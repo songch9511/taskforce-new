@@ -11,6 +11,7 @@ import {
   type SuggestionResponse,
 } from "./contract";
 import { errorResponse, parseBody, unauthorized } from "./respond";
+import type { ReviewDecisionsResponse } from "./contract";
 
 // /api/v2/review · /api/v2/return-summary(/clear) · /api/v2/suggestions/{id}/(snooze|dismiss) 처리 (0.2.0 C3). 인증 · gate · 읽기/쓰기를 인자로 받아 Route Handler 밖에서 테스트한다.
 //  - gate가 꺼져 있으면 404: 인증 · DB를 부르지 않는다 (새 쓰기 0, 기존 API 그대로). 복귀 요약 세 경로는 RETURN_SUMMARY_ENABLED 또는 REVIEW_V2_ENABLED, Review · 제안 경로는 REVIEW_V2_ENABLED (src/lib/flags.ts).
@@ -196,5 +197,25 @@ export async function handleDismissSuggestion<User extends AppUser>(request: Req
   } catch (error) {
     fail("suggestion_dismiss_failed", error);
     return errorResponse(500, "internal_error", "제안을 처리하지 못했습니다.");
+  }
+}
+
+// ─── GET: 결정만 (OA R-dec) ───────────────────────────────
+
+export type ReviewDecisionsDeps<User extends AppUser> = BaseDeps<User> & { load: (user: User, now: Date) => Promise<ReviewDecisionsResponse> };
+
+/**
+ * GET /api/v2/review/decisions — 결정 대기만. GET /api/v2/review와 같은 계산이고 Taskforce 행을 쓰지 않는다(제안 생산 · 노출 · 그날 묶음 소비 0; 공유 인증 계층의 쿠키 세션 갱신은 제외). 결정 원천을 못 읽어도 200이고 unavailable로 표시한다.
+ * 같은 순서: gate 404 → 인증 401 → 읽기 → 200 no-store / 500. 쿠키 인증 GET은 CSRF 검사 대상이 아니다(Taskforce 행을 쓰지 않으므로 다른 사이트가 부르게 해도 바뀌는 Taskforce 상태가 없다).
+ */
+export async function handleGetReviewDecisions<User extends AppUser>(request: Request, deps: ReviewDecisionsDeps<User>): Promise<Response> {
+  if (!deps.enabled()) return errorResponse(404, "not_found", NOT_FOUND);
+  const user = await deps.authenticate(request);
+  if (!user) return unauthorized();
+  try {
+    return Response.json(await deps.load(user, deps.now?.() ?? new Date()) satisfies ReviewDecisionsResponse, { headers: NO_STORE });
+  } catch (error) {
+    fail("review_decisions_failed", error);
+    return errorResponse(500, "internal_error", "결정을 불러오지 못했습니다.");
   }
 }

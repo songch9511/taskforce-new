@@ -1,12 +1,13 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ createCookieClient: vi.fn(), admin: vi.fn() }));
+const mocks = vi.hoisted(() => ({ createCookieClient: vi.fn(), admin: vi.fn(), bearerClient: vi.fn() }));
 
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/supabase/server", () => ({ createClient: mocks.createCookieClient }));
 vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: mocks.admin }));
-vi.mock("@/lib/review/review", () => ({ loadReview: vi.fn() }));
+vi.mock("@supabase/supabase-js", async (importOriginal) => ({ ...(await importOriginal<typeof import("@supabase/supabase-js")>()), createClient: mocks.bearerClient }));
+vi.mock("@/lib/review/review", () => ({ loadReview: vi.fn(), loadReviewDecisions: vi.fn() }));
 vi.mock("@/lib/review/return-summary", () => ({ loadReturnSummary: vi.fn(), clearReturnSummary: vi.fn(), initializeReturnSummaryBaseline: vi.fn() }));
 vi.mock("@/lib/review/suggestions", () => ({ snoozeSuggestion: vi.fn(), dismissSuggestion: vi.fn() }));
 
@@ -20,6 +21,7 @@ import { GET as getSummary } from "../return-summary/route";
 import { POST as dismiss } from "../suggestions/[id]/dismiss/route";
 import { POST as snooze } from "../suggestions/[id]/snooze/route";
 
+import { GET as getReviewDecisions } from "./decisions/route";
 import { GET as getReview } from "./route";
 
 // 인증 · gate · 쿠키 CSRF (C3): 진짜 authenticateRequest로 부른다. gate가 꺼져 있으면 인증도 DB 클라이언트도 부르지 않고(404, 새 쓰기 0),
@@ -37,12 +39,14 @@ const WRITES: [string, Call, unknown][] = [
 ];
 const READS: [string, Call][] = [
   ["GET review", (r) => getReview(r)],
+  ["GET review/decisions", (r) => getReviewDecisions(r)],
   ["GET return-summary", (r) => getSummary(r)],
 ];
 
 const services = () =>
   [
     vi.mocked(review.loadReview),
+    vi.mocked(review.loadReviewDecisions),
     vi.mocked(returnSummary.loadReturnSummary),
     vi.mocked(returnSummary.clearReturnSummary),
     vi.mocked(returnSummary.initializeReturnSummaryBaseline),
@@ -61,6 +65,7 @@ beforeEach(() => {
   mocks.createCookieClient.mockResolvedValue({ auth: { getClaims } } as unknown as SupabaseClient);
   mocks.admin.mockReturnValue({ admin: true });
   vi.mocked(review.loadReview).mockResolvedValue({ ok: "review" } as never);
+  vi.mocked(review.loadReviewDecisions).mockResolvedValue({ ok: "decisions" } as never);
   vi.mocked(returnSummary.loadReturnSummary).mockResolvedValue({ ok: "summary" } as never);
   vi.mocked(returnSummary.clearReturnSummary).mockResolvedValue({ status: "stale" });
   vi.mocked(returnSummary.initializeReturnSummaryBaseline).mockResolvedValue({ status: "stale" });
@@ -128,5 +133,34 @@ describe.each(READS)("%s", (_name, call) => {
     const response = await call(req("GET", undefined, { "sec-fetch-site": "cross-site" }));
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
+  });
+});
+
+// R-dec: 결정만 읽는 GET은 Taskforce 행을 쓰지 않으므로 다른 사이트의 쿠키 GET이 와도 문제가 없다(그날 묶음을 앞당겨 소비시킬 수 없다 — D-4 우려 없음). 만료 쿠키의 세션 갱신은 공유 인증 계층의 일이다(여기서는 인증을 mock한다).
+// 그래서 CSRF 검사를 지나 서비스까지 간다. Bearer도 그대로 통과한다.
+describe("GET review/decisions: 읽기는 CSRF 대상이 아니다 (쓰기 0)", () => {
+  const authCalls = () => vi.mocked(review.loadReviewDecisions).mock.calls;
+
+  it("다른 사이트에서 온 쿠키 GET도 인증을 지나 결정 읽기까지 간다 (사용자는 검증된 클레임의 sub). 다른 서비스는 부르지 않는다", async () => {
+    for (const headers of CROSS_SITE) {
+      vi.mocked(review.loadReviewDecisions).mockClear();
+      const response = await getReviewDecisions(req("GET", undefined, headers));
+      expect(response.status, JSON.stringify(headers)).toBe(200);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(authCalls()).toHaveLength(1);
+      expect(JSON.stringify(authCalls()[0])).toContain(USER);
+    }
+    for (const service of services().filter((s) => s !== (vi.mocked(review.loadReviewDecisions) as unknown))) expect(service).not.toHaveBeenCalled();
+  });
+
+  it("Bearer 토큰으로도 같은 서비스에 닿는다: 쿠키 클라이언트를 만들지 않고 토큰으로 검증한다 (다른 사이트 헤더가 붙어도 Bearer는 CSRF 검사 대상이 아니다)", async () => {
+    const bearerClaims = vi.fn().mockResolvedValue({ data: { claims: { sub: USER, email: "me@example.test", user_metadata: {} } }, error: null });
+    mocks.bearerClient.mockReturnValue({ auth: { getClaims: bearerClaims } });
+    const response = await getReviewDecisions(req("GET", undefined, { authorization: "Bearer token-for-test", "sec-fetch-site": "cross-site" }));
+    expect(response.status).toBe(200);
+    expect(mocks.createCookieClient).not.toHaveBeenCalled();
+    expect(bearerClaims).toHaveBeenCalledWith("token-for-test");
+    expect(authCalls()).toHaveLength(1);
+    expect(JSON.stringify(authCalls()[0])).toContain(USER);
   });
 });

@@ -12,6 +12,8 @@ import {
   type Suggestion,
 } from "./contract";
 import { handleClearReturnSummary, handleDismissSuggestion, handleGetReturnSummary, handleGetReview, handleInitializeReturnSummaryBaseline, handleSnoozeSuggestion } from "./review";
+import { reviewDecisionsResponseSchema, type ReviewDecisionsResponse } from "./contract";
+import { handleGetReviewDecisions } from "./review";
 
 // /api/v2/review · return-summary · suggestions 처리 (C3). 인증 · gate · 읽기/쓰기를 가짜로 두고 호출 수로 증명한다:
 // gate 꺼짐에서는 인증도 DB도 부르지 않고(404), 인증 거부에서는 읽기도 쓰기도 부르지 않는다.
@@ -235,5 +237,66 @@ describe("POST suggestions/{id}/snooze · dismiss", () => {
     const snooze = vi.fn(async () => { throw new Error("boom"); });
     expect((await handleSnoozeSuggestion(json({ expected_version: 1, snooze_until: until }), ID, snoozeDeps(snooze))).status).toBe(500);
     expect(snooze).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ─── GET review/decisions (OA R-dec): 결정만 읽는다. 같은 gate · 인증 · no-store, Taskforce 행 쓰기 0 ─────────────────────────
+
+describe("GET review/decisions", () => {
+  const decisions: ReviewDecisionsResponse = { generated_at: NOW.toISOString(), complete: true, empty: true, sources: { decisions: "ok" }, decisions: [] };
+  const run = (deps: object) => handleGetReviewDecisions(get(), deps as never);
+
+  it("gate가 꺼져 있으면 404이고 인증도 읽기도 부르지 않는다 (본문은 다른 Review 경로와 같다)", async () => {
+    const authenticate = vi.fn();
+    const load = vi.fn();
+    const response = await run({ enabled: () => false, authenticate, load });
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: { code: "not_found", message: "없는 경로입니다." } });
+    expect(authenticate).not.toHaveBeenCalled();
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it("인증하지 못하면 401이고 읽기를 부르지 않는다", async () => {
+    const load = vi.fn();
+    const response = await run({ enabled: () => true, authenticate: async () => null, load });
+    expect(response.status).toBe(401);
+    expect(apiErrorV2Schema.parse(await response.json()).error.code).toBe("unauthorized");
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it("200 + no-store + 계약 모양. 읽기는 (사용자, 주입한 now)로 한 번 부른다", async () => {
+    const load = vi.fn(async (user: User, now: Date) => (void user, void now, decisions));
+    const response = await run({ enabled: () => true, authenticate: async () => USER, load, now: () => NOW });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(reviewDecisionsResponseSchema.parse(await response.json())).toEqual(decisions);
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(load).toHaveBeenCalledWith(USER, NOW);
+  });
+
+  it("시계를 주입하지 않으면 지금 시각을 넘긴다", async () => {
+    const load = vi.fn(async () => decisions);
+    await run({ enabled: () => true, authenticate: async () => USER, load });
+    expect(load.mock.calls[0]).toEqual([USER, expect.any(Date)]);
+  });
+
+  it("읽기가 던지면 500이고 본문 · 로그에 값이 없다: 로그는 사건 이름 + 오류 이름뿐 (review_decisions_failed)", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const response = await run({ enabled: () => true, authenticate: async () => USER, load: async () => { throw new Error("select * from sources where text = '카나리 원문 7f3a'"); } });
+    expect(response.status).toBe(500);
+    const text = await response.text();
+    expect(apiErrorV2Schema.parse(JSON.parse(text)).error.code).toBe("internal_error");
+    expect(text).not.toContain("카나리 원문");
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(log.mock.calls[0][0]))).toEqual({ event: "review_decisions_failed", error: "Error" });
+    expect(JSON.stringify(log.mock.calls)).not.toContain("카나리 원문");
+  });
+
+  it("Error가 아닌 값이 던져져도 500이고 로그에는 unknown뿐이다", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const response = await run({ enabled: () => true, authenticate: async () => USER, load: async () => { throw "카나리 문자열 9c1d"; } });
+    expect(response.status).toBe(500);
+    expect(JSON.parse(String(log.mock.calls[0][0]))).toEqual({ event: "review_decisions_failed", error: "unknown" });
+    expect(JSON.stringify(log.mock.calls)).not.toContain("카나리 문자열");
   });
 });
