@@ -337,7 +337,7 @@ D1c-2a 정정 2 인계: lease 만료 unknown_outcome 뒤 접수는 bridge API의
 
 검증은 `lib/bridge/answer-local{,.contract}.test.ts`, route test, `lib/bridge/auth.integration.test.ts`의 한 행, `tests/db/answer-local*`(PGlite T1–T9), `tests/pg/answer-local.test.ts`(P1–P8, 실제 Postgres)에 있다.
 
-## 15. Claude Code adapter (OA D3a)
+## 16. Claude Code adapter (OA D3a)
 
 Mac bridge(11-1절)의 첫 실제 adapter다. 턴마다 사용자의 `claude -p` 프로세스 하나를 띄우고 감독한다. 핵심은 Kit `apple/Packages/TaskforceKit/Sources/TaskforceKit/Bridge/ClaudeCode/`(`#if os(macOS)`)와 의존 0 target `TaskforceAgentWire`(helper 둘의 본체), 앱 번들 helper `Contents/Helpers/tf-agent-hook` · `tf-agent-mcp` · 지킴이 `Taskforce Agent.app`(13장)(Xcode `tool` 타깃, 복사할 때 서명)다. **서버 registry는 바꾸지 않았다**: Claude Code는 초기 등급(쓰기 · 읽기 전용 모두 미검증)이라 서버가 전달하지 않는다. 실제 provider 확인(R1 · R2)과 registry 변경(D3a-s)은 다음 단계다(계약 `handoffs/oa-d3a-contract.md` 4.7 · 5.1).
 
