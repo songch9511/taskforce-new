@@ -4,24 +4,27 @@ import Foundation
 import Testing
 @testable import TaskforceAgentWire
 
-/// 18장 훑기 규칙: 지킴이 뒤에 시작해 훑는 사이에 사라진 프로세스는, 목록의 부모가 지금 같은 프로세스로 살아 있고 구성원이 아님을 증명할 때만 불완전으로 치지 않는다.
+/// 18장 훑기 규칙: 지킴이 뒤에 시작해 훑는 사이에 사라진 프로세스는, 목록의 부모가 지금 같은 프로세스로 살아 있고 구성원이 아님을 증명할 때만 불완전으로 치지 않는다
+/// (같은 프로세스 · 순서는 20장: unique id 순서로 가른다).
 /// 시험 프로세스를 지킴이로 치고 목록 · 조회를 끼워 넣어 결정적으로 본다 (`KeeperScanRulesTests.World`)
 struct KeeperScanRule18Tests {
     typealias World = KeeperScanRulesTests.World
 
-    /// 무관한 부모 하나 (기본: 지킴이와 같은 때 시작 — 지킴이 뒤로 치고, 자식(지킴이 + 1초)보다는 엄격히 앞이다. 책임 프로세스는 다른 앱). 목록에 자기 행이 있다
+    /// 무관한 부모 하나 (책임 프로세스는 다른 앱). 목록에 자기 행이 있다.
+    /// 기본은 지킴이보다 먼저 생긴 부모다(unique id < 지킴이, 지킴이 1초 전 시작: 셸 · 편집기 · 상주 빌드 서비스) — 20장에서 세대를 못 읽은 자식(`.gone`)을 무해로 가를 수 있는 유일한 부모.
+    /// `young`이면 지킴이 뒤에 생긴 부모(unique id = 지킴이 + pid, 지킴이와 같은 때 시작: 세션 중에 시작한 빌드) — 그 뒤 매긴 자식보다는 id가 작다
     @discardableResult
-    /// - `own`: unique id (기본: 지킴이 뒤에 매긴 id)
+    /// - `own`: unique id (위 기본을 덮는다)
     static func parent(
-        _ world: World, startSeconds: UInt64? = nil, responsible: ProcessLookup<UInt64> = .present(12345), zombie: Bool = false, own: UInt64? = nil
+        _ world: World, startSeconds: UInt64? = nil, responsible: ProcessLookup<UInt64> = .present(12345), zombie: Bool = false, own: UInt64? = nil, young: Bool = false
     ) -> ProcessGeneration {
         let pid = world.next
         world.next += 1
-        let seconds = startSeconds ?? world.own.startSeconds
+        let seconds = startSeconds ?? (young ? world.own.startSeconds : world.own.startSeconds - 1)
         world.entries.append(ListedProcess(pid: pid, parentPID: 1, uid: world.uid, ruid: world.uid, startSeconds: seconds, startMicros: world.own.startMicros))
         let generation = ProcessGeneration(
             pid: pid, startSeconds: seconds, startMicros: world.own.startMicros, parentPID: 1, group: pid, uid: world.uid, zombie: zombie,
-            own: own ?? world.own.own + UInt64(pid), parent: 1
+            own: own ?? (young ? world.own.own + UInt64(pid) : world.own.own - UInt64(pid - 900_000)), parent: 1
         )
         world.generations[pid] = .present(generation)
         world.responsible[pid] = responsible
@@ -46,14 +49,18 @@ struct KeeperScanRule18Tests {
     // MARK: 완전 — 무관한 부모
 
     @Test func aChildThatVanishedUnderALiveUnrelatedParentLeavesTheScanComplete() throws {
-        for older in [false, true] {
-            let world = try World()
-            let parent = Self.parent(world, startSeconds: older ? world.own.startSeconds - 1 : nil)
-            Self.vanishedAtGeneration(world, parentPID: parent.pid)
-            #expect(scan(world) == KeeperMembers.Scan(members: [], complete: true), older ? "지킴이 앞에 시작한 부모" : "지킴이 뒤에 시작한 부모")
-            Self.vanishedAtResponsibility(world, parent: parent)
-            #expect(scan(world) == KeeperMembers.Scan(members: [], complete: true), "책임 조회에서 사라짐")
-        }
+        let world = try World()
+        let parent = Self.parent(world)
+        Self.vanishedAtGeneration(world, parentPID: parent.pid)
+        #expect(scan(world) == KeeperMembers.Scan(members: [], complete: true), "지킴이 앞에 생긴 부모")
+        Self.vanishedAtResponsibility(world, parent: parent)
+        #expect(scan(world) == KeeperMembers.Scan(members: [], complete: true), "책임 조회에서 사라짐")
+        // 지킴이 뒤에 생긴 부모(세션 중에 시작한 빌드): 책임 조회에서 사라진 자식은 부모 id < 자식 id로 무해하다.
+        // 세대를 못 읽은 자식은 20장부터 불완전이다 (`KeeperScanRule20Tests`)
+        let young = try World()
+        let build = Self.parent(young, young: true)
+        Self.vanishedAtResponsibility(young, parent: build)
+        #expect(scan(young) == KeeperMembers.Scan(members: [], complete: true), "지킴이 뒤에 생긴 부모 · 책임 조회에서 사라짐")
     }
 
     @Test func withoutTheUniqueIDVariantTheParentIsCheckedByPID() throws {
@@ -113,15 +120,15 @@ struct KeeperScanRule18Tests {
         #expect(scan(zombie)?.complete == false, "부모가 좀비")
         // 지킴이 뒤에 생긴 좀비 부모: 그 행 자체가 사라짐(19.1)이라 어느 쪽으로도 불완전
         let late = try World()
-        let lateParent = Self.parent(late, zombie: true)
+        let lateParent = Self.parent(late, zombie: true, young: true)
         Self.vanishedAtGeneration(late, parentPID: lateParent.pid)
         #expect(scan(late)?.complete == false, "지킴이 뒤의 좀비 부모")
     }
 
     @Test func aParentPIDReusedAfterTheChildStartedMakesTheScanIncomplete() throws {
         let world = try World()
-        // 그 pid의 지금 프로세스가 자식(지킴이 + 1초)보다 늦게 시작했다: 자식의 부모가 아니다
-        let parent = Self.parent(world, startSeconds: world.own.startSeconds + 2)
+        // 그 pid의 지금 프로세스가 자식(지킴이 + 1초)보다 늦게 생겼다(시작 시각 · unique id 모두 자식 뒤): 자식의 부모가 아니다
+        let parent = Self.parent(world, startSeconds: world.own.startSeconds + 2, own: world.own.own + 2_000_000)
         Self.vanishedAtGeneration(world, parentPID: parent.pid)
         #expect(scan(world)?.complete == false)
     }
@@ -136,11 +143,16 @@ struct KeeperScanRule18Tests {
 
     @Test func aParentThatIsAMemberMakesTheScanIncomplete() throws {
         let world = try World()
-        let parent = Self.parent(world, responsible: .present(world.own.own))
+        let parent = Self.parent(world, responsible: .present(world.own.own), young: true)
         Self.vanishedAtGeneration(world, parentPID: parent.pid)
         let result = scan(world)
         #expect(result?.complete == false, "부모의 책임 프로세스 = 지킴이")
         #expect(result?.members == [parent])
+        // 책임 조회에서 사라진 자식: 구성원 부모는 자식보다 먼저 생겼으니(20장 순서 조건을 통과한다) 책임 프로세스 = 지킴이만이 가른다
+        let atResponsibility = try World()
+        let member = Self.parent(atResponsibility, responsible: .present(atResponsibility.own.own), young: true)
+        Self.vanishedAtResponsibility(atResponsibility, parent: member)
+        #expect(scan(atResponsibility)?.complete == false, "책임 조회에서 사라짐 · 부모의 책임 프로세스 = 지킴이")
     }
 
     @Test func aParentTheKeeperHasSeenAsAMemberMakesTheScanIncomplete() throws {
@@ -148,6 +160,11 @@ struct KeeperScanRule18Tests {
         let parent = Self.parent(world)
         Self.vanishedAtGeneration(world, parentPID: parent.pid)
         #expect(scan(world, seen: [parent.own])?.complete == false)
+        // 책임 조회에서 사라진 자식의 부모(지킴이 뒤에 생긴 부모, 구성원 id만 지킴이가 본다)
+        let young = try World()
+        let build = Self.parent(young, young: true)
+        Self.vanishedAtResponsibility(young, parent: build)
+        #expect(scan(young, seen: [build.own])?.complete == false, "책임 조회에서 사라짐")
     }
 
     @Test func aFailedParentLookupMakesTheScanIncomplete() throws {

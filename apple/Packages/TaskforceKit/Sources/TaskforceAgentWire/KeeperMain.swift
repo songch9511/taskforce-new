@@ -299,6 +299,7 @@ public enum KeeperMembers {
         }
         var visited = Set<pid_t>()
         for entry in listed where entry.pid > 1 && entry.pid != keeperPID && visited.insert(entry.pid).inserted {
+            // 목록 행에는 unique id가 없어 지킴이 뒤 시작은 달력 시각으로 가른다 (20장 남는 위험: 시계 후퇴 중 사라진 구성원은 지킴이 앞으로 보일 수 있다)
             let afterKeeper = entry.started(notBefore: keeper)
             guard entry.uid == uid else {
                 if entry.ruid == uid, afterKeeper { changed.append(entry) }
@@ -309,13 +310,10 @@ public enum KeeperMembers {
             case .present(let read): generation = read
             case .gone:
                 // 14장 6: 지킴이 뒤에 시작해 목록과 조회 사이에 끝났다 (fork 사슬이 그 사이에 목록에 없는 자식을 남겼을 수 있다).
-                // 18장 · 19장: 추적 중이 아니고, 목록의 부모가 지금 같은 프로세스로 살아 있으며 구성원이 아니면 그 자식도 구성원일 수 없다. 같은 프로세스 =
-                // 같은 스냅숏에 부모 자신의 행이 있고 지금 세대의 시작 시각이 그 행과 정확히 같으며 그 시작이 자식보다 엄격히 앞이다 (자식 세대를 못 읽어 unique id로 잇지 못한다)
-                if afterKeeper, !(untraced(entry.pid) && vanishedUnderUnrelatedParent(parentPID: entry.parentPID, keeperPID, keeperID, seen, lookups, isSameParent: { parent in
-                    guard let row = rows[entry.parentPID]?.first else { return false }
-                    let listedStart = (row.startSeconds, row.startMicros)
-                    return (parent.startSeconds, parent.startMicros) == listedStart && listedStart < (entry.startSeconds, entry.startMicros)
-                })) {
+                // 18 · 19 · 20장: 추적 중이 아니고, 목록의 부모 pid의 지금 프로세스가 지킴이보다 먼저 생겼고(unique id < 지킴이) 살아 있으며 구성원이 아니면 그 자식도 구성원일 수 없다.
+                // 자식 세대를 못 읽어 unique id로 잇지 못한다: 지킴이 전부터 살아 있는 프로세스는 스냅숏 때도 그 pid의 주인이었고, 구성원의 원래 부모(지킴이 · 구성원)가 끝난 뒤
+                // 그 pid를 다시 쓴 프로세스(`PT_DETACH`가 붙이는 곳)는 지킴이 뒤에 생겼다. 벽시계는 보지 않는다 (시계 후퇴)
+                if afterKeeper, !(untraced(entry.pid) && vanishedUnderUnrelatedParent(parentPID: entry.parentPID, keeperPID, keeperID, seen, lookups) { $0.own < keeperID }) {
                     complete = false
                 }
                 continue
@@ -324,9 +322,12 @@ public enum KeeperMembers {
                 continue
             }
             guard generation.uid == uid, generation.own > keeperID else { continue }
-            /// 책임 조회에서 사라졌거나 조회 때 좀비다: 추적 중이 아니고(19장) 읽은 세대의 부모(unique id)가 지금 같은 프로세스로 살아 있고 구성원이 아님을 증명하면 구성원일 수 없다 (18장)
+            /// 책임 조회에서 사라졌거나 조회 때 좀비다: 추적 중이 아니고(19장) 읽은 세대의 부모(unique id)가 지금 같은 프로세스로 살아 있고 구성원이 아님을 증명하면 구성원일 수 없다 (18장).
+            /// 그 부모는 자식보다 먼저 생겼어야 한다 (20장: `PT_DETACH`가 재사용된 pid의 새 프로세스에 붙이고 exec이 부모 unique id를 그것으로 갱신해도, 그 프로세스는 자식 뒤에 생겼다)
             let vanishedHarmlessly = {
-                untraced(entry.pid) && vanishedUnderUnrelatedParent(parentPID: entry.parentPID, keeperPID, keeperID, seen, lookups) { $0.own == generation.parent }
+                untraced(entry.pid) && vanishedUnderUnrelatedParent(parentPID: entry.parentPID, keeperPID, keeperID, seen, lookups) {
+                    $0.own == generation.parent && $0.own < generation.own
+                }
             }
             // 19.1: 지킴이 뒤에 생겨 목록에 있던 프로세스가 조회 때 좀비다 — 사라짐과 같다 (목록 뒤에 목록에 없는 자식을 남기고 끝났을 수 있고, launchd가 아직 거두지 않았다)
             if generation.zombie {
@@ -371,15 +372,19 @@ public enum KeeperMembers {
         return Scan(members: members, complete: complete)
     }
 
-    /// 그 프로세스의 부모가 지금 같은 id로 살아 있고 그 책임 프로세스가 지킴이가 아님을 증명했다 (15장 3). 사라짐 · 다른 프로세스 · 좀비 · 조회 실패 · 책임 = 지킴이는 아니다
+    /// 그 프로세스의 부모가 지금 같은 id로 살아 있고 그 책임 프로세스가 지킴이가 아님을 증명했다 (15장 3). 사라짐 · 다른 프로세스 · 좀비 · 조회 실패 · 책임 = 지킴이는 아니다.
+    /// 부모가 자식보다 뒤에 생겼으면(20장: detach가 붙인 재사용 pid의 프로세스로 exec이 갱신한 부모 id) 아니다
     static func unrelatedParent(of child: ProcessGeneration, _ keeperPID: pid_t, _ keeperID: UInt64, _ lookups: Lookups) -> Bool {
-        guard child.parentPID > 1, case .present(let parent) = lookups.generation(child.parentPID), parent.own == child.parent, !parent.zombie else { return false }
+        guard child.parentPID > 1, case .present(let parent) = lookups.generation(child.parentPID), parent.own == child.parent, parent.own < child.own, !parent.zombie else {
+            return false
+        }
         return responsibleIsNotKeeper(parent, keeperPID, keeperID, lookups)
     }
 
     /// 18장: 지킴이 뒤에 시작해 훑는 사이에 사라진 프로세스가 구성원일 수 없음을 그 부모로 증명했다. 책임 프로세스는 부모에게서 물려받고(disclaim이면 자기 자신)
-    /// 바뀌지 않으며 고아는 launchd로만 옮겨진다 — 부모가 pid 1 · 지킴이가 아니고, 지금 같은 프로세스로 살아 있으며(`isSameParent`, 좀비 아님), 그 책임 프로세스가
-    /// 지킴이가 아니고, 지킴이가 본 구성원 id가 아니면 그 자식은 살아 있었어도 구성원이 아니었다. 조회 하나라도 실패 · 사라짐 · 불일치면 증명하지 못한다
+    /// 바뀌지 않으며 고아는 launchd로, detach는 원래 부모 pid의 지금 프로세스로만 옮겨진다 — 부모가 pid 1 · 지킴이가 아니고, 지금 살아 있는 그 프로세스가 원래 부모일 수밖에
+    /// 없으며(`isSameParent`: 20장의 unique id 순서, 좀비 아님), 그 책임 프로세스가 지킴이가 아니고, 지킴이가 본 구성원 id가 아니면 그 자식은 살아 있었어도 구성원이
+    /// 아니었다. 조회 하나라도 실패 · 사라짐 · 불일치면 증명하지 못한다
     static func vanishedUnderUnrelatedParent(
         parentPID: pid_t, _ keeperPID: pid_t, _ keeperID: UInt64, _ seen: Set<UInt64>, _ lookups: Lookups, isSameParent: (ProcessGeneration) -> Bool
     ) -> Bool {

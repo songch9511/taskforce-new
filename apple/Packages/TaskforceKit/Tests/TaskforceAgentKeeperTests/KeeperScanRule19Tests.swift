@@ -5,8 +5,8 @@ import Synchronization
 import Testing
 @testable import TaskforceAgentWire
 
-/// 19장 (재검토 10): 18장 예외에 더한 조건 넷 — 추적 중 아님 · 두 목록 일치 · 부모 세대로 책임 조회를 묶음 · (a) 부모는 같은 스냅숏의 자기 행과 시작 시각이 같고
-/// 자식보다 엄격히 앞. 하나라도 아니면 그 훑기는 불완전이다. 목록 · 조회를 끼워 넣어 결정적으로 본다 (`KeeperScanRulesTests.World`)
+/// 19장 (재검토 10): 18장 예외에 더한 조건 — 추적 중 아님 · 두 목록 일치 · 부모 세대로 책임 조회를 묶음 (넷째 시작 시각 조건은 20장이 unique id 순서로 바꿨다).
+/// 하나라도 아니면 그 훑기는 불완전이다. 목록 · 조회를 끼워 넣어 결정적으로 본다 (`KeeperScanRulesTests.World`)
 struct KeeperScanRule19Tests {
     typealias World = KeeperScanRulesTests.World
     typealias Rule18 = KeeperScanRule18Tests
@@ -93,9 +93,11 @@ struct KeeperScanRule19Tests {
 
     // MARK: 3 (P2) 책임 조회를 부모 세대로 묶는다
 
-    /// 자식을 가르며 부모의 책임을 읽은 뒤부터 그 pid의 세대가 `after`로 보인다. 부모 행이 먼저 훑히므로(부모 자신의 책임 조회가 첫째) 둘째 책임 조회 뒤부터다
+    /// 자식을 가르며 부모의 책임을 읽은 뒤부터 그 pid의 세대가 `after`로 보인다. 부모 행이 먼저 훑힌다: 지킴이 뒤에 생긴 부모면 부모 자신의 책임 조회가 첫째라
+    /// 둘째 책임 조회 뒤부터, 지킴이 앞에 생긴 부모(행을 건너뛴다)면 첫째 뒤부터다
     static func swapAfterResponsibility(_ world: World, parent: ProcessGeneration, after: ProcessLookup<ProcessGeneration>) -> KeeperMembers.Lookups {
         #expect(world.entries.firstIndex { $0.pid == parent.pid } == 0, "부모 행이 먼저 (시험 전제)")
+        let first = parent.own > world.own.own ? 2 : 1
         let reads = Mutex(0)
         var lookups = world.lookups
         let generation = lookups.generation
@@ -104,7 +106,7 @@ struct KeeperScanRule19Tests {
             if pid == parent.pid { reads.withLock { $0 += 1 } }
             return byID?(pid) ?? .failed
         }
-        lookups.generation = { pid in pid == parent.pid && reads.withLock({ $0 }) >= 2 ? after : generation(pid) }
+        lookups.generation = { pid in pid == parent.pid && reads.withLock({ $0 }) >= first ? after : generation(pid) }
         return lookups
     }
 
@@ -126,9 +128,9 @@ struct KeeperScanRule19Tests {
     }
 
     @Test func aRedisclaimedChildWhoseParentChangesAcrossTheResponsibilityLookupMakesTheScanIncomplete() throws {
-        // 15장 3: 스스로 책임인 자식의 무관한 부모도 같은 묶음으로 증명한다
+        // 15장 3: 스스로 책임인 자식의 무관한 부모도 같은 묶음으로 증명한다 (15장 3은 지킴이 뒤에 생긴 부모만 본다)
         let world = try World()
-        let parent = Rule18.parent(world)
+        let parent = Rule18.parent(world, young: true)
         let child = world.process(parentPID: parent.pid, parentID: parent.own)
         world.responsible[child.pid] = .present(child.own)
         #expect(scan(world)?.complete == true, "무관한 부모 (시험 전제)")
@@ -140,37 +142,7 @@ struct KeeperScanRule19Tests {
         #expect(scan(world, lookups: lookups)?.complete == false)
     }
 
-    // MARK: 4 (P2) (a)의 부모 동일성: 같은 스냅숏의 자기 행 · 시작 시각 같음 · 자식보다 엄격히 앞
-
-    @Test func aParentWithoutItsOwnRowInTheSnapshotMakesTheScanIncomplete() throws {
-        let world = try World()
-        let parent = Rule18.parent(world)
-        world.entries.removeAll { $0.pid == parent.pid }
-        world.listed(parentPID: parent.pid)
-        #expect(scan(world)?.complete == false)
-    }
-
-    @Test func aParentThatStartedInTheSameMicrosecondAsTheChildMakesTheScanIncomplete() throws {
-        let world = try World()
-        // 자식은 지킴이 + 1초: 부모도 그때 (행과 지금 세대가 같다)
-        let parent = Rule18.parent(world, startSeconds: world.own.startSeconds + 1)
-        world.listed(parentPID: parent.pid)
-        #expect(scan(world)?.complete == false)
-    }
-
-    @Test func aParentWhoseLiveStartDiffersFromItsRowMakesTheScanIncomplete() throws {
-        for shift in [-1, 1] {
-            let world = try World()
-            let parent = Rule18.parent(world, startSeconds: world.own.startSeconds - 5)
-            world.listed(parentPID: parent.pid)
-            // 지금 그 pid의 세대는 행과 다른 때 시작했다 (그래도 자식보다는 앞): 같은 프로세스라는 증명이 아니다
-            world.generations[parent.pid] = .present(ProcessGeneration(
-                pid: parent.pid, startSeconds: UInt64(Int(parent.startSeconds) + shift), startMicros: parent.startMicros, parentPID: 1, group: parent.pid, uid: world.uid,
-                zombie: false, own: parent.own, parent: 1
-            ))
-            #expect(scan(world)?.complete == false, "행보다 \(shift > 0 ? "늦게" : "일찍")")
-        }
-    }
+    // MARK: 4 (P2) (a)의 부모 동일성 — 20장이 시작 시각 비교를 unique id 순서로 바꿨다 (`KeeperScanRule20Tests`)
 
     // MARK: 19.1 좀비 = 사라짐
 
@@ -196,7 +168,7 @@ struct KeeperScanRule19Tests {
 
     @Test func aZombieThatStartedAfterTheKeeperIsTreatedLikeAVanishedProcess() throws {
         let member = try World()
-        let memberParent = Rule18.parent(member, responsible: .present(member.own.own))
+        let memberParent = Rule18.parent(member, responsible: .present(member.own.own), young: true)
         Self.zombie(member, parentPID: memberParent.pid, parentID: memberParent.own)
         #expect(scan(member)?.complete == false, "부모가 구성원: 좀비가 끝나기 전에 띄운 자식은 목록에 없다")
         let orphan = try World()
