@@ -123,7 +123,7 @@ struct ClaudeRereview5Tests {
             return
         }
         kill(claude.parentPID, SIGKILL)
-        #expect(await ClaudeRereview5ReproTests.waitUntil(20) { fake.log.lines.contains { $0.hasPrefix("claude_end_unproven") } })
+        #expect(await ClaudeRereview5ReproTests.waitUntil(60) { fake.log.lines.contains { $0.hasPrefix("claude_end_unproven") } })
         #expect(await fake.process.sessionRun(ClaudeTest.session)?.liveness == .unknown)
         #expect(await fake.restarted().sessionRun(ClaudeTest.session)?.liveness == .unknown)
     }

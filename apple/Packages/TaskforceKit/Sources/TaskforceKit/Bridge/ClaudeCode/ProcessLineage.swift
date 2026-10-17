@@ -160,10 +160,13 @@ public final class ClaudeLineage: Sendable {
     /// (또는 그 뒤 앱이 이미 확정해 끝 기록으로 바꿔 두었다)
     func keeperRecorded() -> Bool {
         guard let file else { return false }
-        if Self.load(file) == .ended { return true }
-        guard let record = KeeperRecord.read(Self.keeperFile(file)), let boot = AgentProcesses.bootSessionID(), record.boot == boot else { return false }
-        guard let keeper else { return evidence == .thisBoot }
-        return record.keeperID == keeper.uniqueID
+        if let record = KeeperRecord.read(Self.keeperFile(file)), let boot = AgentProcesses.bootSessionID(), record.boot == boot {
+            if let keeper, record.keeperID == keeper.uniqueID { return true }
+            if keeper == nil, evidence == .thisBoot { return true }
+        }
+        // 19.2: 끝 기록은 지킴이 기록 뒤에 본다. 끝을 확정하는 쪽(이 객체든 같은 파일을 읽은 다른 adapter든 `forget`)은 끝 기록을 먼저 쓰고 지킴이 기록을 지운다 —
+        // 그래서 지킴이 기록을 못 찾았으면 그 사이 쓰인 끝 기록이 이미 있다. 이 spawn 경로의 · 이번 부팅의 · 형식이 맞는 끝 기록만 (`load`)
+        return Self.load(file) == .ended
     }
 
     /// 끝을 확정한 뒤: 끝 기록(`<id>.ended`)을 쓰고 혈통 파일 · 지킴이 기록을 지운다 (그 뒤의 확인도 끝이다, 11장 1 · 12장 8)

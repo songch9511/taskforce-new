@@ -145,7 +145,8 @@ struct ClaudeRereview7Tests {
         try FileManager.default.createDirectory(at: folder.root.appending(path: "state.json"), withIntermediateDirectories: true)
         let events = EventLog()
         _ = try await fake.turn(events: events)
-        #expect(await events.wait(timeout: 15) { FakeClaude.ended($0) })
+        // 턴 + 내부 닫기의 끝 증명까지 (포기 상한만: 맞으면 바로 돌아온다. 붐비는 Kit 전체 실행에서 15초를 넘겼다, 19장)
+        #expect(await events.wait { FakeClaude.ended($0) })
         let run = try #require(seen.withLock { $0 }, "내부 닫기 직전에 물었다")
         #expect(run.liveness == .alive)
         #expect(await fake.process.sessionRun(ClaudeTest.session)?.liveness == .ended(AgentExit(code: nil)), "내부 닫기까지 끝난 뒤에는 끝")
@@ -187,7 +188,7 @@ struct ClaudeRereview7Tests {
         try FileManager.default.createDirectory(at: folder.root.appending(path: "state.json"), withIntermediateDirectories: true)
         let events = EventLog()
         _ = try await fake.turn(events: events)
-        #expect(await events.wait(timeout: 15) { FakeClaude.ended($0) })
+        #expect(await events.wait { FakeClaude.ended($0) })
         #expect(fake.report(1) == nil, "닫기 spawn 0")
     }
 }

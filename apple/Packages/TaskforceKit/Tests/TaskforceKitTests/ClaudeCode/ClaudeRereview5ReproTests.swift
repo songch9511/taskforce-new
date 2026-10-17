@@ -81,7 +81,7 @@ struct ClaudeRereview5ReproTests {
             return
         }
         kill(claude.parentPID, SIGKILL)
-        #expect(await Self.waitUntil(20) { fake.log.lines.contains { $0.hasPrefix("claude_end_unproven") } })
+        #expect(await Self.waitUntil(60) { fake.log.lines.contains { $0.hasPrefix("claude_end_unproven") } })
         await #expect(throws: (any Error).self) { _ = try await fake.restarted().startTurn(Self.turn(fake), events: EventLog().sink) }
     }
 

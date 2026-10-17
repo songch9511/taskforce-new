@@ -163,6 +163,8 @@ struct ClaudeRereview6Tests {
         kill(child.kept.keeper.pid, SIGKILL)
         if let pid = child.identity.pid { kill(pid_t(pid), SIGKILL) }
         #expect(await child.keeperEnded())
+        // 보낸 SIGKILL이 `claude`에 닿을 때까지 (붐비는 기계에서는 신호를 받기 전이라 아직 같은 프로세스로 보였다, 19장): 그 뒤의 판정은 지킴이로만 갈린다
+        #expect(await ClaudeProcessIdentityTests.within { ClaudeProcessIdentityTests.ended(child.identity) }, "claude가 끝났다 (시험 전제)")
         #expect(child.lineage.endAfterKeeperGone() == .unknown)
         #expect(ClaudeProcessInspector.liveness(child.identity, lineage: child.lineage) == .unknown, "기록보다 거둔 비정상 종료가 이긴다")
     }
