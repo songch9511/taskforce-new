@@ -293,6 +293,7 @@ public actor BridgeRuntime {
     public func stop() async {
         networkEnabled = false
         generation += 1
+        await secrets.clear() // 계정이 떠난다: 그 계정의 비밀값은 메모리에도 남기지 않는다 (OA D4b-m-2, D4bm-23)
         loopsRunning = false
         loopTask?.cancel()
         loopTask = nil
@@ -329,6 +330,7 @@ public actor BridgeRuntime {
     /// 사용자가 Quit을 골랐다: 살아 있는 턴을 중단하고 끝남을 본 턴은 `cancelled` 사건으로 알린 뒤 outbox를 최대 3초 비운다 (Q7, ONE-TF-15 a)
     public func shutdown(interrupt: Bool) async {
         await stopSpawning()
+        await secrets.clear() // 메모리에만 있는 비밀값은 종료와 함께 버린다 (OA D4b-m-2, D4bm-22): 다음 실행에서 그 요청은 닫힌다
         if interrupt {
             await interruptAll(reason: "shutdown")
             await endRemainingRuns()
@@ -350,6 +352,7 @@ public actor BridgeRuntime {
     @discardableResult
     public func interruptLiveTurns() async -> Int {
         await stopSpawning()
+        await secrets.clear()
         await interruptAll(reason: "account_deleted")
         await endRemainingRuns()
         await settleOrphans() // 감독 밖에 남은 프로세스도 끝낸다 (원장을 지우기 전에 감독 밖 writer를 남기지 않는다)
@@ -534,6 +537,7 @@ public actor BridgeRuntime {
     public func housekeeping() async {
         await recover()
         await recheckOrphans()
+        await dropStaleSecrets()
         guard active else { return }
         // 마무리 모드: 끝낼 일이 없으면 요청을 하나도 보내지 않고 멈춘다 (호스트가 런타임을 놓는다)
         if await finishDrainIfDone() { return }
@@ -883,7 +887,9 @@ public actor BridgeRuntime {
         } catch let error as BridgeClientError {
             guard isCurrent(gen) else { return false }
             switch error {
-            case .forbidden: setStatus(.revoked)
+            case .forbidden:
+                setStatus(.revoked)
+                await secrets.clear()
             case .tooManyBridges: setStatus(.tooManyBridges)
             case .rateLimited(let after): pausedUntil[.register] = clock.now().addingTimeInterval(after)
             case .unauthorized:
@@ -1053,6 +1059,7 @@ public actor BridgeRuntime {
     func handleRevoked() async {
         guard statusValue != .revoked else { return }
         setStatus(.revoked)
+        await secrets.clear()
         await interruptAll(reason: "revoked")
         networkEnabled = false
         await publish()
@@ -1069,6 +1076,7 @@ public actor BridgeRuntime {
     /// 401인데 세션도 끝났다: 계정이 떠났다. `BridgeHost`가 곧 멈추지만 그 전에도 보내지 않는다
     func accountLeft() async {
         networkEnabled = false
+        await secrets.clear()
         setStatus(.stopped)
         await publish()
     }

@@ -227,18 +227,18 @@ struct ClaudeRereview2Tests {
 
     @Test func c9TwoCombiningMarksStayButMoreBecomeCodesAndTheCutShowsHowMuchIsHidden() {
         let card = { (command: String) in ClaudeToolGate.approvalQuestion(id: "t", tool: "Bash", relPath: nil, command: command).text }
-        #expect(card("caf" + "e\u{0301}\u{0302} x") == "Run: caf" + "e\u{0301}\u{0302} x", "결합 표시 둘은 그대로")
-        #expect(card("e\u{0301}\u{0302}\u{0301} x") == "Run: e" + #"\u{0301}\u{0302}\u{0301}"# + " x", "셋 이상은 코드로")
-        #expect(card("e" + String(repeating: "\u{0301}", count: 3) + "x") == "Run: e" + #"\u{0301}"# + "×3x")
+        #expect(card("caf" + "e\u{0301}\u{0302} x") == "Run · caf" + "e\u{0301}\u{0302} x", "결합 표시 둘은 그대로")
+        #expect(card("e\u{0301}\u{0302}\u{0301} x") == "Run · e" + #"\u{0301}\u{0302}\u{0301}"# + " x", "셋 이상은 코드로")
+        #expect(card("e" + String(repeating: "\u{0301}", count: 3) + "x") == "Run · e" + #"\u{0301}"# + "×3x")
         let long = String(repeating: "a", count: 400)
-        #expect(card(long) == "Run: " + String(repeating: "a", count: 212) + "…(+108)…" + String(repeating: "a", count: 80))
+        #expect(card(long) == "Run · " + String(repeating: "a", count: 212) + "…(+108)…" + String(repeating: "a", count: 80))
         // 결합 표시 둘이 붙은 글자 200개 = 600 스칼라 (글자 수로는 200): 스칼라로 세어 자른다
         let stacked = card(String(repeating: "e\u{0301}\u{0302}", count: 200))
-        #expect(stacked.unicodeScalars.count <= "Run: ".unicodeScalars.count + 300)
+        #expect(stacked.unicodeScalars.count <= "Run · ".unicodeScalars.count + 300)
         #expect(stacked.contains("…(+"))
         let wide = String(repeating: "가", count: 1000)
         let text = card(wide)
-        #expect(text.unicodeScalars.count <= "Run: ".unicodeScalars.count + 300)
+        #expect(text.unicodeScalars.count <= "Run · ".unicodeScalars.count + 300)
         // 원래 1,000 스칼라 → 자리 4자리(9) → 앞 211 · 끝 80 · 숨김 709
         #expect(text.contains("…(+709)…"))
     }
@@ -260,7 +260,7 @@ struct ClaudeRereview2RuntimeTests {
         let created = h.message()
         await h.runtime.tick()
         await h.settle { (try? await h.ledger.task(created.taskID))?.openRequestID == "req-secret" }
-        await h.secrets.put(requestID: "req-secret", value: AgentAnswerValue(text: "SENTINEL-SECRET-LOCAL-41aa"))
+        await h.secrets.put(key: LocalSecretKey(taskID: created.taskID, requestID: "req-secret"), value: AgentAnswerValue(text: "SENTINEL-SECRET-LOCAL-41aa"))
         h.server.enqueueAnswer(bridgeID: h.bridgeID, taskID: created.taskID, requestID: "req-secret", locally: true, structured: false)
         h.clock.jump(by: 6)
         await h.runtime.tick()

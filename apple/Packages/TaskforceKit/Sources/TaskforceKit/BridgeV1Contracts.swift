@@ -1167,3 +1167,73 @@ public struct BridgeV1HeartbeatResponse: Decodable, Equatable, Sendable {
         missingTaskIDs = try c.decode([String].self, forKey: .missingTaskIDs)
     }
 }
+
+// MARK: - 이 Mac에서 답한 비밀값 (OA F2 · D4b-m-2)
+
+/// `POST /api/v1/bridge/answer-local` 요청. 본문에는 글(값 · `provider_request_id`)을 실을 자리가 없다: 키는 정확히 셋이고 모두 UUID 또는 고정 길이 소문자 16진이다 (서버는 strict 객체, 상한 512바이트).
+/// `requestDigest` = `provider_request_id`의 UTF-8 SHA-256 소문자 16진 64자 (`AgentQuestionRules.requestDigest`)
+public struct BridgeV1AnswerLocalRequest: Encodable, Equatable, Sendable {
+    public var bridgeID: String
+    public var agentTaskID: String
+    public var requestDigest: String
+
+    public init(bridgeID: String, agentTaskID: String, requestDigest: String) {
+        self.bridgeID = bridgeID
+        self.agentTaskID = agentTaskID
+        self.requestDigest = requestDigest
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case bridgeID = "bridge_id"
+        case agentTaskID = "agent_task_id"
+        case requestDigest = "request_digest"
+    }
+}
+
+public enum BridgeV1AnswerLocalStaleReason: OpenStringValue {
+    case questionClosed, notLive, notSecret
+    case unknown(String)
+
+    public init(raw: String) {
+        switch raw {
+        case "question_closed": self = .questionClosed
+        case "not_live": self = .notLive
+        case "not_secret": self = .notSecret
+        default: self = .unknown(raw)
+        }
+    }
+
+    public var raw: String {
+        switch self {
+        case .questionClosed: "question_closed"
+        case .notLive: "not_live"
+        case .notSecret: "not_secret"
+        case .unknown(let raw): raw
+        }
+    }
+}
+
+/// 200 응답. 도메인 결과는 200의 `status`로 온다 (오류는 HTTP 상태로, `BridgeClientError`)
+public enum BridgeV1AnswerLocalResponse: Decodable, Equatable, Sendable {
+    case answered(stepID: String)
+    case duplicate(stepID: String)
+    case stale(reason: BridgeV1AnswerLocalStaleReason)
+    /// 모르는 status: 효과를 만들지 않는 쪽으로 다룬다 (계약 3.3)
+    case unknown(status: String)
+
+    enum CodingKeys: String, CodingKey {
+        case status, reason
+        case stepID = "step_id"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let status = try c.decode(String.self, forKey: .status)
+        switch status {
+        case "answered": self = .answered(stepID: try c.decode(String.self, forKey: .stepID))
+        case "duplicate": self = .duplicate(stepID: try c.decode(String.self, forKey: .stepID))
+        case "stale": self = .stale(reason: try c.decode(BridgeV1AnswerLocalStaleReason.self, forKey: .reason))
+        default: self = .unknown(status: status)
+        }
+    }
+}

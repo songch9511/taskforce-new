@@ -95,7 +95,7 @@
           "questions" : [
             {
               "allow_other" : false,
-              "header" : "Write file",
+              "header" : "Allow Claude Code to write this file?",
               "id" : "approval",
               "multi_select" : false,
               "options" : [
@@ -109,7 +109,7 @@
                 }
               ],
               "secret" : false,
-              "text" : "Write b.txt"
+              "text" : "Write · b.txt"
             }
           ],
           "structured" : true
@@ -118,7 +118,7 @@
         "session_ref" : {
           "agent_session_id" : "5e551011-0000-4000-8000-000000000001"
         },
-        "text" : "Write b.txt",
+        "text" : "Write · b.txt",
         "turn_seq" : 1,
         "type" : "question"
       }

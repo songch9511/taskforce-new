@@ -77,8 +77,19 @@ public final class FakeBridgeServer: @unchecked Sendable {
         var lastLiveState: String?
         var lastEventSeq = 0
         var externalTaskID: String?
-        var openQuestion: String?
+        var openQuestion: OpenQuestion?
         var currentCommandID: String?
+    }
+
+    /// 지금 열린 질문 (question 사건에서 안다): `answer-local`이 digest · 비밀값 여부를 대조한다 (OA F2 · D4b-m-2)
+    struct OpenQuestion {
+        var requestID: String
+        var digest: String
+        var kind: String
+        var structured: Bool
+        var secret: Bool
+        /// 이 Mac이 이미 답한 질문이면 그 답 명령의 단계 id (`duplicate`가 돌려준다)
+        var answeredStepID: String?
     }
 
     struct Command {
@@ -228,6 +239,11 @@ public final class FakeBridgeServer: @unchecked Sendable {
         lock.withLock { tasks[id]?.sessionID = sessionID }
     }
 
+    /// 그 task의 이 종류 명령 id들 (만든 순서). 서버가 스스로 만든 명령(`answer-local`의 답 명령)을 시험이 찾는다
+    public func commandIDs(taskID: String, kind: String) -> [String] {
+        lock.withLock { commands.values.filter { $0.taskID == taskID && $0.kind == kind }.sorted { $0.cursor < $1.cursor }.map(\.id) }
+    }
+
     public func commandStep(_ id: String) -> String? { lock.withLock { commands[id]?.step.rawValue } }
     public func commandCursor(_ id: String) -> Int? { lock.withLock { commands[id]?.cursor } }
     public func commandOutcome(_ id: String) -> String? { lock.withLock { commands[id]?.outcome } }
@@ -264,24 +280,34 @@ public final class FakeBridgeServer: @unchecked Sendable {
         questionKind: String = "input", commandID: String = UUID().uuidString.lowercased(), extra: [String: Any] = [:]
     ) -> Created? {
         lock.withLock {
-            guard let task = tasks[taskID] else { return nil }
-            var command = newCommand(id: commandID, bridgeID: bridgeID, kind: "answer", sessionID: task.sessionID, taskID: taskID, turnSeq: task.turnSeq)
-            let adapter = sessions[task.sessionID]?.adapter ?? "agent:claude-code"
-            var answersValue: Any = NSNull()
-            var textValue: Any = NSNull()
-            if !locally {
-                if let answers { answersValue = answers }
-                if let answerText { textValue = answerText }
-            }
-            command.payload = [
-                "adapter": adapter, "access": "write", "policy_mode": "manual", "provider_request_id": requestID, "question_kind": questionKind, "structured": structured,
-                "answers": answersValue, "answer_text": textValue, "answered_locally": locally,
-            ].merging(extra) { $1 }
-            commands[commandID] = command
-            tasks[taskID]?.currentCommandID = commandID
-            notifyLocked()
-            return Created(commandID: commandID, taskID: taskID, sessionID: task.sessionID, stepID: command.stepID, marker: command.marker)
+            enqueueAnswerLocked(
+                bridgeID: bridgeID, taskID: taskID, requestID: requestID, answers: answers, answerText: answerText, locally: locally, structured: structured,
+                questionKind: questionKind, commandID: commandID, extra: extra
+            )
         }
+    }
+
+    private func enqueueAnswerLocked(
+        bridgeID: String, taskID: String, requestID: String, answers: [String: Any]?, answerText: String?, locally: Bool, structured: Bool, questionKind: String,
+        commandID: String, extra: [String: Any]
+    ) -> Created? {
+        guard let task = tasks[taskID] else { return nil }
+        var command = newCommand(id: commandID, bridgeID: bridgeID, kind: "answer", sessionID: task.sessionID, taskID: taskID, turnSeq: task.turnSeq)
+        let adapter = sessions[task.sessionID]?.adapter ?? "agent:claude-code"
+        var answersValue: Any = NSNull()
+        var textValue: Any = NSNull()
+        if !locally {
+            if let answers { answersValue = answers }
+            if let answerText { textValue = answerText }
+        }
+        command.payload = [
+            "adapter": adapter, "access": "write", "policy_mode": "manual", "provider_request_id": requestID, "question_kind": questionKind, "structured": structured,
+            "answers": answersValue, "answer_text": textValue, "answered_locally": locally,
+        ].merging(extra) { $1 }
+        commands[commandID] = command
+        tasks[taskID]?.currentCommandID = commandID
+        notifyLocked()
+        return Created(commandID: commandID, taskID: taskID, sessionID: task.sessionID, stepID: command.stepID, marker: command.marker)
     }
 
     @discardableResult
@@ -497,6 +523,7 @@ public final class FakeBridgeServer: @unchecked Sendable {
         case "ack": reply = ack(bridgeID: bridgeID, json: json)
         case "events": reply = events(bridgeID: bridgeID, json: json)
         case "heartbeat": reply = heartbeat(bridgeID: bridgeID, json: json)
+        case "answer-local": reply = answerLocal(bridgeID: bridgeID, json: json)
         default: reply = Reply(status: 404, body: error("not_found", "route"))
         }
         let dropped = lock.withLock { dropAfter.remove(route) != nil }
@@ -791,11 +818,21 @@ public final class FakeBridgeServer: @unchecked Sendable {
         var state = effective
         switch type {
         case "accepted": if state == "dispatched" { state = "accepted" }
-        case "progress", "message", "artifact": state = "running"
-        case "question": state = "awaiting_answer"
-        case "turn_completed": state = "idle"
-        case "failed": state = "failed"
-        case "cancelled": state = "cancelled"
+        case "progress", "message", "artifact":
+            state = "running"
+            task.openQuestion = nil
+        case "question":
+            state = "awaiting_answer"
+            task.openQuestion = Self.openQuestion(in: event)
+        case "turn_completed":
+            state = "idle"
+            task.openQuestion = nil
+        case "failed":
+            state = "failed"
+            task.openQuestion = nil
+        case "cancelled":
+            state = "cancelled"
+            task.openQuestion = nil
         case "reconcile":
             guard task.state == "unreachable" else { tasks[taskID] = task; return ("ignored", task.state) }
             state = task.lastLiveState ?? "running"
@@ -808,6 +845,45 @@ public final class FakeBridgeServer: @unchecked Sendable {
         }
         tasks[taskID] = task
         return ("applied", task.state)
+    }
+
+    // MARK: answer-local (OA F2 · D4b-m-2): 이 Mac이 비밀값 질문에 답했다고 표시한다 (값은 오지 않는다). 실제 서버 규칙을 작게 흉내 낸다
+
+    static func openQuestion(in event: [String: Any]) -> OpenQuestion? {
+        guard let question = event["question"] as? [String: Any], let requestID = question["provider_request_id"] as? String else { return nil }
+        let items = question["questions"] as? [[String: Any]] ?? []
+        return OpenQuestion(
+            requestID: requestID, digest: Self.sha256Hex(requestID), kind: question["kind"] as? String ?? "input", structured: question["structured"] as? Bool ?? false,
+            secret: items.contains { ($0["secret"] as? Bool) == true }
+        )
+    }
+
+    static func sha256Hex(_ text: String) -> String {
+        SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func answerLocal(bridgeID: String, json: [String: Any]) -> Reply {
+        lock.withLock {
+            // 본문은 strict 3키다: 값을 실을 다른 키는 400 (문구는 고정)
+            let digest = json["request_digest"] as? String ?? ""
+            guard Set(json.keys) == ["bridge_id", "agent_task_id", "request_digest"], let taskID = json["agent_task_id"] as? String, UUID(uuidString: taskID) != nil,
+                  digest.count == 64, digest.allSatisfy({ "0123456789abcdef".contains($0) }) else {
+                return Reply(status: 400, body: error("invalid_request", "Invalid local answer request."))
+            }
+            guard let task = tasks[taskID], sessions[task.sessionID]?.bridgeID == bridgeID else { return Reply(status: 404, body: error("not_found", "Local answer target not found.")) }
+            guard task.state == "awaiting_answer", let open = task.openQuestion, open.digest == digest else { return ok(["status": "stale", "reason": "question_closed"]) }
+            guard open.secret, open.kind == "input" else { return ok(["status": "stale", "reason": "not_secret"]) }
+            let now = clock()
+            let heartbeatAlive = bridges[bridgeID]?.lastHeartbeatAt.map { now.timeIntervalSince($0) <= 90 } ?? false
+            guard heartbeatAlive, sessions[task.sessionID]?.status != "unreachable" else { return ok(["status": "stale", "reason": "not_live"]) }
+            if let step = open.answeredStepID { return ok(["status": "duplicate", "step_id": step]) }
+            guard let created = enqueueAnswerLocked(
+                bridgeID: bridgeID, taskID: taskID, requestID: open.requestID, answers: nil, answerText: nil, locally: true, structured: open.structured, questionKind: open.kind,
+                commandID: UUID().uuidString.lowercased(), extra: [:]
+            ) else { return Reply(status: 404, body: error("not_found", "Local answer target not found.")) }
+            tasks[taskID]?.openQuestion?.answeredStepID = created.stepID
+            return ok(["status": "answered", "step_id": created.stepID])
+        }
     }
 
     // MARK: heartbeat (D2a 3.6)

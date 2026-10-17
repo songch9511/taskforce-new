@@ -371,17 +371,17 @@ struct ClaudeToolGateTests {
         let write = await evaluate("Edit", #"{"file_path":"\#(box.workspacePath)/src/a.txt","old_string":"x","new_string":"y"}"#, id: "toolu_e", decider: ScriptedDecider([.success(ScriptedDecider.response(.defer, .manualWrite))]))
         #expect(write.response.decision == .defer)
         let pending = try #require(write.deferred)
-        #expect(pending.question == AgentQuestion(providerRequestID: "toolu_e", kind: .approval, structured: true, text: "Edit src/a.txt", items: [
-            AgentQuestionItem(id: "approval", header: "Edit file", text: "Edit src/a.txt", options: [AgentQuestionOption(label: "Allow", description: ""), AgentQuestionOption(label: "Deny", description: "")]),
+        #expect(pending.question == AgentQuestion(providerRequestID: "toolu_e", kind: .approval, structured: true, text: "Edit · src/a.txt", items: [
+            AgentQuestionItem(id: "approval", header: ClaudeApprovalCopy.editHeader, text: "Edit · src/a.txt", options: [AgentQuestionOption(label: "Allow", description: ""), AgentQuestionOption(label: "Deny", description: "")]),
         ]))
         let command = "npm   run\n build " + String(repeating: "x", count: 400)
         let bash = await evaluate("Bash", WireJSON.object(["command": .string(command)]).canonicalText, id: "toolu_b", decider: ScriptedDecider([.success(ScriptedDecider.response(.defer, .commandNotReadonly))]))
         // 줄바꿈은 ⏎, 공백 여럿은 ␠×N, 길면 앞부분 + …(+숨긴 수)… + 마지막 80 스칼라 (8장 4 · 9장 11 · 10장 9)
         let text = try #require(bash.deferred).question.text
         // 원래 417 스칼라. 앞부분 212 = "npm␠×3run⏎ build " 17 + x 195, 끝 x 80, 숨긴 수 417 − 212 − 80 = 125
-        #expect(text == "Run: npm␠×3run⏎ build " + String(repeating: "x", count: 195) + "…(+125)…" + String(repeating: "x", count: 80))
+        #expect(text == "Run · npm␠×3run⏎ build " + String(repeating: "x", count: 195) + "…(+125)…" + String(repeating: "x", count: 80))
         let config = await evaluate("Write", #"{"file_path":"\#(box.workspacePath)/.mcp.json","content":"{}"}"#, decider: ScriptedDecider([.success(ScriptedDecider.response(.defer, .toolConfigWrite))]))
-        #expect(config.deferred?.question.text == "Write .mcp.json")
+        #expect(config.deferred?.question.text == "Write · .mcp.json")
     }
 
     @Test func unknownServerValuesDefer() async {

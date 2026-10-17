@@ -395,34 +395,106 @@ extension WorkspaceResolver {
     public func authorize(workspaceRef: String, session sessionID: String, adapter: String) async -> Bool { false }
 }
 
-/// 비밀값 답은 이 Mac의 메모리에만 있다 (계약 3.6): 서버에도 디스크에도 없다. D4b-m의 입력 화면이 넣고 런타임이 한 번 꺼내 간다
-public actor LocalSecretAnswers {
-    private var values: [String: AgentAnswerValue] = [:]
+/// 비밀값 답의 열쇠 (OA D4b-m-2, 결정 D4bm2-01): `(agent_task_id, provider_request_id)`. 다른 task의 같은 요청 id와 섞이지 않는다.
+/// task id는 소문자로 맞춘다 (질문 저장소의 `UUID.uuidString`은 대문자, 서버 명령의 `agent_task_id`는 소문자다)
+public struct LocalSecretKey: Hashable, Sendable {
+    public let taskID: String
+    public let requestID: String
+
+    public init(taskID: String, requestID: String) {
+        self.taskID = taskID.lowercased()
+        self.requestID = requestID
+    }
+}
+
+/// 답 값을 담는 상자. `description` · `debugDescription` · `customMirror` 어디에도 값을 말하지 않는다 (`SecretBox`와 같은 방식, `dump` · 거울에도 값 0).
+/// 값은 `reveal()` 하나로만 나가고 `LocalSecretAnswers.take`가 전달 직전에만 부른다
+struct LocalAnswerBox: Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    private let value: AgentAnswerValue
+
+    init(_ value: AgentAnswerValue) {
+        self.value = value
+    }
+
+    func reveal() -> AgentAnswerValue { value }
+
+    var description: String { "<secret answer>" }
+    var debugDescription: String { "<secret answer>" }
+    var customMirror: Mirror { Mirror(self, children: []) }
+}
+
+/// 비밀값 답은 이 Mac의 메모리에만 있다 (계약 3.6): 서버에도 디스크에도 로그에도 없다. D4b-m의 입력 화면이 `BridgeRuntime.submitLocalSecret`을 거쳐 넣고, 런타임이 답 명령 전달 때 한 번 꺼내 간다.
+/// 값의 수명 (F2 notes 10장 6 · 7): TTL(`deliveryWindow` 24시간)이 지나면 · 그 명령이 정산되면(withdrawn · stale · request_closed · 전달 끝) · 원장이 그 요청을 더는 열린 것으로 보지 않으면 ·
+/// 계정이 떠나거나 · 종료하거나 · 폐기되면 버린다. 덤프에 안전하다: 값은 상자에 있고 이 actor도 값을 말하지 않는다
+public actor LocalSecretAnswers: CustomReflectable, CustomStringConvertible {
+    private struct Entry {
+        let box: LocalAnswerBox
+        let storedAt: Date
+    }
+
+    private var values: [LocalSecretKey: Entry] = [:]
     private var onChange: (@Sendable (Bool) -> Void)?
 
     public init() {}
+
+    nonisolated public var customMirror: Mirror { Mirror(self, children: []) }
+    nonisolated public var description: String { "LocalSecretAnswers" }
 
     /// 아직 전달하지 않은 비밀값이 있는지 바뀔 때 알린다 (종료 확인의 "바쁨")
     public func observe(_ onChange: @escaping @Sendable (Bool) -> Void) {
         self.onChange = onChange
     }
 
-    public func put(requestID: String, value: AgentAnswerValue) {
-        values[requestID] = value
+    public func put(key: LocalSecretKey, value: AgentAnswerValue, at now: Date = Date()) {
+        values[key] = Entry(box: LocalAnswerBox(value), storedAt: now)
         onChange?(true)
     }
 
-    public func take(requestID: String) -> AgentAnswerValue? {
-        let value = values.removeValue(forKey: requestID)
+    /// 전달 직전에 한 번 꺼낸다 (꺼내면 지워진다)
+    public func take(key: LocalSecretKey) -> AgentAnswerValue? {
+        let entry = values.removeValue(forKey: key)
         if values.isEmpty { onChange?(false) }
-        return value
+        return entry?.box.reveal()
     }
+
+    public func contains(key: LocalSecretKey) -> Bool { values[key] != nil }
+
+    /// 값을 버린다 (멱등). 있었으면 true
+    @discardableResult
+    public func discard(key: LocalSecretKey) -> Bool {
+        let had = values.removeValue(forKey: key) != nil
+        if had, values.isEmpty { onChange?(false) }
+        return had
+    }
+
+    /// 그 task의 값을 모두 버린다 (요청 id를 모르는 정산: lease가 거둔 · 오래된 명령). 버린 수
+    @discardableResult
+    public func discard(taskID: String) -> Int {
+        let task = taskID.lowercased()
+        let keys = values.keys.filter { $0.taskID == task }
+        for key in keys { values.removeValue(forKey: key) }
+        if !keys.isEmpty, values.isEmpty { onChange?(false) }
+        return keys.count
+    }
+
+    /// 저장한 지 `ttl`초가 넘은 값을 버린다. 버린 수
+    @discardableResult
+    public func dropExpired(now: Date, ttl: TimeInterval) -> Int {
+        let keys = values.filter { now.timeIntervalSince($0.value.storedAt) > ttl }.map(\.key)
+        for key in keys { values.removeValue(forKey: key) }
+        if !keys.isEmpty, values.isEmpty { onChange?(false) }
+        return keys.count
+    }
+
+    /// 지금 값이 있는 열쇠 (값은 아니다): 원장과 대조해 닫힌 요청의 값을 버릴 때 쓴다
+    public var keys: [LocalSecretKey] { Array(values.keys) }
 
     public var hasPending: Bool { !values.isEmpty }
 
     public func clear() {
+        let had = !values.isEmpty
         values.removeAll()
-        onChange?(false)
+        if had { onChange?(false) }
     }
 }
 #endif

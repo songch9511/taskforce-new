@@ -35,10 +35,10 @@ struct AgentQuestionModelsTests {
     @Test func anApprovalIsOneQuestionWithAllowAndDenyAndTheAdapterTextAsReceived() throws {
         let edit = try #require(question(F.approvalEdit))
         #expect(edit.kind == .approval && edit.prompts.count == 1 && edit.prompts[0].id == "approval")
-        #expect(edit.prompts[0].header == "Edit file" && edit.prompts[0].text == "Edit src/content/pricing.mdx")
+        #expect(edit.prompts[0].header == "Allow Claude Code to edit this file?" && edit.prompts[0].text == "Edit · src/content/pricing.mdx")
         #expect(edit.prompts[0].options.map(\.label) == ["Allow", "Deny"])
         let run = try #require(question(F.approvalRunWithReason))
-        #expect(run.prompts[0].text == "Run: npm run build\nContains a secret value", "앱은 받은 글을 고치지 않는다")
+        #expect(run.prompts[0].text == "Run · npm run build\nContains a secret value", "앱은 받은 글을 고치지 않는다")
     }
 
     @Test func optionDescriptionsAreKeptForTooltipsAndAccessibility() throws {

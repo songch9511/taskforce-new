@@ -74,7 +74,7 @@ describe("Claude Code S0 events through apply_agent_event (PGlite)", () => {
     expect(await play(w, "approval_turn")).toEqual(["accepted", "running", "awaiting_answer"]);
     const pending = (await f.state(w)).pending_question as { kind: string; structured: boolean; questions: { id: string; text: string; options: { label: string }[] }[] };
     expect(pending).toMatchObject({ kind: "approval", structured: true });
-    expect(pending.questions).toEqual([expect.objectContaining({ id: "approval", text: "Write b.txt", options: [{ label: "Allow", description: "" }, { label: "Deny", description: "" }] })]);
+    expect(pending.questions).toEqual([expect.objectContaining({ id: "approval", text: "Write · b.txt", options: [{ label: "Allow", description: "" }, { label: "Deny", description: "" }] })]);
   });
 
   it("a synthetic not-logged-in turn fails before acceptance with sign_in_needed", async () => {

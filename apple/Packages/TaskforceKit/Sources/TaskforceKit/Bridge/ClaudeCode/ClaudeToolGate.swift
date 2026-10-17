@@ -123,6 +123,17 @@ public enum ClaudeGateReason {
     public static let appData = "This path holds Taskforce app data. Do not change it."
 }
 
+/// 승인 카드의 질문 줄(머리)과 미리보기 앞붙이 (OA D4b-m-2, 계약 16.5): 앱은 받은 글을 그대로 그린다 (질문 줄 = 머리, 미리보기 = 글 첫 줄 `{label} · {값}`).
+/// Edit · Run은 DS 글 그대로, Write는 사용자 승인 문구다 (2026-10-18, D4bm2-06). 앞붙이는 가리기 · 보이기 **뒤에** 붙인다
+public enum ClaudeApprovalCopy {
+    public static let editHeader = "Allow Claude Code to edit this file?"
+    public static let writeHeader = "Allow Claude Code to write this file?"
+    public static let runHeader = "Allow Claude Code to run this command?"
+    public static let editPrefix = "Edit · "
+    public static let writePrefix = "Write · "
+    public static let runPrefix = "Run · "
+}
+
 /// 로컬 defer 승인 카드의 사유 한 줄 (사용자에게 보이는 글, 9장 12 — notes "새 문구"로 사용자 승인)
 public enum ClaudeCardReason {
     public static let hardLink = "File has other links"
@@ -483,14 +494,14 @@ public struct ClaudeToolGate: Sendable {
         var text: String
         switch tool {
         case "Edit":
-            header = "Edit file"
-            text = "Edit " + visible(relPath ?? "")
+            header = ClaudeApprovalCopy.editHeader
+            text = ClaudeApprovalCopy.editPrefix + visible(relPath ?? "")
         case "Write":
-            header = "Write file"
-            text = "Write " + visible(relPath ?? "")
+            header = ClaudeApprovalCopy.writeHeader
+            text = ClaudeApprovalCopy.writePrefix + visible(relPath ?? "")
         default:
-            header = "Run command"
-            text = "Run: " + visible(command ?? "")
+            header = ClaudeApprovalCopy.runHeader
+            text = ClaudeApprovalCopy.runPrefix + visible(command ?? "")
         }
         if let reason { text += "\n" + reason }
         let item = AgentQuestionItem(id: "approval", header: header, text: text, options: [AgentQuestionOption(label: "Allow", description: ""), AgentQuestionOption(label: "Deny", description: "")])

@@ -129,7 +129,16 @@ public struct BridgeClient: Sendable {
         try await send(.post, "bridge/tool-decision", body: request, secret: secret, timeout: timeout)
     }
 
+    /// 이 Mac에서 답한 비밀값을 서버에 표시한다 (OA F2 · D4b-m-2). 값은 가지 않는다: 본문은 `bridge_id` · `agent_task_id` · `request_digest` 셋뿐이다. 주소는 상수이고 쿼리 · 경로 인자는 0이다.
+    /// 사용자가 접힌 "Answer sent" 줄을 보고 있다: 시간 제한은 10초다 (재시도는 호출한 쪽의 결과 표, 최대 3번)
+    public func answerLocal(_ request: BridgeV1AnswerLocalRequest, secret: String) async throws -> BridgeV1AnswerLocalResponse {
+        try await send(.post, Self.answerLocalPath, body: request, secret: secret, timeout: Self.answerLocalTimeout)
+    }
+
     // MARK: 전송
+
+    static let answerLocalPath = "bridge/answer-local"
+    static let answerLocalTimeout: TimeInterval = 10
 
     private func send<T: Decodable>(
         _ method: APIClient.Method, _ path: String, query: [URLQueryItem] = [], body: (any Encodable)?, secret: String?, timeout: TimeInterval = BridgeClient.requestTimeout,

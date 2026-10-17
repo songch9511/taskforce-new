@@ -108,17 +108,17 @@ struct AgentQuestionRulesTests {
 
     @Test func anApprovalShowsTheHeaderAsTheQuestionTheFirstLineAsThePreviewAndTheReasonInTheMeta() throws {
         let edit = try card(F.approvalEdit)
-        #expect(edit.title == "Edit file" && edit.preview == "Edit src/content/pricing.mdx")
+        #expect(edit.title == "Allow Claude Code to edit this file?" && edit.preview == "Edit · src/content/pricing.mdx")
         #expect(edit.meta == "Claude Code", "에이전트 이름, 사유가 없으면 그것만")
         let run = try card(F.approvalRunWithReason)
-        #expect(run.title == "Run command" && run.preview == "Run: npm run build" && run.meta == "Claude Code · Contains a secret value")
+        #expect(run.title == "Allow Claude Code to run this command?" && run.preview == "Run · npm run build" && run.meta == "Claude Code · Contains a secret value")
         #expect(run.rows.map(\.label) == ["Allow", "Deny"])
     }
 
     @Test func anApprovalPreviewIsOnlyTheFirstLineEvenWhenTheCommandHasMore() throws {
-        let q = F.pending(prompts: [F.prompt(id: "approval", text: "Run: a ⏎ b\nreason line\nthird line", header: "Run command", options: [("Allow", ""), ("Deny", "")])], kind: "approval")
+        let q = F.pending(prompts: [F.prompt(id: "approval", text: "Run · a ⏎ b\nreason line\nthird line", header: "Allow Claude Code to run this command?", options: [("Allow", ""), ("Deny", "")])], kind: "approval")
         let c = try card(q)
-        #expect(c.preview == "Run: a ⏎ b" && c.meta == "Claude Code · reason line", "둘째 줄이 사유다")
+        #expect(c.preview == "Run · a ⏎ b" && c.meta == "Claude Code · reason line", "둘째 줄이 사유다")
     }
 
     // MARK: 비밀값
