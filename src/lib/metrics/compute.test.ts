@@ -20,6 +20,7 @@ import {
   type MetricEventRow,
   type WeeklyCheckRow,
 } from "./compute";
+import { AGENT_EVENTS } from "./agents";
 
 const period = { from: new Date("2026-09-21T00:00:00Z"), to: new Date("2026-09-28T00:00:00Z") };
 
@@ -704,5 +705,55 @@ describe("본 것 표시(user_seen, U1 바뀜 점)는 지표가 세지 않는다
     expect(m).toMatchObject({ aiCreated: 2, corrected: 1, confirmed: 0 });
     expect(m.byField).toMatchObject({ status: 1, title: 0, due: 0, owner: 0, deleted: 0, duplicate: 0 });
     expect(missed(events, m, period, true)).toMatchObject({ reported: 0, added: 0, addedPlain: 0 });
+  });
+});
+
+// OA I-oa U6 (Q5): 사용자 활동이 아닌 에이전트 이벤트 셋을 리텐션 활동에서 뺀다. 원래 정의("서버가 남기는 이벤트는 활동이 아니다")로 되돌릴 뿐이다.
+describe("metricActivity: 에이전트 이벤트 (OA I-oa U6)", () => {
+  const row = (type: string, userId = "a", at = "2026-09-10T00:00:00Z"): MetricEventRow => ({ userId, type, actionId: null, at });
+
+  it("agent_message_sent · tool_call_decided · path_conflict_found는 활동이 아니고, 나머지 OA type(질문 답 · Stop · 이동 · 프로젝트 …)은 활동으로 남는다", () => {
+    for (const type of ["agent_message_sent", "tool_call_decided", "path_conflict_found"]) expect(metricActivity([row(type)]), type).toEqual([]);
+    for (const type of ["question_answered", "stop_requested", "message_resent", "session_renamed", "session_opened_external", "session_resumed", "path_conflict_resolved", "issue_moved", "project_created", "context_attached"]) {
+      expect(metricActivity([row(type)]), type).toEqual([{ userId: "a", at: "2026-09-10T00:00:00Z" }]);
+    }
+  });
+
+  it("등록부의 activity 표시가 metricActivity와 17개 모두 같다", () => {
+    for (const spec of AGENT_EVENTS) expect(metricActivity([row(spec.type)]).length, spec.type).toBe(spec.activity ? 1 : 0);
+  });
+
+  it("리텐션 전후 숫자 (fixture): 기계 이벤트로 이어 붙던 주가 사라진다", () => {
+    const events: MetricEventRow[] = [
+      row("app_opened", "A", "2026-09-15T01:00:00Z"),
+      row("app_opened", "A", "2026-09-22T01:00:00Z"),
+      row("agent_message_sent", "A", "2026-09-30T01:00:00Z"),
+      row("tool_call_decided", "A", "2026-10-06T01:00:00Z"),
+      row("app_opened", "B", "2026-09-15T02:00:00Z"),
+      row("path_conflict_found", "B", "2026-09-23T02:00:00Z"),
+      row("action_started", "C", "2026-09-16T01:00:00Z"),
+      row("question_answered", "C", "2026-09-23T01:00:00Z"),
+      row("agent_message_sent", "C", "2026-09-30T03:00:00Z"),
+    ];
+    const now = new Date("2026-10-19T00:00:00Z");
+    // 고치기 전: 서버가 남기는 이벤트가 연결 넷뿐이었다
+    const before = retention(
+      events.filter((e) => !["connection_created", "connection_reauth", "reconnect_notified", "source_failed"].includes(e.type)).map((e) => ({ userId: e.userId, at: e.at })),
+      now,
+    );
+    const after = retention(metricActivity(events), now);
+    expect(before.retention.map((r) => (r === null ? null : Math.round(r * 1000) / 1000))).toEqual([1, 1, 0.667, 0.333, 0]);
+    expect(before.weeklyActive).toEqual([
+      { week: "2026-09-14", users: 3 },
+      { week: "2026-09-21", users: 3 },
+      { week: "2026-09-28", users: 2 },
+      { week: "2026-10-05", users: 1 },
+    ]);
+    expect(after.retention.map((r) => (r === null ? null : Math.round(r * 1000) / 1000))).toEqual([1, 0.667, 0, 0, 0]);
+    expect(after.weeklyActive).toEqual([
+      { week: "2026-09-14", users: 3 },
+      { week: "2026-09-21", users: 2 },
+    ]);
+    expect(after.cohortSize).toBe(3);
   });
 });
