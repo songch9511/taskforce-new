@@ -250,11 +250,12 @@ struct BridgeHostTests {
         _ = await fixture.waitForBridge()
         #expect(!fixture.host.isBusy)
         let secrets = try #require(fixture.host.activeSecrets)
-        await secrets.put(requestID: "req", value: AgentAnswerValue(text: "x"))
+        let key = LocalSecretKey(taskID: UUID().uuidString, requestID: "req")
+        await secrets.put(key: key, value: AgentAnswerValue(text: "x"))
         #expect(await fixture.eventually { fixture.host.isBusy })
         #expect(fixture.host.terminationReply() == .terminateLater)
         #expect(await fixture.eventually { fixture.prompt.asked == 1 })
-        _ = await secrets.take(requestID: "req")
+        _ = await secrets.take(key: key)
         #expect(await fixture.eventually { !fixture.host.isBusy })
     }
 

@@ -112,7 +112,8 @@ enum AppRuntime {
     /// `s3b`가 꺼져 있으면 범위 멤버십 게이트웨이 · 저장소를 **만들지 않는다**: 멤버십 읽기 · 쓰기 · ProjectLink 연결이 없고 All work는 S3 그대로다.
     /// `connectivity`: 연결 경로 (테스트는 nil로 감시를 만들지 않는다)
     static func makeChatRuntime(
-        session: SessionStore, services: AppServices, sample: Bool, s3b: Bool, connectivity: AsyncStream<Bool>? = Connectivity.updates()
+        session: SessionStore, services: AppServices, sample: Bool, s3b: Bool, connectivity: AsyncStream<Bool>? = Connectivity.updates(),
+        agentQuestions: Bool = EdgeSurfaces.current.agentQuestions
     ) -> ChatRuntime {
         #if DEBUG
         if sample {
@@ -125,7 +126,11 @@ enum AppRuntime {
             return runtime
         }
         #endif
-        let runtime = ChatRuntime(gateway: LiveChatGateway(services: services), contextGateway: s3b ? LiveContextGateway(services: services) : nil)
+        // 비밀값 답은 이 Mac의 bridge 런타임이 내보낸다 (OA D4b-m-2): bridge가 꺼졌으면 `unavailable`("Couldn't send")
+        let runtime = ChatRuntime(
+            gateway: LiveChatGateway(services: services), contextGateway: s3b ? LiveContextGateway(services: services) : nil, agentQuestions: agentQuestions,
+            secretSubmitter: BridgeLocalSecretSubmitter(account: { if case .signedIn(let userID, _) = session.state { userID } else { nil } })
+        )
         runtime.scope.bind(to: session)
         if let connectivity { runtime.followConnectivity(connectivity) }
         return runtime

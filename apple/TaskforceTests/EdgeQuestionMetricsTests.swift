@@ -31,7 +31,7 @@ struct EdgeQuestionMetricsTests {
         #expect(height(.init(promptID: "q", kind: .other, title: "Which plan should the banner mention?", meta: "outside the brief", rows: rows(["Pro monthly", "Pro yearly", "Lifetime", "Other"], other: true))) == 262, "Other")
         #expect(height(.init(promptID: "q", kind: .other, title: "Which plan should the banner mention?", meta: "outside the brief", rows: rows(["Pro monthly", "Pro yearly", "Lifetime", "Other"], other: true)), otherOpen: true) == 262, "Other · typing")
         #expect(height(.init(promptID: "q", kind: .single, title: price, meta: "1 of 3 · outside the brief", position: .init(current: 1, total: 3), rows: rows(four))) == 262, "Several questions")
-        #expect(height(.init(promptID: "q", kind: .approval, title: "Edit file", meta: "Claude Code", rows: rows(["Allow", "Deny"]), preview: "Edit src/content/pricing.mdx")) == 210, "Approval")
+        #expect(height(.init(promptID: "q", kind: .approval, title: "Allow Claude Code to edit this file?", meta: "Claude Code", rows: rows(["Allow", "Deny"]), preview: "Edit · src/content/pricing.mdx")) == 210, "Approval")
         #expect(height(.init(promptID: "q", kind: .secret, title: "Enter the staging deploy token", meta: "Stays on this Mac")) == 124, "Secret · this Mac")
         #expect(height(.init(promptID: "q", kind: .secretRemote, title: "Enter the staging deploy token", meta: "Can't be entered here", macName: "Mina's MacBook Pro"), remote: "Answer on Mina's MacBook Pro") == 124, "Secret · other device")
     }

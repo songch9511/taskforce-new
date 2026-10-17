@@ -60,7 +60,7 @@ final class BridgeHost {
     /// 지금 계정의 런타임 (계정이 없거나 꺼져 있으면 nil)
     var activeRuntime: BridgeRuntime? { activePartitionID.flatMap { entries[$0]?.runtime } }
 
-    /// D4a가 비밀값 답을 넣는 곳 (메모리에만)
+    /// D4b-m이 비밀값 답을 넣는 곳 (메모리에만): `BridgeLocalSecretSubmitter` → `BridgeRuntime.submitLocalSecret`
     var activeSecrets: LocalSecretAnswers? { activePartitionID.flatMap { entries[$0]?.secrets } }
 
     var activePartition: BridgePartition? { activePartitionID.flatMap { entries[$0]?.partition } }

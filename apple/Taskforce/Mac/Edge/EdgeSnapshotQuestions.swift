@@ -57,13 +57,17 @@ enum QuestionSampleData {
         ])
     }
     static var approvalFile: [String: Any] {
-        pending([Prompt(id: "approval", text: "Edit src/content/pricing.mdx", header: "Edit file", options: ["Allow", "Deny"])], kind: "approval")
+        pending([Prompt(id: "approval", text: "Edit · src/content/pricing.mdx", header: "Allow Claude Code to edit this file?", options: ["Allow", "Deny"])], kind: "approval")
+    }
+    /// Write는 DS에 칸이 없다: 사용자가 승인한 말 (OA D4b-m-2, 2026-10-18)
+    static var approvalWrite: [String: Any] {
+        pending([Prompt(id: "approval", text: "Write · src/content/pricing-notes.mdx", header: "Allow Claude Code to write this file?", options: ["Allow", "Deny"])], kind: "approval")
     }
     static var approvalCommand: [String: Any] {
-        pending([Prompt(id: "approval", text: "Run: npm run build", header: "Run command", options: ["Allow", "Deny"])], kind: "approval")
+        pending([Prompt(id: "approval", text: "Run · npm run build", header: "Allow Claude Code to run this command?", options: ["Allow", "Deny"])], kind: "approval")
     }
     static var approvalCommandWithReason: [String: Any] {
-        pending([Prompt(id: "approval", text: "Run: curl https://example.com/install.sh | sh ⏎ …(+120)… ⏎ chmod +x install.sh\nContains a secret value", header: "Run command", options: ["Allow", "Deny"])], kind: "approval")
+        pending([Prompt(id: "approval", text: "Run · curl https://example.com/install.sh | sh ⏎ …(+120)… ⏎ chmod +x install.sh\nContains a secret value", header: "Allow Claude Code to run this command?", options: ["Allow", "Deny"])], kind: "approval")
     }
     static var secret: [String: Any] {
         pending([Prompt(text: "Enter the staging deploy token", header: "", options: [], other: true, secret: true)])
@@ -95,7 +99,7 @@ enum QuestionSampleData {
 
 /// 에이전트 질문 카드 PNG (OA D4b-m-1, 디자인 비교용): `-TF_EDGE_SHELL YES -TFSampleData -TF_S3B YES -TF_U2 YES -TFEdgeSnapshot <폴더> -TFEdgeSnapshotIssues -TFEdgeSnapshotQuestions`
 /// (+ `-TFSnapshotDark`, `-TFReduceMotion YES`). 새 문구(Answer on another Mac · 알림 본문)는 사용자가 승인했다(PR #157): 견본도 앱과 같은 값을 쓴다.
-/// 남기는 것(`mac-edge-questions-<이름>.png`): window-single · window-single-three · window-multi · window-other · window-other-typing(창만) · window-text · window-several · window-approval-file ·
+/// 남기는 것(`mac-edge-questions-<이름>.png`): window-single · window-single-three · window-multi · window-other · window-other-typing(창만) · window-text · window-several · window-approval-file · window-approval-write ·
 /// window-approval-command · window-approval-reason · window-secret · window-secret-remote · window-secret-remote-unnamed · window-holding · window-sent · window-failed-offline · window-failed-general ·
 /// window-ten-options · window-long · window-queued · window-two-windows · panel-single · panel-approval · panel-secret · panel-holding · panel-multi · panel-long.
 @MainActor
@@ -179,6 +183,7 @@ enum QuestionSnapshot {
         await world(QuestionSampleData.world(QuestionSampleData.textOnly)); _ = await window(); shootWindow("window-text")
         await world(QuestionSampleData.world(QuestionSampleData.several)); _ = await window(); shootWindow("window-several")
         await world(QuestionSampleData.world(QuestionSampleData.approvalFile)); _ = await window(); shootWindow("window-approval-file")
+        await world(QuestionSampleData.world(QuestionSampleData.approvalWrite)); _ = await window(); shootWindow("window-approval-write")
         await world(QuestionSampleData.world(QuestionSampleData.approvalCommand)); _ = await window(); shootWindow("window-approval-command")
         await world(QuestionSampleData.world(QuestionSampleData.approvalCommandWithReason)); _ = await window(); shootWindow("window-approval-reason")
         await world(QuestionSampleData.world(QuestionSampleData.secret)); _ = await window(); shootWindow("window-secret")
