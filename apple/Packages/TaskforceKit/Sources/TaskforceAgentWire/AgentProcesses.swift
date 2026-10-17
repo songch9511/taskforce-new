@@ -60,14 +60,27 @@ public struct ListedProcess: Equatable, Sendable {
     /// 커널 시작 시각 (초 · 마이크로초 그대로)
     public let startSeconds: UInt64
     public let startMicros: UInt64
+    /// 19장: 추적 중이다 (`p_flag`의 `P_TRACED`: 커널이 `P_LTRACED`를 옮겨 적는다) — 그동안 부모는 tracer다
+    public let traced: Bool
+    /// 19장: 추적을 시작할 때 적어 둔 원래 부모 pid (`p_oppid`, 추적이 끝나면 0)
+    public let originalParentPID: pid_t
 
-    public init(pid: pid_t, parentPID: pid_t, uid: uid_t, ruid: uid_t, startSeconds: UInt64, startMicros: UInt64) {
+    public init(
+        pid: pid_t, parentPID: pid_t, uid: uid_t, ruid: uid_t, startSeconds: UInt64, startMicros: UInt64, traced: Bool = false, originalParentPID: pid_t = 0
+    ) {
         self.pid = pid
         self.parentPID = parentPID
         self.uid = uid
         self.ruid = ruid
         self.startSeconds = startSeconds
         self.startMicros = startMicros
+        self.traced = traced
+        self.originalParentPID = originalParentPID
+    }
+
+    /// 19장: 두 목록의 같은 pid가 같은 프로세스로 보인다 (부모 · 시작 시각 · 사용자가 같다)
+    public func agrees(with other: ListedProcess) -> Bool {
+        pid == other.pid && parentPID == other.parentPID && uid == other.uid && ruid == other.ruid && startSeconds == other.startSeconds && startMicros == other.startMicros
     }
 
     /// 이 세대와 같은 때나 그 뒤에 시작했다 (마이크로초까지)
@@ -121,11 +134,21 @@ public enum AgentProcesses {
     }
 
     /// 지킴이가 훑는 목록 (14장 4): 실효 사용자가 이 사용자(`KERN_PROC_UID`) ∪ 실제 사용자가 이 사용자(`KERN_PROC_RUID`, setuid로 실효 사용자가 바뀐 자손).
-    /// pid가 겹치면 하나만. 둘 중 하나라도 읽지 못하면 nil
+    /// 둘 중 하나라도 읽지 못하면 nil
     public static func userProcesses() -> [ListedProcess]? {
         guard let byUID = list(KERN_PROC_UID), let byRUID = list(KERN_PROC_RUID) else { return nil }
-        var seen = Set<pid_t>()
-        return (byUID + byRUID).filter { seen.insert($0.pid).inserted }
+        return merged(byUID, byRUID)
+    }
+
+    /// 두 목록을 합친다 (19장 2): 똑같은 행은 하나만 두고, 같은 pid라도 다른 행(부모 · 시작 시각 · 사용자 · 추적)은 버리지 않고 둘 다 둔다 —
+    /// 두 번의 목록 사이에 그 pid가 다른 프로세스로 다시 쓰였을 수 있다. 훑기가 불일치를 보고 불완전으로 한다
+    public static func merged(_ byUID: [ListedProcess], _ byRUID: [ListedProcess]) -> [ListedProcess] {
+        var kept: [pid_t: [ListedProcess]] = [:]
+        return (byUID + byRUID).filter { row in
+            if kept[row.pid]?.contains(row) == true { return false }
+            kept[row.pid, default: []].append(row)
+            return true
+        }
     }
 
     static func list(_ selector: Int32) -> [ListedProcess]? {
@@ -141,7 +164,8 @@ public enum AgentProcesses {
             let start = info.kp_proc.p_un.__p_starttime
             return ListedProcess(
                 pid: info.kp_proc.p_pid, parentPID: info.kp_eproc.e_ppid, uid: info.kp_eproc.e_ucred.cr_uid, ruid: info.kp_eproc.e_pcred.p_ruid,
-                startSeconds: UInt64(max(0, start.tv_sec)), startMicros: UInt64(max(0, start.tv_usec))
+                startSeconds: UInt64(max(0, start.tv_sec)), startMicros: UInt64(max(0, start.tv_usec)),
+                traced: info.kp_proc.p_flag & P_TRACED != 0, originalParentPID: info.kp_proc.p_oppid
             )
         }
     }

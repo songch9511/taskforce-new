@@ -9,22 +9,26 @@ import Testing
 struct KeeperScanRule18Tests {
     typealias World = KeeperScanRulesTests.World
 
-    /// 무관한 부모 하나 (기본: 지킴이 뒤에 시작, 책임 프로세스는 다른 앱)
+    /// 무관한 부모 하나 (기본: 지킴이와 같은 때 시작 — 지킴이 뒤로 치고, 자식(지킴이 + 1초)보다는 엄격히 앞이다. 책임 프로세스는 다른 앱). 목록에 자기 행이 있다
     @discardableResult
-    static func parent(_ world: World, startSeconds: UInt64? = nil, responsible: ProcessLookup<UInt64> = .present(12345), zombie: Bool = false) -> ProcessGeneration {
+    /// - `own`: unique id (기본: 지킴이 뒤에 매긴 id)
+    static func parent(
+        _ world: World, startSeconds: UInt64? = nil, responsible: ProcessLookup<UInt64> = .present(12345), zombie: Bool = false, own: UInt64? = nil
+    ) -> ProcessGeneration {
         let pid = world.next
         world.next += 1
-        let seconds = startSeconds ?? world.own.startSeconds + 1
+        let seconds = startSeconds ?? world.own.startSeconds
         world.entries.append(ListedProcess(pid: pid, parentPID: 1, uid: world.uid, ruid: world.uid, startSeconds: seconds, startMicros: world.own.startMicros))
         let generation = ProcessGeneration(
-            pid: pid, startSeconds: seconds, startMicros: world.own.startMicros, parentPID: 1, group: pid, uid: world.uid, zombie: zombie, own: world.own.own + UInt64(pid), parent: 1
+            pid: pid, startSeconds: seconds, startMicros: world.own.startMicros, parentPID: 1, group: pid, uid: world.uid, zombie: zombie,
+            own: own ?? world.own.own + UInt64(pid), parent: 1
         )
         world.generations[pid] = .present(generation)
         world.responsible[pid] = responsible
         return generation
     }
 
-    /// (a) 세대 조회에서 사라진 자식: 목록에만 있다 (지킴이 뒤 · 부모 시작 시각과 같은 때)
+    /// (a) 세대 조회에서 사라진 자식: 목록에만 있다 (지킴이 + 1초에 시작)
     static func vanishedAtGeneration(_ world: World, parentPID: pid_t) {
         world.listed(parentPID: parentPID)
     }
@@ -102,10 +106,16 @@ struct KeeperScanRule18Tests {
         let world = try World()
         world.listed(parentPID: 777_777)
         #expect(scan(world)?.complete == false, "부모도 사라짐")
+        // 지킴이 앞에 생긴 좀비 부모 (19.1은 지킴이 뒤의 좀비 행만 사라짐으로 본다: 이 부모의 행은 건너뛰므로 자식의 부모 확인만이 가른다)
         let zombie = try World()
-        let parent = Self.parent(zombie, zombie: true)
+        let parent = Self.parent(zombie, startSeconds: zombie.own.startSeconds - 1, zombie: true, own: zombie.own.own - 1)
         Self.vanishedAtGeneration(zombie, parentPID: parent.pid)
         #expect(scan(zombie)?.complete == false, "부모가 좀비")
+        // 지킴이 뒤에 생긴 좀비 부모: 그 행 자체가 사라짐(19.1)이라 어느 쪽으로도 불완전
+        let late = try World()
+        let lateParent = Self.parent(late, zombie: true)
+        Self.vanishedAtGeneration(late, parentPID: lateParent.pid)
+        #expect(scan(late)?.complete == false, "지킴이 뒤의 좀비 부모")
     }
 
     @Test func aParentPIDReusedAfterTheChildStartedMakesTheScanIncomplete() throws {
