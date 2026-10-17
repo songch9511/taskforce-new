@@ -184,6 +184,8 @@ extension BridgeRuntime {
             deferred.remove(item.cursor)
             return .ignored
         }
+        // 비밀값 정산의 기준: 답 명령을 처음 본 때 (그 제출의 값은 명령이 만들어지기 전에 놓였다, OA D4b-m-2)
+        if item.kind == .answer { await secrets.noteAnswerCommandSeen(item.id) }
         // 모르는 kind: lease하지 않고 실행하지 않는다 (추측 실행 금지, 아키텍처 9.2 · D2a 3.4)
         if case .unknown = item.kind { return await declineUnknownKind(item, existing: existing, reason: reason, wakeAt: wakeAt, listedAt: listedAt) }
 
@@ -277,7 +279,7 @@ extension BridgeRuntime {
                 }
                 if result == .notReceived { _ = try? await ledger.updateTask(item.agentTaskID) { $0.lastState = "failed" } }
                 // 정산: 결과 확인으로 끝난 답 명령의 값. 요청 id를 모르므로 task가 끝난 경우(`not_received` → `failed`)에만 그 task의 값을 버린다 (OA D4b-m-2 검토 1)
-                await settleSecretsAfterReadback(taskID: item.agentTaskID, kind: item.kind, result: result, leasedAt: item.leasedAt)
+                await settleSecretsAfterReadback(commandID: item.commandID, taskID: item.agentTaskID, kind: item.kind, result: result)
                 await sendAck(.readback(result, processEnded: ended), commandID: item.commandID, saving: unrecorded)
                 return .acted
             }
@@ -368,7 +370,7 @@ extension BridgeRuntime {
                 record.stateAt = clock.now()
                 try? await ledger.saveCommand(record)
                 deferred.remove(item.cursor)
-                if item.kind == .answer { await settleSecrets(taskID: item.agentTaskID) } // 정산: 이 명령의 비밀값 답은 더는 갈 곳이 없다 (OA D4b-m-2)
+                if item.kind == .answer { await settleAnswerCommand(commandID: item.id, taskID: item.agentTaskID) } // 정산: 이 명령의 비밀값 답은 더는 갈 곳이 없다 (OA D4b-m-2)
                 return .acted
             } catch {
                 // 응답을 모른다: 상태를 그대로 둔다. 다음 목록에서 `leased_by_me`면 lease를 다시 해 `replay`를 받는다
@@ -401,7 +403,7 @@ extension BridgeRuntime {
                 record.stateAt = clock.now()
                 try? await ledger.saveCommand(record)
                 deferred.remove(item.cursor)
-                if item.kind == .answer { await settleSecrets(taskID: item.agentTaskID) } // 정산: 거둔 답 명령의 비밀값은 버린다 (OA D4b-m-2, F2 notes 10장 7)
+                if item.kind == .answer { await settleAnswerCommand(commandID: item.id, taskID: item.agentTaskID) } // 정산: 거둔 답 명령의 비밀값은 버린다 (OA D4b-m-2, F2 notes 10장 7)
                 return .acted
             case .stale(let staleReason):
                 if !retried, staleReason == .heartbeatFirst || staleReason == .policyChanged {
@@ -417,7 +419,7 @@ extension BridgeRuntime {
                 record.stateAt = clock.now()
                 try? await ledger.saveCommand(record)
                 deferred.remove(item.cursor)
-                if item.kind == .answer { await settleSecrets(taskID: item.agentTaskID) } // 정산: 오래된 답 명령의 비밀값은 버린다 (OA D4b-m-2, F2 notes 10장 7)
+                if item.kind == .answer { await settleAnswerCommand(commandID: item.id, taskID: item.agentTaskID) } // 정산: 오래된 답 명령의 비밀값은 버린다 (OA D4b-m-2, F2 notes 10장 7)
                 return .acted
             case .settled, .unknown:
                 // 효과를 만들지 않는 쪽: 실행 0, 다음 목록에서 다시 판단한다
@@ -620,7 +622,7 @@ extension BridgeRuntime {
         refused.state = .declined
         refused.reason = why
         refused.stateAt = clock.now()
-        if refused.kind == "answer" { await settleSecrets(taskID: refused.agentTaskID) } // 정산: 거절한 답 명령의 비밀값은 버린다 (OA D4b-m-2)
+        if refused.kind == "answer" { await settleAnswerCommand(commandID: refused.commandID, taskID: refused.agentTaskID) } // 정산: 거절한 답 명령의 비밀값은 버린다 (OA D4b-m-2)
         // 중단 명령은 결과 확인이 아니라 `complete`로 정산한다 (띄운 프로세스가 없는 task)
         let op: BridgeV1AckOp = refused.kind == "cancel" ? .complete(.taskUnknown) : .readback(.notReceived, processEnded: true)
         await sendAck(op, commandID: record.commandID, saving: refused)
@@ -940,6 +942,7 @@ extension BridgeRuntime {
         }
         // 전달이 끝났다 (delivered · requestClosed · 오류): 같은 열쇠를 한 번 더 버린다. `take` 뒤에 `duplicate`로 다시 `put`된 값이 남지 않게 한다 (OA D4b-m-2)
         await settleSecret(taskID: common.agentTaskID, requestID: requestID)
+        await secrets.forgetAnswerCommand(record.commandID)
         await publish()
     }
 
@@ -1007,6 +1010,7 @@ extension BridgeRuntime {
     /// 요청을 거절로 닫고(adapter가 할 수 있으면) 원장에 닫힘을 적은 뒤 `request_closed`로 정산한다. 사용자는 "Question closed before the answer was sent" 줄을 본다
     func closeRequestAndAck(record: BridgeCommandRecord, taskID: String, requestID: String, adapterID: String, session: String, adapterClose: Bool) async {
         await settleSecret(taskID: taskID, requestID: requestID) // 요청이 닫힌다: 그 요청의 비밀값 답은 갈 곳이 없다 (OA D4b-m-2)
+        await secrets.forgetAnswerCommand(record.commandID)
         if adapterClose, let adapter = adapters[adapterID] {
             let task = try? await ledger.task(taskID)
             let ref = AgentRequestRef(taskID: taskID, sessionID: session, requestID: requestID, externalSessionID: task?.externalSessionID, workspaceRef: task?.workspaceRef)

@@ -430,9 +430,17 @@ public actor LocalSecretAnswers: CustomReflectable, CustomStringConvertible {
     private struct Entry {
         let box: LocalAnswerBox
         let storedAt: Date
+        /// 이 값이 놓인 차례 (`putCount`): 시계가 아니라 순서로 "이 명령이 처음 보이기 전에 둔 값"을 가른다
+        let generation: Int
     }
 
     private var values: [LocalSecretKey: Entry] = [:]
+    /// 지금까지 `put`한 횟수 (값을 둘 때마다 오른다)
+    private var putCount = 0
+    /// 답 명령 id → 그 명령을 이 프로세스가 처음 봤을 때의 `putCount`. 그 명령의 제출은 명령이 만들어지기 **전에** 값을 뒀으므로(put → POST → 서버가 명령을 만든다) 그 값의 차례는 이 수 이하다.
+    /// 정산된 명령의 값을 정확히 가르는 열쇠다 (서버 `step_id`는 lease 응답에만 오고 결과 확인 목록에는 없다). 메모리에만 있고 id와 수뿐이다
+    private var commandSeenAt: [String: Int] = [:]
+    private static let maxTrackedCommands = 512
     private var onChange: (@Sendable (Bool) -> Void)?
 
     public init() {}
@@ -446,8 +454,32 @@ public actor LocalSecretAnswers: CustomReflectable, CustomStringConvertible {
     }
 
     public func put(key: LocalSecretKey, value: AgentAnswerValue, at now: Date = Date()) {
-        values[key] = Entry(box: LocalAnswerBox(value), storedAt: now)
+        putCount += 1
+        values[key] = Entry(box: LocalAnswerBox(value), storedAt: now, generation: putCount)
         onChange?(true)
+    }
+
+    /// 답 명령을 이 프로세스가 처음 봤다 (목록에 나왔다). 이미 봤으면 그대로 둔다: 다시 목록에 나와도 기준은 처음 본 때다
+    public func noteAnswerCommandSeen(_ commandID: String) {
+        if commandSeenAt.count >= Self.maxTrackedCommands { commandSeenAt.removeAll() } // 넘치면 기준을 잃을 뿐이다: 값은 보관 정리 · TTL이 맡는다
+        if commandSeenAt[commandID] == nil { commandSeenAt[commandID] = putCount }
+    }
+
+    /// 그 명령을 끝까지 다뤘다 (값을 가르는 일이 더는 없다)
+    public func forgetAnswerCommand(_ commandID: String) {
+        commandSeenAt[commandID] = nil
+    }
+
+    /// 정산된 답 명령의 제출 값만 버린다: 그 명령을 처음 보기 전에 둔 그 task의 값. 그 뒤에 다시 입력한 값(복원된 같은 요청이든 새 요청이든)과 다른 task의 값은 그대로다.
+    /// 처음 본 기록이 없으면(이 프로세스가 보지 못한 명령) 아무것도 버리지 않는다. 버린 수
+    @discardableResult
+    public func discard(taskID: String, settledCommand commandID: String) -> Int {
+        guard let mark = commandSeenAt.removeValue(forKey: commandID) else { return 0 }
+        let task = taskID.lowercased()
+        let keys = values.filter { $0.key.taskID == task && $0.value.generation <= mark }.map(\.key)
+        for key in keys { values.removeValue(forKey: key) }
+        if !keys.isEmpty, values.isEmpty { onChange?(false) }
+        return keys.count
     }
 
     /// 전달 직전에 한 번 꺼낸다 (꺼내면 지워진다)
@@ -467,26 +499,6 @@ public actor LocalSecretAnswers: CustomReflectable, CustomStringConvertible {
         return had
     }
 
-    /// 그 task의 값을 모두 버린다 (요청 id를 모르는 정산: lease가 거둔 · 오래된 명령). 버린 수
-    @discardableResult
-    public func discard(taskID: String) -> Int {
-        let task = taskID.lowercased()
-        let keys = values.keys.filter { $0.taskID == task }
-        for key in keys { values.removeValue(forKey: key) }
-        if !keys.isEmpty, values.isEmpty { onChange?(false) }
-        return keys.count
-    }
-
-    /// 그 task의 값 가운데 `cutoff` 이전에 둔 것만 버린다 (결과 확인으로 정산된 제출의 값: 그 뒤에 다시 입력한 값은 둔다). 버린 수
-    @discardableResult
-    public func discard(taskID: String, storedAtOrBefore cutoff: Date) -> Int {
-        let task = taskID.lowercased()
-        let keys = values.filter { $0.key.taskID == task && $0.value.storedAt <= cutoff }.map(\.key)
-        for key in keys { values.removeValue(forKey: key) }
-        if !keys.isEmpty, values.isEmpty { onChange?(false) }
-        return keys.count
-    }
-
     /// 저장한 지 `ttl`초가 넘은 값을 버린다. 버린 수
     @discardableResult
     public func dropExpired(now: Date, ttl: TimeInterval) -> Int {
@@ -504,6 +516,7 @@ public actor LocalSecretAnswers: CustomReflectable, CustomStringConvertible {
     public func clear() {
         let had = !values.isEmpty
         values.removeAll()
+        commandSeenAt.removeAll()
         if had { onChange?(false) }
     }
 }

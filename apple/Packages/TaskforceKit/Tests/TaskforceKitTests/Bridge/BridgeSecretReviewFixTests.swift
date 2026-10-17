@@ -75,29 +75,38 @@ struct BridgeSecretReviewFixTests {
         }
     }
 
-    @Test func aNotReceivedSettleDropsOnlyTheSettledSubmissionsValueNotANewerOneNorOtherTasks() async throws {
-        let h = try BridgeHarness()
+    @Test func aNotReceivedSettleDropsOnlyTheSettledCommandsSubmissionNotANewerValueNorOtherTasks() async throws {
         let task = UUID().uuidString.lowercased()
         let other = LocalSecretKey(taskID: UUID().uuidString, requestID: "r1")
-        let settled = LocalSecretKey(taskID: task, requestID: "r1") // 정산되는 답 명령의 제출 (lease보다 앞서 입력)
-        let newer = LocalSecretKey(taskID: task, requestID: "r2") // 정산 뒤 다시 입력한 값 (다른 요청, lease보다 한참 뒤)
-        let leased = Date(timeIntervalSince1970: 1_760_400_000)
-        func fill() async {
-            await h.secrets.put(key: other, value: AgentAnswerValue(text: "v-other"), at: leased.addingTimeInterval(-60))
-            await h.secrets.put(key: settled, value: AgentAnswerValue(text: "v-r1"), at: leased.addingTimeInterval(-5))
-            await h.secrets.put(key: newer, value: AgentAnswerValue(text: "v-r2"), at: leased.addingTimeInterval(400))
+        let settled = LocalSecretKey(taskID: task, requestID: "r1") // 정산되는 답 명령의 제출: 명령이 만들어지기 전에 값을 뒀다
+        let newer = LocalSecretKey(taskID: task, requestID: "r2") // 정산 뒤 다시 입력한 값 (다른 요청)
+        /// 값 셋을 두고 명령 `cmd`를 처음 본 시점을 기록한다: `settled`는 그 전, `newer`는 그 뒤
+        func prepare(_ h: BridgeHarness) async {
+            await h.secrets.put(key: other, value: AgentAnswerValue(text: "v-other"))
+            await h.secrets.put(key: settled, value: AgentAnswerValue(text: "v-r1"))
+            await h.secrets.noteAnswerCommandSeen("cmd")
+            await h.secrets.put(key: newer, value: AgentAnswerValue(text: "v-r2"))
+            await h.secrets.noteAnswerCommandSeen("cmd") // 다시 목록에 나와도 기준은 처음 본 때다 (새 값은 그 뒤)
         }
-        await fill()
-        // 받았다 · 모른다 · message 명령: 값을 건드리지 않는다
-        for (kind, result) in [(BridgeV1CommandKind.answer, BridgeV1ReadbackResult.received), (.answer, .unknown), (.message, .notReceived)] {
-            await h.runtime.settleSecretsAfterReadback(taskID: task, kind: kind, result: result, leasedAt: leased)
-            let kept = await [h.secrets.contains(key: settled), h.secrets.contains(key: newer), h.secrets.contains(key: other)]
-            #expect(kept == [true, true, true], Comment(rawValue: "\(kind) \(result)"))
+        func state(_ h: BridgeHarness) async -> [Bool] { await [h.secrets.contains(key: settled), h.secrets.contains(key: newer), h.secrets.contains(key: other)] }
+        // 받았다 · 모른다 · message 명령 · 처음 본 적 없는 명령: 값을 건드리지 않는다
+        for (name, command, kind, result) in [("받았다", "cmd", BridgeV1CommandKind.answer, BridgeV1ReadbackResult.received), ("모른다", "cmd", .answer, .unknown), ("message", "cmd", .message, .notReceived), ("처음 본 적 없음", "cmd-unseen", .answer, .notReceived)] {
+            let h = try BridgeHarness()
+            await prepare(h)
+            await h.runtime.settleSecretsAfterReadback(commandID: command, taskID: task, kind: kind, result: result)
+            #expect(await state(h) == [true, true, true], Comment(rawValue: name))
         }
-        // answer가 not_received로 정산됐다: 그 제출(lease 전에 입력)의 값만 버린다. 뒤에 다시 입력한 값(다른 요청)과 다른 task의 값은 그대로
-        await h.runtime.settleSecretsAfterReadback(taskID: task, kind: .answer, result: .notReceived, leasedAt: leased)
-        let after = await [h.secrets.contains(key: settled), h.secrets.contains(key: newer), h.secrets.contains(key: other)]
-        #expect(after == [false, true, true])
+        // 받았다 뒤에는 그 명령의 기준을 잊는다: 나중에 not_received가 와도 건드리지 않는다
+        let forgotten = try BridgeHarness()
+        await prepare(forgotten)
+        await forgotten.runtime.settleSecretsAfterReadback(commandID: "cmd", taskID: task, kind: .answer, result: .received)
+        await forgotten.runtime.settleSecretsAfterReadback(commandID: "cmd", taskID: task, kind: .answer, result: .notReceived)
+        #expect(await state(forgotten) == [true, true, true])
+        // answer가 not_received로 정산됐다: 그 명령을 처음 보기 전에 둔 그 task의 값만 버린다. 뒤에 다시 입력한 값(다른 요청)과 다른 task의 값은 그대로
+        let h = try BridgeHarness()
+        await prepare(h)
+        await h.runtime.settleSecretsAfterReadback(commandID: "cmd", taskID: task, kind: .answer, result: .notReceived)
+        #expect(await state(h) == [false, true, true])
     }
 
     // MARK: F-3 — put 앞에서 원장이 그 (task, request)를 열린 비밀값 요청으로 아는지 본다

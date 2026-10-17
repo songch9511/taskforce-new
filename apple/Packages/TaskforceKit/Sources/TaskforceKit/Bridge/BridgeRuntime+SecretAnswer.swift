@@ -134,22 +134,23 @@ extension BridgeRuntime {
         await secrets.discard(key: LocalSecretKey(taskID: taskID, requestID: requestID))
     }
 
-    /// 정산 때 버린다: 요청 id를 모르는 정산 (lease가 거둔 · 오래된 answer 명령은 payload가 오지 않는다). 그 task의 값을 모두 버린다 (한 task에는 열린 질문이 하나다)
-    func settleSecrets(taskID: String) async {
-        await secrets.discard(taskID: taskID)
+    /// 정산 때 버린다: 요청 id를 모르는 정산 (lease가 거둔 · 오래된 · 거절한 answer 명령은 payload가 오지 않고, 결과 확인 목록에도 요청 id가 없다). 그 **명령의 제출 값만** 버린다:
+    /// 그 명령을 이 프로세스가 처음 보기 전에 둔 그 task의 값 (`LocalSecretAnswers.discard(taskID:settledCommand:)`). 시계도 task 전체도 쓰지 않는다
+    func settleAnswerCommand(commandID: String, taskID: String) async {
+        await secrets.discard(taskID: taskID, settledCommand: commandID)
     }
 
-    /// 결과 확인(readback)으로 정산한 답 명령 (lease 응답이 유실돼 만료된 것): 요청 id를 모른다. `not_received`는 **task의 끝이 아니다**: 서버가 질문을 `awaiting_answer`로 복원하고
-    /// (`20261118000000_bridge_commands.sql:394`) 로컬 task만 `failed`로 남는다. 그래서 task 전체가 아니라 **정산된 제출의 값만** 버린다: 그 명령을 lease한 때(`leasedAt`, 서버 시각을
-    /// 시계 차이로 로컬 시각으로 바꾸고 어긋남 여유 2초) 이전에 둔 값이다. 그 뒤에 다시 입력한 값(복원된 같은 요청이든 새 요청이든)은 두어 전달되게 한다.
-    /// 그 밖의 결과(`received` · `unknown`)는 값을 건드리지 않는다 (`take`가 이미 일어났거나 task가 계속 열려 있다)
-    func settleSecretsAfterReadback(taskID: String, kind: BridgeV1CommandKind, result: BridgeV1ReadbackResult, leasedAt: Date) async {
-        guard kind == .answer, result == .notReceived else { return }
-        let offset = TimeInterval((try? await ledger.meta())?.clockOffsetMS ?? 0) / 1000 // 서버 − 로컬
-        await secrets.discard(taskID: taskID, storedAtOrBefore: leasedAt.addingTimeInterval(-offset + Self.readbackClockSlack))
+    /// 결과 확인(readback)으로 정산한 답 명령 (lease 응답이 유실돼 만료된 것). `not_received`는 **task의 끝이 아니다**: 서버가 질문을 `awaiting_answer`로 복원하고
+    /// (`20261118000000_bridge_commands.sql:394`) 로컬 task만 `failed`로 남는다. 그래서 그 명령의 제출 값만 버린다: 복원된 질문에 다시 입력한 값은 새 제출이라 남는다.
+    /// 그 밖의 결과(`received` · `unknown`)는 값을 건드리지 않는다 (`take`가 이미 일어났거나 task가 계속 열려 있다). 서버 `step_id`는 결과 확인 목록에 없다 (`contract.ts` readbacks)
+    func settleSecretsAfterReadback(commandID: String, taskID: String, kind: BridgeV1CommandKind, result: BridgeV1ReadbackResult) async {
+        guard kind == .answer else { return }
+        if result == .notReceived {
+            await settleAnswerCommand(commandID: commandID, taskID: taskID)
+        } else {
+            await secrets.forgetAnswerCommand(commandID)
+        }
     }
-
-    static let readbackClockSlack: TimeInterval = 2
 
     // MARK: 변환 · 결과 표
 

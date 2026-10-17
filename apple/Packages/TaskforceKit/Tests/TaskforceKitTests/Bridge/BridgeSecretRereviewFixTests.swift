@@ -68,23 +68,63 @@ struct BridgeSecretRereviewFixTests {
         #expect(done.get() == .failed(.generic), "전달되지 않았다: 보냈다고 하지 않는다")
     }
 
-    // MARK: 서버 시각 → 로컬 시각
+    // MARK: 재검토 2 — 비대칭 heartbeat 지연에도 정산된 제출의 값이 남지 않는다
 
-    @Test func theLeaseTimeOfTheSettledCommandIsConvertedWithTheClockOffset() async throws {
-        let h = try BridgeHarness(serverClockOffset: 1000) // 서버 시계가 로컬보다 1,000초 앞선다
-        await h.registerFirst()
+    @Test func anAsymmetricHeartbeatLatencyNeverLeavesTheSettledValueBehind() async throws {
+        let h = try BridgeHarness()
+        let created = try await S.open(h, endsAfterAsking: true)
+        #expect(await S.submit(h, S.answer(created, value: S.canary())) == .sent)
+        let commandID = try #require(h.server.commandIDs(taskID: created.taskID, kind: "answer").first)
+        h.server.dropResponseOnce(route: "ack") // 서버는 lease했지만 응답이 유실된다
+        await S.deliver(h)
+        h.server.markLeasedUnknown(commandID)
+        // 만료 뒤 heartbeat를 서버가 느리게 처리한다 (요청 도중 시계가 30초 흐른다): 왕복 중간점 보정이 +15초 어긋난다. 시각으로 짝을 맞추면 옛 값이 남는다
+        let clock = h.clock
+        h.server.onRequest = { record in if record.route == "heartbeat" { clock.jump(by: 30) } }
+        h.clock.jump(by: 6)
+        await h.runtime.tick()
+        h.server.onRequest = nil
+        #expect(await h.eventually(timeout: 5) { (try? await h.ledger.command(commandID))?.ackFinalAt != nil }, "정산이 끝났다")
+        let command = try #require(try await h.ledger.command(commandID))
+        #expect(command.state == .settled && command.ackResult == "not_received")
         let offset = try #require(try await h.ledger.meta().clockOffsetMS)
-        #expect(abs(offset - 1_000_000) < 2_000, "heartbeat가 시계 차이를 쟀다: \(offset)ms")
-        let task = UUID().uuidString.lowercased()
-        let settled = LocalSecretKey(taskID: task, requestID: "r1")
-        let newer = LocalSecretKey(taskID: task, requestID: "r2")
-        let leasedLocal = h.clock.now
-        await h.secrets.put(key: settled, value: AgentAnswerValue(text: "v-old"), at: leasedLocal.addingTimeInterval(-5))
-        await h.secrets.put(key: newer, value: AgentAnswerValue(text: "v-new"), at: leasedLocal.addingTimeInterval(400))
-        // 서버가 적은 lease 시각은 서버 시계다 (로컬 + 1,000초)
-        await h.runtime.settleSecretsAfterReadback(taskID: task, kind: .answer, result: .notReceived, leasedAt: leasedLocal.addingTimeInterval(1000))
-        let after = await [h.secrets.contains(key: settled), h.secrets.contains(key: newer)]
-        #expect(after == [false, true], "시계 차이를 빼서 비교한다: 정산된 제출의 값만 버린다")
+        #expect(abs(offset) > 10_000, "양성 대조: 시계 차이 추정이 실제로 크게 어긋났다 (\(offset)ms)")
+        let pending = await h.secrets.hasPending
+        #expect(!pending, "정산된 제출의 값 0")
+        let busy = await h.runtime.isBusy()
+        #expect(!busy, "바쁨이 아니다")
+    }
+
+    // MARK: 정산이 재시도보다 먼저 (settle-before-bind)
+
+    @Test func aCommandSettledBeforeTheRetryLeavesTheValueGoneAndTheRetryNeitherPostsNorPutsAgain() async throws {
+        let h = try BridgeHarness()
+        let created = try await S.open(h, endsAfterAsking: true)
+        h.server.dropResponseOnce(route: "answer-local") // 서버는 답 명령을 만들었지만 POST 응답이 유실된다
+        let done = Locked<LocalSecretOutcome?>(nil)
+        let task = Task { done.set(await h.runtime.submitLocalSecret(S.answer(created, value: S.canary()), accountStillMatches: { true })) }
+        #expect(await h.eventually { h.clock.sleeperCount > 0 }, "재시도 전의 잠깐")
+        // 그 사이 그 명령이 목록에 나오고, lease 응답이 유실되고, 만료돼 not_received로 정산된다
+        let commandID = try #require(h.server.commandIDs(taskID: created.taskID, kind: "answer").first)
+        h.server.dropResponseOnce(route: "ack")
+        await S.deliver(h)
+        h.server.markLeasedUnknown(commandID)
+        h.clock.jump(by: 6)
+        await h.runtime.tick()
+        #expect(await h.eventually(timeout: 5) { (try? await h.ledger.command(commandID))?.ackFinalAt != nil }, "정산이 끝났다")
+        let pendingAfterSettle = await h.secrets.hasPending
+        #expect(!pendingAfterSettle, "정산이 그 제출의 값을 버렸다")
+        // 재시도가 온다: 값이 없고 질문은 복원돼 열려 있다 → 다시 두지도 보내지도 않고 실패로 돌려보낸다
+        let deadline = Date().addingTimeInterval(30)
+        while done.get() == nil, Date() < deadline {
+            if h.clock.sleeperCount > 0 { await h.clock.advance(by: 1) } else { try? await Task.sleep(for: .milliseconds(2)) }
+        }
+        await task.value
+        #expect(done.get() == .failed(.generic))
+        #expect(h.server.requests("answer-local").count == 1, "두 번째 POST 0")
+        let pending = await h.secrets.hasPending
+        #expect(!pending, "값을 다시 두지 않았다")
+        #expect(h.server.taskState(created.taskID) == "awaiting_answer", "질문은 복원돼 있다: 사용자는 다시 입력할 수 있다")
     }
 }
 #endif
