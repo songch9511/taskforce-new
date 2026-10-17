@@ -740,7 +740,7 @@ struct EdgeTaskforceTests {
         #expect(rig.gateway.taskforceReads == closed, "닫힌 패널은 컨트롤러의 패널 열기 읽기 몫이다")
     }
 
-    /// P3-4: Try again은 v2를 한 번만 읽는다 (컨트롤러의 `load(.retry)`가 이미 읽는다). 이 GET은 제안 노출 표시를 한다
+    /// P3-4: Try again은 v2를 한 번만 읽는다 (컨트롤러의 `load(.retry)`가 이미 읽는다). 읽기 전용 경로가 된 뒤(R-dec-m)에도 읽기 수는 그대로다
     @Test func tryAgainReadsTheV2ReviewExactlyOnce() async throws {
         let rig = try await Rig.make()
         rig.gateway.taskforceRead = .failed
@@ -754,7 +754,7 @@ struct EdgeTaskforceTests {
         let reads = rig.gateway.taskforceReads
         rig.shell.taskforceTryAgain()
         await rig.settle()
-        #expect(rig.gateway.taskforceReads == reads + 1, "제안 노출 표시가 있는 GET은 한 번만")
+        #expect(rig.gateway.taskforceReads == reads + 1, "Try again은 한 번만 읽는다")
     }
 
     /// P3-5: 연결이 끊기면 다음 읽기가 실패하기 전에도 화면이 오프라인을 말하고 답이 잠긴다 (끊김과 다음 읽기 사이)

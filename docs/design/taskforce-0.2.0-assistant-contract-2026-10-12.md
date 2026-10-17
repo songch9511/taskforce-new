@@ -362,7 +362,7 @@ registry에 있고 연결이 없으면 `not_connected`(예: Codex를 아직 연�
 
 ### 5.4 OA U3 화면 정정 (2026-10-18)
 
-이 절은 DS 2026-10-16 변경("Taskforce replaces Review" · "Design review cleanup")과 사용자 결정(2026-10-18, DS를 따른다)을 반영하며 아래에 지정한 기존 문구보다 우선한다. 서버 경로 · 토큰 · 지표 이름(`/api/v2/review`, `result_ready` …)은 그대로이고, 바뀌는 것은 앱의 자리와 이름이다.
+이 절은 DS 2026-10-16 변경("Taskforce replaces Review" · "Design review cleanup")과 사용자 결정(2026-10-18, DS를 따른다)을 반영하며 아래에 지정한 기존 문구보다 우선한다. 서버 토큰 · 지표 이름(`result_ready` …)은 그대로이고, 바뀌는 것은 앱의 자리와 이름이다. Taskforce 대화의 읽기 경로는 결정만 읽는 `GET /api/v2/review/decisions`다(OA R-dec-m, `/api/v2/review`가 아니다): Taskforce 행 쓰기 0이라 제안 생산 · 노출 표시를 하지 않는다(U3-21 해소). 404는 기능 꺼짐으로 읽고 옛 `GET /api/v2/review`로 되돌아가 읽지 않는다.
 
 - **이름:** 앱 화면의 "Review"(Dock의 Review 항목 · Review 목록 · Review 패널)는 **Taskforce 대화**다. 입구는 레일 첫 칸 Taskforce bell(⌘1)이고, Taskforce 요청이 있거나 대화가 열려 있을 때만 보인다.
 - **0.1 U1 (:18):** "세션 패널과 Review는 입력창을 유지한다" → "세션 패널은 입력창을 유지한다. Taskforce 대화의 입력창은 후속이다".

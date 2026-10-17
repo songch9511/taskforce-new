@@ -1,9 +1,8 @@
 import Foundation
 import Supabase
 
-// OA U3: Taskforce 대화가 서버와 닿는 길. 읽기 둘 + 쓰기 하나뿐이다 (새 서버 route 없음).
-// - `GET /api/v2/review` (`REVIEW_V2_ENABLED`): 결정 목록. **이 GET은 읽기만 하지 않는다** — 제안 생산 · 노출 표시(`shown_at` · 그날 묶음 소비)를 한다 (`docs/review-summary.md` 1절).
-//   그래서 정해진 주기로 읽지 않고, 사용자가 화면을 열거나 바뀔 까닭이 있을 때만 읽는다 (`TaskforceRequestStore`). 측정 공백은 U3 notes에 있다.
+// OA U3 · R-dec-m: Taskforce 대화가 서버와 닿는 길. 읽기 둘 + 쓰기 하나뿐이다 (새 서버 route 없음).
+// - `GET /api/v2/review/decisions` (`REVIEW_V2_ENABLED`): 결정 목록. Taskforce 행 쓰기 0 (`docs/review-summary.md` 1-1절). 404는 `featureOff`이고, 쓰기가 있는 옛 `GET /api/v2/review`로 되돌아가 읽지 않는다.
 // - RLS select: 경로 충돌의 경로 (`agent_path_leases.rel_path`)와 두 run의 세션 (`execution_runs.agent_session_id`). 쓰기 0.
 // - `POST /api/v2/path-conflicts/{lease_id}/resolve { keep, conflict_version }`: 되돌릴 수 없어서 보내기 전 2초 보류는 앱 몫이다 (`TaskforceRequestStore`).
 //   200 resolved · 409 conflict(옛 version이거나 이미 해소됨: 쓰기 0, 자동 재시도 없이 다시 읽는다) · 404 · 400 · 401.
@@ -11,7 +10,7 @@ import Supabase
 extension APIClient {
     /// 결정 목록 (서버 순서 그대로)
     public func taskforceReview() async throws -> TaskforceReviewResponse {
-        try await send(.get, "review", version: .v2)
+        try await send(.get, "review/decisions", version: .v2)
     }
 
     /// 경로 충돌 해소. `conflictVersion`은 Review 항목의 `conflict.conflict_version` 그대로 (1…2,147,483,647)

@@ -1,8 +1,8 @@
 import Foundation
 
-// OA U3: Taskforce 대화의 원천 `GET /api/v2/review`의 앱 쪽 모양과 경로 충돌 해소 요청.
-// 서버 `contract.ts`의 `reviewWithAgentsResponseSchema`(D4b-s) · `resolvePathConflictRequestSchema`를 읽는다. 픽스처는 서버 시험
-// `tests/review/review-agents-contract.test.ts`의 `REVIEW_WITH_AGENTS_JSON` · `RESOLVE_*`를 그대로 복사한 것이다 (`Fixtures/taskforce-requests/`).
+// OA U3: Taskforce 대화의 원천 `GET /api/v2/review/decisions`(R-dec-m 전에는 `GET /api/v2/review`)의 앱 쪽 모양과 경로 충돌 해소 요청.
+// 서버 `contract.ts`의 `reviewDecisionsResponseSchema`(R-dec) · `reviewWithAgentsResponseSchema`(D4b-s) · `resolvePathConflictRequestSchema`를 읽는다. 픽스처는 서버 시험
+// `tests/review/review-decisions-contract.test.ts`의 `REVIEW_DECISIONS_JSON`, `review-agents-contract.test.ts`의 `REVIEW_WITH_AGENTS_JSON` · `RESOLVE_*`를 그대로 복사한 것이다 (`Fixtures/taskforce-requests/`).
 // 규칙:
 // - 구조(필수 키 · 타입)는 엄격하다: 틀리면 디코딩 실패 = "읽지 못함"이지 빈 상태가 아니다.
 // - 모르는 결정 종류는 **지우지 않고** `.unknown`으로 둔다. 앱은 그 항목을 건너뛰되 응답이 완전하다고 믿지 않는다 (`TaskforceRequestRules`).
@@ -260,7 +260,7 @@ public struct TaskforceDecisionGroup: Sendable, Hashable, Decodable {
     }
 }
 
-/// `GET /api/v2/review` 응답 중 U3가 읽는 것. `decisions`가 null이면 모르는 것이다 (비어 있는 것이 아니다)
+/// `GET /api/v2/review/decisions`(와 같은 결정 모양의 `GET /api/v2/review`) 응답 중 U3가 읽는 것. `decisions`가 null이면 모르는 것이다 (비어 있는 것이 아니다)
 public struct TaskforceReviewResponse: Sendable, Hashable, Decodable {
     public let generatedAt: String
     /// 모든 원천을 읽었다
