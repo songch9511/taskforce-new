@@ -357,8 +357,10 @@ final class EdgePassivePanel: NSPanel {
 final class EdgeRailPanelController {
     let shell: EdgeShellModel
     let panel: EdgePassivePanel
-    private let hosting: RailHostingView
+    let hosting: RailHostingView
     private let tooltip: RailTooltipController
+    /// 지금 포인터의 화면 좌표 (시험은 실제 마우스 대신 정해 준다)
+    var pointerLocation: () -> NSPoint = { NSEvent.mouseLocation }
     var onConnections: () -> Void = { SettingsOpener.open(.connections) }
     var onSettings: () -> Void = { SettingsOpener.open(.account) }
 
@@ -527,7 +529,7 @@ final class EdgeRailPanelController {
         withExtendedLifetime(target) {}
         shell.setMenuOpen(false)
         // 메뉴를 쓰는 동안은 포인터 이벤트가 오지 않는다: 지금 포인터 자리로 다시 판단한다
-        let local = hosting.convert(panel.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
+        let local = hosting.convert(panel.convertPoint(fromScreen: pointerLocation()), from: nil)
         let inside = hosting.bounds.contains(local)
         pointer(inside ? (hosting.isFlipped ? local : CGPoint(x: local.x, y: hosting.bounds.height - local.y)) : nil)
     }
@@ -561,11 +563,10 @@ final class EdgeRailPanelController {
     }
 
     private func moreCardClosed() {
-        shell.setMenuOpen(false)
-        // 접근성 포커스는 ⋯로 돌아간다
-        shell.returnFocusToMore()
+        // 메뉴 표시를 거두고 접근성 포커스를 ⋯로 돌려준다 (레일은 ⋯가 포커스를 받을 때까지 펼친 채다)
+        shell.moreCardClosed()
         // 카드를 쓰는 동안은 레일이 포인터 이벤트를 받지 못할 수 있다: 지금 포인터 자리로 다시 판단한다
-        let local = hosting.convert(panel.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
+        let local = hosting.convert(panel.convertPoint(fromScreen: pointerLocation()), from: nil)
         let inside = hosting.bounds.contains(local)
         pointer(inside ? (hosting.isFlipped ? local : CGPoint(x: local.x, y: hosting.bounds.height - local.y)) : nil)
     }

@@ -10,13 +10,17 @@ public struct RailBell: View {
     let state: TaskforceBell
     let expanded: Bool
     let highlighted: Bool
+    /// 대화가 열려 있어도(`selected`) 칸 원을 칠하지 않는다: 다른 칸이 "지금 여기"로 칠해진 동안(More 카드가 열려 있을 때) 칠해진 칸은 하나뿐이다.
+    /// 접근성의 "선택됨"은 그대로 둔다
+    let selectionShown: Bool
     let reduceMotion: Bool
     let action: () -> Void
 
-    public init(_ state: TaskforceBell, expanded: Bool, highlighted: Bool = false, reduceMotion: Bool = false, action: @escaping () -> Void) {
+    public init(_ state: TaskforceBell, expanded: Bool, highlighted: Bool = false, selectionShown: Bool = true, reduceMotion: Bool = false, action: @escaping () -> Void) {
         self.state = state
         self.expanded = expanded
         self.highlighted = highlighted
+        self.selectionShown = selectionShown
         self.reduceMotion = reduceMotion
         self.action = action
     }
@@ -29,7 +33,7 @@ public struct RailBell: View {
             bell
                 .frame(width: RailCapsuleMetrics.item, height: RailCapsuleMetrics.item)
                 .background {
-                    Circle().fill(expanded && (state.selected || highlighted) ? TFColor.bezelHover : .clear)
+                    Circle().fill(expanded && ((state.selected && selectionShown) || highlighted) ? TFColor.bezelHover : .clear)
                 }
                 .contentShape(Circle())
         }

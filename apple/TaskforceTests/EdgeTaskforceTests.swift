@@ -347,6 +347,39 @@ struct EdgeTaskforceTests {
         #expect(await rig.harness.server.writeCount() == 0)
     }
 
+    // MARK: confirm 답의 오프라인 빈틈 (재검토 1 P3)
+
+    /// 저장소가 오프라인을 먼저 받았고 `/now`(`reviewScreen`)는 아직 모른다: 오래된 카드의 클릭 콜백이 이 사이에 도착한다
+    @Test func aStaleConfirmClickAfterTheStoreWentOfflineIsNeitherAcceptedNorSent() async throws {
+        let rig = try await Rig.make()
+        await rig.read(Rig.response([Rig.confirm(rig.id(1)), Rig.confirm(rig.id(2))]))
+        rig.shell.openTaskforce()
+        rig.store.pathChanged(online: false)
+        #expect(rig.shell.reviewScreen.canAnswer, "빈틈: /now 쪽 화면은 아직 오프라인을 모른다")
+        #expect(!rig.shell.taskforceScreen.canAnswer, "저장소는 오프라인이다")
+        #expect(rig.shell.answer(.confirm, for: rig.id(1)) == nil, "접수하지 않는다")
+        #expect(await rig.harness.server.writeCount() == 0)
+        #expect(rig.desk.sending[rig.id(1)] == nil, "진행 표시도 남기지 않는다")
+        // 연결이 돌아오면 같은 클릭이 받아들여진다 (오프라인 때문에만 막혔다)
+        rig.store.pathChanged(online: true)
+        let task = try #require(rig.shell.answer(.confirm, for: rig.id(1)))
+        #expect(await task.value == .applied)
+        #expect(await rig.harness.server.writeCount() == 1)
+    }
+
+    /// 접수는 온라인에서 했고 보내기 직전(예약된 작업이 도는 사이)에 저장소가 오프라인이 됐다: 쓰기 0
+    @Test func aConfirmAcceptedOnlineIsNotSentIfTheStoreWentOfflineBeforeTheSend() async throws {
+        let rig = try await Rig.make()
+        await rig.read(Rig.response([Rig.confirm(rig.id(1)), Rig.confirm(rig.id(2))]))
+        rig.shell.openTaskforce()
+        let task = try #require(rig.shell.answer(.confirm, for: rig.id(1)))
+        rig.store.pathChanged(online: false)
+        #expect(rig.shell.reviewScreen.canAnswer, "빈틈: /now 쪽 화면은 아직 오프라인을 모른다")
+        #expect(await task.value == .ignored, "보내기 직전의 확인이 막는다")
+        #expect(await rig.harness.server.writeCount() == 0)
+        #expect(rig.desk.sending[rig.id(1)] == nil)
+    }
+
     // MARK: 충돌 해소의 2초 보류
 
     @Test func choosingAConflictAnswerHoldsTwoSecondsUndoSendsNothingAndTheClockSendsOne() async throws {

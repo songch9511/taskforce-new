@@ -34,7 +34,7 @@ struct EdgeRailCapsuleView: View {
             // ① bell
             if let capsule = layout.bellCapsuleDrawn, let item = layout.bellItemDrawn, let bell = shell.taskforceBell {
                 capsuleBackground(capsule)
-                RailBell(bell, expanded: layout.expanded, highlighted: shell.hoveredBell, reduceMotion: shell.reduceMotion) {
+                RailBell(bell, expanded: layout.expanded, highlighted: shell.railBellHoverLit, selectionShown: shell.railBellSelectionShown, reduceMotion: shell.reduceMotion) {
                     shell.openTaskforce()
                 }
                 .offset(x: item.minX, y: item.minY)
@@ -49,7 +49,7 @@ struct EdgeRailCapsuleView: View {
                     }
                 }
                 if let frame = layout.plusDrawn {
-                    RailButton(icon: .addTask, label: EdgeShellModel.newSessionLabel, highlighted: shell.hoveredPlus, circular: true) {
+                    RailButton(icon: .addTask, label: EdgeShellModel.newSessionLabel, highlighted: shell.railPlusLit, circular: true) {
                         shell.newSession(from: .rail)
                     }
                     .offset(x: frame.minX, y: frame.minY)
@@ -70,12 +70,17 @@ struct EdgeRailCapsuleView: View {
                             }
                         }
                         .accessibilityFocused(control == .more ? $moreFocused : $otherFocused)
+                        // 포커스는 ⋯ 칸 자신이 받는다: 칸이 그려져 있지 않으면(접힌 레일) 받지 못하고 알리지도 않는다
+                        .onChange(of: shell.moreFocusSerial) { _, serial in
+                            guard control == .more else { return }
+                            moreFocused = true
+                            shell.moreFocusLanded(serial)
+                        }
                         .offset(x: frame.minX, y: frame.minY)
                     }
                 }
             }
         }
-        .onChange(of: shell.moreFocusSerial) { _, _ in moreFocused = true }
         .frame(width: EdgeRailCapsuleLayout.windowWidth, height: EdgeRailCapsuleLayout.windowHeight, alignment: .topLeading)
         // 열 전체가 오른쪽 가운데를 기준으로 줄어든다 (접힘 .72배): 자리는 바뀌지 않고 transform만 바뀐다
         .scaleEffect(layout.scale, anchor: UnitPoint(x: layout.anchor.x / EdgeRailCapsuleLayout.windowWidth, y: 0.5))
@@ -100,7 +105,7 @@ struct EdgeRailCapsuleView: View {
     private func ring(_ entry: RailEntry, layout: EdgeRailCapsuleLayout) -> some View {
         RailItem(
             kind: entry.kind, title: entry.title, state: entry.state, activity: entry.activity, expanded: layout.expanded,
-            highlighted: entry.id == shell.hoveredID || (shell.panelOpen && entry.id == shell.railCurrentID),
+            highlighted: shell.railRingLit(entry.id),
             reduceMotion: shell.reduceMotion, look: .capsule
         ) {
             shell.openRailEntry(entry)

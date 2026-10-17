@@ -256,6 +256,14 @@ final class EdgeShellModel {
     private(set) var menuOpen = false
     /// More 카드가 닫힐 때마다 오른다: 레일이 접근성 포커스를 ⋯로 돌려준다 (OA U3 16.1)
     private(set) var moreFocusSerial = 0
+    /// ⋯가 접근성 포커스를 실제로 받은 마지막 번호 (`moreFocusSerial`과 같으면 돌려준 것이다). ⋯ 칸 뷰 자신이 포커스를 주었을 때만 알린다
+    private(set) var moreFocusLandedSerial = 0
+    /// More 카드가 닫혀 ⋯가 접근성 포커스를 받으러 가는 번호: ⋯가 `moreFocusLanded`로 알리면 비운다.
+    /// 받기 전에는 레일이 접히지 않는다 (접히면 ⋯ 칸이 사라져 포커스를 돌려줄 곳이 없다)
+    private(set) var moreFocusPending: Int?
+    @ObservationIgnored private var moreFocusHold: EdgeTimer?
+    /// 끝내 ⋯가 포커스를 받지 못해도(칸이 안 그려짐 등) 레일이 영영 펼쳐 있지 않게 하는 상한
+    static let moreFocusHoldLimit: TimeInterval = 2
     private(set) var work = EdgeWorkSnapshot.empty
     /// 레일에 오를 수 있는 일 전부 (칸은 넷까지지만 접근성 이름의 개수는 전부를 센다)
     private(set) var live: [RailEntry] = []
@@ -421,8 +429,8 @@ final class EdgeShellModel {
 
     // MARK: 레일 모양
 
-    /// 펼친 레일: 노치 호버 · 열린 패널(패널 옆 레일은 늘 펼친다)
-    var isExpanded: Bool { railHovered || panelOpen }
+    /// 펼친 레일: 노치 호버 · 열린 패널(패널 옆 레일은 늘 펼친다) · ⋯가 포커스를 받으러 가는 중(`moreFocusPending`)
+    var isExpanded: Bool { railHovered || panelOpen || moreFocusPending != nil }
     /// 숨은 레일의 노치에 보이는 링 (셋까지)
     var notch: [RailEntry] { RailOrdering.notch(slots) }
     /// 펼쳤을 때만 보이는 나머지 일
@@ -479,12 +487,17 @@ final class EdgeShellModel {
             hoveredTile = false
             hoveredPlus = false
             hoveredBell = false
-            guard railHovered, leaveTimer == nil else { return }
-            leaveTimer = schedule(TFMotion.railLeaveDelay) { [weak self] in
-                guard let self else { return }
-                self.leaveTimer = nil
-                if !self.pointerInside, !self.menuOpen { self.railHovered = false }
-            }
+            scheduleLeave()
+        }
+    }
+
+    /// 포인터가 나간 뒤 400ms에 접는다. 메뉴(More 카드)가 열려 있거나 ⋯가 포커스를 받으러 가는 중이면 접지 않는다: 그 일이 끝날 때 다시 부른다
+    private func scheduleLeave() {
+        guard railHovered, leaveTimer == nil else { return }
+        leaveTimer = schedule(TFMotion.railLeaveDelay) { [weak self] in
+            guard let self else { return }
+            self.leaveTimer = nil
+            if !self.pointerInside, !self.menuOpen, self.moreFocusPending == nil { self.railHovered = false }
         }
     }
 
@@ -936,20 +949,24 @@ final class EdgeShellModel {
         reviewID = reviewQueue.resolving(reviewID, previous: previous)
     }
 
+    /// Taskforce 대화가 켜진 구성은 이 대화 저장소의 연결도 본다: 저장소가 오프라인을 먼저 받고 `/now` 화면(`reviewScreen`)이 아직 모르는 사이에도 막는다
+    /// (오래된 카드의 클릭 콜백이 이 빈틈에 도착해도 접수 · 전송하지 않는다). 대화가 꺼진 구성은 지금 규칙 그대로다
+    private var taskforceAllowsAnswer: Bool { !taskforceEnabled || taskforceScreen.canAnswer }
+
     /// 사용자가 고른 답 하나 (클릭 · 1/2 키). `id`는 사용자가 본 항목의 id다: 지금 보이는 결정이 아니면(큐가 바뀌어 빠졌거나 다른 항목이 보임) 아무것도 하지 않는다.
     /// 오프라인이거나 Review가 보이지 않으면 보내지 않는다 (나중에 보내려고 모아 두지 않는다).
     /// **받는 이 동기 경계에서** 계정 token · 항목 · 이 방문(`reviewPresentation`)을 잡고, 예약된 작업이 실제로 보내기 직전에 다시 본다 (`ReviewDesk.send`):
     /// 그 사이 계정이 바뀌었거나(같은 UUID 재로그인 포함) 패널이 닫히고 화면이 옮겨지고 항목이 큐에서 빠지거나 더는 보이는 결정이 아니면 쓰기 0이다
     @discardableResult
     func answer(_ answer: ReviewAnswer, for id: UUID) -> Task<ReviewWriteResult, Never>? {
-        guard let review, panelOpen, view == .review, reviewScreen.canAnswer, shownReview?.id == id,
+        guard let review, panelOpen, view == .review, reviewScreen.canAnswer, taskforceAllowsAnswer, shownReview?.id == id,
               let ticket = review.begin(answer, for: id) else { return nil }
         let presentation = reviewPresentation
         return Task { [weak self] in
             let result = await review.send(ticket) {
                 guard let self else { return false }
                 return self.panelOpen && self.view == .review && self.reviewPresentation == presentation
-                    && self.reviewScreen.canAnswer && self.shownReview?.id == id
+                    && self.reviewScreen.canAnswer && self.taskforceAllowsAnswer && self.shownReview?.id == id
             }
             // 서버가 받은 답이면 복귀 요약의 `Needs your answer`가 낡았을 수 있다: 서버의 지금 상태를 다시 읽는다 (읽기일 뿐, C3가 켜졌을 때만)
             if result == .applied {
@@ -1067,19 +1084,47 @@ final class EdgeShellModel {
     func dismiss() {
         guard panelOpen else { return }
         panelOpen = false
-        // 포인터가 레일에 없으면 바로 숨는다 (호버로 펼친 상태가 아니었으면)
-        if !pointerInside {
+        // 포인터가 레일에 없으면 바로 숨는다 (호버로 펼친 상태가 아니었으면). ⋯가 포커스를 받으러 가는 중이면 받은 뒤 평소 시간으로 접힌다
+        if !pointerInside, moreFocusPending == nil {
             railHovered = false
         }
     }
 
     // MARK: More 메뉴
 
-    /// More 카드가 닫혔다: 포커스는 ⋯로 돌아간다
-    func returnFocusToMore() {
+    /// More 카드가 닫혔다 (고름 · Esc · 바깥 클릭 · 키를 잃음): 메뉴 표시를 거두고 ⋯가 접근성 포커스를 받게 한다.
+    /// 레일은 ⋯가 포커스를 받을 때까지 펼친 채 둔다 (포인터가 카드 위나 밖에 있어도: 먼저 접히면 ⋯ 칸이 사라져 돌려줄 곳이 없다).
+    /// 받은 뒤에는 평소의 떠남 시간으로 접힌다. 끝내 받지 못해도 상한(`moreFocusHoldLimit`)이 풀어 준다
+    func moreCardClosed() {
+        menuOpen = false
         moreFocusSerial += 1
+        moreFocusPending = moreFocusSerial
+        moreFocusHold?.cancel()
+        moreFocusHold = schedule(Self.moreFocusHoldLimit) { [weak self] in
+            guard let self else { return }
+            self.moreFocusHold = nil
+            self.moreFocusPending = nil
+            self.leaveIfIdle()
+        }
     }
 
+    /// ⋯ 칸 뷰가 접근성 포커스를 주었다 (⋯ 칸이 그려져 있을 때만 부른다)
+    func moreFocusLanded(_ serial: Int) {
+        moreFocusLandedSerial = serial
+        guard moreFocusPending == serial else { return }
+        moreFocusPending = nil
+        moreFocusHold?.cancel()
+        moreFocusHold = nil
+        leaveIfIdle()
+    }
+
+    /// 붙잡던 일이 끝났다: 포인터가 레일에 없고 패널도 메뉴도 없으면 평소의 떠남 시간 뒤에 접는다
+    private func leaveIfIdle() {
+        guard !pointerInside, !panelOpen, !menuOpen else { return }
+        scheduleLeave()
+    }
+
+    /// 노치 레일의 기본 메뉴(`NSMenu`)가 열리고 닫혔다. 닫히면 포인터가 레일 밖일 때 바로 접는다 (카드는 `moreCardClosed`)
     func setMenuOpen(_ open: Bool) {
         menuOpen = open
         if !open, !pointerInside, !panelOpen {
@@ -1292,11 +1337,27 @@ extension EdgeShellModel {
     /// 패널이 열려 있으면 그 화면의 칸 하나(Taskforce 대화는 bell이 칠해지고 셋째 캡슐은 하나도 안 칠해진다)이고, Assistant 창이 앞에 있다는 이유의 Chats 칠은 패널이 닫혀 있을 때만이다 (검토 1)
     func railControlHighlighted(_ control: Control) -> Bool {
         if control == .more { return menuOpen || hoveredControl == .more }
+        // More 카드가 열려 있는 동안은 ⋯만 칠해진다 (열린 화면의 칸 · 호버도 칠하지 않는다. 카드가 닫히면 선택은 그대로 돌아온다)
+        if menuOpen { return false }
         if hoveredControl == control { return true }
         if control == .chats, windowsEnabled, assistantWindowFront, !panelOpen { return true }
         guard panelOpen else { return false }
         return control == .allWork ? view == .allWork && currentID == nil : control == .chats && view == .chats
     }
+
+    /// 세션 링이 칠해지나: 호버, 또는 패널이 그 일을 보여 주는 중
+    func railRingLit(_ id: UUID) -> Bool {
+        !menuOpen && (id == hoveredID || (panelOpen && id == railCurrentID))
+    }
+
+    /// bell의 호버 칠 (대화가 열려 있을 때의 칠은 bell 자체의 `selected`다: `railBellSelectionShown`)
+    var railBellHoverLit: Bool { !menuOpen && hoveredBell }
+
+    /// 열린 대화의 bell 칠을 그리나
+    var railBellSelectionShown: Bool { !menuOpen }
+
+    /// New session `+`의 호버 칠
+    var railPlusLit: Bool { !menuOpen && hoveredPlus }
 
     /// 레일 첫 캡슐의 bell (없으면 nil): 보이는 요청이 있거나 대화가 열려 있을 때만. 울림 = 보이는 요청 > 0 (변화만으로는 울리지 않는다)
     var taskforceBell: TaskforceBell? {
