@@ -6,6 +6,21 @@ import { grantedFeatures } from "@/lib/connectors/google/run";
 
 import { readAll } from "../read-all";
 import {
+  agentDelivery,
+  agentQuestions,
+  agentStops,
+  agentUsage,
+  COMMAND_RETENTION_MS,
+  type AgentEventRow,
+  type DeliveryCard,
+  type DeliveryStep,
+  type OpenTask,
+  type QuestionCard,
+  type StepEvent,
+  type StopCard,
+  type UsageCard,
+} from "./agents";
+import {
   connections,
   discoveryCost,
   execution,
@@ -34,6 +49,7 @@ import {
 // Gmail · Google 연결은 설정 중 개수(settings.stats)만 읽는다 (주소 · 계정은 읽지 않는다). 회의 원문은 외부 id와 붙은 일정 id만 읽는다.
 // 발견 원가는 처리를 마친 원문의 처리 시각과 처리 요약 중 원가(processing_summary.cost)만 읽는다.
 // 실행(U2)은 상태 · 시각 · 원가 · 크레딧 숫자 열만 읽는다 (요청 · 계획 · 초안 · receipt는 읽지 않는다).
+// 에이전트 카드(OA I-oa)는 토큰 · 숫자 · 시각 · id 열과 JSON 열에서 허용한 키(->>)만 읽는다 (메시지 · 질문 · 답 글, 경로, 산출물 요약, args · receipt · pending_question 통째는 읽지 않는다).
 
 /** 관리자 이메일 (ADMIN_EMAILS, 쉼표로 구분). 비어 있으면 아무도 관리자가 아니다 */
 export function isAdmin(email: string | null): boolean {
@@ -140,6 +156,250 @@ export async function loadExecution(admin: SupabaseClient, period: Period): Prom
     console.error("실행 지표 읽기 실패:", error instanceof Error ? error.message : error);
     return null;
   }
+}
+
+export type AgentMetrics = { usage: UsageCard | null; delivery: DeliveryCard | null; questions: QuestionCard | null; stops: StopCard | null };
+
+const AGENT_STEP_KINDS = ["agent_message", "agent_cancel"];
+const DELIVERY_STATES = ["queued", "not_sent", "dispatched", "expired", "cancelled"];
+/** 단계 사건 중 지연 · 결과에 쓰는 전이 (집어 감 = calling, 접수 = called, 끝남 = failed · skipped) */
+const STEP_EVENT_STATES = ["calling", "called", "failed", "skipped"];
+/** bridge_sweep의 lease_busy와 같은 값: 5초 넘게 만료한 채 남은 calling 단계 수 (src/lib/bridge/sweep.ts) */
+const OVERDUE_LEASE_GRACE_SECONDS = 5;
+/** 열린 충돌만 고르는 하한 (conflict_at이 있는 lease) */
+const EPOCH = "1970-01-01T00:00:00Z";
+/** in()에 한 번에 넣는 id 수 */
+const ID_CHUNK = 100;
+
+type StepRecord = {
+  id: string;
+  kind: string;
+  provider: string | null;
+  purpose: string;
+  created_at: string;
+  task_id: string | null;
+  request_id: string | null;
+  answer_message_id: string | null;
+  answered_locally: string | null;
+  reason: string | null;
+};
+type AgentEventRecord = { at: string; event_type: string; status: string; kind: string | null; question_key: unknown };
+
+/** 한 번 읽고 나눠 쓴다: 읽기가 실패하면 그것을 쓰는 카드가 모두 실패한다 (카드마다 따로 로그) */
+function once<T>(read: () => Promise<T>): () => Promise<T> {
+  let promise: Promise<T> | undefined;
+  return () => (promise ??= read());
+}
+
+/** 카드 하나: 읽기가 던지면 그 카드만 null. 로그에는 카드 이름과 오류 이름만 남긴다 (메시지 · 값은 쓰지 않는다) */
+async function card<T>(name: string, read: () => Promise<T>): Promise<T | null> {
+  try {
+    return await read();
+  } catch (error) {
+    console.error(JSON.stringify({ event: "agent_metrics_failed", card: name, error: error instanceof Error ? error.name : "unknown" }));
+    return null;
+  }
+}
+
+/**
+ * 에이전트 지표 카드 넷 (OA I-oa): 이미 남은 행을 읽어 센다. 새 이벤트 · 마이그레이션은 없다.
+ * 카드마다 실패를 가둔다: 에이전트 표가 없는 환경(마이그레이션 전)에서도 지표 1–5는 그대로 보인다.
+ */
+export async function loadAgentMetrics(admin: SupabaseClient, period: Period): Promise<AgentMetrics> {
+  const since = period.from.toISOString();
+  const until = period.to.toISOString();
+
+  const steps = once(() =>
+    readAll<StepRecord>((from, to) =>
+      admin
+        .from("execution_steps")
+        .select(
+          "id, kind, provider, purpose, created_at, task_id:args->>agent_task_id, request_id:args->>provider_request_id, answer_message_id:args->>answer_message_id, answered_locally:args->>answered_locally, reason:receipt->>reason",
+        )
+        .in("kind", AGENT_STEP_KINDS)
+        .gte("created_at", since)
+        .order("created_at")
+        .order("id")
+        .range(from, to),
+    ).then((rows): DeliveryStep[] =>
+      rows.map((r) => ({
+        id: r.id,
+        kind: r.kind,
+        adapter: r.provider,
+        purpose: r.purpose,
+        createdAt: r.created_at,
+        taskId: r.task_id,
+        requestId: r.request_id,
+        answerMessageId: r.answer_message_id,
+        answeredLocally: r.answered_locally,
+        receiptReason: r.reason,
+      })),
+    ),
+  );
+
+  const stepEvents = once(async (): Promise<StepEvent[]> => {
+    // 기간 안에 만든 단계의 사건만 (단계 · 사건은 지우지 않으므로 90일 보기도 그대로 된다)
+    const ids = (await steps()).filter((step) => Date.parse(step.createdAt) < period.to.getTime()).map((step) => step.id);
+    const events: StepEvent[] = [];
+    for (let i = 0; i < ids.length; i += ID_CHUNK) {
+      const chunk = ids.slice(i, i + ID_CHUNK);
+      const rows = await readAll<{ step_id: string; to_state: string; gate: string | null; at: string }>((from, to) =>
+        admin
+          .from("execution_events")
+          .select("step_id, to_state, gate, at")
+          .eq("type", "step")
+          .in("to_state", STEP_EVENT_STATES)
+          .in("step_id", chunk)
+          .order("at")
+          .order("id")
+          .range(from, to),
+      );
+      events.push(...rows.map((r) => ({ stepId: r.step_id, toState: r.to_state, gate: r.gate, at: r.at })));
+    }
+    return events;
+  });
+
+  // 질문 · 끝난 턴 사건: 감사 payload의 허용한 키만 (question_key = [작업 id, 요청 id])
+  const agentEvents = once(async (): Promise<AgentEventRow[]> => {
+    const rows = await readAll<AgentEventRecord>((from, to) =>
+      admin
+        .from("execution_events")
+        .select("at, event_type:payload->>event_type, status:payload->>status, kind:payload->>kind, question_key:payload->question_key")
+        .eq("type", "agent")
+        .in("payload->>event_type", ["question", "turn_completed"])
+        .gte("at", since)
+        .lt("at", until)
+        .order("at")
+        .order("id")
+        .range(from, to),
+    );
+    return rows.map((r) => {
+      const key = Array.isArray(r.question_key) ? r.question_key : [];
+      return {
+        at: r.at,
+        eventType: r.event_type,
+        status: r.status,
+        kind: r.kind,
+        taskId: typeof key[0] === "string" ? key[0] : null,
+        requestId: typeof key[1] === "string" ? key[1] : null,
+      };
+    });
+  });
+
+  // 지금 열린 작업: 답을 기다리는 것 · 연결이 끊긴 것
+  const openTasks = once(async (): Promise<OpenTask[]> => {
+    const rows = await readAll<{ id: string; state: string; request_id: string | null }>((from, to) =>
+      admin
+        .from("agent_tasks")
+        .select("id, state, request_id:pending_question->>provider_request_id")
+        .in("state", ["awaiting_answer", "unreachable"])
+        .order("id")
+        .range(from, to),
+    );
+    return rows.map((r) => ({ id: r.id, state: r.state, requestId: r.request_id }));
+  });
+
+  const [usage, delivery, questions, stops] = await Promise.all([
+    card("usage", async (): Promise<UsageCard> => {
+      // 모르는 type을 세려고 기간 안의 지표 이벤트를 type 필터 없이 읽는다 (props는 토큰 · 숫자뿐)
+      const rows = await readAll<{ user_id: string; type: string; at: string; props: unknown }>((from, to) =>
+        admin.from("metric_events").select("user_id, type, at, props").gte("at", since).lt("at", until).order("at").order("id").range(from, to),
+      );
+      // 에이전트에게 맡겨 이슈가 생김: action_events의 rule 열 (TT: user_created, rule assistant_agent)
+      const issues = await readAll<{ user_id: string; created_at: string }>((from, to) =>
+        admin
+          .from("action_events")
+          .select("user_id, created_at")
+          .eq("type", "user_created")
+          .eq("rule", "assistant_agent")
+          .gte("created_at", since)
+          .lt("created_at", until)
+          .order("created_at")
+          .order("id")
+          .range(from, to),
+      );
+      return agentUsage(
+        rows.map((r) => ({ userId: r.user_id, type: r.type, at: r.at, props: r.props })),
+        issues.map((r) => ({ userId: r.user_id, at: r.created_at })),
+        period,
+      );
+    }),
+    card("delivery", async (): Promise<DeliveryCard> => {
+      const [stepRows, events] = await Promise.all([steps(), stepEvents()]);
+      const messages = await readAll<{ id: string; delivery_state: string; delivery_reason: string | null; created_at: string }>((from, to) =>
+        admin
+          .from("conversation_messages")
+          .select("id, delivery_state, delivery_reason, created_at")
+          .in("delivery_state", DELIVERY_STATES)
+          .gte("created_at", since)
+          .lt("created_at", until)
+          .order("created_at")
+          .order("id")
+          .range(from, to),
+      );
+      // 명령은 끝난 뒤 30일이 지나면 지운다: 그보다 먼 과거는 읽지 않는다
+      const commandsSince = new Date(Math.max(period.from.getTime(), period.to.getTime() - COMMAND_RETENTION_MS)).toISOString();
+      const commands = await readAll<{ kind: string; outcome: string | null; created_at: string }>((from, to) =>
+        admin.from("bridge_commands").select("kind, outcome, created_at").gte("created_at", commandsSince).lt("created_at", until).order("created_at").order("id").range(from, to),
+      );
+      return agentDelivery(
+        {
+          steps: stepRows,
+          events,
+          messages: messages.map((r) => ({ id: r.id, deliveryState: r.delivery_state, deliveryReason: r.delivery_reason, createdAt: r.created_at })),
+          commands: commands.map((r) => ({ kind: r.kind, outcome: r.outcome, createdAt: r.created_at })),
+        },
+        period,
+      );
+    }),
+    card("questions", async (): Promise<QuestionCard> => {
+      const [stepRows, events, tasks] = await Promise.all([steps(), agentEvents(), openTasks()]);
+      return agentQuestions({ events, steps: stepRows, tasks }, period);
+    }),
+    card("stops", async (): Promise<StopCard> => {
+      const [events, tasks] = await Promise.all([agentEvents(), openTasks()]);
+      // 대화 run이 멈춘 까닭: task run의 stopped는 세지 않는다
+      const stopEvents = await readAll<{ run_id: string; gate: string | null; at: string }>((from, to) =>
+        admin
+          .from("execution_events")
+          .select("run_id, gate, at")
+          .eq("type", "run")
+          .eq("to_state", "stopped")
+          .gte("at", since)
+          .lt("at", until)
+          .order("at")
+          .order("id")
+          .range(from, to),
+      );
+      const runIds = [...new Set(stopEvents.map((e) => e.run_id))];
+      const conversationRunIds = new Set<string>();
+      for (let i = 0; i < runIds.length; i += ID_CHUNK) {
+        const chunk = runIds.slice(i, i + ID_CHUNK);
+        const rows = await readAll<{ id: string }>((from, to) => admin.from("execution_runs").select("id").eq("kind", "conversation").in("id", chunk).order("id").range(from, to));
+        for (const row of rows) conversationRunIds.add(row.id);
+      }
+      const { count, error: countError } = await admin.from("execution_steps").select("id", { count: "exact", head: true }).in("kind", AGENT_STEP_KINDS).eq("state", "unknown_outcome");
+      if (countError) throw countError;
+      const { data: overdue, error: overdueError } = await admin.rpc("count_overdue_agent_step_leases", { p_grace_seconds: OVERDUE_LEASE_GRACE_SECONDS });
+      if (overdueError) throw overdueError;
+      const conflicts = await readAll<{ conflict_at: string }>((from, to) =>
+        admin.from("agent_path_leases").select("conflict_at").gt("conflict_at", EPOCH).order("conflict_at").order("id").range(from, to),
+      );
+      return agentStops(
+        {
+          stopEvents: stopEvents.map((e) => ({ runId: e.run_id, gate: e.gate, at: e.at })),
+          conversationRunIds,
+          events,
+          overdueLeases: Number(overdue ?? 0),
+          unknownOutcome: count ?? 0,
+          tasks,
+          conflicts: conflicts.map((c) => ({ conflictAt: c.conflict_at })),
+        },
+        period,
+      );
+    }),
+  ]);
+  return { usage, delivery, questions, stops };
 }
 
 export async function loadMetrics(admin: SupabaseClient, period: Period) {
@@ -261,6 +521,7 @@ export async function loadMetrics(admin: SupabaseClient, period: Period) {
   );
 
   const executionMetric = await loadExecution(admin, period);
+  const agents = await loadAgentMetrics(admin, period);
 
   const misjudged = misjudgment(rows, period);
   return {
@@ -277,6 +538,7 @@ export async function loadMetrics(admin: SupabaseClient, period: Period) {
     ),
     sourceFailures: sourceFailures(metrics, period),
     execution: executionMetric,
+    agents,
     connections: connections(metrics, connectionRequests, period),
     gmail: gmailFiltering(gmailStats.map((row) => row.stats)),
     google: googleActivity(googleStats.map((row) => row.stats)),

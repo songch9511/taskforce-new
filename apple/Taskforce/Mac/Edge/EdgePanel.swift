@@ -4,11 +4,12 @@ import SwiftUI
 import TaskforceKit
 import TaskforceUI
 
-/// EdgePanel의 자리 (디자인 README › Layout): 380pt 폭, 모서리 18, 내용에 맞춰 520pt까지. 펼친 레일 왼쪽 12pt, 위가 레일과 같다.
+/// EdgePanel의 자리 (디자인 README › Layout): 380pt 폭, 모서리 18, 내용에 맞춰 520pt까지. 펼친 레일 왼쪽 12pt.
+/// 노치 레일(Release · 게이트 꺼짐)은 위가 레일과 같고(화면 위에서 120), 캡슐 레일(OA U3)은 오른쪽이 화면 끝 − 62(캡슐 6 + 44 + 12)이며 위는 그대로다 (U3-11).
 enum EdgePanelMetrics {
     static let width: CGFloat = 380
     static let maxHeight: CGFloat = 520
-    /// DS `panel-min-height` 320: 결정 화면도 이 아래로 줄지 않는다 (세션 탭이 늘 패널의 평평한 가장자리에 닿는다)
+    /// DS `panel-min-height` 320: 노치 레일(게이트 꺼짐) 화면은 이 아래로 줄지 않는다. 캡슐 레일 구성은 내용에 맞춘다 (Projects 하나 · 짧은 목록, OA U3-31)
     static let minHeight: CGFloat = 320
     static let radius: CGFloat = TFRadius.lg
     /// 레일과의 간격 (`space-md`)
@@ -25,15 +26,20 @@ enum EdgePanelMetrics {
         return EdgeInsets(top: 0, leading: TFSpace.lg, bottom: TFSpace.md, trailing: TFSpace.lg)
     }
 
-    /// 본문(+아래 입력칸) 높이에 맞춘 패널 높이
-    static func height(body: CGFloat, footer: CGFloat = 0) -> CGFloat {
-        min(maxHeight, max(minHeight, headerHeight + body + footer))
+    /// 본문(+아래 입력칸) 높이에 맞춘 패널 높이. `fits`: 바닥 없이 내용에 맞춘다 (캡슐 구성, 520까지)
+    static func height(body: CGFloat, footer: CGFloat = 0, fits: Bool = false) -> CGFloat {
+        min(maxHeight, max(fits ? 0 : minHeight, headerHeight + body + footer))
     }
 
-    /// 패널 창의 자리 (화면 좌표, 아래가 0). 오른쪽은 펼친 레일 왼쪽에서 12pt, 위는 레일 위 모서리.
-    /// `tab`: 패널 왼쪽에 붙는 SessionTab 띠의 폭 (OA U2: 창이 그만큼 왼쪽으로 넓다. 탭이 없으면 0)
-    static func frame(height: CGFloat, railTop: CGFloat, screenMaxX: CGFloat, tab: CGFloat = 0) -> NSRect {
-        NSRect(x: screenMaxX - EdgeRailLayout.railWidth - gap - width - tab, y: railTop - height, width: width + tab, height: height)
+    /// 패널 창의 자리 (화면 좌표, 아래가 0). 오른쪽은 펼친 레일 왼쪽에서 12pt, 위는 `railTop`(화면 위에서 120).
+    /// `capsule`: 캡슐 레일이면 레일이 화면 끝에서 6 안쪽이라 패널도 그만큼 안쪽이다 (오른쪽 = 화면 끝 − 6 − 44 − 12)
+    static func frame(height: CGFloat, railTop: CGFloat, screenMaxX: CGFloat, capsule: Bool = false) -> NSRect {
+        NSRect(x: rightEdge(screenMaxX: screenMaxX, capsule: capsule) - width, y: railTop - height, width: width, height: height)
+    }
+
+    /// 패널의 오른쪽 가장자리 (화면 좌표): 노치 레일은 끝 − 44 − 12, 캡슐 레일은 끝 − 6 − 44 − 12 = 끝 − 62
+    static func rightEdge(screenMaxX: CGFloat, capsule: Bool) -> CGFloat {
+        screenMaxX - (capsule ? RailCapsuleMetrics.inset : 0) - EdgeRailLayout.railWidth - gap
     }
 }
 
@@ -45,8 +51,6 @@ final class EdgePanelPresentation {
     /// 아래 입력칸(Chats)의 높이: 패널 높이에 더한다
     var footerHeight: CGFloat = 0
     var shown = false
-    /// 패널 왼쪽 SessionTab 띠의 폭 (없으면 0, OA U2): 창 프레임이 그만큼 넓다
-    var tabWidth: CGFloat = 0
 }
 
 /// 패널 (디자인 EdgePanel): 머리 · 본문 · (입력칸). 자기 탐색이 없고 닫기 버튼도 없다. 한 번에 한 화면.
@@ -72,19 +76,11 @@ struct EdgePanelView: View {
     var body: some View {
         // 이동(16pt)은 창이 움직이고, 크기(.975 → 1)는 여기서. 움직임 줄이기면 둘 다 없다
         let scale = TFMotion.panelTransform(shown: presentation.shown, reduceMotion: shell.reduceMotion).scale
-        let showsTab = shell.showsSessionTab
-        // 새 Issues 화면: 패널 왼쪽에 SessionTab 띠가 붙는다. 창이 그만큼 넓고 띠 밖은 투명해 클릭이 뒤로 지나간다
-        HStack(alignment: .top, spacing: 0) {
-            if showsTab { sessionTab }
-            panel
-        }
-        .frame(maxHeight: .infinity, alignment: .top)
-        .scaleEffect(scale, anchor: .topTrailing)
-        .animation(TFMotion.move(TFMotion.panelMove, reduceMotion: shell.reduceMotion), value: presentation.shown)
-        .onChange(of: showsTab, initial: true) { _, shows in
-            presentation.tabWidth = shows ? SessionTabGeometry.expanded.width : 0
-        }
-        .accessibilityElement(children: .contain)
+        panel
+            .frame(maxHeight: .infinity, alignment: .top)
+            .scaleEffect(scale, anchor: .topTrailing)
+            .animation(TFMotion.move(TFMotion.panelMove, reduceMotion: shell.reduceMotion), value: presentation.shown)
+            .accessibilityElement(children: .contain)
         .accessibilityLabel("Taskforce")
     }
 
@@ -106,8 +102,14 @@ struct EdgePanelView: View {
                                 PanelEmptyState(title: Self.noChats)
                             }
                         case .review:
-                            // S4 gate가 꺼져 있으면(`review == nil`) 이 화면은 열리지 않는다
-                            if let desk = shell.review { ReviewPanelBody(shell: shell, desk: desk) }
+                            // S4 gate가 꺼져 있으면(`review == nil`) 이 화면은 열리지 않는다. Taskforce 대화가 켜진 구성은 요청 카드 한 장 + 끝의 요약이다
+                            if let desk = shell.review {
+                                if shell.taskforceEnabled {
+                                    TaskforcePanelBody(shell: shell, desk: desk)
+                                } else {
+                                    ReviewPanelBody(shell: shell, desk: desk)
+                                }
+                            }
                         }
                     }
                     .padding(EdgePanelMetrics.bodyInsets(issueScreens: shell.issueScreensEnabled, view: shell.view))
@@ -136,28 +138,12 @@ struct EdgePanelView: View {
         .clipShape(RoundedRectangle(cornerRadius: EdgePanelMetrics.radius, style: .continuous))
     }
 
-    /// 패널 왼쪽 가장자리의 SessionTab (이슈 상세 · 프로젝트 · Ungrouped 목록의 세션). 위는 패널 위에서 40 (필렛 10 포함해 30에서 시작)
-    private var sessionTab: some View {
-        let plan = shell.tabPlan
-        #if DEBUG
-        let expanded = shell.tabExpandedForSnapshot
-        #else
-        let expanded = false
-        #endif
-        return SessionTab(
-            items: plan.shown.map { SessionTabItem($0, current: $0.id == shell.sessionPanelID) }, moreLabel: plan.moreLabel,
-            expanded: expanded, reduceMotion: shell.reduceMotion, onOpen: { shell.openSession($0) },
-            onMore: { shell.onShowMoreSessions(plan.hidden) }, onNew: { shell.newSession(from: .tab) }
-        )
-        .padding(.top, SessionTabMetrics.top - SessionTabGeometry.fillet)
-    }
-
     @ViewBuilder
     private var header: some View {
         if shell.view == .chats, let chat {
             ChatPanelHeader(chat: chat.chat)
         } else if shell.view == .review, shell.review != nil {
-            ReviewPanelHeader(shell: shell)
+            if shell.taskforceEnabled { TaskforcePanelHeader(shell: shell) } else { ReviewPanelHeader(shell: shell) }
         } else if shell.issueScreensEnabled, shell.view == .allWork {
             // 새 Issues 화면: 머리는 지금 연 화면이 정한다. 뒤로는 목록 · 상세에, 직접 추가 `+`는 Done today를 뺀 이슈 목록에 (Add task = 기존 런처)
             PanelHeader(
@@ -233,8 +219,7 @@ final class EdgePanelController {
     init(shell: EdgeShellModel, chat: ChatRuntime? = nil) {
         self.shell = shell
         panel = EdgeKeyPanel(
-            // 새 Issues 화면이 켜진 셸은 SessionTab 띠(36)만큼 넓다. 꺼져 있으면 지금 그대로 380
-            contentRect: NSRect(x: 0, y: 0, width: EdgePanelMetrics.width + (shell.issueScreensEnabled ? SessionTabGeometry.expanded.width : 0), height: EdgePanelMetrics.maxHeight),
+            contentRect: NSRect(x: 0, y: 0, width: EdgePanelMetrics.width, height: EdgePanelMetrics.maxHeight),
             styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -261,10 +246,10 @@ final class EdgePanelController {
     private func targetFrame() -> NSRect? {
         guard let screen = EdgeRailPanelController.screen else { return nil }
         return EdgePanelMetrics.frame(
-            height: EdgePanelMetrics.height(body: presentation.bodyHeight, footer: presentation.footerHeight),
+            height: EdgePanelMetrics.height(body: presentation.bodyHeight, footer: presentation.footerHeight, fits: shell.issueScreensEnabled),
             railTop: EdgeRailPanelController.railTop(on: screen),
             screenMaxX: screen.frame.maxX,
-            tab: presentation.tabWidth
+            capsule: shell.issueScreensEnabled
         )
     }
 

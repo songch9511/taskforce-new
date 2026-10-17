@@ -112,15 +112,4 @@ struct IssueNavigationTests {
         #expect(IssueNavigation.fallbackScope(for: P.item(1, "T", links: [old, zebra])) == .project(zebra.project.id))
         #expect(IssueNavigation.fallbackScope(for: P.item(1, "T", known: false)) == .ungrouped)
     }
-
-    @Test func theScopeOfTheSessionTabIsTheOpenListOrTheOpenIssue() {
-        var nav = IssueNavigation()
-        #expect(nav.tabScope == nil, "Projects에는 탭이 없다")
-        nav.open(.doneToday)
-        #expect(nav.tabScope == nil, "Done today에는 탭이 없다")
-        nav.open(.ungrouped)
-        #expect(nav.tabScope == .list(.ungrouped))
-        nav.openDetail(Fx.issue(1))
-        #expect(nav.tabScope == .detail(Fx.issue(1)))
-    }
 }

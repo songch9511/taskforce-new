@@ -295,8 +295,22 @@ struct EdgeRailView: View {
     }
 }
 
+/// 레일의 뿌리 뷰: 새 Issues 화면이 켜진 구성은 캡슐 레일(OA U3), 아니면 지금의 노치 레일 (Release · 게이트 꺼짐)
+struct EdgeRailRootView: View {
+    @Bindable var shell: EdgeShellModel
+    let onMore: (CGRect) -> Void
+
+    var body: some View {
+        if shell.issueScreensEnabled {
+            EdgeRailCapsuleView(shell: shell, onMore: onMore)
+        } else {
+            EdgeRailView(shell: shell, onMore: onMore)
+        }
+    }
+}
+
 /// 레일 창의 호스팅 뷰: 앱이 비활성이어도 포인터를 따라간다 (`activeAlways`). 투명한 곳의 클릭은 아래 창으로 지나간다.
-final class RailHostingView: NSHostingView<EdgeRailView> {
+final class RailHostingView: NSHostingView<EdgeRailRootView> {
     var onPointer: ((CGPoint?) -> Void)?
     private var tracking: NSTrackingArea?
 
@@ -338,27 +352,29 @@ final class EdgePassivePanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-/// 레일 창: 화면 오른쪽 모서리, 위에서 120pt. 모든 Space · 전체 화면 앱 위에 머문다.
+/// 레일 창: 노치 레일은 화면 오른쪽 모서리 위에서 120pt, 캡슐 레일(OA U3)은 화면 오른쪽 가운데에서 6 안쪽. 모든 Space · 전체 화면 앱 위에 머문다.
 @MainActor
 final class EdgeRailPanelController {
     let shell: EdgeShellModel
     let panel: EdgePassivePanel
-    private let hosting: RailHostingView
+    let hosting: RailHostingView
     private let tooltip: RailTooltipController
+    /// 지금 포인터의 화면 좌표 (시험은 실제 마우스 대신 정해 준다)
+    var pointerLocation: () -> NSPoint = { NSEvent.mouseLocation }
     var onConnections: () -> Void = { SettingsOpener.open(.connections) }
     var onSettings: () -> Void = { SettingsOpener.open(.account) }
 
     init(shell: EdgeShellModel) {
         self.shell = shell
         panel = EdgePassivePanel(
-            contentRect: NSRect(x: 0, y: 0, width: EdgeRailLayout.railWidth, height: EdgeRailLayout.windowHeight(plus: shell.issueScreensEnabled)),
+            contentRect: Self.windowSize(for: shell),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
         tooltip = RailTooltipController(shell: shell)
         var openMore: (CGRect) -> Void = { _ in }
-        hosting = RailHostingView(rootView: EdgeRailView(shell: shell, onMore: { openMore($0) }))
+        hosting = RailHostingView(rootView: EdgeRailRootView(shell: shell, onMore: { openMore($0) }))
         hosting.sizingOptions = []
         panel.isFloatingPanel = true
         panel.level = .statusBar
@@ -382,8 +398,22 @@ final class EdgeRailPanelController {
         screen.frame.maxY - EdgeRailLayout.topFromScreen
     }
 
+    /// 창 크기 (캡슐 레일은 가장 큰 열이 들어가는 크기로 늘 같다)
+    static func windowSize(for shell: EdgeShellModel) -> NSRect {
+        if shell.issueScreensEnabled {
+            return NSRect(origin: .zero, size: EdgeRailCapsuleLayout.windowSize)
+        }
+        return NSRect(x: 0, y: 0, width: EdgeRailLayout.railWidth, height: EdgeRailLayout.windowHeight(plus: false))
+    }
+
     func show() {
         guard let screen = Self.screen else { return }
+        if shell.issueScreensEnabled {
+            // 캡슐 레일: 화면 세로 가운데, 오른쪽 끝 (열이 창 안에서 가운데로 자란다)
+            panel.setFrame(EdgeRailCapsuleLayout.windowFrame(screenMaxX: screen.frame.maxX, midY: screen.frame.midY), display: true)
+            panel.orderFrontRegardless()
+            return
+        }
         let top = Self.railTop(on: screen) + EdgeRailLayout.top
         let height = EdgeRailLayout.windowHeight(plus: shell.issueScreensEnabled)
         panel.setFrame(
@@ -415,6 +445,10 @@ final class EdgeRailPanelController {
             tooltip.update(anchor: nil, in: panel)
             return
         }
+        if shell.issueScreensEnabled {
+            capsulePointer(point)
+            return
+        }
         let layout = layout
         shell.pointer(inside: layout.hitRect.contains(point))
         let overTile = layout.hitsTile(point)
@@ -440,8 +474,39 @@ final class EdgeRailPanelController {
         tooltip.update(anchor: anchor, in: panel)
     }
 
-    /// More: 레일 왼쪽의 메뉴, Connections와 Settings 둘만. 둘 다 Mac 설정 창을 연다
+    /// 캡슐 레일의 포인터: 판정은 캡슐 모양 안뿐이다 (`EdgeRailCapsuleLayout`이 그리기와 같은 값을 준다)
+    private func capsulePointer(_ point: CGPoint) {
+        let layout = shell.capsuleLayout
+        shell.pointer(inside: layout.hitsRail(point))
+        let hit = layout.hit(point, slots: shell.slots)
+        if hit.bell {
+            shell.hover(bell: true)
+        } else if hit.plus {
+            shell.hover(plus: true)
+        } else if let id = hit.item {
+            shell.hover(item: id)
+        } else {
+            shell.hover(control: hit.control)
+        }
+        let anchor: CGRect? = {
+            if hit.bell { return layout.bellFrame }
+            if hit.plus { return layout.plusFrame }
+            if let id = hit.item, let index = shell.slots.firstIndex(where: { $0.id == id }) { return layout.ringFrame(index) }
+            return hit.control.flatMap { layout.controlFrame($0) }
+        }()
+        tooltip.update(anchor: anchor, in: panel)
+    }
+
+    /// More 카드 창 (게이트 켜짐의 캡슐 레일): DS EdgeRail "More open"의 카드 (OA U3 16.1)
+    let moreCard = EdgeRailMoreCard()
+
+    /// More: 레일 왼쪽의 메뉴, Connections와 Settings 둘만. 둘 다 Mac 설정 창을 연다.
+    /// 캡슐 레일(게이트 켜짐)은 DS 카드(`EdgeRailMoreCard`), 노치 레일(게이트 꺼짐 · Release)은 macOS 기본 메뉴 그대로다
     private func showMore(from frame: CGRect) {
+        if usesMoreCard {
+            toggleMoreCard()
+            return
+        }
         let menu = NSMenu()
         menu.autoenablesItems = false
         let connections = NSMenuItem(title: "Connections", action: #selector(MenuTarget.connections), keyEquivalent: "")
@@ -454,19 +519,64 @@ final class EdgeRailPanelController {
         }
         shell.setMenuOpen(true)
         tooltip.hide()
-        // 메뉴 오른쪽 끝을 레일 왼쪽 10pt에 둔다 (메뉴가 레일을 덮지 않게)
+        // 메뉴 오른쪽 끝을 레일 왼쪽 10pt에 둔다 (메뉴가 레일을 덮지 않게). 캡슐 레일은 셋째 캡슐의 왼쪽 가장자리에서 10 (DS `.tf-edge .tf-menu{right:calc(100% + 10px)}`)
+        let left = shell.issueScreensEnabled ? (shell.capsuleLayout.thirdCapsuleFrame?.minX ?? frame.minX) : frame.minX
         let point = NSPoint(
-            x: frame.minX - 10 - menu.size.width,
+            x: left - 10 - menu.size.width,
             y: hosting.isFlipped ? frame.minY : hosting.bounds.height - frame.minY
         )
         menu.popUp(positioning: nil, at: point, in: hosting)
         withExtendedLifetime(target) {}
         shell.setMenuOpen(false)
         // 메뉴를 쓰는 동안은 포인터 이벤트가 오지 않는다: 지금 포인터 자리로 다시 판단한다
-        let local = hosting.convert(panel.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
+        let local = hosting.convert(panel.convertPoint(fromScreen: pointerLocation()), from: nil)
         let inside = hosting.bounds.contains(local)
         pointer(inside ? (hosting.isFlipped ? local : CGPoint(x: local.x, y: hosting.bounds.height - local.y)) : nil)
     }
+
+    /// ⋯가 DS 카드를 여나 (게이트 켜짐의 캡슐 레일). 아니면 macOS 기본 메뉴 (노치 레일: 게이트 꺼짐 · Release)
+    var usesMoreCard: Bool { shell.issueScreensEnabled }
+
+    /// ⋯를 누르면 카드가 열리고, 열려 있을 때 다시 누르면 닫힌다 (닫는 클릭은 `swallowsOutsideClick`이 삼킨다)
+    func toggleMoreCard() {
+        if moreCard.isOpen {
+            moreCard.dismiss()
+            return
+        }
+        guard let capsule = shell.capsuleLayout.thirdCapsuleFrame else { return }
+        let model = ContextMenuModel(items: [
+            ContextMenuItem(id: "connections", icon: .connections, label: "Connections", action: { [weak self] in self?.onConnections() }),
+            ContextMenuItem(id: "settings", icon: .settings, label: "Settings", action: { [weak self] in self?.onSettings() }),
+        ])
+        moreCard.swallowsOutsideClick = { [weak self] event in self?.hitsMore(event) ?? false }
+        shell.setMenuOpen(true)
+        tooltip.hide()
+        let rect = panel.convertToScreen(hosting.convert(NSRect(x: capsule.minX, y: capsule.minY, width: capsule.width, height: capsule.height), to: nil))
+        moreCard.present(model: model, label: shell.label(for: .more), capsule: rect, over: panel) { [weak self] in self?.moreCardClosed() }
+    }
+
+    /// 클릭이 ⋯ 칸 위인가 (카드를 닫는 클릭이 ⋯를 다시 누르지 않게)
+    private func hitsMore(_ event: NSEvent) -> Bool {
+        guard event.window === panel, let frame = shell.capsuleLayout.controlFrame(.more) else { return false }
+        let local = hosting.convert(event.locationInWindow, from: nil)
+        return frame.contains(hosting.isFlipped ? local : CGPoint(x: local.x, y: hosting.bounds.height - local.y))
+    }
+
+    private func moreCardClosed() {
+        // 메뉴 표시를 거두고 접근성 포커스를 ⋯로 돌려준다 (레일은 ⋯가 포커스를 받을 때까지 펼친 채다)
+        shell.moreCardClosed()
+        // 카드를 쓰는 동안은 레일이 포인터 이벤트를 받지 못할 수 있다: 지금 포인터 자리로 다시 판단한다
+        let local = hosting.convert(panel.convertPoint(fromScreen: pointerLocation()), from: nil)
+        let inside = hosting.bounds.contains(local)
+        pointer(inside ? (hosting.isFlipped ? local : CGPoint(x: local.x, y: hosting.bounds.height - local.y)) : nil)
+    }
+
+    #if DEBUG
+    /// 견본: ⋯를 누른 것과 같은 길로 카드를 연다
+    func openMoreCardForSnapshot() {
+        if !moreCard.isOpen { toggleMoreCard() }
+    }
+    #endif
 
     private final class MenuTarget: NSObject {
         let onConnections: () -> Void

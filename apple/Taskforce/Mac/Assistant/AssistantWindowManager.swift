@@ -44,12 +44,20 @@ final class AssistantWindowManager {
             screen.id == display() ? railWidth : 0
         }
 
-        /// 실제 화면: 레일이 붙는 화면, 열린 패널의 창. 패널의 자리는 **열린 패널들의 합**이다: 이슈 패널 창(SessionTab 띠 포함)과 세션 패널 (OA U2-44)
+        /// 실제 화면: 레일이 붙는 화면, 열린 패널의 창. 패널의 자리는 **열린 패널들의 합**이다: 이슈 패널 창과 세션 패널 (OA U2-44)
+        @MainActor
         static func live(panel: EdgePanelController, shell: EdgeShellModel, sessionPanel: EdgeSessionPanelController? = nil) -> Environment {
-            Environment(
+            var environment = Environment(
                 visibleFrame: { (EdgeRailPanelController.screen ?? NSScreen.main)?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1440, height: 875) },
                 railFrame: {
                     guard let screen = EdgeRailPanelController.screen ?? NSScreen.main else { return CGRect(x: 1396, y: 400, width: 44, height: 320) }
+                    // 캡슐 레일(OA U3-52): 펼친 열의 실제 자리 — 화면 세로 가운데에서 자라고 화면 끝에서 6 안쪽이다. 노치 레일은 지금 그대로
+                    if shell.issueScreensEnabled {
+                        return EdgeRailCapsuleLayout.expandedRailFrame(
+                            screenMaxX: screen.frame.maxX, midY: screen.frame.midY, bell: shell.taskforceBell != nil,
+                            rings: min(shell.slots.count, EdgeRailCapsuleLayout.expandedRings)
+                        )
+                    }
                     let top = EdgeRailPanelController.railTop(on: screen)
                     let height = EdgeRailLayout.windowHeight(plus: shell.issueScreensEnabled) - 2 * EdgeRailLayout.fillet
                     return CGRect(x: screen.frame.maxX - EdgeRailLayout.railWidth, y: top - height, width: EdgeRailLayout.railWidth, height: height)
@@ -65,6 +73,9 @@ final class AssistantWindowManager {
                     return NSScreen.screens.filter { $0 !== rail }.map { AssistantScreen(id: Self.displayKey($0), visible: $0.visibleFrame) }
                 }
             )
+            // 창이 가리지 않는 레일 폭: 캡슐 레일은 44 + 화면 끝에서의 6 (OA U3-52). 저장된 위치는 그대로 두고 보일 때만 이 폭으로 화면 안에 맞춘다
+            if shell.issueScreensEnabled { environment.railWidth = EdgeRailCapsuleLayout.width + EdgeRailCapsuleLayout.inset }
+            return environment
         }
 
         @MainActor

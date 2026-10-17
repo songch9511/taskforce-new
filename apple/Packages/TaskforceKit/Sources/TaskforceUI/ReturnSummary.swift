@@ -7,6 +7,7 @@ import TaskforceKit
 /// - 줄을 누르면 그 작업으로 간다. 열 곳이 없는 줄(목록에 없는 작업)은 누를 수 없다 (› 없음).
 /// - **숫자가 없다.** Clear는 읽음 처리일 뿐이다 (해결 · 승인 · 완료 · 거절이 아니다): 결정 줄은 Clear 뒤에도 남는다. 답할 결정이 있으면 ⌥ Space는 여전히 Review를 먼저 연다.
 /// - 비어 있다는 문구가 없다. 읽지 못했거나 일부만 보일 때(`notes`)는 줄 밑에서 그렇게 말한다 — 비어 있는 것이 아니라 모르는 것이다.
+/// **변화만 보이는 메시지**(`content.changesOnly`, OA U3): Taskforce 대화의 끝에 오는 모양이다 — 줄 앞 표시는 `StatusMark`이고 In Progress는 빈 자리다(DS 2026-10-16). Needs 태그 · 형광펜이 없다.
 /// 값과 동작만 받는다: 무엇을 보일지는 `ReturnSummaryContent`(Kit)가 정한다.
 public struct ReturnSummary: View {
     let content: ReturnSummaryContent
@@ -36,6 +37,16 @@ public struct ReturnSummary: View {
     }
 
     nonisolated static func mark(_ progress: ReturnSummaryProgress?) -> TaskStatusMark.State? {
+        switch progress {
+        case .toDo?: .toDo
+        case .inProgress?: .inProgress
+        case .done?: .done
+        case .unknown?, nil: nil
+        }
+    }
+
+    /// 변화만 보이는 메시지의 줄 앞 표시: 세 모양 중 하나, In Progress는 빈 자리 (모양을 그리지 않는다)
+    nonisolated static func changesMark(_ progress: ReturnSummaryProgress?) -> StatusMark.State? {
         switch progress {
         case .toDo?: .toDo
         case .inProgress?: .inProgress
@@ -84,7 +95,9 @@ public struct ReturnSummary: View {
                         title: row.title, detail: row.detail.map { MarkerText.attributed($0, highlighting: row.highlight) },
                         onOpen: row.canOpen ? { onOpen(row.id) } : nil,
                         lead: {
-                            if let state = Self.mark(row.progress) {
+                            if content.changesOnly, let state = Self.changesMark(row.progress) {
+                                StatusMark(state, blankInProgress: true)
+                            } else if !content.changesOnly, let state = Self.mark(row.progress) {
                                 TaskStatusMark(state)
                             } else {
                                 // 표시가 없는 줄(취소된 작업)도 글자 자리를 맞춘다

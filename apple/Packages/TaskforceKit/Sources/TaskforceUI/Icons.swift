@@ -72,6 +72,10 @@ public enum TFIcon: String, CaseIterable, Sendable {
     case archive = "archive"
     case delete = "trash-2"
 
+    /// 레일 첫 캡슐의 Taskforce bell (OA U3-16, Lucide `bell`): 자산은 Settings Reports와 같은 글리프다. 열거형의 원시값은 유일해야 해서(`reports = "bell"`)
+    /// 별도 case가 아니라 같은 글리프를 가리키는 이름이다: 역할이 다르니 쓰는 쪽은 이 이름으로 부른다
+    public static var taskforce: TFIcon { .reports }
+
     /// 프로젝트 아이콘 이름의 글리프 (풀 밖 · 모르는 이름은 folder)
     public static func project(_ name: ProjectIconName) -> TFIcon {
         switch name {

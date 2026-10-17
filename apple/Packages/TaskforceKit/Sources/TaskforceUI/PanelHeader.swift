@@ -62,16 +62,36 @@ public struct PanelHeaderPill {
 ///   `status`는 머리 아래 글만 있는 한 줄(footnote `text/secondary`, 안쪽 0 16 10, 한 줄 끝 줄임). 세션 머리는 알약이 있어도 40pt다 (위 10 · 아래 6). View full은 머리에 없다
 public struct PanelHeader: View {
     public struct Steps: Equatable, Sendable {
-        public let count: Int
-        public let current: Int
-
-        public init(count: Int, current: Int) {
-            self.count = count
-            self.current = current
+        /// 점이 가리키는 것: 옛 Review 항목 (모든 점을 그린다) · Taskforce 요청 (OA U3-24: 10개까지, 넘으면 지금 요청이 가운데 오게 민다)
+        public enum Style: Sendable, Hashable {
+            case review
+            case request
         }
 
-        /// "Review item 2 of 3"
-        public var accessibilityLabel: String { "Review item \(current + 1) of \(count)" }
+        public let count: Int
+        public let current: Int
+        public let style: Style
+
+        public init(count: Int, current: Int, style: Style = .review) {
+            self.count = count
+            self.current = current
+            self.style = style
+        }
+
+        /// "Review item 2 of 3" · 요청이면 "Request 2 of 3" (사용자 승인 2026-10-18)
+        public var accessibilityLabel: String {
+            style == .request ? TaskforceCopy.requestPosition(current + 1, of: count) : "Review item \(current + 1) of \(count)"
+        }
+
+        /// 점 하나의 접근성 이름
+        public func dotLabel(_ index: Int) -> String {
+            style == .request ? TaskforceCopy.requestPosition(index + 1, of: count) : "Review item \(index + 1)"
+        }
+
+        /// 그릴 점들: 요청은 `TaskforceStepsWindow`, 옛 Review는 전부
+        public var visibleDots: Range<Int> {
+            style == .request ? TaskforceStepsWindow.visible(count: count, current: current) : 0..<max(count, 0)
+        }
     }
 
     let title: String
@@ -152,16 +172,18 @@ public struct PanelHeader: View {
                 .accessibilityAddTraits(.isHeader)
             if let steps, steps.count > 1 {
                 HStack(spacing: 0) {
-                    ForEach(0..<steps.count, id: \.self) { index in
+                    ForEach(Array(steps.visibleDots), id: \.self) { index in
                         Button { onStep?(index) } label: {
                             Circle()
                                 .fill(index == steps.current ? TFColor.textPrimary : TFColor.statusStepInactive)
                                 .frame(width: 6, height: 6)
+                                // DS `[aria-current] ::before { transform: scale(1.34) }`: 지금 요청은 한 단계 크다 (옛 Review 점은 지금 모양 그대로)
+                                .scaleEffect(steps.style == .request && index == steps.current ? 1.34 : 1)
                                 .frame(width: 24, height: 24)
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("Review item \(index + 1)")
+                        .accessibilityLabel(steps.dotLabel(index))
                     }
                 }
                 .accessibilityElement(children: .contain)

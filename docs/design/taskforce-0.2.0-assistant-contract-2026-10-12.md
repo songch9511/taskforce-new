@@ -360,6 +360,25 @@ registry에 있고 연결이 없으면 `not_connected`(예: Codex를 아직 연�
 - **8장 지표:** `question_answered`에 `answered_locally: true` 차원을 더한다(`kind:"input"`, `answered`일 때만 같은 트랜잭션). 측정 공백: 입력한 화면(Assistant · Review) · 질문이 기다린 시간 · 표시 뒤 lease 때 값이 없어 닫힌 수(`bridge_commands.outcome='request_closed'`).
 - **AC-37 (:445) 서버 몫:** 비밀값 답의 서버 기록 0(답 단계 args는 `{agent_task_id, provider_request_id, answered_locally:true}`뿐, 카나리가 어느 표에도 남지 않음)과 Review 항목이 주인 Mac의 표시로 사라지는 것, 다른 기기는 표시할 수 없는 것을 fixture로 확인한다. 값이 에이전트에 한 번 도달하는 것은 D4b-m · MS-2의 실제 provider · Mac 확인이다.
 
+### 5.4 OA U3 화면 정정 (2026-10-18)
+
+이 절은 DS 2026-10-16 변경("Taskforce replaces Review" · "Design review cleanup")과 사용자 결정(2026-10-18, DS를 따른다)을 반영하며 아래에 지정한 기존 문구보다 우선한다. 서버 경로 · 토큰 · 지표 이름(`/api/v2/review`, `result_ready` …)은 그대로이고, 바뀌는 것은 앱의 자리와 이름이다.
+
+- **이름:** 앱 화면의 "Review"(Dock의 Review 항목 · Review 목록 · Review 패널)는 **Taskforce 대화**다. 입구는 레일 첫 칸 Taskforce bell(⌘1)이고, Taskforce 요청이 있거나 대화가 열려 있을 때만 보인다.
+- **0.1 U1 (:18):** "세션 패널과 Review는 입력창을 유지한다" → "세션 패널은 입력창을 유지한다. Taskforce 대화의 입력창은 후속이다".
+- **0.1 U8 · U17 (:25 · :34), 11장 1 (:484):** "Dock의 Review 항목" → "레일 첫 칸 Taskforce bell".
+- **3.4 Dock의 Review (:183):** Taskforce 대화는 Taskforce 요청(`confirm` · `result_ready` · `path_conflict`)을 서버 순서(긴급 → 오래 기다린 순)로 한 번에 하나 보이고, 끝에 복귀 요약 메시지(변화만, Needs 태그 없음, Clear = 읽음)를 둔다. 노란 · 조용한 타일과 목록 화면은 없다. bell은 요청이 있을 때 울리고 변화만으로는 울리지 않는다.
+- **3.4 "Review result" (:185) · 5.2 (:336):** "Later"는 없다. 요청은 처리될 때까지 남고, 시트의 Back이 남겨 둔다.
+- **3.6 입력 질문 (:209):** 입력 질문 · 승인 질문은 그 세션(세션 패널과 그 에이전트 대화)에서만 보이고 답한다. Taskforce 대화에 나열하지 않는다. 서버 계산 입력과 응답의 에이전트 종류 항목은 그대로이고 앱은 그리지도 세지도 않는다.
+- **5.1 3.6 승인 답 (:330):** "Assistant와 Review는 같은 …를 보낸다" → "Assistant 창과 세션 패널은 같은 …를 보낸다".
+- **5.2 (:337):** "⌥Space의 '가장 최근 결정'은 … `created_at`이 가장 늦은 항목" → "⌥Space · ⌘1은 앱이 그리는 종류의 `decisions` 중 서버 순서 첫 항목(가장 오래 기다린 요청)을 연다. 요청이 없으면 ⌥Space는 마지막 화면, ⌘1은 빈 대화를 연다".
+- **5.2 (:338):** "Review의 답은 D1d 답 route를 그대로 쓴다" → route는 그대로이고, 앱은 질문 항목을 Taskforce 대화에 그리지 않는다(세션에서 답한다).
+- **9장 (:432):** "Rail: Review 항목은 Review 목록이 있을 때만" → "Rail: 첫 칸 Taskforce bell은 요청이 있거나 대화가 열려 있을 때만".
+- **AC-7 (:445) · AC-24 (:462):** "Review의 `result_ready`" → "Taskforce 대화의 Result ready 요청".
+- **AC-9 (:447):** "Manual이면 Review로" → "Manual이면 그 세션의 승인 카드로".
+- **AC-25 (:463):** "Review 목록이 비면 Dock Review 항목 0" → "Taskforce 요청이 없고 대화가 닫혀 있으면 bell 0".
+- **AC-37 (:475):** "각각 Assistant와 Review에서 정확히 1회 전달" → "각각 그 세션(세션 패널과 그 에이전트 대화)에서 정확히 1회 전달".
+
 ## 6. 프로젝트 관리 (U5)
 
 | route | 내용 |
@@ -429,6 +448,14 @@ Action 생성(3.3)은 `action_events` `user_created`(`rule='assistant_agent'`)�
 - 6.1 이벤트(:357): `user_merged`를 받는 것은 `coordinator_on_action_decision` **트리거의 WHEN 목록**이다(함수 본문이 아니다).
 - 9장 마이그레이션이 필요한 기존 함수: `conversation_finish_turn`(adopt.kind · p_turn.move · 55P03) · `coordinator_recover_missing`(결정 회수 목록) · `match_actions_for_ask`(병합으로 닫은 중복 제외)도 교체한다. 이동 지표는 새 래퍼 `change_context_membership_with_metric`(by_user는 그대로).
 - 이슈 id: `start_agent_turn`이 sha256에서 만드는 Action id는 RFC 4122 버전 · variant 자리와 달라 `z.uuid()`를 통과하지 못한다 — 메시지 refs · 카드 · 기록 줄의 이슈 id 스키마는 `z.guid()`다.
+
+**OA I-oa 정정 (2026-10-17 — 8장 표를 이 항목이 이긴다):**
+- 위 표는 v1 목록이다. 지금 `metric_events.type` CHECK는 블록 v3(24 type = OA 전 7개 + OA 17개, `20261123000000_agent_path_leases.sql`)이고, **OA type · 원천(SQL 함수 · TS 파일) · 차원 · 리텐션 활동 여부 · 공백의 목록은 `src/lib/metrics/agents.ts` 등록부(`AGENT_EVENTS`)가 집이다.** 이 문서는 목록을 다시 적지 않고 그 파일을 가리킨다. `tests/metrics/agent-event-registry.test.ts`가 최신 CHECK ↔ 등록부 ↔ 원천 함수의 최신 정의 ↔ 시험 파일을 정적으로 대조하므로, 블록 v4가 type을 더하면 이 시험이 실패해 등록부와 카드를 고치게 한다.
+- `/admin/metrics`의 에이전트 카드 넷(`loadAgentMetrics`): ① 사용 ② 전달 · 지연(ONE-TF-11 서버 구간) + 전달 · 명령 결과 ③ 질문 → 답(기다린 시간 · 답한 길) ④ 멈춤 · 지금 막힌 것. 새 type · 마이그레이션 0: 이미 남은 행(`metric_events` · `execution_events` · `execution_steps` · `bridge_commands` · `conversation_messages` 상태 열 · `agent_tasks` · `agent_path_leases`)을 읽어 센다. 지연 = 단계 `created_at` → 사건 `at`(서버 시계끼리), 통과 · 실패 배지는 달지 않는다(판정은 MS-2 Mac 원장). **ONE-TF-11 대응(코디네이터 확정):** "세션에 열린 작업 있음"은 실행 중인 작업에 넣는 `answer` · `cancel` 명령, "idle"은 새 턴을 여는 `message`이고, 카드 ②는 종류(message · answer · cancel)로 나눠 보인다. Claude Code의 접수는 그 턴의 첫 `assistant` 사건이라 모델의 첫 출력 시간이 들어 있는 상한이다. 명령은 30일 뒤 지워서 명령 결과만 최근 30일이다.
+- 자유 글 답(`route_agent_message`)은 지표 행이 없다(D1d). `question_answered`는 질문 답 route · 승인 · 비밀값 로컬 답만 세고, ③이 답 단계(`answer_message_id` · `answered_locally`)로 모든 길을 센다.
+- 리텐션 활동에서 `agent_message_sent` · `tool_call_decided` · `path_conflict_found`를 뺀다(`compute.ts` `SERVER_EVENTS`): 대기열 · 재전달 · Mac 복귀 시작, bridge의 도구 결정, 에이전트 산출물이 일으킨 충돌은 사용자가 그 시각에 한 일이 아니다. 원래 정의("서버가 남기는 이벤트는 활동이 아니다")로 되돌린 것이고 나머지 OA type(답 · Stop · 이동 · 프로젝트 …)은 사용자가 누른 순간에 생겨 활동으로 남는다. 착수 시간(PRD 지표 2)의 정의는 그대로다(열린 질문으로 사용자 결정 대기).
+- "Action 생성은 `action_events` `user_created`(`rule='assistant_agent'`)" — `rule`은 `action_events.rule` 열이다(`after`가 아니다). Stop 버튼(`stop_agent_session`)은 작업을 취소하고 `stop_run`으로 run도 닫는다(gate `stop`).
+- **측정 공백(지금도 못 세는 것):** (Mac 후속 — 클라이언트 이벤트는 블록 v4 + 앱 insert 정책 확장이 필요하고 정책은 지금 `app_opened` · `assistant_opened`만 연다) `assistant_opened` 보내기(정책은 이미 허용), Undo · 2초 안 취소 · 알림 열기 · bell · ⌘1 · ⌥Space · 충돌 Undo · 대화 열림 · 요청 처리, 어느 화면(Assistant 창 · 세션 패널 · Review)에서 답했나. (E1c) 결과 준비 → 검토 시간(`result_reviewed {adapter, waited_s}` 제안). (후속 서버) 해소된 충돌의 기다린 시간(`resolve_path_conflict`가 `conflict_at`을 지운다), 답 route의 409 · 404 이유별 횟수, referent 고르기(D4a-27), Done 55P03 재시도 · 소진 수, `user_merged` 수 · 정리 제안 결과. (R-dec + Mac 후속) 보지 않은 제안 노출(U3-21). (MS-2 Mac 원장 · Mac 로그) ONE-TF-11의 Realtime 연결 여부 · CLI 입력 시각, bridge 로컬 결정 · TS 사전 한도 거절, D3a OSLog 줄.
 
 ## 9. 같이 고칠 문서
 

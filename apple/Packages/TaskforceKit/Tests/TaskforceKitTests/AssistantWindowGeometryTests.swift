@@ -27,10 +27,10 @@ struct AssistantWindowGeometryTests {
         #expect(origin.y == railFrame.maxY)
     }
 
-    @Test func aSessionTabOnThePanelPushesTheWindowLeftOfTheTab() {
+    @Test func anOuterInsetOnThePanelPushesTheWindowLeftOfIt() {
         let panel = CGRect(x: 1440 - 44 - 12 - 380, y: 500, width: 380, height: 320)
         let origin = G.firstTopLeft(panelFrame: panel, railFrame: railFrame, panelOuterInset: 24)
-        #expect(origin.x == panel.minX - 24 - 12 - G.width, "패널의 바깥 가장자리(세션 탭 포함)에서 12pt")
+        #expect(origin.x == panel.minX - 24 - 12 - G.width, "패널의 바깥 가장자리(붙은 것 포함)에서 12pt")
     }
 
     // MARK: 화면 둘 (창은 자기가 있는 화면 기준)

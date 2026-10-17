@@ -8,7 +8,11 @@ import TaskforceUI
 /// 서버 응답은 모두 가짜(`IssueSampleGateway` · `IssueSampleContextGateway`)라 렌더 fixture일 뿐이다 (실제 서버 · 계정 · AI 호출 없음).
 /// Figma M1 · M3 · M4 · M5 · OA-3 프레임의 문구(Taskforce 0.2.0 · #139 · Pricing copy draft …)를 그대로 쓴다.
 enum IssueSnapshotData {
-    static var isEnabled: Bool { ProcessInfo.processInfo.arguments.contains("-TFEdgeSnapshotIssues") }
+    /// `-TFEdgeSnapshotIssues` 또는 새 셸 견본(`-TFEdgeSnapshotTaskforce`, OA U3)이 같은 견본 서버를 읽는다
+    static var isEnabled: Bool {
+        let arguments = ProcessInfo.processInfo.arguments
+        return arguments.contains("-TFEdgeSnapshotIssues") || arguments.contains("-TFEdgeSnapshotTaskforce")
+    }
 
     // MARK: 아이디
 
@@ -142,7 +146,7 @@ enum IssueSnapshotData {
         case .none:
             return []
         case .many:
-            // 세션이 아주 많은 경우: 한 이슈에 예순 (탭 6 + More, More 메뉴는 화면 높이에서 스크롤)
+            // 세션이 아주 많은 경우: 한 이슈에 예순 (Sessions 목록이 패널 높이를 넘는다)
             let states: [AgentTaskState] = [.running, .idle, .awaitingAnswer, .idle, .running]
             return (0..<60).map { index in
                 SessionSeed(
@@ -187,6 +191,15 @@ enum IssueSnapshotData {
                     number: 1, name: "Rewrite the pricing page copy for the trial and the Lifetime plan, keep the refund window wording, then update the help center",
                     connection: claude, status: .bound, state: .running, issues: [139], created: 1
                 ),
+            ]
+        case .longNamePair:
+            // 이름이 아주 긴 세션과 보통 세션 (Taskforce 충돌 카드의 두 줄: OA U3)
+            return [
+                SessionSeed(
+                    number: 1, name: "Rewrite the pricing page copy for the trial and the Lifetime plan, keep the refund window wording, then update the help center",
+                    connection: claude, status: .bound, state: .running, issues: [139], created: 1
+                ),
+                SessionSeed(number: 2, name: "Lifetime plan section", connection: codex, status: .bound, state: .idle, issues: [139], created: 2),
             ]
         }
     }
@@ -317,11 +330,11 @@ final class IssueSampleContextGateway: ContextGateway, @unchecked Sendable {
 }
 
 /// 가짜 대화 · 세션 서버: 세션 읽기 · 번호 · 이슈 상세 · 세션 대화. 쓰기는 모두 "기능 꺼짐"이다 (이 하네스는 읽기 화면만 본다)
-final class IssueSampleGateway: ChatGateway, IssueScreensGateway, @unchecked Sendable {
+final class IssueSampleGateway: ChatGateway, IssueScreensGateway, TaskforceRequestGateway, @unchecked Sendable {
     static let shared = IssueSampleGateway()
 
     enum SessionScenario: Sendable {
-        case none, basic, awaiting, external, closedAndStates, nine, longName, many
+        case none, basic, awaiting, external, closedAndStates, nine, longName, longNamePair, many
     }
 
     enum ReadScenario: Sendable {
@@ -340,6 +353,15 @@ final class IssueSampleGateway: ChatGateway, IssueScreensGateway, @unchecked Sen
     private var _sessionReads = 0
     private var _conversationReads = 0
     private var _shiftConversations = false
+    // Taskforce 대화 (OA U3): 가짜 서버가 내릴 응답 · 읽기 상태 · 충돌 상세 · 해소의 결과. 응답이 없으면 "이 서버는 아직 이 기능이 없다"(404)다
+    private var _taskforceResponse: TaskforceReviewResponse?
+    private var _taskforceRead = ReadScenario.full
+    private var _taskforceDetails: [UUID: TaskforceConflictDetail] = [:]
+    private var _taskforceDetailsRead = ReadScenario.full
+    private var _resolveFailure: Error?
+    private var _resolveDelay: TimeInterval = 0
+    private var _taskforceReads = 0
+    private var _resolves: [TaskforceResolveRecord] = []
 
     var sessions: SessionScenario {
         get { lock.withLock { _sessions } }
@@ -396,6 +418,73 @@ final class IssueSampleGateway: ChatGateway, IssueScreensGateway, @unchecked Sen
     var sourceCount: Int {
         get { lock.withLock { _sources } }
         set { lock.withLock { _sources = newValue } }
+    }
+
+    // MARK: Taskforce (OA U3)
+
+    /// `GET /api/v2/review`가 내릴 응답 (nil = 404, 기능 꺼짐)
+    var taskforceResponse: TaskforceReviewResponse? {
+        get { lock.withLock { _taskforceResponse } }
+        set { lock.withLock { _taskforceResponse = newValue } }
+    }
+
+    /// v2 Review 읽기의 상태 (offline · failed · hang)
+    var taskforceRead: ReadScenario {
+        get { lock.withLock { _taskforceRead } }
+        set { lock.withLock { _taskforceRead = newValue } }
+    }
+
+    /// 충돌의 경로 · 두 run의 세션
+    var taskforceDetails: [UUID: TaskforceConflictDetail] {
+        get { lock.withLock { _taskforceDetails } }
+        set { lock.withLock { _taskforceDetails = newValue } }
+    }
+
+    var taskforceDetailsRead: ReadScenario {
+        get { lock.withLock { _taskforceDetailsRead } }
+        set { lock.withLock { _taskforceDetailsRead = newValue } }
+    }
+
+    /// 해소가 던질 오류 (nil = 200 resolved)
+    var resolveFailure: Error? {
+        get { lock.withLock { _resolveFailure } }
+        set { lock.withLock { _resolveFailure = newValue } }
+    }
+
+    /// 해소 요청이 답하기까지 걸리는 초 (스냅샷: 보낸 뒤의 "Answer sent" 장면)
+    var resolveDelay: TimeInterval {
+        get { lock.withLock { _resolveDelay } }
+        set { lock.withLock { _resolveDelay = newValue } }
+    }
+
+    var taskforceReads: Int { lock.withLock { _taskforceReads } }
+    var resolves: [TaskforceResolveRecord] { lock.withLock { _resolves } }
+
+    func taskforceReview() async throws -> TaskforceReviewResponse {
+        let (scenario, response) = lock.withLock { () -> (ReadScenario, TaskforceReviewResponse?) in
+            _taskforceReads += 1
+            return (_taskforceRead, _taskforceResponse)
+        }
+        try await gate(scenario)
+        guard let response else { throw APIError.server(status: 404, code: .notFound, message: APIError.featureOffMessage) }
+        return response
+    }
+
+    func pathConflictDetails(_ refs: [TaskforceConflictRef]) async throws -> [UUID: TaskforceConflictDetail] {
+        let (scenario, details) = lock.withLock { (_taskforceDetailsRead, _taskforceDetails) }
+        try await gate(scenario)
+        return details.filter { entry in refs.contains { $0.leaseID == entry.key } }
+    }
+
+    func resolvePathConflict(leaseID: UUID, keep: TaskforceConflictKeep, conflictVersion: Int) async throws -> TaskforceResolveConflictResponse {
+        let failure = lock.withLock { () -> Error? in
+            _resolves.append(TaskforceResolveRecord(leaseID: leaseID, keep: keep, conflictVersion: conflictVersion))
+            return _resolveFailure
+        }
+        let delay = lock.withLock { _resolveDelay }
+        if delay > 0 { try await Task.sleep(for: .seconds(delay)) }
+        if let failure { throw failure }
+        return try JSONDecoder().decode(TaskforceResolveConflictResponse.self, from: Data(#"{"status":"resolved"}"#.utf8))
     }
 
     private func gate(_ scenario: ReadScenario) async throws {
@@ -502,10 +591,17 @@ final class IssueSampleGateway: ChatGateway, IssueScreensGateway, @unchecked Sen
     func moveMemory(id: UUID, expectedVersion: Int, to target: MemoryTarget) async throws -> MemoryItem { try off() }
 }
 
+/// 가짜 서버가 받은 경로 충돌 해소 하나 (OA U3 시험)
+struct TaskforceResolveRecord: Equatable, Sendable {
+    let leaseID: UUID
+    let keep: TaskforceConflictKeep
+    let conflictVersion: Int
+}
+
 /// 새 Issues 화면 PNG (OA U2, 디자인 비교용): `-TF_EDGE_SHELL YES -TFSampleData -TF_S3B YES -TF_U2 YES -TFEdgeSnapshot <폴더> -TFEdgeSnapshotIssues`
-/// (+ `-TFSnapshotDark`, `-TFReduceMotion YES`). 화면 녹화 권한 없이 자기 창(레일 · 이슈 패널과 SessionTab · 세션 패널 · 메뉴)의 내용만 그려 데스크톱 견본 위에 실제 자리대로 붙인다.
-/// 남기는 것(`mac-edge-issues-<이름>.png`): projects(M1) · projects-ask · projects-many · projects-empty · projects-loading/offline/failed · list-project(M3) · list-project-tab-open ·
-/// list-ungrouped · list-done-today · list-many(긴 제목 · 많은 이슈) · list-ask · list-tab-more · menu-more · menu-more-many · menu-more-many-last · detail-many · detail(M4) · detail-states · detail-no-source · detail-no-sessions · detail-nine ·
+/// (+ `-TFSnapshotDark`, `-TFReduceMotion YES`). 화면 녹화 권한 없이 자기 창(캡슐 레일 · 이슈 패널 · 세션 패널 · 메뉴)의 내용만 그려 데스크톱 견본 위에 실제 자리대로 붙인다.
+/// 남기는 것(`mac-edge-issues-<이름>.png`): projects(M1) · projects-ask · projects-many · projects-empty · projects-loading/offline/failed · list-project(M3) ·
+/// list-ungrouped · list-done-today · list-many(긴 제목 · 많은 이슈) · list-ask · detail-many · detail(M4) · detail-states · detail-no-source · detail-no-sessions · detail-nine ·
 /// detail-loading/offline/failed · detail-long · session-running · session-needs · session-idle · session-external · session-closed · session-in-nine · session-long-name · session-unreachable.
 /// 서버 응답은 가짜(`IssueSampleGateway` · `IssueSampleContextGateway`)라 렌더 fixture일 뿐이다.
 @MainActor
@@ -572,10 +668,6 @@ enum IssueSnapshot {
                 await settle(1.2)
             }
         }
-        func expandTab(_ on: Bool) async {
-            shell.tabExpandedForSnapshot = on
-            await settle(0.4)
-        }
 
         // 프로젝트 목록 (M1)
         await world()
@@ -590,12 +682,9 @@ enum IssueSnapshot {
         shoot("projects-ask")
         PanelRowSnapshot.askingNames = []
 
-        // 이슈 목록 (M3): 프로젝트 · 탭 펼침 · Ungrouped · Done today
+        // 이슈 목록 (M3): 프로젝트 · Ungrouped · Done today
         await list(.project(IssueSnapshotData.taskforce))
         shoot("list-project")
-        await expandTab(true)
-        shoot("list-project-tab-open")
-        await expandTab(false)
         if let first = shell.issueList(.project(IssueSnapshotData.taskforce))?.groups.first?.rows.first {
             PanelRowSnapshot.askingNames = [first.accessibilityLabel]
             await list(.project(IssueSnapshotData.taskforce))
@@ -612,9 +701,6 @@ enum IssueSnapshot {
         // 이슈 상세 (M4) + 상태들
         await detail(139)
         shoot("detail")
-        await expandTab(true)
-        shoot("detail-tab-open")
-        await expandTab(false)
         if let session = shell.sessions(of: IssueSnapshotData.issue(139)).first {
             PanelRowSnapshot.askingNames = [session.rowAccessibilityName]
             await detail(139)
@@ -682,31 +768,17 @@ enum IssueSnapshot {
         await detail(139, session: 1)
         shoot("session-long-name")
 
-        // 많은 경우: 탭 여섯 + More, More 메뉴, 긴 제목
+        // 많은 경우: 이슈 상세의 Sessions 목록이 길어진다 (세션은 이 목록 한 곳에서만 연다)
         await world(sessions: .nine)
         await detail(139)
         shoot("detail-nine")
         await list(.project(IssueSnapshotData.taskforce))
         shoot("list-nine")
-        showMore(edge)
-        await settle(0.5)
-        shoot("menu-more")
-        edge.menu.dismiss()
 
-        // 세션이 아주 많은 경우: 이슈 상세 · More 메뉴가 화면 높이에서 스크롤 (키보드로 짚은 줄을 따라간다)
+        // 세션이 아주 많은 경우: 이슈 상세가 화면 높이에서 스크롤
         await world(sessions: .many)
         await detail(139)
         shoot("detail-many")
-        await list(.project(IssueSnapshotData.taskforce))
-        showMore(edge)
-        await settle(0.5)
-        shoot("menu-more-many")
-        if let model = edge.menu.model {
-            for _ in 0..<60 { model.move(1) }
-            await settle(0.5)
-            shoot("menu-more-many-last")
-        }
-        edge.menu.dismiss()
 
         // 긴 제목 · 많은 이슈 · 많은 프로젝트
         let many = IssueSnapshotData.seeds + IssueSnapshotData.longTitles
@@ -757,26 +829,12 @@ enum IssueSnapshot {
         return { CGWarpMouseCursorPosition(CGPoint(x: original.x, y: height - original.y)) }
     }
 
-    /// More 항목을 눌렀을 때의 메뉴를 탭 More 자리에 연다 (창 위치는 포인터가 아니라 탭에서 계산한다)
-    private static func showMore(_ edge: EdgeShellController) {
-        let shell = edge.shell
-        let plan = shell.tabPlan
-        guard !plan.hidden.isEmpty, edge.panel.panel.isVisible else { return }
-        let items = plan.hidden.map { session in
-            ContextMenuItem(id: session.id.uuidString, label: session.name, detail: session.line, checked: session.id == shell.sessionPanelID)
-        }
-        let frame = edge.panel.panel.frame
-        // 접힌 탭 몸통: 위 40, 칸 20 (패널 창의 왼쪽 끝에서 12 떨어진 몸통)
-        let index = CGFloat(plan.shown.count)
-        let row = CGRect(x: frame.minX + 12, y: frame.maxY - SessionTabMetrics.top - 6 - (index + 1) * 20, width: 24, height: 20)
-        edge.menu.present(model: ContextMenuModel(items: items), label: "More sessions", row: row, pointerX: row.midX, over: edge.panel.panel) {}
-    }
-
     /// 보이는 창(레일 · 이슈 패널 · 세션 패널 · 메뉴)을 화면 자리대로, 데스크톱 견본 위에 그린다
     static func compose(_ edge: EdgeShellController, to url: URL) {
         var windows: [NSWindow] = [edge.panel.panel, edge.rail.panel].filter(\.isVisible)
         if let session = edge.sessionPanel?.panel, session.isVisible { windows.append(session) }
         if let menu = edge.menu.window, menu.isVisible { windows.append(menu) }
+        if let card = edge.rail.moreCard.window, card.isVisible { windows.append(card) }
         guard let first = windows.first else { return }
         let margin: CGFloat = 24
         let bounds = windows.map(\.frame).reduce(first.frame) { $0.union($1) }

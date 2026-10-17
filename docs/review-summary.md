@@ -1,7 +1,7 @@
 # Review · 복귀 요약 · 제안 서버 (0.2.0 C3) — 결정 기록과 위치
 
 2026-10-12 · 구현 계획 C3 · 근거: 런타임 계약 1장(복귀 요약 = 기존 이벤트 계산) · 6장(`pending_decisions`) · 8장(`suggestions`) · 12장 상수, 아키텍처 I04 · I13 · I14 · ARCH06/07/25, 개발 계획 A08 · A09 · A16 · A39 · A40, 디자인 D-12(ReturnSummary) · D-8(Receipts 틀은 Mac 몫).
-**gate 둘 모두 기본 꺼짐: `REVIEW_V2_ENABLED`는 새 경로 여섯 개 전부, `RETURN_SUMMARY_ENABLED`는 복귀 요약 세 경로만 연다(둘 중 하나로 복귀 요약이 열리고 Review · 제안은 `REVIEW_V2_ENABLED`만 본다, JSON 계약 "공통" 표). 꺼진 경로는 404(인증 · DB 호출 없음, 새 쓰기 0), 기존 API · 쓰기 · 실행 의미는 그대로다. 운영 DB 적용 전.** 이 문서는 "무엇을 만들었고, 무엇을 일부러 안 만들었고, 어디 있는가"만 적는다. 일반 규칙은 [FEATURE_MAP.md](FEATURE_MAP.md), 코디네이터는 [coordinator.md](coordinator.md).
+**gate 둘 모두 기본 꺼짐: `REVIEW_V2_ENABLED`는 새 경로 여섯 개 전부와 결정만 읽기 경로(R-dec, 1-1절), `RETURN_SUMMARY_ENABLED`는 복귀 요약 세 경로만 연다(둘 중 하나로 복귀 요약이 열리고 Review · 제안은 `REVIEW_V2_ENABLED`만 본다, JSON 계약 "공통" 표). 꺼진 경로는 404(인증 · DB 호출 없음, 새 쓰기 0), 기존 API · 쓰기 · 실행 의미는 그대로다. 운영 DB 적용 전.** 이 문서는 "무엇을 만들었고, 무엇을 일부러 안 만들었고, 어디 있는가"만 적는다. 일반 규칙은 [FEATURE_MAP.md](FEATURE_MAP.md), 코디네이터는 [coordinator.md](coordinator.md).
 
 ## 1. 한눈에
 
@@ -13,8 +13,8 @@
 | 복귀 요약 읽기 · 계산(순수) · Clear · 기준점 확정 | `src/lib/review/return-summary.ts` · `cursor.ts` · `init-token.ts` |
 | Review (결정 대기 + 열린 제안) | `src/lib/review/review.ts` · `time-zone.ts` · `day.ts` · `dto.ts` · `review.config.ts` |
 | API 처리 (인증 · gate · 오류 매핑) | `src/lib/api/review.ts` · zod `src/lib/api/contract.ts` 끝(C3 절) |
-| route | `src/app/api/v2/{review,return-summary,return-summary/clear,return-summary/baseline,suggestions/[id]/snooze,suggestions/[id]/dismiss}/route.ts` |
-| gate | `src/lib/flags.ts` `REVIEW_V2_ENABLED`(여섯 경로) · `RETURN_SUMMARY_ENABLED`(복귀 요약 세 경로만) · `returnSummaryEnabled()` |
+| route | `src/app/api/v2/{review,review/decisions,return-summary,return-summary/clear,return-summary/baseline,suggestions/[id]/snooze,suggestions/[id]/dismiss}/route.ts` (`review/decisions` = 결정만 읽기, OA R-dec, 1-1절) |
+| gate | `src/lib/flags.ts` `REVIEW_V2_ENABLED`(여섯 경로 + 결정만 읽기) · `RETURN_SUMMARY_ENABLED`(복귀 요약 세 경로만) · `returnSummaryEnabled()` |
 | 바뀜 규칙 한 곳 | `src/lib/actions/changed.ts` (`changesAfterSeen`은 `changedSinceSeen`과 같은 뜻) |
 | 에이전트 입력 읽기 (질문 셋 · 결과 준비 · 경로 충돌, OA D4b-s) | `supabase/migrations/20261124000000_review_agent_inputs.sql`(읽기 전용 SQL 함수 `review_agent_inputs` 하나 — 반환은 입력 배열 **scalar `jsonb` 하나**라서 PostgREST `db-max-rows`(행 수 상한)에 잘리지 않는다) · `src/lib/coordinator/pending.ts`(종류 · 항목 열쇠 · ref · 계산) · gate `openAgentAdapters()`(`src/lib/agents/registry.ts`) |
 | 경로 충돌 해소 route (D4b-s) | `src/app/api/v2/path-conflicts/[id]/resolve/route.ts` · `src/lib/api/path-conflicts.ts` → D3c-2 `resolve_path_conflict` |
@@ -107,6 +107,7 @@
 | Review · 제안 · 시간대 읽기(P2-B) | `tests/review/review.test.ts` · `tests/review/time-zone.test.ts` |
 | 복귀 요약 · Clear · 완전성 · 권한 경계 (A40 · ARCH06/07) | `tests/review/return-summary.test.ts` · `src/lib/review/*.test.ts` |
 | API 처리 · 쿠키 CSRF · gate | `src/lib/api/review.test.ts` · `src/app/api/v2/review/csrf.test.ts` |
+| 결정만 읽기 (OA R-dec): `loadReview`의 결정 쪽과 바이트 동일 · 부른 rpc · 못 읽음 · 빈 사용자 · 상한 없음 · C3 `run_input` 포함 · Taskforce 행 쓰기 0 | `tests/review/review-decisions.test.ts`(PGlite, 쓰기 0은 `loadReview`와의 대조 포함) · `tests/pg/review-decisions.test.ts`(실제 Postgres, 로더가 쓰는 연결 기준: 트랜잭션 id 미배정 · `pg_stat_xact_user_tables` 증감 0 · `begin read only` · 제안 잠금을 기다리지 않음) · `tests/review/review-decisions-contract.test.ts`(`REVIEW_DECISIONS_JSON`) · `gates.test.ts` · `csrf.test.ts` |
 | v1 동결 | `src/lib/api/contract-v1-freeze.test.ts` (지문 그대로) |
 
 # JSON 계약 (Mac이 읽는다)
@@ -116,7 +117,7 @@
 - 모든 경로는 `/api/v2/…`, 인증은 `Authorization: Bearer <Supabase access token>` 또는 웹 쿠키(쿠키로 인증하는 **POST**는 같은 출처만 — 아니면 401). 앱은 Bearer.
 - **gate 둘**(서버 env, 모두 기본 꺼짐, 정확히 `"true"`만 켠다 — `TRUE` · `1` · 앞뒤 공백은 꺼짐):
   - `RETURN_SUMMARY_ENABLED`는 **복귀 요약 세 경로만** 연다: `GET /api/v2/return-summary` · `POST …/clear` · `POST …/baseline`.
-  - `REVIEW_V2_ENABLED`는 **여섯 경로 전부**(위 셋 + `GET /api/v2/review` + 제안 `snooze` · `dismiss`; Review GET이 제안 생산 · 노출 표시를 한다)를 연다. 상위 집합이다.
+  - `REVIEW_V2_ENABLED`는 **여섯 경로 전부**(위 셋 + `GET /api/v2/review` + 제안 `snooze` · `dismiss`; Review GET이 제안 생산 · 노출 표시를 한다)를 연다. 상위 집합이다. 결정만 읽기 `GET /api/v2/review/decisions`(Taskforce 행 쓰기 0, 1-1절)도 이 gate다 — `RETURN_SUMMARY_ENABLED`는 이 경로를 열지 못한다.
   - 복귀 요약 세 경로는 **둘 중 하나라도 켜져 있으면** 열린다. Review · 제안 세 경로는 `REVIEW_V2_ENABLED`만 본다 — `RETURN_SUMMARY_ENABLED`만 켜면 Review · 제안은 계속 404이고 제안 생산 · 노출 · snooze · dismiss는 0이다.
   - | REVIEW_V2 | RETURN_SUMMARY | 복귀 요약 3경로 | Review GET · snooze · dismiss |
     |---|---|---|---|
@@ -129,7 +130,7 @@
   - 경로 충돌 해소 route(아래 3-2)는 `REVIEW_V2_ENABLED` ∧ `openAgentAdapters()`가 비지 않음일 때만 열린다(Review가 충돌을 보이는 조건과 같다). `RETURN_SUMMARY_ENABLED`는 이 route를 열지 못한다.
 - 오류 본문은 항상 `{"error":{"code","message"}}` (code ∈ 기존 `apiErrorCodeSchema`: `unauthorized` 401 · `invalid_request` 400 · `not_found` 404 · `conflict` 409 · `internal_error` 500). 새 오류 코드는 없다. `message`는 한국어 진단문이라 화면에 그대로 쓰지 않는다. 오류 본문에는 요청 값이 없다.
 - 시각은 두 종류다: **마이크로초 UTC 글자** `2026-10-12T00:00:00.123456Z`(`since` · 변화 `at` · 커서 · `cleared_through`)는 **Date로 바꿔서 서버에 돌려주지 않는다**(커서는 불투명 글자 그대로). 나머지(`generated_at` · `created_at` · `shown_at` · `snooze_until`)는 `toISOString()` 모양(밀리초) ISO 8601.
-- GET 응답은 `Cache-Control: no-store`. **`GET /api/v2/return-summary`는 아무것도 쓰지 않는다. `GET /api/v2/review`는 멱등 쓰기를 한다**(제안 생산 · 노출 표시, 아래 1절) — Action · run · Claim은 만들지 않는다.
+- GET 응답은 `Cache-Control: no-store`. **`GET /api/v2/return-summary`는 아무것도 쓰지 않는다. `GET /api/v2/review`는 멱등 쓰기를 한다**(제안 생산 · 노출 표시, 아래 1절) — Action · run · Claim은 만들지 않는다. 결정만 읽기 `GET /api/v2/review/decisions`는 Taskforce 행을 쓰지 않는다(1-1절; 인증 계층의 세션 갱신은 모든 경로가 같다).
 - **숫자를 내리지 않는다.** 개수 · 합계 필드가 없다. 앱도 세지 않는다(디자인 D-12).
 - 서버는 문구를 만들지 않는다. 아래 "토큰" 표의 토큰에서 앱이 문구를 만든다.
 
@@ -163,7 +164,7 @@
   - `result_ready`: `result: { session_id | null, reviewed_turn_seq, last_turn_seq, changed_at }`. 턴이 `idle`로 끝나고 검토하지 않은 산출물이 있으면 **run마다 하나**(턴이 더해지면 같은 `id`에 version만 바뀐다). `changed_at` = 그 산출물 중 가장 늦은 생성 시각. 사라지는 때: 이슈 Done · 세션 Stop(run이 끝남) · Action이 닫힘 · 다음 턴이 진행 중 · E1c가 `reviewed_turn_seq`를 올림. **"Review result" · Later 행동은 E1c 몫이라 이 서버에는 없다.**
   - `path_conflict`: `conflict: { lease_id, conflict_version, holder_action_id, holder_run_id, later_run_id, released, stopped }`. 묶음 · 항목의 `action_id` · `run_id`는 **늦게 쓴(멈춘) run** 쪽이고 holder는 ref에 있다. 해소는 **`POST /api/v2/path-conflicts/{conflict.lease_id}/resolve { keep, conflict_version }`**(아래 3-2). 같은 lease에 새 충돌이 생기면 `conflict_version`이 올라 같은 `id`에 다른 `version`이 된다.
   - 응답에는 **글이 없다**: 질문 글 · 헤더는 `agent_tasks.pending_question`(카드는 그 값이 있을 때만), 경로는 `agent_path_leases.rel_path`, 이슈 번호는 `actions.number`를 앱이 RLS로 읽는다.
-  - ⌥Space가 여는 "가장 최근 결정"은 `decisions` 항목 중 `created_at`이 가장 늦은 것이다(앱의 표시 규칙이고 순위 계산이 아니다).
+  - ⌥Space · ⌘1은 앱이 그리는 종류의 `decisions` 중 서버 순서 첫 항목(가장 오래 기다린 요청)을 연다. 요청이 없으면 ⌥Space는 마지막 화면, ⌘1은 빈 대화를 연다(앱은 순서를 다시 매기지 않는다. 계약 v3 5.4).
 - 에이전트 입력 함수의 반환은 배열 하나(`[]`이면 입력 없음)다. 개수 상한이 없고 PostgREST `db-max-rows`에 잘리지 않으며, 배열이 아닌 값(null 포함)은 비었다고 읽지 않고 실패로 읽는다. 에이전트 입력 중 하나라도 읽지 못하거나 모양이 틀리면 **결정 전체**가 `unavailable`이다(`sources.decisions: "unavailable"` · `decisions: null` · `complete:false` · `empty:false`) — C3 결정만 보이고 에이전트 결정이 빠진 목록을 내지 않는다.
 - `version`(묶음 · 항목)은 **처리되면 바뀌는 식별**이다. 다른 기기에서 처리되면 다음 조회에서 항목이 사라지거나(gone) version이 달라진다(stale). **옛 version으로 행동하지 않는다.** 항목 `id`는 안정 id.
 - `suggestions` = 지금 보이는 열린 제안(`state`는 늘 `open`): 긴급(상한 밖) + 이미 노출한 비긴급 + 오늘 처음 노출된 비긴급(사용자 현지 날짜마다 **한 묶음 3개**). `offered_on`(YYYY-MM-DD)이 오늘이면 오늘 새로 나온 것. 긴급은 `offered_on: null`. 순서: 긴급 먼저 → 오래된 순.
@@ -171,6 +172,34 @@
 - 완전성: `sources` 셋(`decisions` · `suggestions` · `time_zone`)이 모두 `ok`일 때만 `complete`. **`empty`가 true일 때만** "아무것도 없음"을 보여도 된다. 한 쪽이 `unavailable`이면 그 목록은 `null`이거나 **일부**일 수 있고(예: 이 서버가 모르는 종류의 제안이 있어 `suggestions`가 `unavailable`) 비어 있는 것이 아니라 **모르는 것**이다(Try again 상태로). `needs_time_zone`은 `unavailable`이 아니다: 저장된 시간대가 없다는 사실을 완전하게 읽은 것이다.
 - **제안을 보는 것은 Action · run · Claim을 만들지 않는다. 그러나 이 GET은 읽기만 하지 않는다**: 제안 생산(지금 있는 사실에서 `suggestions` 행을 만든다, 멱등) · 노출 표시(`shown_at` · **그날의 비긴급 묶음 3개를 처음 정해 소비한다**) · snooze가 끝난 제안을 다시 연다 · 증거가 생긴 제안(기한이 바뀜 · Action이 닫힘 · run이 끝남)을 `expired`로 닫는다. 같은 하루 안에서 몇 번을 불러도 같은 묶음이다. 두 기기가 동시에 불러도 묶음은 하나다. GET이라 쿠키 CSRF 검사 대상이 아니다(앱은 Bearer): 다른 사이트가 쿠키 세션의 GET을 일으켜 그날 묶음을 앞당겨 소비시킬 수는 있다(응답은 읽지 못한다) — 열린 판단 D-4.
 - 401 로그인 필요 · 404 gate 꺼짐 · 500 `internal_error`(전체 실패; 일부 실패는 200 + `unavailable`).
+
+### 1-1. `GET /api/v2/review/decisions` — 결정만 (OA R-dec)
+
+`GET /api/v2/review`의 `decisions`만 **Taskforce 데이터(제안 · 읽음 · 지표 등)를 쓰지 않고** 읽는다. Taskforce 대화는 결정만 그리는데(제안은 그리지 않는다), 1절의 GET은 열 때마다 제안을 만들고 그날의 비긴급 묶음을 소비하고 `shown_at`을 찍었다 — 보지 않은 제안이 "노출됨"이 되고 나중에 제안 카드가 생겨도 그날 묶음이 이미 비어 있게 된다(U3-21). 그 입구를 읽기 전용으로 따로 둔다. gate는 `REVIEW_V2_ENABLED` 하나(에이전트 입력 gate는 1절과 같은 `openAgentAdapters()`이고 404 조건이 아니다), 인증은 Bearer · 쿠키 둘 다다.
+
+200 `ReviewDecisionsResponse` — 최상위 키 정확히 다섯, `sources`는 `decisions` 하나 (strict; 전체 fixture는 `tests/review/review-decisions-contract.test.ts`의 `REVIEW_DECISIONS_JSON`):
+
+```json
+{
+  "generated_at": "2026-10-15T02:00:00.000Z",
+  "complete": true,
+  "empty": false,
+  "sources": { "decisions": "ok" },
+  "decisions": [
+    { "key": "<action_id>:agent_approval", "action_id": "<guid>", "kind": "agent_approval", "urgent": true, "version": "0123456789abcdef", "created_at": "2026-10-15T01:00:00.000Z",
+      "items": [ { "id": "agent_approval:<task_id>", "kind": "agent_approval", "action_id": "<guid>", "run_id": "<uuid>", "step_id": null, "question_id": null,
+                   "version": "question:<task_id>:toolu-req-1", "urgent": true, "urgent_reason": "due_window", "created_at": "2026-10-15T01:00:00.000Z",
+                   "agent": { "task_id": "<guid>", "session_id": "<guid>", "provider_request_id": "toolu-req-1", "adapter": "agent:codex", "bridge_id": "<guid>" } } ] }
+  ]
+}
+```
+
+- `decisions`는 1절과 **같은 계산**이다: 같은 두 함수(`loadPendingDecisions` → `pendingGroupDto`)를 같은 인자(사용자 · `now` · adapter 목록)로 부른다. 순서(긴급 → 오래 기다린 순 → 종류 순 → 업무 id) · `key` · `version` · `created_at` · 에이전트 ref가 1절과 바이트 단위로 같고, 개수 상한이 없으며, 앱은 다시 정렬하지 않는다. 묶음 · 항목 모양과 `kind`는 1절 그대로다(새 종류 · 새 ref 없음).
+- 완전성: 이 응답의 원천은 `decisions` 하나라 `complete` = `sources.decisions`가 `ok`, `empty` = `complete`이면서 결정 0. 결정 원천을 읽지 못하면(함수 실패 · 모양 틀림) `sources.decisions: "unavailable"` · `decisions: null` · `complete: false` · `empty: false` — 1절의 결정 쪽과 같은 규칙이다(비었다고 하지 않는다). 읽지 않은 원천(`suggestions` · `time_zone`)을 상태로 적으면 거짓이라 **키 자체가 없다**: `suggestions` · `suggestion_batch` · `sources.suggestions` · `sources.time_zone`이 섞인 응답은 스키마가 거절한다. 1절의 `complete`는 제안 원천이 `unavailable`이면 false지만, 여기서는 결정만으로 판단한다.
+- **Taskforce 행 쓰기 0 · 잠금 0 · CSRF 우려 없음**: 이 경로는 Taskforce 행(`suggestions` · `return_summary_*` · `metric_events` 등)을 쓰지 않는다. 제안 생산 · 노출 · 시간대 읽기 · 제안 advisory lock을 부르지 않는다(부르는 것은 읽기 전용 SQL 함수 `coordinator_pending_inputs`와 adapter가 있을 때 `review_agent_inputs`뿐). 쿠키 인증 GET은 CSRF 검사 대상이 아니지만 Taskforce 행을 쓰지 않으므로 다른 사이트가 부르게 해도 그날 묶음 같은 Taskforce 상태가 바뀌지 않는다(1절의 D-4 우려가 없다). 증명은 **로더가 쓰는 DB 연결**에서 트랜잭션 id가 배정되지 않는 것으로 한다(`tests/pg/review-decisions.test.ts`).
+- **이 경로만의 보장이 아닌 것 (공유 인증 계층)**: ① 만료된 **웹 쿠키**로 부르면 공유 인증(`authenticateRequest` → Supabase 세션 갱신)이 세션을 갱신하고 쿠키를 다시 쓸 수 있다 — 모든 인증 경로가 같다(앱은 Bearer라 갱신하지 않는다). 위 증명은 이 갱신을 보지 않는다. ② 공유 proxy(`src/proxy.ts` → `updateSession`)는 gate보다 **먼저** 세션을 확인한다 — gate가 꺼져 있어도 이 route의 handler는 인증 · DB를 부르지 않지만(시험이 본다), 요청 전체에서 인증이 0인 것은 아니다. 두 가지는 이 WP에서 고치지 않았다(후속 항목: 노트).
+- 401 로그인 필요 · 404 gate 꺼짐(옛 서버에도 이 경로가 없어 404다 — 앱은 "이 서버엔 아직 없다"로 읽고, 쓰기를 하는 `GET /api/v2/review`로 되돌아가 읽지 않는다) · 500 `internal_error`(결정 원천을 못 읽은 것은 200 + `unavailable`). 로그는 사건 이름 + 오류 이름만이다(`review_decisions_failed` · `review_decisions_pending_failed`).
+- 이 경로만 쓰면 제안은 생산 · 노출되지 않는다(1절의 GET만 제안을 만든다). 제안 카드는 C3 후속이고, 그것이 `GET /api/v2/review`를 다시 부를 때까지 제안 행이 생기지 않는다.
 
 ### 2. `GET /api/v2/return-summary` — 복귀 요약
 
@@ -284,3 +313,4 @@
 9. (D4b-s) 모르는 `decisions[].kind`는 건너뛰되(`.unknown`) `complete`를 true로 믿지 않는다. `decisions`의 순서를 다시 매기지 않는다(서버 순서가 Needs you 순서).
 10. (D4b-s) 에이전트 질문 · 해소의 409(`question_stale` · `conflict`)를 자동 재시도하지 않는다 — Review를 다시 읽는다. 비밀값 항목(`agent_secret_question`)의 답을 서버로 보내지 않는다(409 `secret_requires_local`; 값은 서버로 오지 않는다). 그 Mac의 표시는 값 없는 `POST /api/v1/bridge/answer-local { bridge_id, agent_task_id, request_digest }`뿐이다(OA F2).
 11. (D4b-s) 응답에 없는 글(질문 · 경로 · 파일 이름)을 서버에 요청하지 않는다 — 앱이 RLS로 읽는다. 결과 준비 항목에서 `reviewed_turn_seq`를 올리는 행동은 E1c 전에는 없다.
+12. (R-dec) 결정만 필요하면 `GET /api/v2/review`를 부르지 않는다 — 그 GET은 그날 제안 묶음을 소비하고 `shown_at`을 찍는다. 결정만 읽기가 404이면(옛 서버) 쓰기 GET으로 되돌아가 읽지 않는다.

@@ -2,9 +2,9 @@ import SwiftUI
 import TaskforceKit
 
 /// ContextChip (0.2.0 디자인 시스템 Atoms): 다음 Assistant 메시지가 실을 맥락 하나 (이슈 · 세션 · 파일).
-/// - **Auto**: Taskforce가 지금 있는 곳에서 고른 것. 면 없음 + 1pt 점선 `border/control` + `text/secondary`
+/// - **Auto**: Taskforce가 지금 있는 곳에서 고른 것. 옅은 면(`bg/selected`) 위의 조용한 글(`text/secondary`), 테두리 없음 (OA U3-47, DS "Never a dashed outline")
 /// - **Added**: 사용자가 고른 것. `bg/elevated` + `text/primary`
-/// - 약 22pt (DS bundle.css: 안쪽 3/4/3/6 · 줄 높이 16, auto는 테두리 1pt를 안쪽에서 덜어 같은 22), 모서리 6, 간격 4. 이름은 `footnote` 한 줄이고 **가운데를 줄인다**
+/// - 약 22pt (DS bundle.css: 안쪽 3/4/3/6 · 줄 높이 16 — 둘이 같다), 모서리 6, 간격 4. 대비 높이기에서는 둘 다 1pt `border/control`. 이름은 `footnote` 한 줄이고 **가운데를 줄인다**
 ///   (`#139 …` 번호와 끝이 함께 보인다). 아이콘 · ×는 줄지 않는다
 /// - 칩은 `bg/field` 트레이 위에서만 (맨 패널 위에서는 added의 면이 사라진다). 개수를 보이지 않는다
 public struct ContextChip: View {
@@ -17,6 +17,24 @@ public struct ContextChip: View {
 
     nonisolated public static let iconSize: CGFloat = 12
     nonisolated public static let radius: CGFloat = 6
+
+    /// 칩의 모양 값 (OA U3-47, DS ContextChip): auto는 `bg/selected` 면 위의 `text/secondary`, 테두리 없음. added는 `bg/elevated` 위의 `text/primary`.
+    /// 안쪽 3/4/3/6은 둘이 같아 22pt다. 대비 높이기에서만 둘 다 1pt `border/control`
+    public struct Look: Equatable, Sendable {
+        public enum Fill: Sendable { case selected, elevated }
+        public let fill: Fill
+        public let quietText: Bool
+        public let borderWidth: CGFloat
+        /// 위 · 왼쪽 · 아래 · 오른쪽
+        public let insets: [CGFloat]
+
+        public static func of(origin: ChatAttachmentOrigin, increasedContrast: Bool) -> Look {
+            Look(
+                fill: origin == .auto ? .selected : .elevated, quietText: origin == .auto, borderWidth: increasedContrast ? 1 : 0,
+                insets: [3, 6, 3, TFSpace.xs]
+            )
+        }
+    }
 
     let label: String
     let origin: ChatAttachmentOrigin
@@ -40,8 +58,6 @@ public struct ContextChip: View {
         self.activationName = activationName
     }
 
-    private var isAuto: Bool { origin == .auto }
-
     /// auto 칩은 눌러서 더할 수 있나: 누르는 동작이 주어졌을 때만 (에이전트 대상)
     nonisolated public static func isActivatable(origin: ChatAttachmentOrigin, hasAction: Bool) -> Bool { origin == .auto && hasAction }
 
@@ -55,7 +71,8 @@ public struct ContextChip: View {
 
     public var body: some View {
         let shape = RoundedRectangle(cornerRadius: Self.radius, style: .continuous)
-        let secondary = isAuto ? TFColor.textSecondary : TFColor.textPrimary
+        let look = Look.of(origin: origin, increasedContrast: contrast == .increased)
+        let secondary = look.quietText ? TFColor.textSecondary : TFColor.textPrimary
         HStack(spacing: TFSpace.xs) {
             labelPart(secondary)
             if let onRemove {
@@ -63,14 +80,11 @@ public struct ContextChip: View {
                     .layoutPriority(1)
             }
         }
-        // auto는 점선 1pt가 안쪽 둘레를 쓴다: 안쪽 3/4/3/6에서 1씩 덜어 added와 같은 22pt
-        .padding(isAuto ? EdgeInsets(top: 2, leading: 5, bottom: 2, trailing: 3) : EdgeInsets(top: 3, leading: 6, bottom: 3, trailing: TFSpace.xs))
-        .background(isAuto ? Color.clear : TFColor.bgElevated, in: shape)
+        .padding(EdgeInsets(top: look.insets[0], leading: look.insets[1], bottom: look.insets[2], trailing: look.insets[3]))
+        .background(look.fill == .selected ? TFColor.bgSelected : TFColor.bgElevated, in: shape)
         .overlay {
-            if isAuto {
-                shape.strokeBorder(TFColor.borderControl, style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
-            } else if contrast == .increased {
-                shape.strokeBorder(TFColor.borderControl, lineWidth: 1)
+            if look.borderWidth > 0 {
+                shape.strokeBorder(TFColor.borderControl, lineWidth: look.borderWidth)
             }
         }
         .accessibilityElement(children: .contain)

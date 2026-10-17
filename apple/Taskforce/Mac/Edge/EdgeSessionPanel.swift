@@ -322,7 +322,7 @@ struct SessionPanelView: View {
     }
 }
 
-/// 세션 패널 창 (OA U2-46): `EdgeKeyPanel`과 같은 종류(borderless · nonactivating)의 두 번째 창. 탭이 붙은 이슈 패널의 왼쪽 40pt, 위를 이슈 패널과 맞춘다.
+/// 세션 패널 창 (OA U2-46): `EdgeKeyPanel`과 같은 종류(borderless · nonactivating)의 두 번째 창. 이슈 패널의 왼쪽 40pt(OA U3-45), 위를 이슈 패널과 맞춘다.
 /// 이슈 패널이 열려 있고 세션 패널이 열려 있을 때만 보이고, 높이는 내용에 맞춰 320–520이다
 @MainActor
 final class EdgeSessionPanelController {
@@ -331,7 +331,7 @@ final class EdgeSessionPanelController {
     let presentation = EdgeSessionPanelPresentation()
     private let hosting: NSHostingView<SessionPanelView>
     private var generation = 0
-    /// 이슈 패널 창의 자리 (탭 띠 포함). 세션 패널은 그 왼쪽에 놓인다
+    /// 이슈 패널 창의 자리. 세션 패널은 그 왼쪽에 놓인다
     var issuePanelFrame: () -> NSRect? = { nil }
 
     init(shell: EdgeShellModel, runtime: ChatRuntime) {
@@ -386,15 +386,15 @@ final class EdgeSessionPanelController {
         min(EdgePanelMetrics.maxHeight, max(EdgePanelMetrics.minHeight, presentation.contentHeight))
     }
 
-    /// 지금 자리: 이슈 패널(탭 띠 포함) 왼쪽 4pt (= 이슈 패널 본체에서 40pt), 위 맞춤
+    /// 지금 자리: 이슈 패널 왼쪽 40pt, 위 맞춤
     func targetFrame() -> NSRect? {
         guard let issue = issuePanelFrame() else { return nil }
         return Self.frame(issuePanel: issue, height: height())
     }
 
-    /// 순수한 자리 규칙: 이슈 패널 창(탭 띠 36 포함)의 왼쪽 가장자리에서 탭 폭 만큼 빼고 40 떨어진다 = 창 왼쪽에서 4
+    /// 순수한 자리 규칙: 이슈 패널의 왼쪽 가장자리에서 40 떨어진다 (지금 보이는 간격 그대로, OA U3-45)
     nonisolated static func frame(issuePanel: NSRect, height: CGFloat) -> NSRect {
-        let right = issuePanel.minX - (SessionTabMetrics.panelGap - SessionTabMetrics.expandedWidth)
+        let right = issuePanel.minX - SessionPanelMetrics.panelGap
         return NSRect(x: right - EdgePanelMetrics.width, y: issuePanel.maxY - height, width: EdgePanelMetrics.width, height: height)
     }
 

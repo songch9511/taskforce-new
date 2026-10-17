@@ -52,6 +52,7 @@ export function sqlAdmin(query: Query): SupabaseClient {
     const filters: Filter[] = [];
     let order: string[] = [];
     let limit: number | null = null;
+    let offset = 0;
     let single: "maybe" | "one" | null = null;
 
     const run = async () => {
@@ -63,7 +64,7 @@ export function sqlAdmin(query: Query): SupabaseClient {
       const where = () => (filters.length ? ` where ${filters.map((f) => f.sql(p)).join(" and ")}` : "");
       let sql: string;
       if (mode === "select") {
-        sql = `select ${columns} from public.${table}${where()}${order.length ? ` order by ${order.join(", ")}` : ""}${limit !== null ? ` limit ${limit}` : ""}`;
+        sql = `select ${columns} from public.${table}${where()}${order.length ? ` order by ${order.join(", ")}` : ""}${limit !== null ? ` limit ${limit}` : ""}${offset ? ` offset ${offset}` : ""}`;
       } else if (mode === "insert" || mode === "upsert") {
         const keys = [...new Set(rows.flatMap((r) => Object.keys(r)))];
         const tuples = rows.map((r) => `(${keys.map((k) => p(r[k] ?? null)).join(", ")})`).join(", ");
@@ -131,6 +132,8 @@ export function sqlAdmin(query: Query): SupabaseClient {
       },
       order: (c: string, options: { ascending?: boolean } = {}) => ((order = [...order, `${c} ${options.ascending === false ? "desc" : "asc"}`]), builder),
       limit: (n: number) => ((limit = n), builder),
+      // PostgREST range: from · to 모두 포함 (readAll이 1,000행씩 읽는다)
+      range: (first: number, last: number) => ((offset = first), (limit = last - first + 1), builder),
       maybeSingle: () => ((single = "maybe"), builder),
       single: () => ((single = "one"), builder),
       throwOnError: () => builder,

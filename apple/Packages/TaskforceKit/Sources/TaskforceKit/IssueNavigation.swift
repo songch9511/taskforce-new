@@ -24,15 +24,6 @@ public struct IssueNavigation: Equatable, Sendable {
         if case .detail(let id) = current { id } else { nil }
     }
 
-    /// SessionTab이 보는 범위: 열린 이슈 상세는 그 이슈, 프로젝트 · Ungrouped 목록은 그 목록. Projects · Done today에는 탭이 없다
-    public var tabScope: IssueScreen? {
-        switch current {
-        case .detail: current
-        case .list(.doneToday), .projects: nil
-        case .list: current
-        }
-    }
-
     /// ⌘2 · 레일 첫 칸: Projects 첫 화면
     public mutating func reset() {
         stack = [.projects]

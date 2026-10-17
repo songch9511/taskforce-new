@@ -79,6 +79,9 @@ enum FigmaColor {
         "bg/panel": ("#FFFFFFF7", "#2C2C2EF7"),
         "status/activity": ("#6A8CC7", "#6A8CC7"),
         "status/step-inactive": ("#8E8E93", "#8E8E93"),
+        // DS tokens.json `needs-you`(orange-300) · `done`(green-300), 두 모드가 같다 (OA U3 검토 1: 코드 상수에서 색 세트로)
+        "status/needs-you": ("#EBAA7E", "#EBAA7E"),
+        "status/done": ("#9CE73A", "#9CE73A"),
         "bezel/base": ("#000000", "#000000"),
         "bezel/ink": ("#FFFFFF", "#FFFFFF"),
         "bezel/ink-secondary": ("#9A9AA0", "#9A9AA0"),
@@ -229,6 +232,15 @@ struct ColorTokenTests {
     /// 카탈로그에 토큰이 아닌 색 세트가 남아 있지 않다
     @Test func catalogHasNoOrphanColorSets() {
         #expect(TokenCatalog.sourceColorSets() == Set(TFColor.Name.allCases.map(\.rawValue)))
+    }
+
+    /// 세션이 당신을 기다리는 링(needs-you)과 방금 끝난 링(done)은 DS 토큰의 색 세트다: orange-300 · green-300, 두 모드가 같다 (코드 상수가 아니다)
+    @Test func theRingTokensAreDesignSystemColorSetsInBothAppearances() throws {
+        let needsYou = try #require(TokenCatalog.resolve("status/needs-you"), "색 세트가 없다")
+        let done = try #require(TokenCatalog.resolve("status/done"), "색 세트가 없다")
+        #expect(needsYou.light == RGBA("#EBAA7E") && needsYou.dark == RGBA("#EBAA7E"), "orange-300")
+        #expect(done.light == RGBA("#9CE73A") && done.dark == RGBA("#9CE73A"), "green-300")
+        #expect(TFColor.Name.statusNeedsYou.rawValue == "status/needs-you" && TFColor.Name.statusDone.rawValue == "status/done")
     }
 
     /// 선택 면은 DS 값 그대로: 라이트 검정 7% · 다크 흰색 10% (청색 아님)
