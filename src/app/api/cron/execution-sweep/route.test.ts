@@ -188,3 +188,14 @@ it("U6 path sweep failure preserves the cron response and hides exception text",
   expect(console.error).toHaveBeenCalledWith(JSON.stringify({ event: "path_lease_sweep_failed" }));
   expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain("PRIVATE-PATH-TEXT");
 });
+
+// ─── OA F3: 만료한 lease 전 prepared 회수 결과도 bridge_sweep 로그 한 줄에 숫자로만 실린다 ───
+it("F3 bridge_sweep log line carries the reclaim counts as numbers only (no ids, no text)", async () => {
+  const swept = { unreachable: 1, expired_leases: 0, lease_busy: 1, reclaimed: 4, reclaim_busy: 2, redelivered: 3, errors: 0 };
+  vi.mocked(sweepBridge).mockResolvedValue(swept);
+  await cron();
+  const lines = vi.mocked(console.info).mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>).filter((line) => line.event === "bridge_sweep");
+  expect(lines).toEqual([{ event: "bridge_sweep", ...swept }]);
+  for (const [key, value] of Object.entries(lines[0])) if (key !== "event") expect(typeof value, key).toBe("number");
+  expect(Object.keys(lines[0])).toEqual(expect.arrayContaining(["reclaimed", "reclaim_busy", "lease_busy"]));
+});

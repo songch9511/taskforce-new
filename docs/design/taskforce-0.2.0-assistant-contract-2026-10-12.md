@@ -310,6 +310,15 @@ registry에 있고 연결이 없으면 `not_connected`(예: Codex를 아직 연�
 - **개인정보:** Mac 이름은 사용자 데이터다. 로그 · 지표 · 오류 문구 · AI 입력에 넣지 않고, 그 Mac을 폐기하거나 계정을 지우면 비운다. 식별(`device_ref` 해시 · `device_id` 난수)은 그대로이고 이름은 어떤 판정 · 조인에도 쓰지 않는다.
 - **3.2 만료 회수:** lease가 `delivery_expires_at` 지난 메시지를 `expired`로 회수할 때 `delivery_reason`을 쓰지 않는다(`expired` 상태가 이유를 대신한다). 한계(후속 F3): Mac이 꺼져 있는 동안 lease 전 `prepared` 명령은 `delivery_expires_at`이 지나도 DB에서 `dispatched/prepared` 그대로이고 표시는 `unreachable`이면 `queued`다. 표시만 `expired`로 바꾸면 Send again이 `not_eligible`이 되므로, F3이 만료한 lease 전 `prepared` 명령을 잠금 아래 `withdraw_bridge_command(…,'expired')` 경로로 회수하고 Send again과 잇는다.
 
+### 4.5.2 OA F3 정정 (2026-10-18)
+
+이 절은 OA F3 계약 5.1의 결정을 반영하며 4.5.1의 "한계(후속 F3)"와 아래에 지정한 기존 문구보다 우선한다. 구현은 [agent-gateway.md](../agent-gateway.md) 15장이다.
+
+- **3.2 만료 회수(한계 해소):** 만료 sweep(`conversation_expire_agent_messages`)은 계속 `queued` · `not_sent`만 본다. Mac이 꺼져 있는 동안 만료한 lease 전 `prepared` 명령은 1분 cron(`sweepBridge`)의 `expire_unleased_agent_messages`가 lease와 같은 조건 · 같은 잠금 순서(메시지 → 세션 → run → task → step → 명령) · 같은 쓰기 함수(`withdraw_bridge_command(…,'expired')`)로 회수한다. 회수하면 DB가 `expired`(이유 null)가 되므로 응답의 `delivery.state`가 다음 읽기부터 `expired`로 바뀌고 개별 · 일괄 Send again이 받는다. 읽기 모델은 시계를 보지 않는다 — 만료 ~ 다음 cron(최대 1분) 동안은 계속 `queued`다("보이는 것 = DB"). 회수한 세션은 kick하므로 만료된 메시지 뒤 메시지는 기다리지 않는다(3.2 보관 기한 항목).
+- **회수 대상:** message 명령만. 세션 · 연결 · 실행 gate와 무관하게 24시간이 지나면 이유보다 만료가 이긴다. answer 명령의 답 글 만료는 계속 lease 때만 거둔다.
+- **3.4 Done · 11.x 잠금 순서:** 질문이 있는 작업의 Done은 세션 · 원 메시지를 `FOR KEY SHARE NOWAIT`로 먼저 쥔다(작업 행 둘째 갱신의 FK 재확인이 그 둘을 기다리기 때문). 못 쥐면 Done 전체가 롤백되고 서버가 다시 한다. 질문이 없는 작업의 Done은 그대로 세션을 잠그지 않는다. 폐기도 같은 이유로 작업 고리에서 원 메시지를 먼저 쥔다.
+- **응답 · Swift:** 응답 모양 변경 0, Swift 변경 0. 오프라인 24시간 뒤 전달 줄이 `Queued` → `Expired`로 바뀌는 것은 다음 폴링이다.
+
 ## 5. 중단 (U7, 검토 F14)
 
 - 보내기 ↔ Stop 전환 = **이 대화에 묶인 세션**에 열린 `agent_tasks`(dispatched · accepted · running · awaiting_answer)가 있는가. `idle`은 열린 작업이 아니다(Stop 대신 보내기).

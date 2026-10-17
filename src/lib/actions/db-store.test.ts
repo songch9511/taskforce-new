@@ -50,7 +50,29 @@ describe.each(["write_action", "set_action_progress"] as const)("%s lock retry",
     }
   });
 
-  it.each([["55P03", 3], ["40001", 1], ["P0002", 1], ["XX000", 1]] as const)("propagates %s after %s calls", async (code, calls) => {
+  it("OA F3 retries a deadlock victim (40P01) after 50ms and 150ms too, mixed with 55P03, with unchanged arguments", async () => {
+    vi.useFakeTimers();
+    try {
+      const execute = vi.fn().mockRejectedValueOnce({ code: "40P01" }).mockRejectedValueOnce({ code: "55P03" }).mockResolvedValue({ data: true });
+      const rpc = vi.fn(() => ({ throwOnError: execute }));
+      const result = invoke({ rpc } as unknown as SupabaseClient).then((data) => ({ data }), (error: unknown) => ({ error }));
+      await vi.advanceTimersByTimeAsync(49);
+      expect(rpc).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(rpc).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(149);
+      expect(rpc).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await result).toEqual({ data: true });
+      expect(rpc).toHaveBeenCalledTimes(3);
+      expect(rpc.mock.calls[1]).toEqual(rpc.mock.calls[0]);
+      expect(rpc.mock.calls[2]).toEqual(rpc.mock.calls[0]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([["55P03", 3], ["40P01", 3], ["40001", 1], ["P0002", 1], ["XX000", 1]] as const)("propagates %s after %s calls", async (code, calls) => {
     const error = { code };
     const rpc = vi.fn(() => ({ throwOnError: vi.fn().mockRejectedValue(error) }));
     await expect(invoke({ rpc } as unknown as SupabaseClient)).rejects.toBe(error);
