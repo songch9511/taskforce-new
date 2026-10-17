@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
+import ts from "typescript";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
@@ -164,6 +165,36 @@ describe("U3 로그", () => {
   });
 });
 
+/**
+ * 소스 글자가 `<무엇>.rpc(<name 글자 상수>, …)` 호출을 담는가 (TypeScript AST). 호출 대상이 `.rpc`(또는 `["rpc"]`)이고 첫 인자가 글자 상수 · 치환 없는 템플릿이며 값이 name이면 true.
+ * 주석 · 공백 · 줄바꿈 · 괄호 · `as` 형 변환은 AST에서 사라지거나 벗겨진다. 이름만 적은 주석 · 문자열 · 다른 함수 호출은 호출이 아니다 (상수 변수를 거친 호출은 보지 못한다).
+ */
+function callsRpc(source: string, name: string, fileName = "source.ts"): boolean {
+  const file = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, fileName.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+  const unwrap = (expression: ts.Expression): ts.Expression =>
+    ts.isParenthesizedExpression(expression) || ts.isAsExpression(expression) || ts.isSatisfiesExpression(expression) || ts.isNonNullExpression(expression) || ts.isTypeAssertionExpression(expression)
+      ? unwrap(expression.expression)
+      : expression;
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    if (ts.isCallExpression(node)) {
+      const callee = unwrap(node.expression);
+      const viaRpc =
+        (ts.isPropertyAccessExpression(callee) && callee.name.text === "rpc") ||
+        (ts.isElementAccessExpression(callee) && ts.isStringLiteralLike(callee.argumentExpression) && callee.argumentExpression.text === "rpc");
+      const first = node.arguments[0] ? unwrap(node.arguments[0]) : undefined;
+      if (viaRpc && first && ts.isStringLiteralLike(first) && first.text === name) {
+        found = true;
+        return;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return found;
+}
+
 describe("U5 단일 입구 가드 (정적 스캔)", () => {
   const root = path.resolve(import.meta.dirname, "..", "..");
   const production = (dir: string): string[] => readdirSync(dir).flatMap((name) => {
@@ -173,10 +204,42 @@ describe("U5 단일 입구 가드 (정적 스캔)", () => {
   });
   const files = production(root);
 
+  // 규칙은 "부르는 곳이 하나"다: TypeScript AST에서 `<무엇>.rpc(<이 이름의 글자 상수>, …)` 호출만 센다. 주석 · 공백 · 줄바꿈은 AST에 없고, 이름만 적은 곳(주석 · 문자열 · 지표 등록부 src/lib/metrics/agents.ts)은 호출이 아니다
+  const LOCAL_ANSWER = "answer_agent_question_locally";
+
   it("생산 코드에서 answer_agent_question_locally를 부르는 곳은 src/lib/bridge/answer-local.ts 하나다", () => {
     expect(files.length).toBeGreaterThan(100);
-    const hits = files.filter((file) => readFileSync(file, "utf8").includes("answer_agent_question_locally")).map((file) => path.relative(root, file));
+    const hits = files.filter((file) => callsRpc(readFileSync(file, "utf8"), LOCAL_ANSWER, file)).map((file) => path.relative(root, file));
     expect(hits).toEqual(["lib/bridge/answer-local.ts"]);
+  });
+
+  it("가드 자체: .rpc(이름 글자 상수) 호출은 모양이 달라도 잡고(주석 · 줄바꿈 · 템플릿 · 옵셔널 체인 · 중첩 · 형 변환), 호출이 아닌 언급은 잡지 않는다", () => {
+    const calls = [
+      'admin.rpc("answer_agent_question_locally", { p_user_id: user })',
+      'admin.rpc(/* 설명 */ "answer_agent_question_locally", args)',
+      'admin.rpc( // 설명\n  "answer_agent_question_locally", args)',
+      "client\n  .rpc(\n    'answer_agent_question_locally',\n    {},\n  )",
+      "admin.rpc(`answer_agent_question_locally`)",
+      'admin.rpc<Result>("answer_agent_question_locally")',
+      'admin?.rpc("answer_agent_question_locally", args)',
+      'await retryOnConflict(async () => admin.rpc("answer_agent_question_locally", args))',
+      'admin["rpc"]("answer_agent_question_locally")',
+      'admin.rpc(("answer_agent_question_locally" as const), args)',
+    ];
+    for (const source of calls) expect(callsRpc(source, LOCAL_ANSWER), source).toBe(true);
+    // TSX 파일의 호출도 잡는다
+    expect(callsRpc('export const X = () => <button onClick={() => admin.rpc("answer_agent_question_locally")} />;', LOCAL_ANSWER, "x.tsx")).toBe(true);
+    const mentions = [
+      'const sources = [sql("answer_agent_question_locally")];',
+      '// admin.rpc("answer_agent_question_locally", args)',
+      '/* admin.rpc("answer_agent_question_locally") */ const x = 1;',
+      "const text = 'admin.rpc(\"answer_agent_question_locally\")';",
+      'admin.rpc("answer_agent_question_recorded", { note: "answer_agent_question_locally" })',
+      'admin.rpc("other_function", {})\nconst name = "answer_agent_question_locally"',
+      'logger.info("answer_agent_question_locally")',
+      "const tpl = `${admin.rpc(\"other\")} answer_agent_question_locally`;",
+    ];
+    for (const source of mentions) expect(callsRpc(source, LOCAL_ANSWER), source).toBe(false);
   });
 
   it("answeredLocally: true를 answerAgentQuestion에 넘기는 곳이 없다 (questions.ts 'server proof' 규칙을 고정)", () => {

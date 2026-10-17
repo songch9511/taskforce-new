@@ -251,8 +251,8 @@ export function kstWeek(at: string): string {
 
 export type Activity = { userId: string; at: string };
 
-/** 서버가 남기는 이벤트: 사용자의 활동이 아니다 (연결 완료 · 연결 만료 · 재연결 알림 · 원문 처리 실패로 닫음) */
-const SERVER_EVENTS = new Set(["connection_created", "connection_reauth", "reconnect_notified", "source_failed"]);
+/** 서버가 남기는 이벤트: 사용자의 활동이 아니다 (연결 완료 · 연결 만료 · 재연결 알림 · 원문 처리 실패로 닫음 · 에이전트: 전달 시작(대기열 · 재전달 · Mac 복귀 때도) · bridge의 도구 결정 · 산출물이 일으킨 충돌) */
+const SERVER_EVENTS = new Set(["connection_created", "connection_reauth", "reconnect_notified", "source_failed", "agent_message_sent", "tool_call_decided", "path_conflict_found"]);
 
 /** 지표 이벤트 중 사용자의 활동(앱 열기 · 착수 · 넘기기 등). 서버 이벤트는 넣지 않는다: 리텐션 정의를 바꾸지 않게 */
 export function metricActivity(events: MetricEventRow[]): Activity[] {
