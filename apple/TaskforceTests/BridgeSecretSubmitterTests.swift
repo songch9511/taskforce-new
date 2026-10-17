@@ -38,9 +38,11 @@ struct BridgeSecretSubmitterTests {
         return (fixture, created)
     }
 
-    private func submitter(_ fixture: HostFixture, account: UUID? = nil) -> BridgeLocalSecretSubmitter {
+    /// 질문 저장소가 쓰는 것과 같은 모양의 `AccountScope`(계정 + 세대)를 가진 submitter. `account`를 주면 질문 저장소가 다른 계정을 본다
+    private func submitter(_ fixture: HostFixture, account: UUID? = nil, scope custom: AccountScope? = nil) -> BridgeLocalSecretSubmitter {
         let user = fixture.user
-        return BridgeLocalSecretSubmitter(account: { account ?? user.value }, host: { [weak fixture] in fixture?.host })
+        let scope = custom ?? AccountScope(currentAccount: { account ?? user.value })
+        return BridgeLocalSecretSubmitter(scope: scope, host: { [weak fixture] in fixture?.host })
     }
 
     // MARK: 실제 경로에 있다
@@ -59,7 +61,7 @@ struct BridgeSecretSubmitterTests {
 
     @Test func withoutAHostOrWithBridgeOffTheOutcomeIsUnavailableAndNothingIsSent() async throws {
         let canary = "TF_CANARY_D4BM2_\(UUID().uuidString)"
-        let none = BridgeLocalSecretSubmitter(account: { UUID() }, host: { nil })
+        let none = BridgeLocalSecretSubmitter(scope: AccountScope(currentAccount: { UUID() }), host: { nil })
         let stranger = FakeBridgeServer.Created(commandID: "c", taskID: UUID().uuidString.lowercased(), sessionID: "s", stepID: "x", marker: "m")
         #expect(await none.submit(answer(stranger, value: canary)) == .unavailable)
 
@@ -103,6 +105,25 @@ struct BridgeSecretSubmitterTests {
         let outcome = await submitter(fixture, account: UUID()).submit(answer(created, value: "TF_CANARY_D4BM2_\(UUID().uuidString)"))
         #expect(outcome == .failed(.generic))
         #expect(fixture.server.requests("answer-local").isEmpty)
+        #expect(await secrets.hasPending == false)
+    }
+
+    @Test func aSignOutAndSignInOfTheSameUserDuringTheSubmitIsAnotherSessionAndSendsNothing() async throws {
+        let (fixture, created) = try await openFixture()
+        defer { fixture.cleanup() }
+        let secrets = try #require(fixture.host.activeSecrets)
+        let user = fixture.user
+        let scope = AccountScope(currentAccount: { user.value })
+        // 시작 확인 뒤 첫 확인(heartbeat 포트) 때 같은 사용자가 로그아웃 · 재로그인한 것을 흉내 낸다: 사용자는 같고 세대(epoch)만 오른다
+        let calls = HostBox(0)
+        let probe = BridgeLocalSecretSubmitter(scope: scope, host: { [weak fixture] in
+            calls.value += 1
+            if calls.value == 2 { scope.accountLeft() }
+            return fixture?.host
+        })
+        #expect(await probe.submit(answer(created, value: "TF_CANARY_D4BM2_\(UUID().uuidString)")) == .failed(.generic))
+        #expect(calls.value >= 2)
+        #expect(fixture.server.requests("answer-local").isEmpty, "다른 세대의 값은 서버에 닿지 않는다")
         #expect(await secrets.hasPending == false)
     }
 

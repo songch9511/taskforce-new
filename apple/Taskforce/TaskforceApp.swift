@@ -126,10 +126,12 @@ enum AppRuntime {
             return runtime
         }
         #endif
-        // 비밀값 답은 이 Mac의 bridge 런타임이 내보낸다 (OA D4b-m-2): bridge가 꺼졌으면 `unavailable`("Couldn't send")
+        // 비밀값 답은 이 Mac의 bridge 런타임이 내보낸다 (OA D4b-m-2): bridge가 꺼졌으면 `unavailable`("Couldn't send").
+        // 질문 저장소와 같은 `AccountScope`를 넘긴다: 계정 경계를 그 토큰(계정 + 세대)으로 본다
+        let scope = AccountScope()
         let runtime = ChatRuntime(
-            gateway: LiveChatGateway(services: services), contextGateway: s3b ? LiveContextGateway(services: services) : nil, agentQuestions: agentQuestions,
-            secretSubmitter: BridgeLocalSecretSubmitter(account: { if case .signedIn(let userID, _) = session.state { userID } else { nil } })
+            gateway: LiveChatGateway(services: services), contextGateway: s3b ? LiveContextGateway(services: services) : nil, scope: scope, agentQuestions: agentQuestions,
+            secretSubmitter: BridgeLocalSecretSubmitter(scope: scope)
         )
         runtime.scope.bind(to: session)
         if let connectivity { runtime.followConnectivity(connectivity) }
