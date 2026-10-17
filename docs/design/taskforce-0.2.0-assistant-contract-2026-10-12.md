@@ -430,6 +430,14 @@ Action 생성(3.3)은 `action_events` `user_created`(`rule='assistant_agent'`)�
 - 9장 마이그레이션이 필요한 기존 함수: `conversation_finish_turn`(adopt.kind · p_turn.move · 55P03) · `coordinator_recover_missing`(결정 회수 목록) · `match_actions_for_ask`(병합으로 닫은 중복 제외)도 교체한다. 이동 지표는 새 래퍼 `change_context_membership_with_metric`(by_user는 그대로).
 - 이슈 id: `start_agent_turn`이 sha256에서 만드는 Action id는 RFC 4122 버전 · variant 자리와 달라 `z.uuid()`를 통과하지 못한다 — 메시지 refs · 카드 · 기록 줄의 이슈 id 스키마는 `z.guid()`다.
 
+**OA I-oa 정정 (2026-10-17 — 8장 표를 이 항목이 이긴다):**
+- 위 표는 v1 목록이다. 지금 `metric_events.type` CHECK는 블록 v3(24 type = OA 전 7개 + OA 17개, `20261123000000_agent_path_leases.sql`)이고, **OA type · 원천(SQL 함수 · TS 파일) · 차원 · 리텐션 활동 여부 · 공백의 목록은 `src/lib/metrics/agents.ts` 등록부(`AGENT_EVENTS`)가 집이다.** 이 문서는 목록을 다시 적지 않고 그 파일을 가리킨다. `tests/metrics/agent-event-registry.test.ts`가 최신 CHECK ↔ 등록부 ↔ 원천 함수의 최신 정의 ↔ 시험 파일을 정적으로 대조하므로, 블록 v4가 type을 더하면 이 시험이 실패해 등록부와 카드를 고치게 한다.
+- `/admin/metrics`의 에이전트 카드 넷(`loadAgentMetrics`): ① 사용 ② 전달 · 지연(ONE-TF-11 서버 구간) + 전달 · 명령 결과 ③ 질문 → 답(기다린 시간 · 답한 길) ④ 멈춤 · 지금 막힌 것. 새 type · 마이그레이션 0: 이미 남은 행(`metric_events` · `execution_events` · `execution_steps` · `bridge_commands` · `conversation_messages` 상태 열 · `agent_tasks` · `agent_path_leases`)을 읽어 센다. 지연 = 단계 `created_at` → 사건 `at`(서버 시계끼리), 통과 · 실패 배지는 달지 않는다(판정은 MS-2 Mac 원장). Claude Code의 접수는 그 턴의 첫 `assistant` 사건이라 모델의 첫 출력 시간이 들어 있는 상한이다. 명령은 30일 뒤 지워서 명령 결과만 최근 30일이다.
+- 자유 글 답(`route_agent_message`)은 지표 행이 없다(D1d). `question_answered`는 질문 답 route · 승인 · 비밀값 로컬 답만 세고, ③이 답 단계(`answer_message_id` · `answered_locally`)로 모든 길을 센다.
+- 리텐션 활동에서 `agent_message_sent` · `tool_call_decided` · `path_conflict_found`를 뺀다(`compute.ts` `SERVER_EVENTS`): 대기열 · 재전달 · Mac 복귀 시작, bridge의 도구 결정, 에이전트 산출물이 일으킨 충돌은 사용자가 그 시각에 한 일이 아니다. 원래 정의("서버가 남기는 이벤트는 활동이 아니다")로 되돌린 것이고 나머지 OA type(답 · Stop · 이동 · 프로젝트 …)은 사용자가 누른 순간에 생겨 활동으로 남는다. 착수 시간(PRD 지표 2)의 정의는 그대로다(열린 질문으로 사용자 결정 대기).
+- "Action 생성은 `action_events` `user_created`(`rule='assistant_agent'`)" — `rule`은 `action_events.rule` 열이다(`after`가 아니다). Stop 버튼(`stop_agent_session`)은 작업을 취소하고 `stop_run`으로 run도 닫는다(gate `stop`).
+- **측정 공백(지금도 못 세는 것):** (Mac 후속 — 클라이언트 이벤트는 블록 v4 + 앱 insert 정책 확장이 필요하고 정책은 지금 `app_opened` · `assistant_opened`만 연다) `assistant_opened` 보내기(정책은 이미 허용), Undo · 2초 안 취소 · 알림 열기 · bell · ⌘1 · ⌥Space · 충돌 Undo · 대화 열림 · 요청 처리, 어느 화면(Assistant 창 · 세션 패널 · Review)에서 답했나. (E1c) 결과 준비 → 검토 시간(`result_reviewed {adapter, waited_s}` 제안). (후속 서버) 해소된 충돌의 기다린 시간(`resolve_path_conflict`가 `conflict_at`을 지운다), 답 route의 409 · 404 이유별 횟수, referent 고르기(D4a-27), Done 55P03 재시도 · 소진 수, `user_merged` 수 · 정리 제안 결과. (R-dec + Mac 후속) 보지 않은 제안 노출(U3-21). (MS-2 Mac 원장 · Mac 로그) ONE-TF-11의 Realtime 연결 여부 · CLI 입력 시각, bridge 로컬 결정 · TS 사전 한도 거절, D3a OSLog 줄.
+
 ## 9. 같이 고칠 문서
 
 - CLAUDE.md 원칙 1: 직접 추가 입구에 "Assistant에서 에이전트에게 일을 맡길 때"를 더한다(3.3).
