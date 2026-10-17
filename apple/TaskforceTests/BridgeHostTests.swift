@@ -69,16 +69,20 @@ final class HostFixture {
     private(set) var host: BridgeHost!
     private let enabled: Bool
     private let wake: (any BridgeWakeSource)?
+    private let connectAtStart: String?
+    private let workspaces: ProjectWorkspaces?
     /// 런타임을 만들기 전에 시험이 끼어드는 자리 (원장을 여는 동안 계정이 바뀌는 경쟁)
     var onFactory: (@MainActor () async -> Void)?
 
     init(
         enabled: Bool = true, user: UUID? = UUID(), agent: FakeAgentProcess? = nil, server: FakeBridgeServer? = nil, root: URL? = nil, credentials: InMemoryBridgeCredentialStore? = nil,
-        wake: (any BridgeWakeSource)? = nil
+        wake: (any BridgeWakeSource)? = nil, connectAtStart: String? = nil, workspaces: ProjectWorkspaces? = nil
     ) {
         let clock = self.clock
         self.enabled = enabled
         self.wake = wake
+        self.connectAtStart = connectAtStart
+        self.workspaces = workspaces
         self.server = server ?? FakeBridgeServer(clock: { clock.now })
         self.root = root ?? FileManager.default.temporaryDirectory.appending(path: "bridge-host-\(UUID().uuidString)", directoryHint: .isDirectory)
         self.agent = agent ?? FakeAgentProcess(clock: clock.clock)
@@ -94,6 +98,7 @@ final class HostFixture {
         let agent = self.agent
         let credentials = self.credentials
         let wake = self.wake
+        let workspaces = self.workspaces
         return BridgeHost(
             enabled: enabled, apiBaseURL: server.baseURL, storageRoot: root, credentials: credentials, currentUser: { [user] in user.value }, epoch: { [epoch] in epoch.value },
             factory: { [weak self] partition, mode, secrets, onChange in
@@ -107,10 +112,10 @@ final class HostFixture {
                 )
                 return BridgeRuntime(
                     configuration: BridgeRuntimeConfiguration(partition: partition, appVersion: "0.2.0-test", mode: mode), client: client, ledger: ledger,
-                    credentials: credentials, adapters: [agent], clock: clock.clock, wake: wake, secrets: secrets, workspaces: HostWorkspaces(), onChange: onChange
+                    credentials: credentials, adapters: [agent], clock: clock.clock, wake: wake, secrets: secrets, workspaces: workspaces?.resolver(for: partition) ?? HostWorkspaces(), onChange: onChange
                 )
             },
-            quitPrompt: prompt, reply: { [weak self] value in self?.replies.append(value) }, notificationCenter: center
+            quitPrompt: prompt, reply: { [weak self] value in self?.replies.append(value) }, notificationCenter: center, workspaces: workspaces, connectAtStart: connectAtStart
         )
     }
 
@@ -780,5 +785,48 @@ struct BridgeHostTests {
         #expect(!result.isComplete, "남은 프로세스가 있는데 정리가 끝난 것으로 보이지 않는다")
         #expect(result.folderRemoved && result.credentialsRemoved, "사용자 데이터는 그래도 지운다")
         #expect(!FileManager.default.fileExists(atPath: partition.directory(in: fixture.root).path))
+    }
+
+    // MARK: Debug 연결 인자 (OA D4a2-10)
+
+    private func connectRegistrations(_ fixture: HostFixture) -> [[String]] {
+        fixture.server.requests("register").compactMap { $0.json["connect"] as? [String] }.filter { !$0.isEmpty }
+    }
+
+    @Test func aDebugConnectRequestConnectsExactlyOnceAfterTheRuntimeStarts() async throws {
+        let fixture = HostFixture(connectAtStart: "agent:claude-code")
+        defer { fixture.cleanup() }
+        await fixture.start()
+        #expect(await fixture.eventually { connectRegistrations(fixture) == [["agent:claude-code"]] })
+        // 같은 계정으로 다시 맞춰도 더 부르지 않는다 (런타임을 만들 때 한 번)
+        await fixture.host.syncAccount()
+        await fixture.host.didWake()
+        try? await Task.sleep(for: .milliseconds(100))
+        #expect(connectRegistrations(fixture).count == 1)
+    }
+
+    @Test func withoutTheConnectRequestNoAdapterIsConnected() async throws {
+        let fixture = HostFixture()
+        defer { fixture.cleanup() }
+        await fixture.start()
+        _ = await fixture.waitForBridge()
+        try? await Task.sleep(for: .milliseconds(100))
+        #expect(connectRegistrations(fixture).isEmpty, "연결 인자가 없으면 connect를 보내지 않는다")
+    }
+
+    @Test func aDrainRuntimeNeverConnects() async throws {
+        let fixture = HostFixture(enabled: false, connectAtStart: "agent:claude-code")
+        defer { fixture.cleanup() }
+        let userID = try #require(fixture.user.value)
+        let partition = BridgePartition(apiBaseURL: fixture.server.baseURL, userID: userID)
+        let ledger = try BridgeLedger(directory: partition.directory(in: fixture.root))
+        try await ledger.saveCommand(BridgeCommandRecord(
+            commandID: "c1", kind: "message", agentSessionID: "s", agentTaskID: "t", turnSeq: 1, cursor: 1, state: .leased, stateAt: fixture.clock.now
+        ))
+        await ledger.close()
+        await fixture.start()
+        #expect(fixture.host.runtimeCount == 1, "마무리 모드 런타임이 있다")
+        try? await Task.sleep(for: .milliseconds(100))
+        #expect(connectRegistrations(fixture).isEmpty && fixture.server.registerAttempts == 0)
     }
 }

@@ -116,10 +116,13 @@ struct EdgeSessionActionsTests {
         #expect(r.shell.thisMacBridgeID == nil, "bridge가 꺼졌으면 알약이 없다")
     }
 
-    @Test func theLauncherIsNotThereYetSoOpenInTerminalIsNeverOffered() async throws {
+    @Test func theRealLauncherIsThereSoOpenInTerminalIsOfferedButOnlyOnThisMacsSessions() async throws {
         let r = try await rig(Data.inFlight())
         defer { r.stop() }
-        #expect(!r.flow.offersOpenInTerminal, "D4a-1: 실제 launcher는 D4a-2")
+        #expect(r.flow.offersOpenInTerminal, "D4a-2: 앱의 실제 launcher (`.command`)가 있다")
+        let session = try r.session()
+        #expect(SessionPanelView.pillSpec(for: session, thisMacBridgeID: Data.thisMacBridge, offersOpenInTerminal: r.flow.offersOpenInTerminal) != nil)
+        #expect(SessionPanelView.pillSpec(for: session, thisMacBridgeID: Data.otherMacBridge, offersOpenInTerminal: r.flow.offersOpenInTerminal) == nil, "다른 Mac의 세션에는 알약이 없다 (D4a-03)")
     }
 
     // MARK: Resume here

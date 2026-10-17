@@ -230,6 +230,16 @@ struct AssistantWindowView: View {
         Button(ChatCopy.tryAgain, action: action).buttonStyle(TFButtonStyle(.secondary, size: size))
     }
 
+    /// 보내기. 에이전트 대화의 첫 보내기 직전에는 작업 폴더를 먼저 묻는다 (OA D4a2-05): 취소하면 보내지 않고 글은 입력 칸에 그대로 둔다
+    private func send() async {
+        let text = model.draft
+        guard model.canSend(text) else { return }
+        if model.toAgent {
+            guard await runtime.prepareAgentSend(conversationID: model.conversationID, hasSession: model.sessionID != nil, target: model.pick, chips: model.chips.chips) else { return }
+        }
+        await model.send(text)
+    }
+
     // MARK: 입력 영역
 
     private var footer: some View {
@@ -253,7 +263,7 @@ struct AssistantWindowView: View {
                 isRunning: model.stopPresentation.showsStop,
                 canSend: model.canSend,
                 focusRequest: model.focusRequest,
-                onSend: { Task { await model.send(model.draft) } },
+                onSend: { Task { await send() } },
                 onStop: { Task { await model.stop() } },
                 onRemoveChip: { model.removeChip($0) },
                 onTargetTap: actions.toggleTargetMenu,

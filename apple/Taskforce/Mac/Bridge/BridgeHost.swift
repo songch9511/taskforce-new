@@ -35,6 +35,10 @@ final class BridgeHost {
     private let notificationCenter: NotificationCenter
     /// 앱 전체에 하나인 Claude Code 훅 소켓 (OA D3a 2.6). bridge가 켜졌을 때만 있고 앱 종료 때 닫는다. 런타임(파티션)이 바뀌어도 하나다 — nonce가 spawn을 가리킨다
     let hookServer: HookSocketServer?
+    /// 프로젝트마다의 작업 폴더 등록부 · resolver (OA D4a2). bridge가 꺼진 빌드 · 시험 호스트는 nil
+    let workspaces: ProjectWorkspaces?
+    /// Debug 전용 (OA D4a2-10): 런타임을 시작한 직후 이 adapter로 `connect`를 한 번 부른다. Release는 늘 nil
+    private let connectAtStart: String?
 
     /// 파티션 id → 런타임. 계정이 떠난 뒤에도 살아 있는 턴이 있으면 남겨 둔다 (계속 감독하고 그 파티션 원장에만 기록, 네트워크 0 — Q5)
     private var entries: [String: Entry] = [:]
@@ -65,12 +69,22 @@ final class BridgeHost {
 
     var activePartition: BridgePartition? { activePartitionID.flatMap { entries[$0]?.partition } }
 
+    /// 지금 계정의 작업 폴더 등록부 (계정이 없거나 이 빌드에 등록부가 없으면 nil)
+    var activeWorkspaceRegistry: WorkspaceRegistry? { activePartition.flatMap { partition in workspaces?.registry(for: partition) } }
+
+    /// 보내기 전에 작업 폴더를 묻는 데 쓰는 면 (D4a2-05): 지금 계정의 등록부 + 연결이 이 Mac의 것인지 확인. 등록부가 없으면 nil (묻지 않는다)
+    var workspaceAsking: AgentWorkspaceAsking? {
+        guard let workspaces, let registry = activeWorkspaceRegistry else { return nil }
+        return AgentWorkspaceAsking(folders: registry, isThisMac: { await workspaces.isThisMac(connectionID: $0) })
+    }
+
     var runtimeCount: Int { entries.count }
 
     init(
         enabled: Bool, apiBaseURL: URL, storageRoot: URL, credentials: any BridgeCredentialStore, currentUser: @escaping @MainActor () -> UUID?,
         epoch: @escaping @MainActor () -> Int = { 0 }, factory: @escaping RuntimeFactory, quitPrompt: any BridgeQuitPrompting,
-        reply: @escaping @MainActor (Bool) -> Void, notificationCenter: NotificationCenter, hookServer: HookSocketServer? = nil
+        reply: @escaping @MainActor (Bool) -> Void, notificationCenter: NotificationCenter, hookServer: HookSocketServer? = nil, workspaces: ProjectWorkspaces? = nil,
+        connectAtStart: String? = nil
     ) {
         self.enabled = enabled
         self.apiBaseURL = apiBaseURL
@@ -83,6 +97,8 @@ final class BridgeHost {
         self.reply = reply
         self.notificationCenter = notificationCenter
         self.hookServer = hookServer
+        self.workspaces = workspaces
+        self.connectAtStart = connectAtStart
     }
 
     /// 앱이 시작할 때 한 번: 알림 구독 · 업데이트 재시작 정책 연결. 계정 확인은 `syncAccount`가 한다
@@ -171,6 +187,18 @@ final class BridgeHost {
         entries[partition.id] = entry
         activePartitionID = partition.id
         await runtime.start()
+        // Debug 전용 연결 인자 (D4a2-10): 런타임을 시작한 뒤 한 번. 연결 화면(Settings)이 들어온 뒤에도 시험 · R2 자동화용으로 남는다
+        if let adapter = connectAtStart, mode == .normal {
+            Task {
+                // 처음 등록이 끝난 뒤에 부른다: 등록과 겹치면 `connect` 요청이 진행 중인 등록에 합쳐져 사라진다 (등록 응답이 `pendingConnect`를 비운다). 20초 안에 등록되지 않으면 부르지 않는다
+                var registered = await runtime.localBridgeID() != nil
+                for _ in 0..<200 where !registered {
+                    try? await Task.sleep(for: .milliseconds(100))
+                    registered = await runtime.localBridgeID() != nil
+                }
+                if registered { _ = await runtime.connect(adapters: [adapter]) }
+            }
+        }
     }
 
     /// 지금 계정의 네트워크를 멈춘다. 바쁘지도 살아 있는 프로세스도 없으면 원장도 닫고 버린다
@@ -321,6 +349,17 @@ final class BridgeHost {
         return .none
     }
 
+    /// Claude Code adapter에 넣는 작업 폴더 resolver (OA D4a2): Release와 Debug 모두 등록부 resolver다. Debug만 `-TF_BRIDGE_WORKSPACE`(R2 확인용 일회용 폴더, Q14)가 있으면
+    /// 그 폴더만 쓴다 — 조건을 못 채우면 resolver가 없다(등록부로 넘어가지 않는다). `disposable`은 Release에서는 늘 nil이다 (`agentChoice`)
+    static func claudeCodeWorkspaces(disposable: String?, apiBaseURL: URL, home: String, registered: () -> (any WorkspaceResolver)?) -> (any WorkspaceResolver)? {
+        #if DEBUG
+        if disposable != nil { return DisposableWorkspaces.make(path: disposable, apiBaseURL: apiBaseURL, home: home) }
+        #else
+        _ = (disposable, apiBaseURL, home)
+        #endif
+        return registered()
+    }
+
     /// bridge가 켜졌을 때만 소켓을 연다 (꺼진 빌드는 소켓 파일 0). 열지 못하면 nil (Claude Code 새 턴은 `spawn_failed`)
     static func startHookServer(enabled: Bool, path: String, log: any BridgeLogSink) -> HookSocketServer? {
         guard enabled else { return nil }
@@ -345,6 +384,14 @@ final class BridgeHost {
         let enabled = BridgeFlag.current
         let hookServer = startHookServer(enabled: enabled, path: HookSocketServer.socketPath(applicationSupport: support, bundleID: bundleID), log: BridgeOSLog())
         let choice = agentChoice(isDebugBuild: AppRuntime.isDebugBuild, arguments: BridgeFlag.currentArguments, apiBaseURL: services.api.baseURL)
+        // 작업 폴더 등록부 · resolver (D4a2): 파티션 폴더 안의 `workspaces.json`. 서버에는 경로를 보내지 않는다. bridge가 꺼진 빌드는 만들지 않는다
+        let projectWorkspaces = enabled ? ProjectWorkspaces.live(services: services, root: root, support: support, bundleID: bundleID) : nil
+        if enabled { AgentTerminalLauncherLive.sweepOldFiles() }
+        #if DEBUG
+        let connectAtStart: String? = enabled ? BridgeFlag.connectAdapter(arguments: BridgeFlag.currentArguments, isDebugBuild: AppRuntime.isDebugBuild, apiBaseURL: services.api.baseURL) : nil
+        #else
+        let connectAtStart: String? = nil
+        #endif
         let host = BridgeHost(
             enabled: enabled, apiBaseURL: services.api.baseURL, storageRoot: root, credentials: credentials,
             currentUser: { if case .signedIn(let userID, _) = session.state { userID } else { nil } }, epoch: { scope.epoch },
@@ -370,13 +417,9 @@ final class BridgeHost {
                     )
                     claudeCode.purgeLineageOfOtherBoots()
                     adapters = [claudeCode]
-                    #if DEBUG
-                    // R2 확인용 일회용 폴더 (Q14). 실제 폴더 고르기는 D4a 몫이라 Release는 resolver가 없다 (새 세션 `spawn_failed`)
-                    workspaces = DisposableWorkspaces.make(path: disposable, apiBaseURL: services.api.baseURL, home: NSHomeDirectory())
-                    #else
-                    _ = disposable
-                    workspaces = nil
-                    #endif
+                    workspaces = BridgeHost.claudeCodeWorkspaces(
+                        disposable: disposable, apiBaseURL: services.api.baseURL, home: NSHomeDirectory(), registered: { projectWorkspaces?.resolver(for: partition) }
+                    )
                 case .fake:
                     #if DEBUG
                     // 격리 Debug 실행에서만 가짜 agent (`-TF_BRIDGE_FAKE_AGENT YES`, 서버 주소가 loopback일 때만). 작업 폴더는 가짜 값
@@ -394,7 +437,7 @@ final class BridgeHost {
                 )
             },
             quitPrompt: BridgeQuitAlert(), reply: { NSApplication.shared.reply(toApplicationShouldTerminate: $0) }, notificationCenter: NSWorkspace.shared.notificationCenter,
-            hookServer: hookServer
+            hookServer: hookServer, workspaces: projectWorkspaces, connectAtStart: connectAtStart
         )
         scope.onLeft { Task { await host.syncAccount() } }
         host.follow(session)
