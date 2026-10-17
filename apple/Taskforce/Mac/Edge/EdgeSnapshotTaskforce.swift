@@ -9,7 +9,7 @@ import TaskforceUI
 /// 화면 녹화 권한 없이 자기 창(레일 · 이슈 패널 · 세션 패널)의 내용만 그려 데스크톱 견본 위에 실제 자리대로 붙인다 (`IssueSnapshot.compose`).
 /// 움직이는 장면은 숨쉬기의 쉬는 프레임(크기 1, echo 없음)에서 찍는다 (`RailMotionSnapshot.frozen`).
 /// 남기는 것(`mac-edge-taskforce-<이름>.png`): 레일 — rail-rest · rail-compact-bell-rings · rail-compact-rings · rail-compact-bell · rail-expanded · rail-expanded-no-bell · rail-expanded-no-rings ·
-/// rail-more-open · rail-taskforce-open · rail-needs-you · rail-many · rail-many-expanded / 대화 — confirm · confirm-no-meta · confirm-long · result · conflict · conflict-held · conflict-sent · conflict-409 ·
+/// rail-more-open · rail-more-open-projects · rail-more-open-taskforce · rail-taskforce-open · rail-needs-you · rail-many · rail-many-expanded / 대화 — confirm · confirm-no-meta · confirm-long · result · conflict · conflict-held · conflict-sent · conflict-409 ·
 /// conflict-long · steps-two · steps-many · request-summary · summary-only · empty-next · empty-projects · loading · offline · failed · incomplete · unknown-kind · last-answer.
 /// 서버 응답은 가짜(`IssueSampleGateway` · `SampleReturnSummaryGateway`)라 렌더 fixture일 뿐이다: 실제 서버 · 계정 · AI 호출이 없다.
 @MainActor
@@ -160,6 +160,10 @@ enum TaskforceSnapshot {
             if verdict == "ok", card, !edge.rail.moreCard.isOpen {
                 verdict = "INVALID More 카드가 닫혔다"
             }
+            // More 카드가 열려 있으면 칠해진 칸은 ⋯ 하나다: 열린 화면의 칸 · 열린 대화의 bell 칠은 그리지 않는다 (재검토 1)
+            if verdict == "ok", card, lit != [.more] || shell.railBellSelectionShown {
+                verdict = "INVALID More 카드가 열려 있는데 칠해진 칸이 ⋯ 하나가 아니다: \(lit) bell칠=\(shell.railBellSelectionShown)"
+            }
             if verdict.hasPrefix("INVALID") { invalid += 1 } else { seen[fingerprint] = name }
             checks.append("\(name) sha256=\(fingerprint.prefix(16)) reopened=\(reopened) hover=[\(hoverSeen)] lit=\(lit) \(verdict)")
         }
@@ -267,6 +271,21 @@ enum TaskforceSnapshot {
         edge.rail.openMoreCardForSnapshot()
         await settle(0.4)
         await shoot("rail-more-open", panel: false, card: true)
+        edge.rail.moreCard.dismiss()
+        // 재검토 1: 본문이 열린 채 More 카드를 열어도 칠해진 칸은 ⋯ 하나다: Projects가 열려 있을 때 · Taskforce 대화가 열려 있을 때(bell)
+        await world()
+        shell.pointer(inside: false)
+        shell.openAllWork()
+        await settle(0.9)
+        edge.rail.openMoreCardForSnapshot()
+        await settle(0.4)
+        await shoot("rail-more-open-projects", panel: false, card: true)
+        edge.rail.moreCard.dismiss()
+        await world()
+        await request(.confirm, of: 150)
+        edge.rail.openMoreCardForSnapshot()
+        await settle(0.4)
+        await shoot("rail-more-open-taskforce", panel: false, card: true)
         edge.rail.moreCard.dismiss()
 
         // 세션이 질문한다: 링이 needs-you (주황), 많은 링 (다섯 이상은 넷까지)
