@@ -64,17 +64,19 @@ public enum TaskforceSourceStatus: Sendable, Hashable, Decodable {
     }
 }
 
+/// 응답이 읽은 원천의 상태. **믿는 규칙은 `decisions`(와 응답의 `complete`)뿐이다.** `suggestions` · `time_zone`은 앱이 읽지 않는다: 읽기 전용 `GET /api/v2/review/decisions`(R-dec)는
+/// `sources`에 `decisions` 하나만 싣는다 (합성 `Decodable`이 선택 키는 없어도 읽는다). 키가 없으면 `nil`이다 — "모른다"가 아니라 "이 응답의 원천이 아니다"이므로 응답을 믿는 데 영향이 없다 (OA U3 검토 1, R-dec Q8)
 public struct TaskforceReviewSources: Sendable, Hashable, Decodable {
     public let decisions: TaskforceSourceStatus
-    public let suggestions: TaskforceSourceStatus
-    public let timeZone: TaskforceSourceStatus
+    public let suggestions: TaskforceSourceStatus?
+    public let timeZone: TaskforceSourceStatus?
 
     enum CodingKeys: String, CodingKey {
         case decisions, suggestions
         case timeZone = "time_zone"
     }
 
-    public init(decisions: TaskforceSourceStatus, suggestions: TaskforceSourceStatus = .ok, timeZone: TaskforceSourceStatus = .ok) {
+    public init(decisions: TaskforceSourceStatus, suggestions: TaskforceSourceStatus? = .ok, timeZone: TaskforceSourceStatus? = .ok) {
         self.decisions = decisions
         self.suggestions = suggestions
         self.timeZone = timeZone

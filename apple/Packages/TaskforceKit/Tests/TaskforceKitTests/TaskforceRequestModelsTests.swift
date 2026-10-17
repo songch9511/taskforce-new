@@ -157,4 +157,44 @@ struct TaskforceRequestModelsTests {
         #expect(TaskforceConflictKeep(key: 0) == nil && TaskforceConflictKeep(key: 3) == nil)
         #expect(TaskforceConflictKeep.holder.key == 1 && TaskforceConflictKeep.later.key == 2)
     }
+
+    // MARK: R-dec (읽기 전용 결정 길): `sources`에 `decisions`만 있는 응답
+
+    /// `GET /api/v2/review/decisions`는 `sources`에 `decisions` 하나만 싣는다. 없는 `suggestions` · `time_zone`은 응답을 못 읽게 하지도, 믿을 수 없게 하지도 않는다
+    @Test func aDecisionsOnlyResponseDecodesAndTheMissingKeysAreNotIncomplete() throws {
+        let response = try Fx.decode(Fx.reviewDecisionsOnly)
+        #expect(response.sources.decisions == .ok && response.sources.suggestions == nil && response.sources.timeZone == nil)
+        #expect(response.complete && !response.empty && response.decisionsOK)
+        #expect(response.items.map(\.kind) == [.resultReady, .confirm])
+        #expect(TaskforceRequestRules.isTrustworthy(response, skippedUnknown: false), "믿는 규칙은 `sources.decisions`와 `complete`뿐이다")
+    }
+
+    /// 읽지 못한 같은 모양은 여전히 믿을 수 없다 (키가 없어서가 아니라 `decisions`가 `unavailable`이라서)
+    @Test func aDecisionsOnlyResponseThatCouldNotReadItsSourceIsStillNotTrusted() throws {
+        let response = try Fx.decode(Fx.reviewDecisionsOnlyUnavailable)
+        #expect(response.sources.decisions == .unavailable && response.sources.suggestions == nil && !response.decisionsOK && !response.complete)
+        #expect(!TaskforceRequestRules.isTrustworthy(response, skippedUnknown: false))
+    }
+
+    /// 기존 전체 응답(`GET /api/v2/review`)은 그대로 읽힌다: 두 키가 있으면 그 상태가 그대로 나온다
+    @Test func theFullResponseStillDecodesUnchangedWithBothKeys() throws {
+        let response = try Fx.decode(Fx.review)
+        #expect(response.sources == TaskforceReviewSources(decisions: .ok, suggestions: .ok, timeZone: .ok))
+        let degraded = try variant { object in
+            object["sources"] = ["decisions": "ok", "suggestions": "unavailable", "time_zone": "unavailable"]
+            object["complete"] = false
+        }
+        #expect(degraded.sources.suggestions == .unavailable && degraded.sources.timeZone == .unavailable)
+        #expect(degraded.decisionsOK && !degraded.complete, "제안 원천이 `unavailable`이어도 결정 목록은 믿을 수 있다(complete는 서버 값 그대로)")
+    }
+
+    /// 한 키만 있어도 읽힌다 (선택 키는 각자 선택이다)
+    @Test func eachOptionalSourceKeyIsOptionalOnItsOwn() throws {
+        let onlySuggestions = try variant { $0["sources"] = ["decisions": "ok", "suggestions": "ok"] }
+        #expect(onlySuggestions.sources.suggestions == .ok && onlySuggestions.sources.timeZone == nil)
+        let onlyTimeZone = try variant { $0["sources"] = ["decisions": "ok", "time_zone": "ok"] }
+        #expect(onlyTimeZone.sources.suggestions == nil && onlyTimeZone.sources.timeZone == .ok)
+        // `decisions`는 선택이 아니다: 없으면 읽을 수 없다
+        #expect(throws: (any Error).self) { try self.variant { $0["sources"] = ["suggestions": "ok"] } }
+    }
 }
