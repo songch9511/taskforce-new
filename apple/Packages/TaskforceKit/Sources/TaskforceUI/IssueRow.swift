@@ -2,7 +2,7 @@ import SwiftUI
 import TaskforceKit
 
 /// IssueRow (0.2.0 디자인 시스템 Molecules, OA U2): 프로젝트 · Ungrouped · Done today 목록의 이슈 한 줄 (Figma `8:152`, 36pt).
-/// StatusMark 16 · 제목(callout, 한 줄 끝 줄임) · 오른쪽 meta 하나(footnote, **줄이지 않는다**, 제목이 먼저 줄어든다). 안쪽 8/10 · 간격 10 · 구분선 없음.
+/// StatusMark 16(In Progress는 표시 없이 빈 자리, OA U3-46) · 제목(callout, 한 줄 끝 줄임) · 오른쪽 meta 하나(footnote, **줄이지 않는다**, 제목이 먼저 줄어든다). 안쪽 8/10 · 간격 10 · 구분선 없음.
 /// - meta는 활동("Needs your answer" · "Running" · …)이 먼저, 없으면 기한(`DueText.short`). 기한이 지났거나 오늘이면 `status/overdue` 600 (지났으면 접근성 이름에 "overdue")
 /// - 번호는 행에 없다 (번호는 상세 머리 · 세션 머리 · 칩). 끝낸 행 제목은 `text/secondary` (취소선 없음)
 /// - 호버 · 현재 행 · 레일에서 가리킨 행은 `bg/selected`, 보조 글자는 `text/secondary-selected`. Ask 알약이 뜨는 동안은 meta가 가려진다
@@ -33,7 +33,7 @@ public struct IssueRow: View {
         ) { lit, asking in
             let secondary = lit ? TFColor.textSecondarySelected : TFColor.textSecondary
             HStack(spacing: 10) {
-                StatusMark(StatusMark.State(content.state))
+                StatusMark(StatusMark.State(content.state), blankInProgress: true)
                 Text(content.title)
                     .font(TFFont.callout)
                     .tracking(-0.24)

@@ -127,18 +127,18 @@ struct AssistantIssueTests {
 
     // MARK: 첫 창의 자리
 
-    @Test func theFirstWindowOpensTwelveLeftOfTheUnionOfTheIssuePanelWithItsTabAndTheSessionPanel() throws {
+    @Test func theFirstWindowOpensTwelveLeftOfTheUnionOfTheIssuePanelAndTheSessionPanel() throws {
         let account = try AppChatAccount.make()
         let defaults = try TestDefaults()
         defer { defaults.cleanup() }
-        let issue = EdgePanelMetrics.frame(height: 440, railTop: 800, screenMaxX: 1440, tab: SessionTabGeometry.expanded.width)
+        let issue = EdgePanelMetrics.frame(height: 440, railTop: 800, screenMaxX: 1440, capsule: true)
         let session = EdgeSessionPanelController.frame(issuePanel: issue, height: 380)
         let union = try #require(AssistantWindowGeometry.panelsFrame([issue, session]))
         #expect(union.minX == session.minX && union.maxX == issue.maxX && union.maxY == issue.maxY)
         let runtime = ChatRuntime(gateway: IssueSampleGateway(), scope: account.scope, now: { Date() }, issueScreens: false)
         let shell = EdgeShellModel(schedule: { _, _ in EdgeTimer() }, chatsEnabled: true, windowsEnabled: true)
         let visible = CGRect(x: 0, y: 0, width: 1440, height: 875)
-        let rail = CGRect(x: 1396, y: 400, width: 44, height: 353)
+        let rail = CGRect(x: 1440 - 6 - 44, y: 400, width: 44, height: 353)
         let manager = AssistantWindowManager(
             runtime: runtime, shell: shell, store: AssistantWindowPositionStore(defaults: defaults.defaults),
             environment: .init(visibleFrame: { visible }, railFrame: { rail }, panelFrame: { union }, display: { "1" }, extraScreens: { [] })
@@ -146,7 +146,7 @@ struct AssistantIssueTests {
         manager.presents = false
         let id = try #require(manager.openNewWindow())
         let point = try #require(manager.controllers[id]?.topLeft)
-        #expect(point.x == union.minX - 12 - AssistantWindowGeometry.width, "탭 · 세션 패널까지 합친 바깥 가장자리에서 12")
+        #expect(point.x == union.minX - 12 - AssistantWindowGeometry.width, "세션 패널까지 합친 바깥 가장자리에서 12")
         #expect(point.y == union.maxY, "위는 패널과 같다")
         manager.closeAll()
     }

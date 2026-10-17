@@ -25,7 +25,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     let assistant: AssistantWindowManager?
     /// 세션 패널 창 (OA U2): 이슈 패널 왼쪽의 두 번째 창. 새 Issues 화면이 꺼져 있으면 nil
     let sessionPanel: EdgeSessionPanelController?
-    /// 범용 메뉴 창 (OA U2): 탭의 More 목록
+    /// 범용 메뉴 창 (OA U2): 이슈 패널의 메뉴 창을 "밖"으로 치지 않으려고 컨트롤러가 알아본다 (`ownsIssueWindow`)
     let menu = EdgeContextMenu()
     /// 지금의 키 창 (키를 잃을 때 새 키 창이 Assistant 창인지 본다. 시험은 이 값을 바꾼다)
     var keyWindow: () -> NSWindow? = { NSApp.keyWindow }
@@ -106,12 +106,11 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         wireQuestions()
     }
 
-    /// 새 Issues 화면(OA U2)의 동작: Ask 알약 · New session `+` · More 목록. 앞 Assistant 창이 있으면 그 창에 칩을 더하고, 없으면 새 창 (창이 없는 구성에서는 아무 일도 없다)
+    /// 새 Issues 화면(OA U2)의 동작: Ask 알약 · New session `+`. 앞 Assistant 창이 있으면 그 창에 칩을 더하고, 없으면 새 창 (창이 없는 구성에서는 아무 일도 없다)
     private func wireIssues() {
         guard shell.issueScreensEnabled else { return }
         shell.onAsk = { [weak self] item in self?.assistant?.ask(about: item) }
         shell.onNewSession = { [weak self] scope in self?.assistant?.openNewSession(scope: scope) }
-        shell.onShowMoreSessions = { [weak self] hidden in self?.showMoreSessions(hidden) }
         // 세션 패널의 대화: id로 직접 읽고(History 100개 목록에 기대지 않는다), 보이는 동안은 온라인 복귀 · 목록 새로 읽기의 공통 갱신 집합에 든다
         if let chat {
             let store = chat.chat
@@ -120,22 +119,6 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
                 guard let shell, shell.sessionPanelShown, let id = shell.openSessionItem?.conversationID else { return [] }
                 return [id]
             }
-        }
-    }
-
-    /// More(탭의 `…`): 숨은 세션을 메뉴로 (이름 + 오른쪽 링 말, AgentMark 없음). 고르면 그 세션의 패널
-    private func showMoreSessions(_ hidden: [AgentSessionItem]) {
-        guard !hidden.isEmpty else { return }
-        let items = hidden.map { session in
-            ContextMenuItem(id: session.id.uuidString, label: session.name, detail: session.line, checked: session.id == shell.sessionPanelID) { [weak shell] in
-                shell?.openSession(session.id)
-            }
-        }
-        let mouse = NSEvent.mouseLocation
-        let row = CGRect(x: mouse.x - 14, y: mouse.y - 14, width: 28, height: 28)
-        shell.setMenuOpen(true)
-        menu.present(model: ContextMenuModel(items: items), label: "More sessions", row: row, pointerX: mouse.x, over: panel.panel) { [weak self] in
-            self?.shell.setMenuOpen(false)
         }
     }
 
@@ -179,6 +162,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         followPanel()
         followSessionPanel()
         followIssues()
+        followTaskforce()
         followSync()
         followSyncFinished()
         // 시작할 때 세션은 아직 읽는 중이다: 로그인이 확인되면 그때 목록 · run을 읽는다 (런처는 열 때마다 읽는다)
@@ -194,8 +178,12 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
             observers.append(center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { _ in
                 MainActor.assumeIsolated { sessions.setAsleep(true) }
             })
-            observers.append(center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { _ in
-                MainActor.assumeIsolated { sessions.setAsleep(false) }
+            observers.append(center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    sessions.setAsleep(false)
+                    // 깨면 Taskforce 요청도 한 번 읽는다 (잔 사이 다른 기기에서 바뀌었을 수 있다, OA U3-20)
+                    self?.shell.taskforceWoke()
+                }
             })
         }
         // 해상도 · 화면 구성이 바뀌면 레일을 다시 화면 모서리에 붙이고, 열린 패널도 그 옆으로
@@ -279,6 +267,8 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         if let summary = shell.summary { Task { await summary.refresh() } }
         // 새 Issues 화면(OA U2): 화면을 열 때 · 로그인 · Try again마다 세션도 다시 읽는다 (RLS select 다섯, 쓰기 없음)
         if let issues = shell.issues { Task { await issues.sessions.refresh() } }
+        // Taskforce 대화(OA U3): 로그인 · 패널 열기 · Try again마다 v2 Review를 읽는다. 정해진 주기 읽기는 없다 (이 GET은 제안 노출 표시를 한다)
+        if shell.taskforceEnabled { shell.refreshTaskforce() }
         if let now = launcher.now, Self.readsList(reason, isLoading: now.refresh.isLoading) { Task { await now.load() } }
         if let runs = launcher.runs {
             Task {
@@ -359,15 +349,14 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         }
     }
 
-    /// 세션 패널 창: 이슈 패널이 열려 있고 탭이 붙은 화면이고 세션 패널이 열려 있을 때만 보인다. 높이 · 이슈 패널 자리가 바뀌면 위를 맞춘 채 맞춘다
+    /// 세션 패널 창: 이슈 패널이 이슈 상세로 열려 있고 세션 패널이 열려 있을 때만 보인다. 높이 · 이슈 패널 자리가 바뀌면 위를 맞춘 채 맞춘다
     private func followSessionPanel() {
         guard let sessionPanel else { return }
         let wanted = withObservationTracking {
             _ = sessionPanel.presentation.contentHeight
-            _ = panel.presentation.tabWidth
             _ = panel.presentation.bodyHeight
             _ = panel.presentation.footerHeight
-            return shell.panelOpen && shell.showsSessionTab && shell.openSessionItem != nil
+            return shell.sessionPanelShown
         } onChange: { [weak self] in
             Task { @MainActor in self?.followSessionPanel() }
         }
@@ -394,6 +383,20 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
             Task { @MainActor in self?.followIssues() }
         }
         shell.sessionsChanged()
+    }
+
+    /// Taskforce 대화(OA U3): v2 응답 · 충돌 상세 · 답 기록이 바뀌면 보던 요청을 맞추고(보던 것이 빠지면 그 뒤를 이은 요청) 기준점을 확인한다. 읽기는 하지 않는다
+    private func followTaskforce() {
+        guard let store = shell.taskforceStore else { return }
+        withObservationTracking {
+            _ = store.readSerial
+            _ = store.response
+            _ = store.conflicts
+            _ = store.answers
+        } onChange: { [weak self] in
+            Task { @MainActor in self?.followTaskforce() }
+        }
+        shell.taskforceChanged()
     }
 
     // MARK: 동기화
@@ -505,7 +508,8 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
             // 안쪽 것(열린 필터 카드 · Chats의 대화 목록)을 먼저 닫고, 그다음 패널을 접는다
             shell.escape()
         case .review:
-            // S4 gate가 꺼져 있으면 이 키는 연결이 없다: 지금처럼 지나간다. ⌘1도 텍스트 편집(입력칸 · IME 조합) · 메뉴 · 시트 밖에서만 듣는다 (⌘2 · ⌘3 · ⌘N은 그대로)
+            // S4 gate가 꺼져 있으면 이 키는 연결이 없다: 지금처럼 지나간다. ⌘1도 텍스트 편집(입력칸 · IME 조합) · 메뉴 · 시트 밖에서만 듣는다 (⌘2 · ⌘3 · ⌘N은 그대로).
+            // Taskforce 대화가 켜진 구성은 늘 대화를 연다: 서버 순서 첫 요청 (OA U3-40)
             guard reviewKeysAllowed else { return false }
             shell.openNewestReview()
         case .allWork:
@@ -534,10 +538,12 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         case .next:
             shell.stepReview(1)
         case .answer(let answer):
+            if shell.taskforceEnabled { return shell.taskforceAnswerKey(answer, repeated: event.isARepeat) }
             if !event.isARepeat, let id = shell.shownReview?.id { shell.answer(answer, for: id) }
         }
         return true
     }
+
 
     // MARK: NSWindowDelegate
 

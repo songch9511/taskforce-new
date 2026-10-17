@@ -229,7 +229,7 @@ public enum AgentSessionRing: String, Sendable, Hashable, CaseIterable {
         }
     }
 
-    /// 링의 말 (탭 항목 · 레일 접근성 이름, 디자인 SessionTab). idle은 "Idle"
+    /// 링의 말 (레일 접근성 이름 · 이슈 상세의 Sessions 목록). idle은 "Idle"
     public var label: String {
         switch self {
         case .needsYou: "Needs your answer"
@@ -326,11 +326,7 @@ public struct AgentSessionItem: Identifiable, Sendable, Hashable {
 
     public var isClosed: Bool { status == .closed }
     public var isExternal: Bool { status == .external }
-    /// 탭 · 레일에 보이는가: 닫힌 세션은 없다
-    public var showsInTab: Bool { !isClosed }
 
     /// SessionRow의 접근성 이름 "{이름} — {에이전트} — {말}". 끝난 세션은 말이 없어 "{이름} — {에이전트}"
     public var rowAccessibilityName: String { line.isEmpty ? "\(name) — \(agentName)" : "\(name) — \(agentName) — \(line)" }
-    /// 탭 항목의 접근성 이름 "{이름} · {말}" (말은 상태 줄과 같다: external은 "External · Open in Terminal")
-    public var tabAccessibilityName: String { line.isEmpty ? name : "\(name) · \(line)" }
 }

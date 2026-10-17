@@ -32,7 +32,7 @@ public enum AssistantWindowGeometry {
     }
 
     /// 첫 창의 왼쪽 위: 열린 패널의 바깥 가장자리에서 왼쪽으로 12pt, 위는 패널과 같다. 패널이 없으면 레일 왼쪽 12pt, 위는 레일과 같다.
-    /// panelOuterInset: 패널 바깥 가장자리에 붙는 것(세션 탭)의 폭 — U2가 채운다 (지금은 0)
+    /// panelOuterInset: 패널 바깥 가장자리에 붙는 것의 폭 (지금은 0: 패널 창이 붙은 것까지 품는다)
     public static func firstTopLeft(panelFrame: CGRect?, railFrame: CGRect, panelOuterInset: CGFloat = 0) -> CGPoint {
         if let panelFrame {
             return CGPoint(x: panelFrame.minX - panelOuterInset - gap - width, y: panelFrame.maxY)

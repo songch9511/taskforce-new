@@ -360,6 +360,25 @@ registry에 있고 연결이 없으면 `not_connected`(예: Codex를 아직 연�
 - **8장 지표:** `question_answered`에 `answered_locally: true` 차원을 더한다(`kind:"input"`, `answered`일 때만 같은 트랜잭션). 측정 공백: 입력한 화면(Assistant · Review) · 질문이 기다린 시간 · 표시 뒤 lease 때 값이 없어 닫힌 수(`bridge_commands.outcome='request_closed'`).
 - **AC-37 (:445) 서버 몫:** 비밀값 답의 서버 기록 0(답 단계 args는 `{agent_task_id, provider_request_id, answered_locally:true}`뿐, 카나리가 어느 표에도 남지 않음)과 Review 항목이 주인 Mac의 표시로 사라지는 것, 다른 기기는 표시할 수 없는 것을 fixture로 확인한다. 값이 에이전트에 한 번 도달하는 것은 D4b-m · MS-2의 실제 provider · Mac 확인이다.
 
+### 5.4 OA U3 화면 정정 (2026-10-18)
+
+이 절은 DS 2026-10-16 변경("Taskforce replaces Review" · "Design review cleanup")과 사용자 결정(2026-10-18, DS를 따른다)을 반영하며 아래에 지정한 기존 문구보다 우선한다. 서버 경로 · 토큰 · 지표 이름(`/api/v2/review`, `result_ready` …)은 그대로이고, 바뀌는 것은 앱의 자리와 이름이다.
+
+- **이름:** 앱 화면의 "Review"(Dock의 Review 항목 · Review 목록 · Review 패널)는 **Taskforce 대화**다. 입구는 레일 첫 칸 Taskforce bell(⌘1)이고, Taskforce 요청이 있거나 대화가 열려 있을 때만 보인다.
+- **0.1 U1 (:18):** "세션 패널과 Review는 입력창을 유지한다" → "세션 패널은 입력창을 유지한다. Taskforce 대화의 입력창은 후속이다".
+- **0.1 U8 · U17 (:25 · :34), 11장 1 (:484):** "Dock의 Review 항목" → "레일 첫 칸 Taskforce bell".
+- **3.4 Dock의 Review (:183):** Taskforce 대화는 Taskforce 요청(`confirm` · `result_ready` · `path_conflict`)을 서버 순서(긴급 → 오래 기다린 순)로 한 번에 하나 보이고, 끝에 복귀 요약 메시지(변화만, Needs 태그 없음, Clear = 읽음)를 둔다. 노란 · 조용한 타일과 목록 화면은 없다. bell은 요청이 있을 때 울리고 변화만으로는 울리지 않는다.
+- **3.4 "Review result" (:185) · 5.2 (:336):** "Later"는 없다. 요청은 처리될 때까지 남고, 시트의 Back이 남겨 둔다.
+- **3.6 입력 질문 (:209):** 입력 질문 · 승인 질문은 그 세션(세션 패널과 그 에이전트 대화)에서만 보이고 답한다. Taskforce 대화에 나열하지 않는다. 서버 계산 입력과 응답의 에이전트 종류 항목은 그대로이고 앱은 그리지도 세지도 않는다.
+- **5.1 3.6 승인 답 (:330):** "Assistant와 Review는 같은 …를 보낸다" → "Assistant 창과 세션 패널은 같은 …를 보낸다".
+- **5.2 (:337):** "⌥Space의 '가장 최근 결정'은 … `created_at`이 가장 늦은 항목" → "⌥Space · ⌘1은 앱이 그리는 종류의 `decisions` 중 서버 순서 첫 항목(가장 오래 기다린 요청)을 연다. 요청이 없으면 ⌥Space는 마지막 화면, ⌘1은 빈 대화를 연다".
+- **5.2 (:338):** "Review의 답은 D1d 답 route를 그대로 쓴다" → route는 그대로이고, 앱은 질문 항목을 Taskforce 대화에 그리지 않는다(세션에서 답한다).
+- **9장 (:432):** "Rail: Review 항목은 Review 목록이 있을 때만" → "Rail: 첫 칸 Taskforce bell은 요청이 있거나 대화가 열려 있을 때만".
+- **AC-7 (:445) · AC-24 (:462):** "Review의 `result_ready`" → "Taskforce 대화의 Result ready 요청".
+- **AC-9 (:447):** "Manual이면 Review로" → "Manual이면 그 세션의 승인 카드로".
+- **AC-25 (:463):** "Review 목록이 비면 Dock Review 항목 0" → "Taskforce 요청이 없고 대화가 닫혀 있으면 bell 0".
+- **AC-37 (:475):** "각각 Assistant와 Review에서 정확히 1회 전달" → "각각 그 세션(세션 패널과 그 에이전트 대화)에서 정확히 1회 전달".
+
 ## 6. 프로젝트 관리 (U5)
 
 | route | 내용 |

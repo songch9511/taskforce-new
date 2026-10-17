@@ -164,6 +164,12 @@ public enum ReturnSummaryCopy {
         parts.append(contentsOf: recentPhrases(item.changes))
         return parts.isEmpty ? nil : parts.joined(separator: separator)
     }
+
+    /// 변화만 보이는 줄의 보조 글 (OA U3, Taskforce 대화의 끝 메시지): 최근 서로 다른 변화 말들뿐이다. 결정은 요청 카드가 말하니 `Needs your answer` 태그가 없다 (DS ReturnSummary)
+    static func changesOnlyDetail(_ item: ReturnSummaryItem) -> String? {
+        let phrases = recentPhrases(item.changes)
+        return phrases.isEmpty ? nil : phrases.joined(separator: separator)
+    }
 }
 
 /// 복귀 요약 한 줄: StatusMark · 제목 · 보조 글 (강조 구절은 `Needs your answer`)
@@ -224,16 +230,22 @@ public struct ReturnSummaryContent: Equatable, Sendable {
     public let isClearing: Bool
     /// Clear 뒤 안내 한 줄 (충돌 · 실패)
     public let message: String?
+    /// 변화만 보이는 메시지 (OA U3, Taskforce 대화의 끝): Needs 태그 · 형광펜 없음, 목록의 In Progress는 표시 없이 빈 자리 (`StatusMark` 규칙). 옛 All work 위 카드는 아니다
+    public let changesOnly: Bool
 
     public var showsCard: Bool { !rows.isEmpty }
 
-    public init(title: String, rows: [ReturnSummaryRow], notes: [Note] = [], canClear: Bool = false, isClearing: Bool = false, message: String? = nil) {
+    public init(
+        title: String, rows: [ReturnSummaryRow], notes: [Note] = [], canClear: Bool = false, isClearing: Bool = false, message: String? = nil,
+        changesOnly: Bool = false
+    ) {
         self.title = title
         self.rows = rows
         self.notes = notes
         self.canClear = canClear
         self.isClearing = isClearing
         self.message = message
+        self.changesOnly = changesOnly
     }
 }
 
@@ -273,6 +285,37 @@ public enum ReturnSummaryPresentation {
             title: questionsOnly ? ReturnSummaryCopy.questionsTitle : ReturnSummaryCopy.title(since: summary.baseline == .cleared ? summary.since : nil, now: now, timeZone: timeZone),
             rows: rows, notes: notes, canClear: canClear(summary, isStale: isStale, cursorSpent: cursorSpent), isClearing: isClearing,
             message: rows.isEmpty ? nil : message
+        )
+    }
+
+    /// 변화만 보이는 요약 (OA U3, 계약 v3 5.4): Taskforce 대화의 끝 메시지. 같은 응답 · 같은 Clear 규칙에서 **결정을 뺀 것**이다.
+    /// - 줄은 변화가 있는 작업뿐이다 (결정만 있는 줄은 요청 카드가 말한다). Needs 태그 · 질문 제목 변형 · 질문 목록 노트가 없다.
+    /// - Clear는 읽음 처리일 뿐이다 (요청을 해결하지 않는다). 변화만으로는 bell이 울리지 않는다.
+    /// 옛 `make`는 Release용으로 그대로다. 아무것도 보일 것이 없으면 nil (비어 있다는 말은 만들지 않는다)
+    public static func makeChangesOnly(
+        summary: ReturnSummaryResponse?, isStale: Bool, readFailed: Bool, cursorSpent: Bool, isClearing: Bool, message: String?,
+        now: Date = Date(), timeZone: TimeZone = .current, canOpen: (UUID) -> Bool = { _ in true }
+    ) -> ReturnSummaryContent? {
+        guard let summary else {
+            return readFailed
+                ? ReturnSummaryContent(title: ReturnSummaryCopy.changesTitle, rows: [], notes: [.couldNotLoad], canClear: false, isClearing: false, message: nil, changesOnly: true)
+                : nil
+        }
+        let rows = summary.items.filter { !$0.changes.isEmpty }.map { item in
+            ReturnSummaryRow(
+                id: item.actionID, title: item.title, progress: item.state.flatMap { $0 == .unknown ? nil : $0 },
+                needsAnswer: false, detail: ReturnSummaryCopy.changesOnlyDetail(item), canOpen: canOpen(item.actionID)
+            )
+        }
+        var notes: [ReturnSummaryContent.Note] = []
+        if isStale || summary.sources.changes == .unavailable || summary.hasUnreadableChangeStatus { notes.append(.couldNotLoad) }
+        if summary.hasUninterpretableChange { notes.append(.couldNotShow) }
+        if summary.isTruncated { notes.append(.moreAvailable) }
+        guard !rows.isEmpty || !notes.isEmpty else { return nil }
+        return ReturnSummaryContent(
+            title: ReturnSummaryCopy.title(since: summary.baseline == .cleared ? summary.since : nil, now: now, timeZone: timeZone),
+            rows: rows, notes: notes, canClear: canClear(summary, isStale: isStale, cursorSpent: cursorSpent), isClearing: isClearing,
+            message: rows.isEmpty ? nil : message, changesOnly: true
         )
     }
 }
