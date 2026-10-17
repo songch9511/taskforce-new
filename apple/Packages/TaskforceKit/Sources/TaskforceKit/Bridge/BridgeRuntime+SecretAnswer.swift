@@ -15,12 +15,13 @@ extension BridgeRuntime {
         // 마무리 모드 · 종료 중인 런타임은 받지 않는다: 값을 두지 않는다
         guard config.mode == .normal, !shuttingDown else { return .unavailable }
         let key = LocalSecretKey(taskID: answer.key.taskID.uuidString, requestID: answer.key.requestID)
+        let trace = SecretSubmissionTrace()
         let ports = AgentQuestionSecretFlow.Ports(
             heartbeat: { await self.secretHeartbeat(accountStillMatches) },
             put: { answer in await self.secretPut(answer, key: key, accountStillMatches) },
             erase: { _ in await self.secrets.discard(key: key) },
             reconcile: { await self.secretReconcile() },
-            post: { digest in await self.secretPost(digest: digest, key: key, accountStillMatches) },
+            post: { digest in await self.secretPost(digest: digest, key: key, trace: trace, accountStillMatches) },
             pause: { seconds in try? await self.clock.sleep(.seconds(seconds)) }
         )
         let outcome = await AgentQuestionSecretFlow.run(answer, ports: ports)
@@ -37,10 +38,17 @@ extension BridgeRuntime {
         return heartbeatFresh()
     }
 
-    /// 포트 ②: 값을 **먼저** 둔다. 계정이 어긋났거나 종료 중이면 두지 않는다 (그러면 `POST`도 가지 않는다: `secretPost`가 값이 있는지 본다)
+    /// 포트 ②: 값을 **먼저** 둔다. 계정이 어긋났거나 종료 중이거나 **이 런타임의 원장이 그 (task, request)를 열린 비밀값 요청으로 모르면** 두지 않는다
+    /// (그러면 `POST`도 가지 않는다: `secretPost`가 값이 있는지 본다). 원장 파티션은 계정마다 갈리므로 이 확인 하나가 계정 전환 틈 · 낡은 카드 · 질문 교체를 로컬에서 함께 닫는다
     func secretPut(_ answer: LocalSecretAnswer, key: LocalSecretKey, _ accountStillMatches: @Sendable () async -> Bool) async {
-        guard await accountStillMatches(), secretPathOpen else { return }
+        guard await accountStillMatches(), secretPathOpen, await ledgerKnowsOpenSecret(key) else { return }
         await secrets.put(key: key, value: Self.wireValue(answer), at: clock.now())
+    }
+
+    /// 원장의 그 task가 이 런타임의 adapter 것이고, 그 요청이 지금 열려 있는 비밀값 요청이며 닫히지 않았다. 원장을 읽지 못하면 아니다
+    func ledgerKnowsOpenSecret(_ key: LocalSecretKey) async -> Bool {
+        guard let task = try? await ledger.task(key.taskID), adapters[task.adapter] != nil else { return false }
+        return task.openRequestID == key.requestID && task.openRequestSecret && !task.closedRequestIDs.contains(key.requestID)
     }
 
     /// 포트 ⑤: 작업을 되살린다 (`not_live` 뒤 한 번): heartbeat · reconcile을 강제로 돌린다
@@ -50,19 +58,23 @@ extension BridgeRuntime {
         await tick(reason: .heartbeat)
     }
 
-    /// 포트 ③: `POST /api/v1/bridge/answer-local`. 본문은 digest뿐이다. 값이 메모리에 없거나(버려졌다) 계정이 어긋났으면 보내지 않는다
-    func secretPost(digest: String, key: LocalSecretKey, _ accountStillMatches: @Sendable () async -> Bool) async -> AgentQuestionSecretFlow.Reply {
-        guard await accountStillMatches(), secretPathOpen, await secrets.contains(key: key) else {
+    /// 포트 ③: `POST /api/v1/bridge/answer-local`. 본문은 digest뿐이다. 계정이 어긋났거나 상태가 막혔으면 값을 지우고 보내지 않는다.
+    /// 값이 메모리에 없으면(정산 · 전달 · 보관 정리가 가져갔다) 보내지 않고 원장으로 그 요청이 어떻게 됐는지 본다 (`secretGoneReply`)
+    func secretPost(digest: String, key: LocalSecretKey, trace: SecretSubmissionTrace, _ accountStillMatches: @Sendable () async -> Bool) async -> AgentQuestionSecretFlow.Reply {
+        guard await accountStillMatches(), secretPathOpen else {
             await secrets.discard(key: key)
             return .http(400)
         }
+        guard await secrets.contains(key: key) else { return await secretGoneReply(key, afterPost: trace.posted) }
         guard let bridgeID else { return .network }
+        trace.markPosted()
         let request = BridgeV1AnswerLocalRequest(bridgeID: bridgeID, agentTaskID: key.taskID, requestDigest: digest)
         let result: AnswerLocalResult
         do {
             // `authed`가 401 회복 · 403 폐기 · 429 멈춤 · 늦은 응답 버리기를 맡는다. 409 · 400은 `authed`가 하나(`badRequest`)로 합치고 5xx는 런타임 전체를 오프라인으로 돌리므로
-            // 여기서 먼저 상태 그대로 구분한다 (결과 표가 다르다: 400은 지우고 끝, 409 · 5xx는 같은 요청을 다시)
-            result = try await authed(.answerLocal) { [client] secret in
+            // 여기서 먼저 상태 그대로 구분한다 (결과 표가 다르다: 400은 지우고 끝, 409 · 5xx는 같은 요청을 다시).
+            // 404는 이 route에서 도메인 결과다 (세션이 닫혔다 · 질문이나 bridge가 쓰는 도중 바뀌었다 · 이 사용자의 task가 아니다): "bridge 행이 없다"로 읽어 `clearBridge()`(다시 등록)하지 않는다 → `ackNotFound`
+            result = try await authed(.answerLocal, ackNotFound: true) { [client] secret in
                 do {
                     return .response(try await client.answerLocal(request, secret: secret))
                 } catch BridgeClientError.conflict {
@@ -83,6 +95,15 @@ extension BridgeRuntime {
         return reply
     }
 
+    /// 값이 없는데 POST 차례가 왔다. 원장의 그 요청: 닫혔다 → 질문이 닫혔다 · 이 제출이 이미 POST한 뒤인데 열려 있지 않고 닫히지도 않았다 = 서버가 만든 답 명령이 전달됐다 → 보냈다 ·
+    /// 그 밖(원장이 모름 · 아직 열려 있는데 값만 없음 · 아직 POST 전)은 실패다. 전달된 값을 거짓 "Couldn't send"로 보이지 않게 한다
+    func secretGoneReply(_ key: LocalSecretKey, afterPost: Bool) async -> AgentQuestionSecretFlow.Reply {
+        guard let task = try? await ledger.task(key.taskID) else { return .http(400) }
+        if task.closedRequestIDs.contains(key.requestID) { return .stale(.questionClosed) }
+        if afterPost, task.openRequestID != key.requestID { return .duplicate }
+        return .http(400)
+    }
+
     // MARK: 값의 수명 (F2 notes 10장 6 · 7)
 
     /// 값을 둘 수 있는 상태인가: 네트워크가 켜져 있고, 종료 중이 아니고, 사용자 행동을 기다리는 상태(폐기 · 자격 거절 · Mac 10대)가 아니다
@@ -97,11 +118,14 @@ extension BridgeRuntime {
         for key in await secrets.keys {
             let task: BridgeTaskRecord?
             do { task = try await ledger.task(key.taskID) } catch { continue } // 원장을 읽지 못하면 판단하지 않는다 (TTL이 지킨다)
-            if let task, task.openRequestID == key.requestID, !task.closedRequestIDs.contains(key.requestID) { continue }
+            // 끝난 task(`failed` · `cancelled`)에는 값을 받아 갈 답 명령이 다시 오지 않는다: 열린 요청이 남아 있어도 버린다
+            if let task, task.openRequestID == key.requestID, !task.closedRequestIDs.contains(key.requestID), !Self.terminalTaskStates.contains(task.lastState) { continue }
             if await secrets.discard(key: key) { closed += 1 }
         }
         if expired + closed > 0 { log.log("secret_answers_dropped", ["expired": .count(expired), "closed": .count(closed)]) }
     }
+
+    static let terminalTaskStates: Set<String> = ["failed", "cancelled"]
 
     /// 정산 때 버린다: 요청 id를 아는 정산 (닫기 · 전달 끝)
     func settleSecret(taskID: String, requestID: String) async {
@@ -111,6 +135,13 @@ extension BridgeRuntime {
     /// 정산 때 버린다: 요청 id를 모르는 정산 (lease가 거둔 · 오래된 answer 명령은 payload가 오지 않는다). 그 task의 값을 모두 버린다 (한 task에는 열린 질문이 하나다)
     func settleSecrets(taskID: String) async {
         await secrets.discard(taskID: taskID)
+    }
+
+    /// 결과 확인(readback)으로 정산한 답 명령 (lease 응답이 유실돼 만료된 것): 요청 id를 모른다. `not_received`면 이 task는 `failed`(끝남)가 되므로 그 task의 값을 모두 버린다.
+    /// 그 밖의 결과(`received` · `unknown`)는 task가 계속 열려 있을 수 있다: 같은 task의 새로 입력한 값(다른 요청 id)을 늦은 정산이 지우지 않는다 (원장 대조 · TTL이 맡는다)
+    func settleSecretsAfterReadback(taskID: String, kind: BridgeV1CommandKind, result: BridgeV1ReadbackResult) async {
+        guard kind == .answer, result == .notReceived else { return }
+        await settleSecrets(taskID: taskID)
     }
 
     // MARK: 변환 · 결과 표
@@ -173,5 +204,14 @@ extension BridgeRuntime {
         case .network: "network"
         }
     }
+}
+
+/// 한 번의 `submitLocalSecret`이 POST를 이미 보냈는지 (재시도 때 "값이 없다"가 전달된 것인지 가르는 데만 쓴다). 값은 담지 않는다
+final class SecretSubmissionTrace: @unchecked Sendable {
+    private let lock = NSLock()
+    private var didPost = false
+
+    var posted: Bool { lock.withLock { didPost } }
+    func markPosted() { lock.withLock { didPost = true } }
 }
 #endif

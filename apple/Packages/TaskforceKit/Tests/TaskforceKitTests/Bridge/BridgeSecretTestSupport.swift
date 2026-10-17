@@ -1,5 +1,6 @@
 #if os(macOS) && DEBUG
 import Foundation
+import Testing
 @testable import TaskforceKit
 
 /// OA D4b-m-2 시험 도우미: 비밀값 질문이 열린 런타임을 세우고, 실제 `submitLocalSecret` 길로 값을 내보낸다 (가짜 서버 · 수동 시계).
@@ -17,12 +18,20 @@ enum SecretFixture {
     }
 
     /// 등록 → 질문을 내는 턴 → 서버가 `awaiting_answer`로 안다
-    static func open(_ h: BridgeHarness, secret: Bool = true) async throws -> FakeBridgeServer.Created {
-        h.agent.setScript(.asking(question(secret: secret)))
+    /// - endsAfterAsking: 질문을 내고 프로세스가 끝난다 (Claude Code처럼: 질문은 프로세스가 끝난 뒤에 나가고 task는 프로세스 없이 `awaiting_answer`로 기다린다)
+    static func open(_ h: BridgeHarness, secret: Bool = true, endsAfterAsking: Bool = false) async throws -> FakeBridgeServer.Created {
+        if endsAfterAsking {
+            h.agent.setScript(.init([.sessionBound(external: "fake-session-1", workspace: "workspace-fake"), .accepted, .question(question(secret: secret)), .end(AgentExit(code: 0))]))
+        } else {
+            h.agent.setScript(.asking(question(secret: secret)))
+        }
         await h.registerFirst()
         let created = h.message()
         await h.runtime.tick()
-        await h.settle { (try? await h.ledger.task(created.taskID))?.openRequestID == requestID && h.server.taskState(created.taskID) == "awaiting_answer" }
+        await h.settle(timeout: 30) { (try? await h.ledger.task(created.taskID))?.openRequestID == requestID && h.server.taskState(created.taskID) == "awaiting_answer" }
+        if (try? await h.ledger.task(created.taskID))?.openRequestID != requestID || h.server.taskState(created.taskID) != "awaiting_answer" {
+            Issue.record("질문이 열리지 않았다 (부하로 늦었을 수 있다): 원장 \(String(describing: (try? await h.ledger.task(created.taskID))?.openRequestID)) 서버 \(String(describing: h.server.taskState(created.taskID)))")
+        }
         return created
     }
 

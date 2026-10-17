@@ -276,6 +276,8 @@ extension BridgeRuntime {
                     unrecorded = record
                 }
                 if result == .notReceived { _ = try? await ledger.updateTask(item.agentTaskID) { $0.lastState = "failed" } }
+                // 정산: 결과 확인으로 끝난 답 명령의 값. 요청 id를 모르므로 task가 끝난 경우(`not_received` → `failed`)에만 그 task의 값을 버린다 (OA D4b-m-2 검토 1)
+                await settleSecretsAfterReadback(taskID: item.agentTaskID, kind: item.kind, result: result)
                 await sendAck(.readback(result, processEnded: ended), commandID: item.commandID, saving: unrecorded)
                 return .acted
             }

@@ -129,6 +129,7 @@ struct BridgeSecretFlowTests {
             #expect(answerLocalRequests(h).count == item.posts, "\(item.name): POST \(answerLocalRequests(h).count)번")
             #expect(await h.secrets.contains(key: S.key(created)) == item.keepsValue, "\(item.name): 값")
             #expect(Set(answerLocalRequests(h).map(\.bodyJSON)).count == 1, "\(item.name): 같은 요청(멱등)")
+            #expect(!h.log.events.contains("bridge_gone"), "\(item.name): 이 route의 오류가 bridge를 지우지 않는다")
             #expect(!answerLocalRequests(h).contains { $0.bodyJSON.contains(canary) }, "\(item.name): 본문에 값 0")
         }
     }
@@ -144,21 +145,29 @@ struct BridgeSecretFlowTests {
 
     // MARK: 서버 규칙을 흉내 낸 가짜 서버
 
-    @Test func aDigestOfAnotherRequestIsAClosedQuestionAndThereIsNoAnswerCommand() async throws {
+    /// 가짜 서버의 규칙은 클라이언트로 직접 본다 (제출 길은 원장이 모르는 요청이면 POST 전에 멈춘다: `BridgeSecretReviewFixTests`)
+    private func rawAnswerLocal(_ h: BridgeHarness, task: String, request: String) async throws -> BridgeV1AnswerLocalResponse {
+        let secret = try #require(try h.credentials.secret(partition: h.partition.id))
+        return try await h.runtime.client.answerLocal(
+            BridgeV1AnswerLocalRequest(bridgeID: h.bridgeID, agentTaskID: task, requestDigest: AgentQuestionRules.requestDigest(request)), secret: secret
+        )
+    }
+
+    @Test func theFakeServerSaysClosedForADigestOfAnotherRequestAndMakesNoAnswerCommand() async throws {
         let h = try BridgeHarness()
         let created = try await S.open(h)
-        #expect(await S.submit(h, S.answer(created, request: "some-other-request", value: S.canary())) == .questionClosed)
-        #expect(await h.secrets.hasPending == false)
+        #expect(try await rawAnswerLocal(h, task: created.taskID, request: "some-other-request") == .stale(reason: .questionClosed))
+        #expect(h.server.commandIDs(taskID: created.taskID, kind: "answer").isEmpty)
         h.clock.jump(by: 6)
         await h.runtime.tick()
         #expect(h.agent.deliveredAnswers.isEmpty)
     }
 
-    @Test func aQuestionThatIsNotSecretIsNotSecretAndNothingStays() async throws {
+    @Test func theFakeServerSaysNotSecretForAQuestionWithoutASecretItem() async throws {
         let h = try BridgeHarness()
         let created = try await S.open(h, secret: false)
-        #expect(await S.submit(h, S.answer(created, value: S.canary())) == .questionClosed)
-        #expect(await h.secrets.hasPending == false)
+        #expect(try await rawAnswerLocal(h, task: created.taskID, request: S.requestID) == .stale(reason: .notSecret))
+        #expect(h.server.commandIDs(taskID: created.taskID, kind: "answer").isEmpty)
     }
 
     @Test func theSameRequestAgainIsADuplicateAndMakesNoSecondCommand() async throws {
@@ -175,12 +184,12 @@ struct BridgeSecretFlowTests {
         #expect(await h.secrets.hasPending == false)
     }
 
-    @Test func aTaskThatThisMacDoesNotOwnIsNotFoundAndTheValueIsErased() async throws {
+    @Test func theFakeServerSaysNotFoundForATaskThisMacDoesNotOwn() async throws {
         let h = try BridgeHarness()
         _ = try await S.open(h)
-        let stranger = FakeBridgeServer.Created(commandID: "x", taskID: UUID().uuidString.lowercased(), sessionID: "y", stepID: "z", marker: "m")
-        #expect(await S.submit(h, S.answer(stranger, value: S.canary())) == .questionClosed, "서버가 모르는 task = 404")
-        #expect(await h.secrets.hasPending == false)
+        await #expect(throws: BridgeClientError.notFound) {
+            _ = try await rawAnswerLocal(h, task: UUID().uuidString.lowercased(), request: S.requestID)
+        }
     }
 
     // MARK: 계정 경계 (D4bm2-05)
