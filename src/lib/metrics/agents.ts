@@ -31,10 +31,6 @@ export type AgentEventSpec = {
 
 const sql = (fn: string): EventSource => ({ kind: "sql", fn });
 
-// F2 단일 입구 가드(src/lib/bridge/answer-local.test.ts U5)가 비밀값 로컬 답 함수의 이름을 글자 그대로 찾아 "부르는 곳은 answer-local.ts 하나"를 고정한다.
-// 이 등록부는 부르지 않고 이름만 적으므로 그 가드에 걸리지 않게 이름을 둘로 나눠 적는다 (그 가드가 이 파일을 건너뛰게 고치면 한 줄로 합칠 수 있다: 범위 요청, notes).
-const LOCAL_ANSWER_FN = ["answer_agent_question", "locally"].join("_");
-
 /** OA 지표 type 17개 (CHECK 블록 v3, 20261123000000_agent_path_leases.sql). 1–11 · 17이 에이전트 대화, 12–16이 프로젝트 · 이슈 정리 */
 export const AGENT_EVENTS: readonly AgentEventSpec[] = [
   // 전달 시작마다: 사용자가 보낸 순간이 아니라 대기열 · 재전달 · Mac 복귀 때도 생긴다 (리텐션 활동이 아니다, Q5)
@@ -46,7 +42,7 @@ export const AGENT_EVENTS: readonly AgentEventSpec[] = [
   // 질문 답 route · 승인 · 비밀값 로컬 답. 자유 글 답(route_agent_message)은 지표 행이 없다 — 카드 ③이 답 단계로 센다 (Q4 A)
   {
     type: "question_answered",
-    sources: [sql("answer_agent_question_recorded"), sql("answer_agent_approval"), sql(LOCAL_ANSWER_FN)],
+    sources: [sql("answer_agent_question_recorded"), sql("answer_agent_approval"), sql("answer_agent_question_locally")],
     dims: ["kind", "answered_locally", "decision"],
     activity: true,
   },

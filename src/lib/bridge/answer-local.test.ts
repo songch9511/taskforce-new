@@ -173,10 +173,31 @@ describe("U5 단일 입구 가드 (정적 스캔)", () => {
   });
   const files = production(root);
 
+  // 규칙은 "부르는 곳이 하나"다: .rpc( 의 첫 인자가 이 함수 이름인 곳만 센다 (공백 · 줄바꿈 허용). 이름을 적기만 하는 곳(주석 · 지표 등록부 src/lib/metrics/agents.ts)은 부르는 곳이 아니다
+  const CALLS_LOCAL_ANSWER = /\.rpc\s*(?:<[^>]*>)?\s*\(\s*["'`]answer_agent_question_locally["'`]/;
+
   it("생산 코드에서 answer_agent_question_locally를 부르는 곳은 src/lib/bridge/answer-local.ts 하나다", () => {
     expect(files.length).toBeGreaterThan(100);
-    const hits = files.filter((file) => readFileSync(file, "utf8").includes("answer_agent_question_locally")).map((file) => path.relative(root, file));
+    const hits = files.filter((file) => CALLS_LOCAL_ANSWER.test(readFileSync(file, "utf8"))).map((file) => path.relative(root, file));
     expect(hits).toEqual(["lib/bridge/answer-local.ts"]);
+  });
+
+  it("가드 자체: .rpc( 호출은 잡고(공백 · 줄바꿈 · 따옴표 종류 무관) 이름만 적은 곳은 잡지 않는다", () => {
+    const calls = [
+      'admin.rpc("answer_agent_question_locally", { p_user_id: user })',
+      "client\n  .rpc(\n    'answer_agent_question_locally',\n    {},\n  )",
+      "admin.rpc(`answer_agent_question_locally`)",
+      'admin.rpc< Result >( "answer_agent_question_locally" )',
+      'await retryOnConflict(async () => admin?.rpc("answer_agent_question_locally", args))',
+    ];
+    for (const source of calls) expect(CALLS_LOCAL_ANSWER.test(source), source).toBe(true);
+    const mentions = [
+      'const sources = [sql("answer_agent_question_locally")];',
+      "// 이 모듈이 answer_agent_question_locally를 부르는 단 하나의 곳이다.",
+      'admin.rpc("answer_agent_question_recorded", { note: "answer_agent_question_locally" })',
+      'admin.rpc("other_function", {})\nconst name = "answer_agent_question_locally"',
+    ];
+    for (const source of mentions) expect(CALLS_LOCAL_ANSWER.test(source), source).toBe(false);
   });
 
   it("answeredLocally: true를 answerAgentQuestion에 넘기는 곳이 없다 (questions.ts 'server proof' 규칙을 고정)", () => {
