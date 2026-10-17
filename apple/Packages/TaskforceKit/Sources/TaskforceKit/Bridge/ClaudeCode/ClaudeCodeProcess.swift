@@ -29,10 +29,13 @@ public struct ClaudeCodeTestHooks: Sendable {
     public var beforeHookReturn: (@Sendable () async -> Void)?
     /// spawn의 stdin에 건네는 바이트 수 (시작 중에 멈춘 spawn은 0, 17장 1)
     public var inputBytes: (@Sendable (Int) -> Void)?
+    /// 끝나는 spawn이 등록부에서 내려온 직후 · 남은 출력을 내기 전 (출력 정산 중 `forgetSession`이 가리개를 지우지 않는지 보는 경쟁 시험, 검토 1)
+    public var afterUnregister: (@Sendable () async -> Void)?
 
     public init(
         afterConfigWrite: (@Sendable (URL) -> Void)? = nil, gateDelay: Duration? = nil, terminateOverride: (@Sendable (AgentProcessIdentity) -> AgentLiveness?)? = nil,
-        beforeFinishClose: (@Sendable () async -> Void)? = nil, beforeHookReturn: (@Sendable () async -> Void)? = nil, inputBytes: (@Sendable (Int) -> Void)? = nil
+        beforeFinishClose: (@Sendable () async -> Void)? = nil, beforeHookReturn: (@Sendable () async -> Void)? = nil, inputBytes: (@Sendable (Int) -> Void)? = nil,
+        afterUnregister: (@Sendable () async -> Void)? = nil
     ) {
         self.afterConfigWrite = afterConfigWrite
         self.gateDelay = gateDelay
@@ -40,6 +43,7 @@ public struct ClaudeCodeTestHooks: Sendable {
         self.beforeFinishClose = beforeFinishClose
         self.beforeHookReturn = beforeHookReturn
         self.inputBytes = inputBytes
+        self.afterUnregister = afterUnregister
     }
 }
 
@@ -72,6 +76,10 @@ public actor ClaudeCodeProcess: AgentProcess {
     private var lineages: [String: ClaudeLineage] = [:]
     /// 앱 종료 · 계정 삭제가 시작됐다 (16장 1): 그 뒤에는 어떤 spawn(턴 · 답 · 닫기 · 내부 닫기)도 띄우지 않는다
     private var spawningStopped = false
+    /// 세션마다 끝나는 중인 spawn 수 (`finish`가 시작해 마지막 출력을 낼 때까지): 이 동안 `forgetSession`은 가리개를 지우지 않는다
+    private var settling: [String: Int] = [:]
+    /// `forgetSession`을 받았지만 spawn이 있거나 정산 중이라 미룬 세션
+    private var forgetWhenSettled: Set<String> = []
 
     /// marker의 혈통 객체 하나: 감독 중이면 그 spawn의 것, 아니면 파일에서 한 번 읽어 둔 것
     func sharedLineage(_ marker: String) -> ClaudeLineage {
@@ -83,14 +91,30 @@ public actor ClaudeCodeProcess: AgentProcess {
     }
 
     /// 그 세션의 비밀값 · 비밀 항목을 메모리에서 지운다 (D4a2-08: 런타임이 폐기(revoke) 때, Settings가 Disconnect 성공 뒤에 부른다, 9장 1).
-    /// 그 세션의 spawn이 아직 등록부에 있으면(돌고 있거나 끝을 증명하지 못했다) 가리개는 남긴다: 그 프로세스의 출력이 비밀값을 되말하면 가려야 한다 — 비밀 항목만 지운다
+    /// 그 세션의 spawn이 아직 등록부에 있거나(돌고 있거나 끝을 증명하지 못했다) **끝난 spawn의 마지막 출력이 아직 정산 중이면**(`finish`가 등록부에서 내린 뒤 산출물 해시를 기다리며 글을 낸다)
+    /// 가리개는 남긴다: 그 출력이 비밀값을 되말하면 가려야 한다 — 비밀 항목만 지운다. 잊기는 세션이 조용해지는 순간 이어서 한다 (`releaseForgetIfIdle`)
     public func forgetSession(_ sessionID: String) async {
         secretItems[sessionID] = nil
-        guard registeredSpawns(sessionID).isEmpty else {
-            log.log("claude_forget_deferred", [:])
-            return
-        }
+        forgetWhenSettled.insert(sessionID)
+        if !releaseForgetIfIdle(sessionID) { log.log("claude_forget_deferred", [:]) }
+    }
+
+    /// 잊기를 기다리는 세션이 조용하면(등록부에 spawn 0 · 정산 중인 spawn 0) 가리개를 지운다. 지웠으면 true
+    @discardableResult
+    private func releaseForgetIfIdle(_ sessionID: String) -> Bool {
+        guard forgetWhenSettled.contains(sessionID), settling[sessionID] == nil, registeredSpawns(sessionID).isEmpty else { return false }
+        forgetWhenSettled.remove(sessionID)
         sessionRedactors[sessionID] = nil
+        return true
+    }
+
+    private func beginSettling(_ sessionID: String) {
+        settling[sessionID, default: 0] += 1
+    }
+
+    private func endSettling(_ sessionID: String) {
+        if let count = settling[sessionID], count > 1 { settling[sessionID] = count - 1 } else { settling[sessionID] = nil }
+        releaseForgetIfIdle(sessionID)
     }
 
     #if DEBUG
@@ -272,7 +296,11 @@ public actor ClaudeCodeProcess: AgentProcess {
         } else {
             try? state.save(in: folder.root)
         }
-        if !values.isEmpty { sessionRedactors[answer.sessionID] = redactor(answer.sessionID).adding(values) }
+        // 새 비밀값을 심는 세션은 다시 쓰이는 세션이다: 앞선 잊기 요청이 이 가리개를 지우지 않게 미룬 요청을 거둔다
+        if !values.isEmpty {
+            forgetWhenSettled.remove(answer.sessionID)
+            sessionRedactors[answer.sessionID] = redactor(answer.sessionID).adding(values)
+        }
         secretItems[answer.sessionID] = nil
         let binding = ClaudeAnswerBinding(requestID: answer.requestID, kind: answer.kind, inputSHA256: open.inputSHA256, value: answer.value, targetSHA256: open.targetSHA256)
         let spawn = try await launch(
@@ -1108,6 +1136,8 @@ public actor ClaudeCodeProcess: AgentProcess {
     }
 
     private func finish(_ spawn: Spawn, status: ClaudeExitStatus) async {
+        beginSettling(spawn.agentSessionID)
+        defer { endSettling(spawn.agentSessionID) }
         spawn.resultTimer?.cancel()
         spawn.exited = true
         spawn.answer.end()
@@ -1138,6 +1168,7 @@ public actor ClaudeCodeProcess: AgentProcess {
         // 따라오는 내부 닫기는 끝 증명 전에 정해 등록부에 있다 (`unexpectedDeferred`, 17장 1). 없으면 끝을 증명한 지금 세션 자리를 놓고 나서 질문 · 글을 낸다
         // (17장 3: 그 사건을 받은 쪽이 같은 세션에 닫기를 띄워도 자기를 기다리지 않는다). 있으면 자기 닫기까지 마친 뒤에 놓는다 (9장 10)
         if spawn.unexpectedDeferred == nil { unregister(spawn) }
+        await testHooks.afterUnregister?()
         await apply(spawn, actions)
         if let id = spawn.unexpectedDeferred, let executable = locator.locate() {
             // 기록에 없는 id가 보고됐거나 열린 요청으로 적지 못했다: 그 id를 바로 닫는다 (질문을 내지 않는다)
@@ -1159,6 +1190,7 @@ public actor ClaudeCodeProcess: AgentProcess {
         spawns[spawn.id] = nil
         if sessionSpawn[spawn.agentSessionID] == spawn.id { sessionSpawn[spawn.agentSessionID] = nil }
         if taskSpawn[spawn.taskID] == spawn.id { taskSpawn[spawn.taskID] = nil }
+        releaseForgetIfIdle(spawn.agentSessionID)
     }
 
     // MARK: writer 하나

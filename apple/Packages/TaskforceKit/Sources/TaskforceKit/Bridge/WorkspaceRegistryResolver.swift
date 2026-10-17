@@ -33,6 +33,15 @@ public final class RegistryWorkspaceResolver: WorkspaceResolver {
         return nil
     }
 
+    /// 세션에 핀을 꽂고 **성공해서 읽힌 실제 핀**만 돌려준다. 저장하지 못하면 nil로 닫는다: 핀 없이 띄우면 다음 턴이 `authorize`에서 거절되고 핀을 다시 만들 길도 없다
+    private func pinned(_ sessionID: String, to path: String) -> String? {
+        do { try registry.pin(session: sessionID, to: path) } catch {
+            log.log("workspace_pin_failed", [:])
+            return nil
+        }
+        return registry.pinned(session: sessionID).flatMap(usable)
+    }
+
     public func workspace(forSession sessionID: String, adapter: String) async -> String? {
         if let pinned = registry.pinned(session: sessionID) { return usable(pinned) }
         guard let session = UUID(uuidString: sessionID) else { return nil }
@@ -45,10 +54,7 @@ public final class RegistryWorkspaceResolver: WorkspaceResolver {
         }
         // 2. 대화 핀
         for conversation in snapshot.conversations where conversation.agentSessionID == session {
-            if let path = registry.pending(conversation: conversation.id), let real = usable(path) {
-                try? registry.pin(session: sessionID, to: real)
-                return real
-            }
+            if let path = registry.pending(conversation: conversation.id), let real = usable(path) { return pinned(sessionID, to: real) }
         }
         // 3. 프로젝트
         let actions = Set(snapshot.runs.filter { $0.agentSessionID == session }.map(\.actionID))
@@ -62,10 +68,7 @@ public final class RegistryWorkspaceResolver: WorkspaceResolver {
         }
         let projects = Set(members.filter { member in member.isConfirmed && member.actionID.map(actions.contains) == true }.map(\.contextID))
         for project in projects.sorted(by: { $0.uuidString < $1.uuidString }) {
-            if let path = registry.folder(forProject: project), let real = usable(path) {
-                try? registry.pin(session: sessionID, to: real)
-                return real
-            }
+            if let path = registry.folder(forProject: project), let real = usable(path) { return pinned(sessionID, to: real) }
         }
         return nil
     }

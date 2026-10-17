@@ -50,16 +50,18 @@ public struct AgentTerminalCommandStore: Sendable {
         self.now = now
     }
 
-    /// 0700 파일을 만들어 `contents`를 쓴다. 폴더가 없으면 0700으로 만들고, 기호 링크이거나 남의 폴더이면 던진다
+    /// 0700 파일을 만들어 `contents`를 쓴다. 폴더가 없으면 0700으로 만들고, 기호 링크이거나 남의 폴더이면 던진다.
+    /// 폴더는 한 번 열어(`O_NOFOLLOW | O_DIRECTORY`) 그 fd로 검사하고 파일을 만든다 — 검사한 폴더와 쓰는 폴더가 같다 (교체 경쟁 없음)
     public func write(_ contents: String) throws -> URL {
-        try prepareDirectory()
-        let file = directory.appending(path: UUID().uuidString.lowercased() + ".command")
-        let descriptor = open(file.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o700)
+        let directoryFD = try openDirectory(create: true)
+        defer { close(directoryFD) }
+        let name = UUID().uuidString.lowercased() + ".command"
+        let descriptor = openat(directoryFD, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o700)
         guard descriptor >= 0 else { throw AgentTerminalCommandError.storeUnavailable }
         var succeeded = false
         defer {
             close(descriptor)
-            if !succeeded { unlink(file.path) }
+            if !succeeded { unlinkat(directoryFD, name, 0) }
         }
         guard fchmod(descriptor, 0o700) == 0 else { throw AgentTerminalCommandError.storeUnavailable }
         let data = Data(contents.utf8)
@@ -74,38 +76,72 @@ public struct AgentTerminalCommandStore: Sendable {
         }
         guard written else { throw AgentTerminalCommandError.storeUnavailable }
         succeeded = true
-        return file
+        return directory.appending(path: name)
     }
 
-    /// 10분이 넘은 `.command` 파일을 지운다 (이 폴더 안의 일반 파일만, 기호 링크는 따라가지 않는다). 지운 수를 돌려준다
+    /// 10분이 넘은 `.command` 파일을 지운다. **폴더 검증(기호 링크가 아닌 내 폴더) + 폴더 fd 기준 삭제**라 `Terminal`이 다른 폴더를 가리켜도 거기 파일을 지우지 않는다
+    /// (일반 파일 · 내 소유만, 파일 이름이 기호 링크여도 따라가지 않는다). 지운 수를 돌려준다
     @discardableResult
     public func sweep() -> Int {
-        guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else { return 0 }
-        let cutoff = now().addingTimeInterval(-Self.lifetime)
+        remove(olderThan: now().addingTimeInterval(-Self.lifetime))
+    }
+
+    /// 모든 `.command` 파일을 지운다 (계정 삭제, 보안 F4). 같은 검증 · 같은 삭제 방식
+    @discardableResult
+    public func removeAll() -> Int {
+        remove(olderThan: nil)
+    }
+
+    private func remove(olderThan cutoff: Date?) -> Int {
+        guard let directoryFD = try? openDirectory(create: false) else { return 0 }
+        defer { close(directoryFD) }
         var removed = 0
-        for name in names where name.hasSuffix(".command") {
-            let path = directory.appending(path: name).path
+        for name in Self.names(inDirectory: directoryFD) where name.hasSuffix(".command") {
             var info = stat()
-            guard lstat(path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, info.st_uid == getuid() else { continue }
-            let modified = Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec))
-            if modified < cutoff, unlink(path) == 0 { removed += 1 }
+            guard fstatat(directoryFD, name, &info, AT_SYMLINK_NOFOLLOW) == 0, (info.st_mode & S_IFMT) == S_IFREG, info.st_uid == getuid() else { continue }
+            if let cutoff, Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec)) >= cutoff { continue }
+            if unlinkat(directoryFD, name, 0) == 0 { removed += 1 }
         }
         return removed
     }
 
-    private func prepareDirectory() throws {
-        var info = stat()
-        if lstat(directory.path, &info) != 0 {
+    /// 폴더를 연다: 기호 링크는 따라가지 않고 `fstat`으로 내 폴더인지 본다. 모드가 0700이 아니면 바로잡는다. `create`면 없을 때 0700으로 만든다
+    private func openDirectory(create: Bool) throws -> Int32 {
+        var descriptor = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        if descriptor < 0, create, errno == ENOENT {
             do {
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             } catch {
                 throw AgentTerminalCommandError.storeUnavailable
             }
-            guard lstat(directory.path, &info) == 0 else { throw AgentTerminalCommandError.storeUnavailable }
+            descriptor = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         }
-        // 기호 링크가 아닌 내 폴더만. 모드가 0700이 아니면 바로잡는다
-        guard (info.st_mode & S_IFMT) == S_IFDIR, info.st_uid == getuid() else { throw AgentTerminalCommandError.storeUnavailable }
-        if info.st_mode & 0o777 != 0o700, chmod(directory.path, 0o700) != 0 { throw AgentTerminalCommandError.storeUnavailable }
+        guard descriptor >= 0 else { throw AgentTerminalCommandError.storeUnavailable }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR, info.st_uid == getuid() else {
+            close(descriptor)
+            throw AgentTerminalCommandError.storeUnavailable
+        }
+        if info.st_mode & 0o777 != 0o700, fchmod(descriptor, 0o700) != 0 {
+            close(descriptor)
+            throw AgentTerminalCommandError.storeUnavailable
+        }
+        return descriptor
+    }
+
+    private static func names(inDirectory descriptor: Int32) -> [String] {
+        let duplicate = dup(descriptor)
+        guard duplicate >= 0, let stream = fdopendir(duplicate) else {
+            if duplicate >= 0 { close(duplicate) }
+            return []
+        }
+        defer { closedir(stream) }
+        var names: [String] = []
+        while let entry = readdir(stream) {
+            let name = withUnsafePointer(to: &entry.pointee.d_name) { $0.withMemoryRebound(to: CChar.self, capacity: Int(NAME_MAX) + 1) { String(cString: $0) } }
+            if name != "." && name != ".." { names.append(name) }
+        }
+        return names
     }
 }
 

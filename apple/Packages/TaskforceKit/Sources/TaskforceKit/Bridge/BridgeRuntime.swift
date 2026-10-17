@@ -221,10 +221,12 @@ public actor BridgeRuntime {
     func decideTool(_ query: BridgeV1ToolDecisionQuery) async throws -> BridgeV1ToolDecisionResponse {
         if statusValue == .revoked { throw AgentToolDecisionError.revoked }
         guard networkEnabled, statusValue != .stopped, let bridgeID, let secret else { throw AgentToolDecisionError.unavailable }
+        // 서버에는 이 Mac의 경로를 한 글자도 보내지 않는다 (D4a2-03 끝까지): 모든 경로 칸을 가상 루트(`/taskforce/<ws_id>/…`)로 바꿔 보내고, 응답의 가상 경로는 되돌려 adapter에 준다
+        let paths = await virtualPaths(for: query)
         let gen = generation
         let response: BridgeV1ToolDecisionResponse
         do {
-            response = try await client.toolDecision(BridgeV1ToolDecisionRequest(bridgeID: bridgeID, query: query), secret: secret, timeout: Self.toolDecisionTimeout)
+            response = paths.restore(try await client.toolDecision(BridgeV1ToolDecisionRequest(bridgeID: bridgeID, query: paths.virtualize(query)), secret: secret, timeout: Self.toolDecisionTimeout))
         } catch BridgeClientError.forbidden {
             throw AgentToolDecisionError.revoked
         } catch {

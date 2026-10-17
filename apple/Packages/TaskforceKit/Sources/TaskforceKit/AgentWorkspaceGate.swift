@@ -115,6 +115,37 @@ public enum AgentWorkspaceGate {
     }
 }
 
+/// 보내기 직전에 고정하는 사실 (코디네이터 13.11 · Astra P2-2): 폴더 창을 기다리는 동안 계정 · 창 · 대화 · 대상 · 칩 · 초안이 바뀌면 **다른 곳으로 보내거나 다른 곳에 등록하지 않는다**.
+/// 보내기를 시작할 때 한 번 만들고, 등록 직전 · 보내기 직전에 지금 값을 다시 만들어 같은지 본다. 다르면 보내지 않고 초안도 지우지 않는다
+public struct AgentSendTicket: Equatable, Sendable {
+    /// 로그인한 계정과 세션 세대 (로그아웃 · 계정 전환이면 달라진다)
+    public let account: AccountScope.Token?
+    /// 보내는 창 (창 모델의 id)
+    public let windowID: UUID
+    public let conversationID: UUID
+    public let hasSession: Bool
+    public let target: AssistantTargetPick
+    public let chips: [AssistantChip]
+    public let draft: String
+
+    public init(account: AccountScope.Token?, windowID: UUID, conversationID: UUID, hasSession: Bool, target: AssistantTargetPick, chips: [AssistantChip], draft: String) {
+        self.account = account
+        self.windowID = windowID
+        self.conversationID = conversationID
+        self.hasSession = hasSession
+        self.target = target
+        self.chips = chips
+        self.draft = draft
+    }
+}
+
+extension AssistantWindowModel {
+    /// 보내기 직전에 고정하는 사실 (`AgentSendTicket`): 폴더 창을 기다린 뒤 지금 값과 같은지 본다
+    public func sendTicket(account: AccountScope.Token?) -> AgentSendTicket {
+        AgentSendTicket(account: account, windowID: id, conversationID: conversationID, hasSession: sessionID != nil, target: pick, chips: chips.chips, draft: draft)
+    }
+}
+
 /// 이 Mac의 폴더 등록부가 보이는 면 (실제는 `WorkspaceRegistry`)
 public protocol AgentWorkspaceFolders: Sendable {
     /// 그 프로젝트에 연결된, 지금도 받아 줄 폴더가 있나
@@ -139,7 +170,7 @@ public final class AgentWorkspaceSendGate {
     public enum Outcome: Equatable, Sendable {
         /// 보내도 된다 (묻지 않았거나, 골라서 등록했다)
         case proceed
-        /// 보내지 않는다 (취소했거나, 이미 묻는 중이다). 글은 입력 칸에 그대로 둔다
+        /// 보내지 않는다 (취소했거나, 이미 묻는 중이거나, 기다리는 동안 보내려던 곳이 바뀌었다). 글은 입력 칸에 그대로 둔다
         case cancelled
     }
 
@@ -158,7 +189,10 @@ public final class AgentWorkspaceSendGate {
     /// - Parameters:
     ///   - target: 이 대화의 대상. 연결 없이 고른 에이전트는 이 Mac의 것이 아니다
     ///   - projects: 보내는 글이 속한 프로젝트 (`AgentWorkspaceGate.projects`)
-    public func prepare(conversationID: UUID, hasSession: Bool, target: AssistantTargetPick, projects: [AgentWorkspaceGate.Project]) async -> Outcome {
+    ///   - stillCurrent: 보내려던 곳이 아직 그대로인가 (`AgentSendTicket` 대조). 서버를 읽고 난 뒤 · 폴더를 고른 뒤 **등록 전에** 부른다 — 아니면 창도 등록도 하지 않고 `.cancelled`
+    public func prepare(
+        conversationID: UUID, hasSession: Bool, target: AssistantTargetPick, projects: [AgentWorkspaceGate.Project], stillCurrent: @MainActor () -> Bool = { true }
+    ) async -> Outcome {
         let withFolder = Set(projects.filter { folders.hasFolder(forProject: $0.id) }.map(\.id))
         var facts = AgentWorkspaceGate.Facts(
             conversationID: conversationID, conversationHasSession: hasSession, targetIsAgent: target.isAgent, targetIsThisMac: true, projects: projects,
@@ -170,17 +204,21 @@ public final class AgentWorkspaceSendGate {
         if asking { return .cancelled }
         asking = true
         facts.targetIsThisMac = await isThisMac(connection)
-        let outcome = await askAndRegister(facts: facts, ask: ask)
+        let outcome = await askAndRegister(facts: facts, ask: ask, stillCurrent: stillCurrent)
         asking = false
         return outcome
     }
 
-    private func askAndRegister(facts: AgentWorkspaceGate.Facts, ask: AgentWorkspaceGate.Ask) async -> Outcome {
+    private func askAndRegister(facts: AgentWorkspaceGate.Facts, ask: AgentWorkspaceGate.Ask, stillCurrent: @MainActor () -> Bool) async -> Outcome {
+        // 서버를 읽는 동안 대화 · 대상이 바뀌었으면 창을 띄우지 않는다
+        guard stillCurrent() else { return .cancelled }
         // 다른 Mac의 연결이면 묻지 않는다 (그 Mac이 정한다)
         guard AgentWorkspaceGate.decide(facts) != .send else { return .proceed }
         let registry = folders
         let accepts: @Sendable (String) -> Bool = { registry.accepts(path: $0) }
         guard let path = await picker.pickFolder(message: ask.message, prompt: ask.prompt, rejection: AgentWorkspaceCopy.rejected, accepts: accepts) else { return .cancelled }
+        // 창을 기다리는 동안 바뀌었으면 고른 폴더를 (옛 프로젝트 · 대화에) 등록하지 않는다
+        guard stillCurrent() else { return .cancelled }
         do {
             try folders.register(path: path, scope: ask.scope)
         } catch {

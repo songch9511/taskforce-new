@@ -12,6 +12,7 @@ import Synchronization
 ///   모르는 경로는 id를 만들지 않는다(등록하지 않은 폴더는 서버에 이름이 가지 않는다)
 /// - 등록은 `WorkspaceFolderRules`를 통과한 폴더만 한다 (한 곳에서 거른다). 쓰기 직전에 resolver가 같은 규칙으로 다시 본다
 /// - 깨진 파일은 빈 표로 읽고, 다음에 쓰기 전에 옆(`workspaces.json.corrupt`)으로 옮긴다 (지우지 않는다). 경로 원문은 로그에 남기지 않는다: 이 타입은 로그를 쓰지 않는다
+/// - 파티션 폴더가 없으면 쓰지 않는다(`writeFailed`): 폴더는 원장이 연다. 계정 삭제가 폴더를 지운 뒤의 늦은 쓰기가 폴더를 다시 만들지 못한다
 public final class WorkspaceRegistry: @unchecked Sendable {
     public enum RegistryError: Error, Equatable, Sendable {
         /// 규칙을 통과하지 못한 폴더다
@@ -240,7 +241,9 @@ public final class WorkspaceRegistry: @unchecked Sendable {
         let fileManager = FileManager.default
         let directory = file.deletingLastPathComponent()
         do {
-            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            // 파티션 폴더가 없으면 쓰지 않는다 (보안 F4): 계정 삭제가 폴더를 지운 뒤에 늦게 온 쓰기가 폴더와 옛 표를 되살리지 않게. 파티션 폴더는 원장이 연다
+            var info = stat()
+            guard lstat(directory.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR else { return false }
             if moveCorruptAside, fileManager.fileExists(atPath: file.path) {
                 let aside = directory.appending(path: Self.fileName + ".corrupt")
                 try? fileManager.removeItem(at: aside)

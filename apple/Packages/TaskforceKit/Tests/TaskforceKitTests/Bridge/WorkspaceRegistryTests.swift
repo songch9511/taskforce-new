@@ -19,6 +19,12 @@ struct WorkspaceRegistryTests {
             }
             rules = WorkspaceFolderRules(home: home, systemRoots: [], protectedRoots: protectedRoots)
             file = temp.appending("partition/workspaces.json")
+            // 파티션 폴더는 원장이 연다 (등록부는 만들지 않는다, 보안 F4)
+            try Self.openPartition(file.deletingLastPathComponent())
+        }
+
+        static func openPartition(_ directory: URL) throws {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         }
 
         func folder(_ name: String) -> String { home + "/Documents/" + name }
@@ -49,9 +55,6 @@ struct WorkspaceRegistryTests {
         #expect((attributes[.posixPermissions] as? Int) == 0o600)
         let names = try FileManager.default.contentsOfDirectory(atPath: fixture.file.deletingLastPathComponent().path)
         #expect(names == ["workspaces.json"], "임시 파일이 남지 않는다: \(names)")
-        // 폴더도 나만 들어온다
-        let directory = try FileManager.default.attributesOfItem(atPath: fixture.file.deletingLastPathComponent().path)
-        #expect((directory[.posixPermissions] as? Int) == 0o700)
     }
 
     @Test func aSessionPinKeepsTheFirstFolderAndTheConversationFolderIsSeparate() throws {
@@ -104,6 +107,8 @@ struct WorkspaceRegistryTests {
 
     @Test func eachAccountPartitionHasItsOwnRegistry() throws {
         let fixture = try Fixture()
+        try Fixture.openPartition(fixture.temp.appending("partition-1"))
+        try Fixture.openPartition(fixture.temp.appending("partition-2"))
         let first = WorkspaceRegistry(file: fixture.temp.appending("partition-1/workspaces.json"), rules: fixture.rules)
         let second = WorkspaceRegistry(file: fixture.temp.appending("partition-2/workspaces.json"), rules: fixture.rules)
         let project = UUID()
@@ -119,6 +124,7 @@ struct WorkspaceRegistryTests {
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         let rules = WorkspaceFolderRules(home: temp.appending("home").path, systemRoots: [])
         let file = partition.directory(in: temp.url).appending(path: WorkspaceRegistry.fileName)
+        try Fixture.openPartition(partition.directory(in: temp.url))
         try WorkspaceRegistry(file: file, rules: rules).setFolder(home.path, forProject: UUID())
         #expect(FileManager.default.fileExists(atPath: file.path))
         let result = await BridgeStorage.deletePartition(partition, root: temp.url, credentials: InMemoryBridgeCredentialStore())

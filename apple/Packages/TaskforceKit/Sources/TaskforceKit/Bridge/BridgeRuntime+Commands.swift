@@ -663,11 +663,15 @@ extension BridgeRuntime {
         // 서버가 준 작업 폴더는 이 Mac이 만든(사용자가 고른) 값일 때만 쓴다. 아니면 거절한다 (침해된 서버가 임의 경로를 시키지 못하게, 검토 반영 7장 C11)
         var workspace = common.session.workspaceRef
         if let served = workspace {
-            // 서버가 돌려준 값은 이 Mac이 보낸 불투명 id다 (D4a2-03): 경로로 바꾼 뒤 인정한다. 모르는 id는 거절한다. 그 밖의 값(옛 절대 경로 — R2 · loopback)은 그대로 아래 검사를 거친다
+            // 서버가 돌려준 값은 이 Mac이 보낸 가상 루트 `/taskforce/<ws_id>`다 (D4a2-03): 등록부로 경로를 찾은 뒤 인정한다. 모르는 id는 거절한다.
+            // 등록부 resolver는 가상 루트가 아닌 값(절대 경로 원문 등)을 **파일 시스템에 대기 전에** 거절한다 (보안 F3: realpath 조회가 TCC 창이나 "핀 폴더와 같은가" 오라클이 되지 않게).
+            // 기본 resolver는 옛 절대 경로(R2 · loopback)를 그대로 아래 검사로 보낸다. 승인된 값은 서버 글이 아니라 등록부의 realpath다
             var candidate = served
-            if WorkspaceRegistry.isOpaqueRef(served) {
-                guard let resolved = await workspaces?.workspacePath(forRef: served) else { return await refuseUnknownPayload(record: record, why: "workspace_unauthorized") }
+            if let ref = VirtualWorkspacePaths.ref(fromVirtualRoot: served) {
+                guard let resolved = await workspaces?.workspacePath(forRef: ref) else { return await refuseUnknownPayload(record: record, why: "workspace_unauthorized") }
                 candidate = resolved
+            } else if !(workspaces?.recognizesRecordedPaths ?? true) {
+                return await refuseUnknownPayload(record: record, why: "workspace_unauthorized")
             }
             var approved = false
             if let resolver = workspaces { approved = await resolver.authorize(workspaceRef: candidate, session: common.agentSessionID, adapter: common.adapter) }

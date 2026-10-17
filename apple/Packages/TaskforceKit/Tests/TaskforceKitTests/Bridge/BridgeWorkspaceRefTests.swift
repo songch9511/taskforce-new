@@ -47,9 +47,11 @@ struct BridgeWorkspaceRefTests {
         await r.h.settle { r.h.server.taskState(first.taskID) == "idle" }
         #expect(r.h.agent.startedTurns.first?.workspaceRef == r.path, "adapter는 경로 그대로 받는다")
         let bound = try #require(r.sessionBound())
-        let ref = try #require(bound["workspace_ref"] as? String)
-        #expect(WorkspaceRegistry.isOpaqueRef(ref) && r.registry.path(forRef: ref) == r.path)
-        #expect(r.h.server.sessionState(BridgeHarness.sessionID)?.workspaceRef == ref)
+        let wireRef = try #require(bound["workspace_ref"] as? String)
+        // 서버에는 가상 루트 `/taskforce/<ws_id>`가 간다 (13.11): 도구 판정의 `workspace_real_path`와 같은 값이어야 서버가 workspace_mismatch로 보지 않는다
+        let ref = try #require(VirtualWorkspacePaths.ref(fromVirtualRoot: wireRef), "\(wireRef)")
+        #expect(wireRef == "/taskforce/" + ref && WorkspaceRegistry.isOpaqueRef(ref) && r.registry.path(forRef: ref) == r.path)
+        #expect(r.h.server.sessionState(BridgeHarness.sessionID)?.workspaceRef == wireRef)
         #expect(await r.h.task(first.taskID)?.workspaceRef == r.path, "원장은 경로 그대로다 (이 Mac 안)")
         // 가짜 서버가 받은 모든 본문에 경로 · 홈 이름이 0이다
         for needle in [r.path, r.fixture.home, "/Users/", "/private/var", r.fixture.temp.url.lastPathComponent, "Documents"] {
@@ -115,7 +117,7 @@ struct BridgeWorkspaceRefTests {
 
     @Test func anIDTheMacNeverIssuedIsRefusedAsUnauthorized() async throws {
         let r = try await Rig()
-        r.h.server.ensureSession(id: BridgeHarness.sessionID, bridgeID: r.h.bridgeID, externalSessionID: "ext-1", workspaceRef: "ws_3f1c2c52-1111-4222-8333-444455556666")
+        r.h.server.ensureSession(id: BridgeHarness.sessionID, bridgeID: r.h.bridgeID, externalSessionID: "ext-1", workspaceRef: "/taskforce/ws_3f1c2c52-1111-4222-8333-444455556666")
         let created = r.h.message()
         r.h.clock.jump(by: 6)
         await r.h.runtime.tick()
@@ -134,7 +136,7 @@ struct BridgeWorkspaceRefTests {
         h.workspaces = ApproveEverything()
         try await h.restart(reopenLedger: false)
         await h.registerFirst()
-        h.server.ensureSession(id: BridgeHarness.sessionID, bridgeID: h.bridgeID, externalSessionID: "ext-1", workspaceRef: "ws_3f1c2c52-1111-4222-8333-444455556666")
+        h.server.ensureSession(id: BridgeHarness.sessionID, bridgeID: h.bridgeID, externalSessionID: "ext-1", workspaceRef: "/taskforce/ws_3f1c2c52-1111-4222-8333-444455556666")
         let created = h.message()
         h.clock.jump(by: 6)
         await h.runtime.tick()
@@ -146,7 +148,7 @@ struct BridgeWorkspaceRefTests {
         let r = try await Rig()
         try r.registry.pin(session: Self.otherSession, to: r.fixture.folder("c"))
         let otherRef = try #require(r.registry.ref(forPath: r.fixture.real("c")))
-        r.h.server.ensureSession(id: BridgeHarness.sessionID, bridgeID: r.h.bridgeID, externalSessionID: "ext-1", workspaceRef: otherRef)
+        r.h.server.ensureSession(id: BridgeHarness.sessionID, bridgeID: r.h.bridgeID, externalSessionID: "ext-1", workspaceRef: VirtualWorkspacePaths.virtualRoot(forRef: otherRef))
         let created = r.h.message()
         r.h.clock.jump(by: 6)
         await r.h.runtime.tick()

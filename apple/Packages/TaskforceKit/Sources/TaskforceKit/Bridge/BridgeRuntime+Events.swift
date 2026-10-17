@@ -34,11 +34,12 @@ extension BridgeRuntime {
         case .ended:
             await handleEnded(taskID: taskID, runID: runID)
         case .sessionBound(let external, let workspace):
-            // 서버에는 작업 폴더의 경로 대신 이 Mac 등록부의 불투명 id만 보낸다 (D4a2-03): 경로에는 사용자 이름 · 고객 이름이 든다. 등록하지 않은 폴더는 id가 없고, 그러면 `workspace_ref`를 보내지 않는다.
+            // 서버에는 작업 폴더의 경로 대신 가상 루트 `/taskforce/<ws_id>`만 보낸다 (D4a2-03): 경로에는 사용자 이름 · 고객 이름이 든다. 도구 판정(`decideTool`)도 같은 가상 루트를 보내므로 서버가 둘을 같게 본다.
+            // 등록하지 않은 폴더는 id가 없고, 그러면 `workspace_ref`를 보내지 않는다.
             // 원장 task에는 경로 그대로 적는다 (다음 턴이 정규화 차이로 거절되지 않게, `macRecordedWorkspace`)
             let path = (workspace?.isEmpty ?? true) ? nil : workspace
             var wireRef: String?
-            if let path, let candidate = await workspaces?.workspaceRef(forPath: path), WorkspaceRegistry.isOpaqueRef(candidate) { wireRef = candidate }
+            if let path, let candidate = await workspaces?.workspaceRef(forPath: path), WorkspaceRegistry.isOpaqueRef(candidate) { wireRef = VirtualWorkspacePaths.virtualRoot(forRef: candidate) }
             // 서버는 `pending:`으로 시작하는 id · 200자를 넘는 id · 500자를 넘는 workspace_ref를 final로 거절한다: 자르면 다른 세션 · 폴더가 되므로 보내지 않는다 (adapter 버그)
             let workspaceValue: String?
             switch OutgoingValues.workspaceRef(wireRef) {
@@ -169,6 +170,14 @@ extension BridgeRuntime {
             return
         }
         scheduleFlush()
+    }
+
+    /// 이 도구 판정의 가상 경로 표: 작업 폴더의 불투명 id는 등록부가 폴더(realpath)마다 하나 준다 (같은 폴더를 쓰는 세션들은 같은 가상 루트라 서버의 경로 lease가 충돌을 잡는다).
+    /// 등록부에 없는 폴더(Debug 일회용 · 가짜 agent)는 고정 자리다
+    func virtualPaths(for query: BridgeV1ToolDecisionQuery) async -> VirtualWorkspacePaths {
+        var ref: String?
+        if let candidate = await workspaces?.workspaceRef(forPath: query.workspaceRealPath), WorkspaceRegistry.isOpaqueRef(candidate) { ref = candidate }
+        return VirtualWorkspacePaths(workspace: query.workspaceRealPath, ref: ref, sessionCwd: query.sessionCwdRealPath)
     }
 
     // MARK: 세션 잊기 (D4a2-08)

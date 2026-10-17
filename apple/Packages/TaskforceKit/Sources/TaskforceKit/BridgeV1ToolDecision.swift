@@ -35,13 +35,16 @@ public struct BridgeV1ToolDecisionQuery: Equatable, Sendable {
     public var turnSeq: Int
     public var workspaceRealPath: String
     public var call: BridgeV1ToolCall
+    /// adapter가 띄운 세션 cwd의 realpath. **서버로 가지 않는다**(인코딩에 없다): 런타임이 경로 칸을 가상 경로로 바꿀 때 세션 cwd를 알아보는 데만 쓴다 (`VirtualWorkspacePaths`)
+    public var sessionCwdRealPath: String?
 
-    public init(agentSessionID: String, agentTaskID: String, turnSeq: Int, workspaceRealPath: String, call: BridgeV1ToolCall) {
+    public init(agentSessionID: String, agentTaskID: String, turnSeq: Int, workspaceRealPath: String, call: BridgeV1ToolCall, sessionCwdRealPath: String? = nil) {
         self.agentSessionID = agentSessionID
         self.agentTaskID = agentTaskID
         self.turnSeq = turnSeq
         self.workspaceRealPath = workspaceRealPath
         self.call = call
+        self.sessionCwdRealPath = sessionCwdRealPath
     }
 }
 

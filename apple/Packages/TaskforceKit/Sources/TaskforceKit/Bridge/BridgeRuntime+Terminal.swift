@@ -37,7 +37,10 @@ extension BridgeRuntime {
     /// 하나라도 빠지면 nil — 앱은 서버를 부르지 않는다. 작업 폴더는 이 세션에 이 Mac이 기록한 값(원장)을 resolver에 다시 물어 쓴다 (등록부가 규칙을 다시 본다)
     public func terminalTarget(forAgentSession sessionID: UUID) async -> AgentTerminalTarget? {
         guard let (task, adapter) = await newestTask(ofSession: sessionID), let terminal = await adapter.terminalSession(task.agentSessionID) else { return nil }
-        let recorded = ((try? await ledger.allTasks()) ?? []).first { $0.agentSessionID == task.agentSessionID && $0.workspaceRef != nil }?.workspaceRef
+        let sessionTasks = ((try? await ledger.allTasks()) ?? []).filter { $0.agentSessionID == task.agentSessionID }
+        // 깊은 방어 (보안 I1): 이 Mac이 아직 돌고 있다고 보거나(`alive` · 감독 중) 중단을 증명하지 못한(`unproven`) 실행이 있으면 터미널로 넘기지 않는다 — 서버 `busy`에만 기대지 않는다
+        guard !sessionTasks.contains(where: { $0.alive || $0.cancelState == "unproven" || supervised[$0.agentTaskID] != nil }) else { return nil }
+        let recorded = sessionTasks.first { $0.workspaceRef != nil }?.workspaceRef
         guard let folder = recorded, let resolver = workspaces,
               await resolver.authorize(workspaceRef: folder, session: task.agentSessionID, adapter: task.adapter) else { return nil }
         var isDirectory: ObjCBool = false

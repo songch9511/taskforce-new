@@ -256,7 +256,8 @@ struct ClaudeToolGateTests {
         let calls = decider.calls
         try #require(calls.count == 2)
         #expect(calls[0] == BridgeV1ToolDecisionQuery(agentSessionID: ClaudeTest.session, agentTaskID: ClaudeTest.task, turnSeq: 3, workspaceRealPath: box.workspacePath,
-                                                     call: .claudeBash(toolUseID: "toolu_b", permissionMode: "default", cwd: cwd.path, command: "npm test", runInBackground: false, dangerouslyDisableSandbox: false)))
+                                                     call: .claudeBash(toolUseID: "toolu_b", permissionMode: "default", cwd: cwd.path, command: "npm test", runInBackground: false, dangerouslyDisableSandbox: false),
+                                                     sessionCwdRealPath: cwd.path), "세션 cwd는 서버로 가지 않고 런타임이 가상 경로로 바꿀 때만 쓴다")
         #expect(calls[1].call == .claudeWrite(toolUseID: "toolu_w", permissionMode: "default", tool: "Write", target: BridgeV1ToolTarget(realPath: box.workspacePath + "/src/new.txt", relPath: "src/new.txt")))
     }
 
