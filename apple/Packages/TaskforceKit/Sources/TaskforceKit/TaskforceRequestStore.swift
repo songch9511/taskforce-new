@@ -22,6 +22,20 @@ public struct TaskforceAnswer: Sendable, Hashable {
     }
 }
 
+/// 사용자가 **눈으로 본** 충돌 카드: 고른 답이 이 카드의 것인지 보낼 때 다시 본다 (OA U3 검토 1). 카드가 그려진 뒤 같은 lease의 `conflict_version`이나 두 세션이 바뀌었으면
+/// 옛 카드의 선택이 새 충돌에 적용되지 않게 한다 (`holder` · `later`는 역할이라 세션 조합이 바뀌면 다른 세션을 고르게 된다)
+public struct TaskforceRenderedConflict: Equatable, Sendable {
+    public let conflictVersion: Int
+    public let holderSessionID: UUID
+    public let laterSessionID: UUID
+
+    public init(conflictVersion: Int, holderSessionID: UUID, laterSessionID: UUID) {
+        self.conflictVersion = conflictVersion
+        self.holderSessionID = holderSessionID
+        self.laterSessionID = laterSessionID
+    }
+}
+
 /// 보낸 해소 한 번의 결과. 성공은 서버 200 `resolved`뿐이다. 어느 결과든 **자동으로 다시 보내지 않고** 지금 상태를 다시 읽는다
 public enum TaskforceResolveResult: Equatable, Sendable {
     /// 200 resolved
@@ -70,6 +84,10 @@ public final class TaskforceRequestStore {
     public private(set) var notice: Notice?
     /// 응답이 반영될 때마다 오른다 (관찰하는 쪽이 "새로 읽었다"를 안다)
     public private(set) var readSerial = 0
+    /// 연결되어 있다 (`pathChanged`): 화면이 오프라인을 말하고 답을 잠그는 근거. 끊긴 읽기가 오기를 기다리지 않는다
+    public private(set) var isOnline = true
+    /// 화면이 말할 읽기 문제: 연결이 끊겼으면 읽기가 실패하기를 기다리지 않고 오프라인이다 (끊김과 다음 읽기 사이에도 답이 잠긴다). 아니면 마지막 읽기의 문제
+    public var screenProblem: WorkLoad.Problem? { isOnline ? readProblem : .offline }
     /// 지금 읽는 중인 읽기의 수 (마지막에 시작한 읽기만 반영되므로 겹친 읽기가 끝나기를 기다리는 시험이 쓴다)
     public private(set) var inflightReads = 0
 
@@ -83,8 +101,9 @@ public final class TaskforceRequestStore {
     /// 보류에 쓰는 시계. 앱은 셸의 `EdgeSchedule`을 넘겨 시험이 손으로 돌린다
     @ObservationIgnored public var schedule: TaskforceSchedule
     @ObservationIgnored private var readSequence = 0
-    @ObservationIgnored private var online = true
     @ObservationIgnored private var holds: [String: Hold] = [:]
+    /// 요청마다 지금 고른 답의 주인(보류 · 전송의 `owner`). 늦게 끝난 옛 전송의 뒤처리가 새로 고른 답의 기록을 지우지 못하게 한다 (OA U3 검토 1)
+    @ObservationIgnored private var answerOwners: [String: Int] = [:]
     @ObservationIgnored private var holdCounter = 0
     /// 마지막으로 보낸 해소 (시험이 끝을 기다린다)
     @ObservationIgnored public private(set) var lastSend: Task<TaskforceResolveResult, Never>?
@@ -121,6 +140,7 @@ public final class TaskforceRequestStore {
         for hold in holds.values { hold.cancel() }
         holds = [:]
         answers = [:]
+        answerOwners = [:]
         notice = nil
         response = nil
         readProblem = nil
@@ -133,8 +153,16 @@ public final class TaskforceRequestStore {
 
     /// 연결 경로: 오프라인에서 돌아오면 이미 읽은 적이 있는 저장소는 다시 읽는다 (처음 읽기는 화면이 연다)
     public func pathChanged(online now: Bool) {
-        let returned = now && !online
-        online = now
+        let returned = now && !isOnline
+        isOnline = now
+        // 끊기면 보류 중인 답은 풀린다: 다음 읽기가 실패하기를 기다리지 않고, 나중에 보내려고 모아 두지도 않는다
+        if !now {
+            for (id, hold) in holds {
+                hold.cancel()
+                holds[id] = nil
+                clearAnswer(id, owner: hold.owner)
+            }
+        }
         guard returned, response != nil || readProblem != nil else { return }
         Task { await refresh() }
     }
@@ -176,7 +204,7 @@ public final class TaskforceRequestStore {
                 readProblem = .failed
             } else {
                 featureOff = false
-                readProblem = Self.isOffline(error, online: online) ? .offline : .failed
+                readProblem = Self.isOffline(error, online: isOnline) ? .offline : .failed
             }
             readSerial += 1
             return
@@ -233,23 +261,39 @@ public final class TaskforceRequestStore {
             guard let item = items[id], item.version == hold.itemVersion, item.conflict?.conflictVersion == hold.conflictVersion else {
                 hold.cancel()
                 holds[id] = nil
-                answers[id] = nil
+                clearAnswer(id, owner: hold.owner)
                 continue
             }
         }
         // 이미 보낸 답은 응답이 그 요청을 빼면(해소됨) 기록도 지운다
         for (id, answer) in answers where answer.phase == .sending && items[id] == nil {
             answers[id] = nil
+            answerOwners[id] = nil
         }
     }
 
     // MARK: 답 (경로 충돌 해소)
 
+    /// 지금 응답이 말하는 충돌 카드 (아직 읽지 못한 것이 있으면 nil)
+    public func renderedConflict(for requestID: String) -> TaskforceRenderedConflict? {
+        guard let item = response?.items.first(where: { $0.id == requestID && $0.kind == .pathConflict }), let conflict = item.conflict,
+              let detail = conflicts[conflict.leaseID], let holder = detail.holderSessionID, let later = detail.laterSessionID else { return nil }
+        return TaskforceRenderedConflict(conflictVersion: conflict.conflictVersion, holderSessionID: holder, laterSessionID: later)
+    }
+
+    /// 사용자가 본 카드(`rendered`)의 선택을 받는다 (OA U3 검토 1)
+    @discardableResult
+    public func choose(_ keep: TaskforceConflictKeep, for requestID: String, rendered: TaskforceRenderedConflict) -> Bool {
+        // 카드가 그려진 뒤 version이나 두 세션이 바뀌었으면 거절한다: 새 카드가 말한다 (옛 카드의 선택이 새 충돌에 적용되지 않는다)
+        guard renderedConflict(for: requestID) == rendered else { return false }
+        return choose(keep, for: requestID)
+    }
+
     /// 고른 답 하나를 **받는다** (클릭 · 1/2 키, 동기 경계): 2초 보류를 시작한다. 이 요청이 응답에 경로 충돌로 있고, 보류 · 전송 중이 아니고, 로그인 세션이 있을 때만 true
     /// (두 번 눌러도 하나뿐이다: 반복 키 · 중복 클릭 · 다른 답으로 바꿔 누르기 모두 한 번만 통과한다)
     @discardableResult
     public func choose(_ keep: TaskforceConflictKeep, for requestID: String) -> Bool {
-        guard let token = scope.token, answers[requestID] == nil,
+        guard isOnline, let token = scope.token, answers[requestID] == nil,
               let item = response?.items.first(where: { $0.id == requestID && $0.kind == .pathConflict }), let conflict = item.conflict,
               Self.conflictVersionRange.contains(conflict.conflictVersion) else { return false }
         holdCounter += 1
@@ -259,6 +303,7 @@ public final class TaskforceRequestStore {
             owner: owner, token: token, keep: keep, leaseID: conflict.leaseID, itemVersion: item.version, conflictVersion: conflict.conflictVersion, cancel: cancel
         )
         answers[requestID] = TaskforceAnswer(requestID: requestID, keep: keep, phase: .holding)
+        answerOwners[requestID] = owner
         notice = nil
         return true
     }
@@ -268,7 +313,14 @@ public final class TaskforceRequestStore {
         guard let answer = answers[requestID], answer.phase == .holding, let hold = holds[requestID] else { return }
         hold.cancel()
         holds[requestID] = nil
+        clearAnswer(requestID, owner: hold.owner)
+    }
+
+    /// 이 주인이 고른 답의 기록만 지운다 (그 사이 다른 답이 새로 골라졌으면 건드리지 않는다)
+    private func clearAnswer(_ requestID: String, owner: Int) {
+        guard answerOwners[requestID] == owner else { return }
         answers[requestID] = nil
+        answerOwners[requestID] = nil
     }
 
     /// 2초가 지났다: 보낸다
@@ -280,10 +332,10 @@ public final class TaskforceRequestStore {
     /// 보내기 직전에 다시 본다. 하나라도 어긋나면 쓰기 0 · `.ignored`다
     private func send(_ requestID: String, hold: Hold) async -> TaskforceResolveResult {
         defer { if holds[requestID]?.owner == hold.owner { holds[requestID] = nil } }
-        guard scope.isCurrent(hold.token), holds[requestID]?.owner == hold.owner,
+        guard isOnline, scope.isCurrent(hold.token), holds[requestID]?.owner == hold.owner,
               let item = response?.items.first(where: { $0.id == requestID }), item.version == hold.itemVersion,
               item.conflict?.conflictVersion == hold.conflictVersion else {
-            if holds[requestID]?.owner == hold.owner { answers[requestID] = nil }
+            if holds[requestID]?.owner == hold.owner { clearAnswer(requestID, owner: hold.owner) }
             return .ignored
         }
         answers[requestID] = TaskforceAnswer(requestID: requestID, keep: hold.keep, phase: .sending)
@@ -303,11 +355,11 @@ public final class TaskforceRequestStore {
             }
         }
         if result == .unconfirmed, notice == nil { notice = Notice(id: requestID, text: ReviewCopy.unverified) }
-        if result != .resolved { answers[requestID] = nil }
+        if result != .resolved { clearAnswer(requestID, owner: hold.owner) }
         // 어느 결과든 자동으로 다시 보내지 않고 지금 상태를 다시 읽는다. 해소되었으면 그 요청이 빠진 응답이 기록도 지운다
         await refresh()
         guard scope.isCurrent(hold.token) else { return .ignored }
-        answers[requestID] = nil
+        clearAnswer(requestID, owner: hold.owner)
         return result
     }
 

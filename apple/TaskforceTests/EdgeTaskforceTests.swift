@@ -23,7 +23,7 @@ struct TaskforceRig {
     static let later = IssueSnapshotData.session(2)
     static let issue = IssueSnapshotData.issue(139)
 
-    static func make(reviews: Int = 2, withReview: Bool = true, withSummary: Bool = true) async throws -> TaskforceRig {
+    static func make(reviews: Int = 2, withReview: Bool = true, withSummary: Bool = true, gate: Bool = true) async throws -> TaskforceRig {
         let harness = try await ReviewHarness.make(reviews: reviews, open: 2)
         let summary = ReturnSummaryStore(gateway: LiveReturnSummaryGateway(services: harness.services), scope: harness.scope)
         let desk = ReviewDesk(now: harness.store, scope: harness.scope)
@@ -33,7 +33,7 @@ struct TaskforceRig {
         let time = EdgeShellModelTests.ManualTime()
         let shell = EdgeShellModel(
             schedule: time.schedule, clock: time.clock, review: withReview ? desk : nil, summary: withSummary ? summary : nil, chatsEnabled: true,
-            windowsEnabled: true, issues: issues
+            windowsEnabled: true, issues: issues, taskforceGate: gate
         )
         shell.accountChanged(ReviewHarness.userID)
         await harness.store.load()
@@ -493,7 +493,10 @@ struct EdgeTaskforceTests {
         rig.gateway.taskforceRead = .offline
         await rig.store.refresh()
         #expect(rig.shell.taskforceScreen == .offline)
+        // 연결이 돌아오면(검토 1: 연결은 화면의 근거다) 읽기 사정이 다시 화면의 말이 된다
         rig.gateway.taskforceRead = .full
+        rig.store.pathChanged(online: true)
+        await rig.settle()
         await rig.read(Rig.response([Rig.result()], complete: false))
         #expect(rig.shell.taskforceScreen == .request(problem: .failed), "complete가 아니면 요청 위 Notice")
         await rig.read(Rig.response([], complete: false))
@@ -659,5 +662,130 @@ struct EdgeTaskforceTests {
         // 패널이 열려 있으면 툴팁을 끈다 (패널이 레일 바로 옆이다)
         rig.shell.openTaskforce()
         #expect(rig.shell.tooltip == nil)
+    }
+
+    // MARK: 검토 1 (Astra): 낡은 카드 · 읽기 소유 · Try again · 연결 · Release 길
+
+    /// P2-2: 카드가 그려진 뒤 충돌의 version이 바뀌었는데 옛 카드의 선택이 도착하면 해소를 보내지 않는다 (선택이 **도착하기 전에** 바뀐 경우)
+    @Test func aStaleCardsPickDeliveredAfterTheConflictChangedResolvesNothing() async throws {
+        let rig = try await Rig.make()
+        await rig.read(Rig.response([Rig.conflict()]))
+        rig.shell.openTaskforce()
+        await rig.settle()
+        let id = try #require(rig.shell.taskforceShownID)
+        let seen = try #require(rig.store.renderedConflict(for: id))
+        #expect(seen.conflictVersion == 2)
+        // 선택이 도착하기 전에 충돌이 바뀐다 (같은 lease의 새 version)
+        await rig.read(Rig.response([Rig.conflict(version: 3)]))
+        #expect(!rig.shell.answerConflict(.holder, for: id, rendered: seen), "옛 카드의 선택은 새 충돌에 적용되지 않는다")
+        rig.time.advance(10)
+        await rig.settle()
+        #expect(rig.gateway.resolves.isEmpty && rig.store.answers.isEmpty)
+        // 새 카드의 선택은 새 version으로 간다
+        let current = try #require(rig.store.renderedConflict(for: id))
+        #expect(current.conflictVersion == 3 && rig.shell.answerConflict(.holder, for: id, rendered: current))
+        rig.time.advance(2)
+        _ = await rig.store.lastSend?.value
+        #expect(rig.gateway.resolves.map(\.conflictVersion) == [3])
+    }
+
+    /// P3-3: Projects 패널이 열린 채 bell · ⌘1로 들어오면 컨트롤러의 "패널 열기" 읽기가 없으니 셸이 읽는다. 닫힌 패널에서는 컨트롤러가 읽으니 셸은 겹쳐 읽지 않는다
+    @Test func enteringFromAnOpenProjectsPanelReadsAgainAndAClosedPanelLeavesItToTheControllersOpenRead() async throws {
+        let rig = try await Rig.make()
+        await rig.read(Rig.response([Rig.confirm(rig.id(1))]))
+        rig.shell.openAllWork()
+        #expect(rig.shell.panelOpen && rig.shell.view == .allWork)
+        await rig.settle()
+        let reads = rig.gateway.taskforceReads
+        rig.shell.openTaskforce()
+        await rig.settle()
+        #expect(rig.shell.view == .review && rig.gateway.taskforceReads == reads + 1, "열린 Projects에서 들어와도 한 번 읽는다")
+        rig.shell.dismiss()
+        let closed = rig.gateway.taskforceReads
+        rig.shell.openTaskforce()
+        await rig.settle()
+        #expect(rig.gateway.taskforceReads == closed, "닫힌 패널은 컨트롤러의 패널 열기 읽기 몫이다")
+    }
+
+    /// P3-4: Try again은 v2를 한 번만 읽는다 (컨트롤러의 `load(.retry)`가 이미 읽는다). 이 GET은 제안 노출 표시를 한다
+    @Test func tryAgainReadsTheV2ReviewExactlyOnce() async throws {
+        let rig = try await Rig.make()
+        rig.gateway.taskforceRead = .failed
+        await rig.read(nil)
+        rig.shell.openTaskforce()
+        await rig.settle()
+        #expect(rig.shell.taskforceScreen == .failed)
+        rig.gateway.taskforceRead = .full
+        // 컨트롤러의 `load(.retry)`는 v2를 한 번 읽는다 (`EdgeShell.load`): 그 읽기를 그대로 흉내 낸다
+        rig.shell.onRetry = { [shell = rig.shell] in shell.refreshTaskforce() }
+        let reads = rig.gateway.taskforceReads
+        rig.shell.taskforceTryAgain()
+        await rig.settle()
+        #expect(rig.gateway.taskforceReads == reads + 1, "제안 노출 표시가 있는 GET은 한 번만")
+    }
+
+    /// P3-5: 연결이 끊기면 다음 읽기가 실패하기 전에도 화면이 오프라인을 말하고 답이 잠긴다 (끊김과 다음 읽기 사이)
+    @Test func goingOfflineLocksTheCardsBeforeTheNextReadFails() async throws {
+        let rig = try await Rig.make()
+        await rig.read(Rig.response([Rig.conflict(), Rig.confirm(rig.id(1))]))
+        rig.shell.openTaskforce()
+        await rig.settle()
+        let conflictID = try #require(rig.shell.taskforceQueue.requests.first { $0.kind == .pathConflict }?.id)
+        rig.shell.showTaskforceRequest(conflictID)
+        #expect(rig.shell.taskforceScreen == .request(problem: nil) && rig.shell.taskforceScreen.canAnswer)
+        let reads = rig.gateway.taskforceReads
+        rig.store.pathChanged(online: false)
+        #expect(rig.store.readProblem == nil, "아직 실패한 읽기는 없다")
+        #expect(rig.shell.taskforceScreen == .request(problem: .offline) && !rig.shell.taskforceScreen.canAnswer)
+        #expect(!rig.shell.answerConflict(.holder, for: conflictID), "오프라인에서는 충돌 답을 받지 않는다")
+        #expect(!rig.shell.taskforceAnswerKey(ReviewAnswer.allCases[0], repeated: false), "키도 지나간다")
+        rig.time.advance(10)
+        await rig.settle()
+        #expect(rig.gateway.resolves.isEmpty && rig.gateway.taskforceReads == reads, "끊김은 읽기도 쓰기도 만들지 않는다")
+        // 다시 연결되면 한 번 읽고 답이 다시 열린다
+        rig.store.pathChanged(online: true)
+        await rig.settle()
+        #expect(rig.gateway.taskforceReads == reads + 1)
+        #expect(rig.shell.taskforceScreen == .request(problem: nil) && rig.shell.taskforceScreen.canAnswer)
+        // 응답이 없는 채 끊기면 읽는 중이 아니라 오프라인이다
+        let fresh = try await Rig.make()
+        fresh.store.pathChanged(online: false)
+        #expect(fresh.shell.taskforceScreen == .offline)
+    }
+
+    /// 검토 1 시험 강도: **진짜 셸이 만들어지는 길**에서 Release가 새지 않는다. 다섯 인자가 모두 켜져도 Release 빌드의 게이트는 false이고, 그 값으로 만든 셸은
+    /// issues · review · summary가 모두 있어도 Taskforce 대화 · 저장소 · bell이 없고 어느 입구로도 v2를 읽지 않는다
+    @Test func aReleaseBuildNeverBuildsTheTaskforceShellEvenWithEveryFlagOn() async throws {
+        let store = try TestDefaults()
+        defer { store.cleanup() }
+        for key in [EdgeShellFlag.key, S3bFlag.key, EdgeSurfaces.issueScreensKey, S4Flag.key, C3Flag.key] { store.defaults.set(true, forKey: key) }
+        #expect(EdgeSurfaces.taskforceConversation(store.defaults, debugBuild: true), "Debug는 다섯 인자로 켜진다")
+        let releaseGate = EdgeSurfaces.taskforceConversation(store.defaults, debugBuild: false)
+        #expect(!releaseGate)
+        let rig = try await Rig.make(gate: releaseGate)
+        #expect(rig.shell.issueScreensEnabled && rig.shell.review != nil && rig.shell.summary != nil)
+        #expect(!rig.shell.taskforceEnabled && rig.shell.taskforceStore == nil && rig.shell.taskforceBell == nil)
+        rig.shell.accountChanged(ReviewHarness.userID)
+        rig.shell.refreshTaskforce()
+        rig.shell.openTaskforce()
+        rig.shell.taskforceWoke()
+        rig.shell.sessionsChanged()
+        rig.sync()
+        await rig.settle()
+        #expect(rig.gateway.taskforceReads == 0 && !rig.shell.panelOpen && rig.shell.taskforceScreen == .blank)
+    }
+
+    /// v2 읽기의 입구: 게이트의 한 조각이라도 빠진 셸(U2만 · S4 없음 · C3 없음)은 어느 입구로도 v2를 읽지 않는다
+    @Test func aShellWithoutTheFullGateNeverReadsV2FromAnyEntry() async throws {
+        for rig in [try await Rig.make(withReview: false), try await Rig.make(withSummary: false), try await Rig.make(gate: false)] {
+            rig.shell.accountChanged(ReviewHarness.userID)
+            rig.shell.refreshTaskforce()
+            rig.shell.taskforceWoke()
+            rig.shell.openTaskforce()
+            rig.shell.sessionsChanged()
+            rig.sync()
+            await rig.settle()
+            #expect(rig.gateway.taskforceReads == 0 && rig.shell.taskforceStore == nil)
+        }
     }
 }

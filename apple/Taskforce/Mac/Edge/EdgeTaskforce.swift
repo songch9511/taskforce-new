@@ -131,11 +131,13 @@ struct TaskforcePanelBody: View {
     /// 경로 충돌: 질문 · 메타 · 두 세션 · 답 둘. 고르면 2초 보류(Answer sent + Undo) 뒤 해소를 보낸다
     @ViewBuilder
     private func conflictCard(_ request: TaskforceRequest) -> some View {
-        if let sides = shell.taskforceConflictSides(request) {
+        if let sides = shell.taskforceConflictSides(request), let version = request.conflict?.conflictVersion {
+            // 카드가 그려질 때의 version · 두 세션: 선택이 도착하기 전에 충돌이 바뀌었으면 저장소가 거절한다 (옛 카드의 선택이 새 충돌에 적용되지 않는다)
+            let rendered = TaskforceRenderedConflict(conflictVersion: version, holderSessionID: sides.first.id, laterSessionID: sides.second.id)
             TaskforceConflictCard(
                 path: sides.path, first: .first(sides.first), second: TaskforceConflictSide(session: sides.second, line: sides.second.line),
                 chosen: store?.answers[request.id], canAnswer: shell.taskforceScreen.canAnswer, note: store?.notice(for: request.id),
-                onAnswer: { keep in shell.answerConflict(keep, for: request.id) },
+                onAnswer: { keep in shell.answerConflict(keep, for: request.id, rendered: rendered) },
                 onUndo: { shell.undoConflict(request.id) },
                 onOpenSession: { shell.openTaskforceSession($0) }
             )
@@ -193,7 +195,7 @@ struct TaskforcePanelBody: View {
     }
 
     private func tryAgain(_ size: TFButtonStyle.Size) -> some View {
-        Button(TaskforceCopy.tryAgain) { shell.onRetry(); shell.refreshTaskforce() }.buttonStyle(TFButtonStyle(.secondary, size: size))
+        Button(TaskforceCopy.tryAgain) { shell.taskforceTryAgain() }.buttonStyle(TFButtonStyle(.secondary, size: size))
     }
 }
 

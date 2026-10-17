@@ -371,4 +371,128 @@ struct TaskforceRequestStoreTests {
         store.clearNotice()
         #expect(store.notice == nil)
     }
+
+    // MARK: 검토 1: 경쟁 · 낡은 카드 · 연결
+
+    /// P2-1: 해소 A가 실패해 다시 읽는 동안 사용자가 B를 고르면, A의 뒤처리가 B의 기록(Undo)을 지우면 안 된다 (보류는 살아 있는데 기록만 사라지면 Undo가 듣지 않는데도 B가 나간다)
+    @Test func anEarlierSendsCleanupNeverWipesTheNewHoldsUndoRecord() async throws {
+        let (store, gateway, clock, _) = make()
+        gateway.setResolve { _ in throw APIError.server(status: 500, code: .internalError, message: "x") }
+        await store.refresh()
+        #expect(store.choose(.holder, for: Fx.conflictID))
+        // A의 다시 읽기를 붙잡아 둔다
+        let gate = TaskforceGate()
+        gateway.setReview { _ in
+            await gate.wait()
+            return Fx.response
+        }
+        clock.advance(2)
+        let sendA = try #require(store.lastSend)
+        while store.inflightReads == 0 { await Task.yield() }
+        #expect(store.answers[Fx.conflictID] == nil, "A는 실패로 끝나 답이 풀렸다 (다시 읽는 중)")
+        // 다시 읽는 사이 사용자가 다른 답 B를 고른다
+        #expect(store.choose(.later, for: Fx.conflictID))
+        gate.open()
+        _ = await sendA.value
+        #expect(store.answers[Fx.conflictID]?.phase == .holding && store.answers[Fx.conflictID]?.keep == .later, "A의 뒤처리가 B의 고른 답 기록을 지우지 않는다")
+        // Undo가 B를 막는다
+        store.undo(Fx.conflictID)
+        #expect(store.answers.isEmpty)
+        clock.advance(10)
+        #expect(gateway.resolves.map(\.keep) == [.holder], "Undo한 B는 나가지 않는다: 나간 것은 A 하나뿐")
+    }
+
+    /// 같은 순서의 대조: 기록이 남아 있으면 B는 한 번만 나간다
+    @Test func theNewHoldSendsExactlyOnceAfterTheEarlierSendFinished() async throws {
+        let (store, gateway, clock, _) = make()
+        gateway.setResolve { resolve in
+            if resolve.keep == .holder { throw APIError.server(status: 500, code: .internalError, message: "x") }
+            return .resolved
+        }
+        await store.refresh()
+        #expect(store.choose(.holder, for: Fx.conflictID))
+        let gate = TaskforceGate()
+        gateway.setReview { _ in
+            await gate.wait()
+            return Fx.response
+        }
+        clock.advance(2)
+        let sendA = try #require(store.lastSend)
+        while store.inflightReads == 0 { await Task.yield() }
+        #expect(store.choose(.later, for: Fx.conflictID))
+        gate.open()
+        _ = await sendA.value
+        clock.advance(2)
+        _ = await store.lastSend?.value
+        #expect(gateway.resolves.map(\.keep) == [.holder, .later])
+    }
+
+    /// P2-2: 카드가 그려진 뒤 `conflict_version`이 바뀌면, 그 카드의 선택이 최신 version으로 나가면 안 된다 (선택이 **도착하기 전에** 바뀐 경우)
+    @Test func aPickFromAStaleCardIsRefusedWhenTheConflictVersionChangedBeforeItArrived() async throws {
+        let (store, gateway, clock, _) = make()
+        await store.refresh()
+        let seen = try #require(store.renderedConflict(for: Fx.conflictID))
+        #expect(seen.conflictVersion == 2 && seen.holderSessionID == Fx.holderSession && seen.laterSessionID == Fx.laterSession)
+        gateway.setReview { _ in Fx.response(conflictVersion: 3) }
+        await store.refresh()
+        #expect(!store.choose(.holder, for: Fx.conflictID, rendered: seen), "옛 카드의 선택은 새 충돌에 적용되지 않는다")
+        clock.advance(10)
+        #expect(gateway.resolves.isEmpty && store.answers.isEmpty && clock.pending == 0)
+        // 새 카드는 그대로 고를 수 있다
+        let current = try #require(store.renderedConflict(for: Fx.conflictID))
+        #expect(current.conflictVersion == 3)
+        #expect(store.choose(.holder, for: Fx.conflictID, rendered: current))
+        clock.advance(2)
+        _ = await store.lastSend?.value
+        #expect(gateway.resolves == [.init(leaseID: Fx.Fx.lease, keep: .holder, conflictVersion: 3)])
+    }
+
+    /// 두 세션의 조합이 바뀌면(같은 version이라도 holder와 later가 서로 바뀐 경우) 옛 카드의 "Keep holder"는 다른 세션을 고르게 된다
+    @Test func aPickFromAStaleCardIsRefusedWhenTheSessionPairChanged() async throws {
+        let (store, gateway, clock, _) = make()
+        await store.refresh()
+        let seen = try #require(store.renderedConflict(for: Fx.conflictID))
+        let swapped = TaskforceConflictDetail(
+            leaseID: Fx.Fx.lease, relPath: Fx.detail.relPath, holderRunID: Fx.detail.holderRunID, laterRunID: Fx.detail.laterRunID,
+            holderSessionID: Fx.laterSession, laterSessionID: Fx.holderSession
+        )
+        gateway.setDetails { _ in [Fx.Fx.lease: swapped] }
+        await store.refresh()
+        #expect(!store.choose(.holder, for: Fx.conflictID, rendered: seen))
+        clock.advance(10)
+        #expect(gateway.resolves.isEmpty)
+        let current = try #require(store.renderedConflict(for: Fx.conflictID))
+        #expect(current.holderSessionID == Fx.laterSession)
+        #expect(store.choose(.holder, for: Fx.conflictID, rendered: current))
+    }
+
+    /// P3-5: 연결이 끊기면 다음 읽기가 실패하기 전에도 답을 받지 않는다 (끊김과 다음 읽기 사이)
+    @Test func goingOfflineLocksThePickBeforeAnyReadHasFailed() async throws {
+        let (store, gateway, clock, _) = make()
+        await store.refresh()
+        let readsBefore = gateway.reviewCalls
+        store.pathChanged(online: false)
+        #expect(!store.isOnline && store.readProblem == nil, "아직 실패한 읽기는 없다")
+        #expect(!store.choose(.holder, for: Fx.conflictID), "오프라인에서는 고르지 못한다")
+        let seen = try #require(store.renderedConflict(for: Fx.conflictID))
+        #expect(!store.choose(.holder, for: Fx.conflictID, rendered: seen))
+        clock.advance(10)
+        #expect(gateway.resolves.isEmpty && store.answers.isEmpty && gateway.reviewCalls == readsBefore, "끊김은 읽기를 만들지 않는다")
+    }
+
+    /// 보류 중에 끊기면 보내지 않고 답이 풀린다 (나중에 보내려고 모아 두지 않는다)
+    @Test func aHoldRunningWhenTheConnectionDropsSendsNothingAndUnlocks() async throws {
+        let (store, gateway, clock, _) = make()
+        await store.refresh()
+        #expect(store.choose(.holder, for: Fx.conflictID))
+        clock.advance(1)
+        store.pathChanged(online: false)
+        #expect(store.answers.isEmpty, "끊기면 보류 중인 답은 풀린다")
+        clock.advance(10)
+        #expect(gateway.resolves.isEmpty)
+        // 다시 연결되면 다시 고를 수 있다
+        store.pathChanged(online: true)
+        while store.inflightReads > 0 { await Task.yield() }
+        #expect(store.isOnline && store.choose(.holder, for: Fx.conflictID))
+    }
 }

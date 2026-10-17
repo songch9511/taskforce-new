@@ -305,7 +305,7 @@ struct EdgeCommandOneTests {
         let store = ReturnSummaryStore(gateway: LiveReturnSummaryGateway(services: harness.services), scope: harness.scope)
         let desk = ReviewDesk(now: harness.store, scope: harness.scope)
         let issues = IssueRuntime(gateway: IssueSampleGateway(), scope: harness.scope)
-        let shell = EdgeShellModel(schedule: { _, _ in EdgeTimer() }, review: desk, summary: store, chatsEnabled: true, windowsEnabled: true, issues: issues)
+        let shell = EdgeShellModel(schedule: { _, _ in EdgeTimer() }, review: desk, summary: store, chatsEnabled: true, windowsEnabled: true, issues: issues, taskforceGate: true)
         await harness.store.load()
         let rig = SummaryRig(harness: harness, desk: desk, store: store, shell: shell)
         rig.sync()

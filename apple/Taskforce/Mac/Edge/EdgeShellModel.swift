@@ -254,6 +254,8 @@ final class EdgeShellModel {
     private(set) var hoveredID: UUID?
     private(set) var hoveredControl: Control?
     private(set) var menuOpen = false
+    /// More 카드가 닫힐 때마다 오른다: 레일이 접근성 포커스를 ⋯로 돌려준다 (OA U3 16.1)
+    private(set) var moreFocusSerial = 0
     private(set) var work = EdgeWorkSnapshot.empty
     /// 레일에 오를 수 있는 일 전부 (칸은 넷까지지만 접근성 이름의 개수는 전부를 센다)
     private(set) var live: [RailEntry] = []
@@ -298,6 +300,8 @@ final class EdgeShellModel {
     var assistantWindowFront = false
     /// 새 Issues 화면(OA U2): 세션 · 번호 · 상세를 읽는 곳. **없으면 게이트가 꺼진 것이다** — Projects · 이슈 목록 · 상세 · 세션 패널이 없고 All work는 지금 그대로다 (`EdgeSurfaces.issueScreens`)
     let issues: IssueRuntime?
+    /// 이 실행의 Taskforce 게이트 (`EdgeSurfaces.taskforceConversation`: Debug에서 다섯 인자가 모두 있을 때만, Release 빌드는 늘 false). 셸이 만들어지는 자리에서 한 번 정한다 (OA U3 검토 1)
+    let taskforceGate: Bool
     var issueScreensEnabled: Bool { issues != nil }
     /// Issues 패널 안의 화면 이동 (Projects → 목록 → 상세). 게이트가 켜졌을 때 `View.allWork`가 이 화면을 보인다
     private(set) var nav = IssueNavigation()
@@ -374,9 +378,10 @@ final class EdgeShellModel {
         reduceMotion: Bool = false, schedule: @escaping EdgeSchedule = EdgeScheduler.live, clock: @escaping () -> Date = Date.init,
         calendar: @escaping () -> Calendar = { Calendar.current }, pinStore: WorkPinStore = WorkPinStore(defaults: nil),
         contexts: WorkContextStore? = nil, review: ReviewDesk? = nil, summary: ReturnSummaryStore? = nil, chatsEnabled: Bool = true,
-        windowsEnabled: Bool = false, issues: IssueRuntime? = nil
+        windowsEnabled: Bool = false, issues: IssueRuntime? = nil, taskforceGate: Bool = EdgeSurfaces.taskforceConversationForThisRun
     ) {
         self.issues = issues
+        self.taskforceGate = taskforceGate
         self.windowsEnabled = chatsEnabled && windowsEnabled
         self.contexts = contexts
         self.review = review
@@ -399,7 +404,7 @@ final class EdgeShellModel {
     // MARK: 레일 모양
 
     /// 펼친 레일: 노치 호버 · 열린 패널(패널 옆 레일은 늘 펼친다)
-    var isExpanded: Bool { railHovered || panelOpen }
+    var isExpanded: Bool { railHovered || panelOpen || (menuOpen && issueScreensEnabled) }
     /// 숨은 레일의 노치에 보이는 링 (셋까지)
     var notch: [RailEntry] { RailOrdering.notch(slots) }
     /// 펼쳤을 때만 보이는 나머지 일
@@ -1046,6 +1051,11 @@ final class EdgeShellModel {
 
     // MARK: More 메뉴
 
+    /// More 카드가 닫혔다: 포커스는 ⋯로 돌아간다
+    func returnFocusToMore() {
+        moreFocusSerial += 1
+    }
+
     func setMenuOpen(_ open: Bool) {
         menuOpen = open
         if !open, !pointerInside, !panelOpen {
@@ -1216,7 +1226,7 @@ extension EdgeShellModel {
     static let taskforceShortcut = "⌘1"
 
     /// 이 셸에 Taskforce 대화가 있나: 새 Issues 화면 + Review(S4) + 복귀 요약(C3)이 모두 켜진 구성뿐 (OA U3-01). 꺼지면 모든 것이 지금 그대로다
-    var taskforceEnabled: Bool { issues != nil && review != nil && summary != nil }
+    var taskforceEnabled: Bool { taskforceGate && issues != nil && review != nil && summary != nil }
 
     var taskforceStore: TaskforceRequestStore? { taskforceEnabled ? issues?.taskforce : nil }
 
@@ -1244,7 +1254,7 @@ extension EdgeShellModel {
         guard let store = taskforceStore else { return .blank }
         let visible = taskforceVisible
         return TaskforceScreen.of(
-            hasResponse: store.response != nil, readProblem: store.readProblem, trustworthy: store.isTrustworthy(visible),
+            hasResponse: store.response != nil, readProblem: store.screenProblem, trustworthy: store.isTrustworthy(visible),
             hasRequest: !visible.requests.isEmpty, deferred: visible.deferred
         )
     }
@@ -1253,6 +1263,16 @@ extension EdgeShellModel {
     var taskforceConversationOpen: Bool { taskforceEnabled && panelOpen && view == .review }
 
     // MARK: bell · 레일
+
+    /// 캡슐 레일의 셋째 캡슐 칸(Projects · Chats · More)이 칠해지나 (OA U3). 호버는 늘 칠한다. 칠해진 칸이 곧 "지금 여기"이므로 **하나만** 칠해진다:
+    /// 패널이 열려 있으면 그 화면의 칸 하나(Taskforce 대화는 bell이 칠해지고 셋째 캡슐은 하나도 안 칠해진다)이고, Assistant 창이 앞에 있다는 이유의 Chats 칠은 패널이 닫혀 있을 때만이다 (검토 1)
+    func railControlHighlighted(_ control: Control) -> Bool {
+        if control == .more { return menuOpen || hoveredControl == .more }
+        if hoveredControl == control { return true }
+        if control == .chats, windowsEnabled, assistantWindowFront, !panelOpen { return true }
+        guard panelOpen else { return false }
+        return control == .allWork ? view == .allWork && currentID == nil : control == .chats && view == .chats
+    }
 
     /// 레일 첫 캡슐의 bell (없으면 nil): 보이는 요청이 있거나 대화가 열려 있을 때만. 울림 = 보이는 요청 > 0 (변화만으로는 울리지 않는다)
     var taskforceBell: TaskforceBell? {
@@ -1277,12 +1297,12 @@ extension EdgeShellModel {
     func openTaskforce(requestID: String? = nil) {
         guard taskforceEnabled else { return }
         let queue = taskforceQueue
-        let wasOpen = taskforceConversationOpen
+        // 읽기의 주인: 패널이 닫혀 있었으면 컨트롤러의 "패널 열기" 읽기가 읽는다. 패널이 이미 열려 있었으면(이 대화든 Projects든) 컨트롤러는 읽지 않으니 여기서 읽는다 (OA U3 검토 1)
+        let panelWasOpen = panelOpen
         taskforceShownID = requestID.flatMap { queue.contains($0) ? $0 : nil } ?? queue.first?.id
         taskforcePreviousIDs = queue.ids
         openPanel(.review)
-        // 패널을 막 연 경우 컨트롤러의 패널 열기 읽기가 다시 읽는다. 이미 열려 있으면 여기서 읽는다
-        if wasOpen { refreshTaskforce() }
+        if panelWasOpen { refreshTaskforce() }
     }
 
     /// 단계 점 · ← →가 가는 곳 (id로). 단계를 옮기는 것은 답이 아니다
@@ -1352,8 +1372,15 @@ extension EdgeShellModel {
     /// 경로 충돌에 답을 고른다 (클릭 · 1/2 키): 보이는 충돌 요청에만, 오프라인이 아닐 때만. 2초 보류 뒤 보낸다 (`TaskforceRequestStore`). 처리했으면 true
     @discardableResult
     func answerConflict(_ keep: TaskforceConflictKeep, for requestID: String) -> Bool {
+        guard let rendered = taskforceStore?.renderedConflict(for: requestID) else { return false }
+        return answerConflict(keep, for: requestID, rendered: rendered)
+    }
+
+    /// 카드의 클릭: 카드가 그려질 때의 version · 두 세션(`rendered`)을 함께 낸다. 그 뒤 충돌이 바뀌었으면 저장소가 거절하고 새 카드가 말한다 (OA U3 검토 1)
+    @discardableResult
+    func answerConflict(_ keep: TaskforceConflictKeep, for requestID: String, rendered: TaskforceRenderedConflict) -> Bool {
         guard taskforceConversationOpen, taskforceScreen.canAnswer, let request = shownTaskforceRequest, request.id == requestID, request.kind == .pathConflict else { return false }
-        return taskforceStore?.choose(keep, for: requestID) ?? false
+        return taskforceStore?.choose(keep, for: requestID, rendered: rendered) ?? false
     }
 
     /// Taskforce 대화의 1 · 2 키 (OA U3-42): 보이는 요청이 확인 요청이면 Confirm · Dismiss(v1 경로), 경로 충돌이면 Keep 둘(2초 보류), 결과는 답이 없어 키가 지나간다.
@@ -1370,6 +1397,11 @@ extension EdgeShellModel {
         case .resultReady:
             return false
         }
+    }
+
+    /// Try again (오프라인 · 읽기 실패 · 일부만): 컨트롤러의 `load(.retry)`가 v2도 한 번 읽는다. 이 GET은 제안 노출 표시를 하므로 따로 한 번 더 읽지 않는다
+    func taskforceTryAgain() {
+        onRetry()
     }
 
     /// Answer sent의 Undo (보류 안에서만)

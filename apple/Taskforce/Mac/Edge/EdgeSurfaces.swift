@@ -134,11 +134,22 @@ extension EdgeSurfaces {
     }
 
     /// 이 실행의 게이트. Debug = `-TF_EDGE_SHELL YES -TF_S3B YES -TF_U2 YES -TF_S4 YES -TF_C3 YES` (인자 영역만, 저장된 defaults로는 켜지지 않는다). Release 빌드는 늘 false
-    static func taskforceConversation(_ defaults: UserDefaults? = nil) -> Bool {
+    static func taskforceConversation(_ defaults: UserDefaults? = nil, debugBuild: Bool = isDebugBuild) -> Bool {
+        // Release 갈래를 시험이 부를 수 있게 값으로 받는다 (OA U3 검토 1: 진짜 셸이 만들어지는 길에서 Release 새어 나감을 막는 한 줄)
+        guard debugBuild else { return false }
         #if DEBUG
         return debug(defaults).allowsTaskforceConversation(issueScreens: issueScreens(defaults))
         #else
         return false
+        #endif
+    }
+
+    /// 이 빌드가 Debug인가
+    static var isDebugBuild: Bool {
+        #if DEBUG
+        true
+        #else
+        false
         #endif
     }
 
