@@ -1,9 +1,11 @@
 import Link from "next/link";
+import { notFound } from "next/navigation";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { EMPTY_PROFILE } from "@/lib/api/profile";
 import { profileSchema } from "@/lib/api/contract";
 import { requireUser } from "@/lib/auth";
+import { isAdmin } from "@/lib/metrics/load";
 import type { JudgeSignals, RejectReason } from "@/lib/pipeline/judge";
 import type { VerifiedCandidate } from "@/lib/pipeline/verify";
 import { DISCONNECTED_SOURCE_MESSAGE, PURGED_SOURCE_MESSAGE } from "@/lib/retention";
@@ -20,6 +22,7 @@ import { MissingReportForm } from "./missing-report-form";
 import { ProfileForm } from "./profile-form";
 
 // 내부 시험대: 원문을 넣고 추출 → 기계 검증 → Jev 판정 결과를 표로 본다. 사용자용 화면이 아니다.
+// 운영자(ADMIN_EMAILS)만 연다. layout.tsx도 막지만 레이아웃은 페이지 렌더를 멈추지 못하므로 여기서도 데이터를 읽기 전에 확인한다.
 
 type SourceRow = {
   id: string;
@@ -76,6 +79,7 @@ const pct = (p: number) => `${Math.round(p * 100)}%`;
 
 export default async function LabPage({ searchParams }: { searchParams: Promise<{ source?: string; notion?: string; slack?: string; gmail?: string; google?: string }> }) {
   const user = await requireUser();
+  if (!isAdmin(user.email)) notFound();
   const { source: selectedId, notion: notionStatus, slack: slackStatus, gmail: gmailStatus, google: googleStatus } = await searchParams;
   const supabase = await createClient();
 
