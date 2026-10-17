@@ -17,17 +17,30 @@ const migrations = new Map(
     .map((name) => [name, readFileSync(path.join(MIGRATIONS, name), "utf8")] as const),
 );
 
-/** 파일 이름 순으로 마지막에 나온 metric_events_type_check의 type 목록 */
-function latestTypeCheck(): string[] {
-  let latest: string[] | null = null;
-  for (const text of migrations.values()) {
-    for (const match of text.matchAll(/add constraint metric_events_type_check\s+check\s*\(\s*type\s+in\s*\(([\s\S]*?)\)\s*\)/g)) {
-      latest = [...match[1].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);
+/** SQL 주석(한 줄 `--` · 블록)을 지운다: 주석 속 제약 이름 언급이 "그 제약을 만진 파일"로 읽히지 않게 */
+const stripSqlComments = (sql: string) => sql.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/--[^\n]*/g, " ");
+
+/**
+ * 파일 이름 순으로 **가장 나중에 metric_events_type_check를 만지는 파일**의 마지막 `CONSTRAINT … CHECK (type IN ('…', …))` type 목록.
+ * 대소문자 · 공백 · 줄바꿈 · 따옴표 붙은 이름을 허용한다. 그 파일이 제약을 만지는데 이 모양으로 해석하지 못하면 이전 목록으로 돌아가지 않고 던진다.
+ */
+function parseLatestTypeCheck(files: ReadonlyMap<string, string>): string[] {
+  const names = [...files.keys()].sort();
+  for (let i = names.length - 1; i >= 0; i--) {
+    const text = stripSqlComments(files.get(names[i])!);
+    if (!/metric_events_type_check/i.test(text)) continue;
+    const definitions = [...text.matchAll(/constraint\s+"?metric_events_type_check"?\s+check\s*\(\s*type\s+in\s*\(([^)]*)\)\s*\)/gi)];
+    const list = definitions.at(-1)?.[1];
+    // 목록은 따옴표 글자 상수와 쉼표뿐이어야 한다 (함수 · 서브쿼리 · = any(array[…])는 해석하지 못한 것으로 본다)
+    if (list === undefined || !/^\s*'[^']*'(?:\s*,\s*'[^']*')*\s*$/.test(list)) {
+      throw new Error(`${names[i]}: metric_events_type_check를 바꾸는데 CHECK (type IN ('…', …)) 모양으로 해석할 수 없다 — 이 시험의 해석기를 고쳐라`);
     }
+    return [...list.matchAll(/'([^']*)'/g)].map((m) => m[1]);
   }
-  if (!latest) throw new Error("metric_events_type_check를 찾지 못했다");
-  return latest;
+  throw new Error("metric_events_type_check를 찾지 못했다");
 }
+
+const latestTypeCheck = () => parseLatestTypeCheck(migrations);
 
 /** `create [or replace] function public.<name>(`의 마지막 정의(파일 이름 순)의 본문 ($$ … $$) */
 function latestFunctionBody(name: string): { file: string; body: string } | null {
@@ -59,6 +72,39 @@ function walk(dir: string, accept: (file: string) => boolean, skip: (dir: string
 }
 
 const quoted = (type: string) => new RegExp(`["'\`]${type}["'\`]`);
+
+describe("R1 가드 자체: 최신 CHECK 해석", () => {
+  const files = (entries: Record<string, string>) => new Map(Object.entries(entries));
+  const check = (list: string, head = "alter table public.metric_events add constraint metric_events_type_check") => `${head} check (type in (${list}));`;
+
+  it("소문자 · 대문자 · 따옴표 붙은 이름 · 여러 줄 · 여분 공백을 모두 읽는다", () => {
+    expect(parseLatestTypeCheck(files({ "1.sql": check("'a', 'b'") }))).toEqual(["a", "b"]);
+    expect(parseLatestTypeCheck(files({ "1.sql": "ALTER TABLE public.metric_events ADD CONSTRAINT metric_events_type_check CHECK (type IN ('a', 'b', 'c'));" }))).toEqual(["a", "b", "c"]);
+    expect(parseLatestTypeCheck(files({ "1.sql": 'Alter Table public.metric_events Add Constraint "Metric_Events_Type_Check" Check (Type In (\'x\'));' }))).toEqual(["x"]);
+    expect(parseLatestTypeCheck(files({ "1.sql": "ALTER TABLE public.metric_events\n  ADD   CONSTRAINT\n    metric_events_type_check\n  CHECK\n(\n  type\n  IN\n  (\n 'a'\n ,\n 'b'\n)\n)" }))).toEqual(["a", "b"]);
+  });
+
+  it("파일 이름 순으로 가장 나중에 그 제약을 만지는 파일의 마지막 정의를 쓴다 (건드리지 않는 뒤 파일 · 주석 언급은 건너뛴다)", () => {
+    expect(parseLatestTypeCheck(files({ "1.sql": check("'a'"), "2.sql": check("'a', 'b'"), "3.sql": "select 1;", "4.sql": "-- metric_events_type_check는 곧 바뀐다\n/* metric_events_type_check */ select 2;" }))).toEqual(["a", "b"]);
+    expect(parseLatestTypeCheck(files({ "1.sql": `${check("'a'")}\n${check("'a', 'z'")}` }))).toEqual(["a", "z"]);
+  });
+
+  it("가장 나중에 만지는 파일을 해석하지 못하면 이전 목록으로 돌아가지 않고 실패한다", () => {
+    const older = check("'a', 'b'");
+    for (const newest of [
+      "alter table public.metric_events add constraint metric_events_type_check check (type = any (array['a','b','c']));",
+      "alter table public.metric_events drop constraint metric_events_type_check;",
+      "alter table public.metric_events add constraint metric_events_type_check check (type in (select t from public.metric_types));",
+      "alter table public.metric_events add constraint metric_events_type_check check (type in (lower('A'), 'b'));",
+    ]) {
+      expect(() => parseLatestTypeCheck(files({ "1.sql": older, "2.sql": newest })), newest).toThrow(/해석/);
+    }
+  });
+
+  it("그 제약이 어디에도 없으면 실패한다", () => {
+    expect(() => parseLatestTypeCheck(files({ "1.sql": "select 1;" }))).toThrow(/찾지 못/);
+  });
+});
 
 describe("R1 최신 CHECK ↔ 등록부", () => {
   it("마지막 metric_events_type_check는 OA 전 7개 ∪ 등록부 17개와 정확히 같다", () => {

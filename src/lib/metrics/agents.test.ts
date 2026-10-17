@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -6,6 +9,8 @@ import {
   agentStops,
   agentUsage,
   AGENT_EVENTS,
+  BUCKET_LABELS,
+  bucketText,
   PRE_OA_TYPES,
   type AgentEventRow,
   type AgentMetricRow,
@@ -212,6 +217,23 @@ describe("U2 ② 전달 · 지연 (ONE-TF-11 서버 구간)", () => {
     );
     // 0 · 3 → ≤3 / 3.001 · 8 → ≤8 / 8.001 · 25 → ≤25 / 25.001 · 90 → >25
     expect(group.buckets).toEqual({ le3: 2, le8: 2, le25: 2, gt25: 2 });
+  });
+
+  it("칸은 겹치지 않는 구간이고(누적 아님) 표시 글자가 그 뜻을 말한다: 표본 2 · 5 · 10초", () => {
+    const [group] = run(
+      [step("a"), step("b"), step("c")],
+      [lease("a", 2), lease("b", 5), lease("c", 10)],
+    );
+    // 2초 → 3초 이하, 5초 → 3초 초과 ~ 8초 이하, 10초 → 8초 초과 ~ 25초 이하 (누적이면 8초 이하 2 · 25초 이하 3)
+    expect(group.buckets).toEqual({ le3: 1, le8: 1, le25: 1, gt25: 0 });
+    expect(BUCKET_LABELS).toEqual({ le3: "3초 이하", le8: "3초 초과 ~ 8초 이하", le25: "8초 초과 ~ 25초 이하", gt25: "25초 초과" });
+    expect(bucketText(group.buckets)).toBe("3초 이하 1 · 3초 초과 ~ 8초 이하 1 · 8초 초과 ~ 25초 이하 1 · 25초 초과 0");
+  });
+
+  it("화면(page.tsx)은 칸 글자를 이 함수로만 만든다 (손으로 적은 \"8초 이하\" 같은 누적처럼 읽히는 글자가 없다)", () => {
+    const page = readFileSync(path.resolve(import.meta.dirname, "../../app/admin/metrics/page.tsx"), "utf8");
+    expect(page).toContain("bucketText(g.buckets)");
+    for (const stale of ["8초 이하 {", "25초 이하 {", "3초 이하 {"]) expect(page).not.toContain(stale);
   });
 
   it("lease는 gate bridge_lease의 첫 calling만, 접수는 첫 called, 둘 다 서버 사건 시각이다", () => {

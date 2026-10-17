@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { requireUser } from "@/lib/auth";
-import type { DimCount, LatencyGroup, Quantiles } from "@/lib/metrics/agents";
+import { bucketText, type DimCount, type LatencyGroup, type Quantiles } from "@/lib/metrics/agents";
 import { HOLD_REASONS, RUN_STATES, type ErrorField, type HoldReason, type MissedMetric, type RunState } from "@/lib/metrics/compute";
 import { isAdmin, loadMetrics } from "@/lib/metrics/load";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -498,9 +498,7 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
                   </p>
                   <ul className="text-muted-foreground space-y-0.5 pl-3">
                     <li>집어 감 (만든 때 → Mac): {quantileText(g.lease)}</li>
-                    <li>
-                      3초 이하 {g.buckets.le3} · 8초 이하 {g.buckets.le8} · 25초 이하 {g.buckets.le25} · 25초 초과 {g.buckets.gt25}
-                    </li>
+                    <li>{bucketText(g.buckets)}</li>
                     <li>
                       아직 기다림 {g.waiting} · 집힌 적 없이 끝남 {g.neverLeased}
                     </li>

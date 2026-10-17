@@ -211,6 +211,13 @@ export type LatencyGroup = {
   /** 시각 이상(집힌 때 · 접수가 만든 때보다 앞)이라 표본에서 뺀 단계 */
   anomalies: number;
 };
+/** 칸 이름: 3 · 8 · 25초 칸은 겹치지 않는 구간이다 (누적이 아니다) */
+export const BUCKET_LABELS = { le3: "3초 이하", le8: "3초 초과 ~ 8초 이하", le25: "8초 초과 ~ 25초 이하", gt25: "25초 초과" } as const;
+
+export function bucketText(buckets: LatencyGroup["buckets"]): string {
+  return (Object.keys(BUCKET_LABELS) as (keyof typeof BUCKET_LABELS)[]).map((key) => `${BUCKET_LABELS[key]} ${buckets[key]}`).join(" · ");
+}
+
 export type DeliveryCard = {
   groups: LatencyGroup[];
   results: { state: string; reason: string; n: number }[];
