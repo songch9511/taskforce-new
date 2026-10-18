@@ -5,7 +5,7 @@ import Foundation
 /// 모양의 출처는 서버 검증 함수 `agent_pending_question_valid`(`supabase/migrations/20261116000000_agent_events.sql`)와 그 시험 상수
 /// (`tests/db/review-agent-inputs.scenarios.ts`의 `question()`)다: 키는 `question_key` · `provider_request_id` · `kind`(`input` | `approval`) · `structured` · `questions` · `asked_at`,
 /// 질문은 1–4개(`id` · `header` · `text` · `options` ≤ 10 · `multi_select` · `allow_other` · `secret`), 선택지는 `label` · `description`.
-/// 승인 질문의 글은 D3a 어댑터의 `approvalQuestion` 출력(머리 `Edit file` · `Write file` · `Run command`, 글 `Edit <상대 경로>` · `Run: <명령>`, 사유는 둘째 줄)과 같은 모양이다.
+/// 승인 질문의 글은 D3a 어댑터의 `approvalQuestion` 출력(머리 `Allow Claude Code to edit this file?` · `…write this file?` · `…run this command?`, 글 `Edit · <상대 경로>` · `Write · <상대 경로>` · `Run · <명령>`, 사유는 둘째 줄)과 같은 모양이다.
 /// 아래 글은 모두 지어낸 예시다 (사용자 글이 아니다).
 enum AgentQuestionFixtures {
     static let taskID = UUID(uuidString: "a5555555-5555-4555-8555-555555555555")!
@@ -103,17 +103,17 @@ enum AgentQuestionFixtures {
             prompt(id: "region", text: "Which region?", header: "Deploy", options: [("eu", ""), ("us", "")]),
         ])
     }
-    /// 승인: 파일 고치기 (D3a: 머리 `Edit file`, 글 `Edit <상대 경로>`)
+    /// 승인: 파일 고치기 (D3a: 머리 `Allow Claude Code to edit this file?`, 글 `Edit · <상대 경로>`)
     static var approvalEdit: String {
         pending(
-            prompts: [prompt(id: "approval", text: "Edit src/content/pricing.mdx", header: "Edit file", options: [("Allow", ""), ("Deny", "")])],
+            prompts: [prompt(id: "approval", text: "Edit · src/content/pricing.mdx", header: "Allow Claude Code to edit this file?", options: [("Allow", ""), ("Deny", "")])],
             kind: "approval"
         )
     }
-    /// 승인: 명령 실행, 사유가 둘째 줄 (D3a: `Run: <명령>\n<사유>`)
+    /// 승인: 명령 실행, 사유가 둘째 줄 (D3a: `Run · <명령>\n<사유>`)
     static var approvalRunWithReason: String {
         pending(
-            prompts: [prompt(id: "approval", text: "Run: npm run build\nContains a secret value", header: "Run command", options: [("Allow", ""), ("Deny", "")])],
+            prompts: [prompt(id: "approval", text: "Run · npm run build\nContains a secret value", header: "Allow Claude Code to run this command?", options: [("Allow", ""), ("Deny", "")])],
             kind: "approval"
         )
     }
@@ -138,11 +138,11 @@ enum AgentQuestionFixtures {
     static var keyForAnotherTask: String { pending(prompts: [prompt()], task: UUID(uuidString: "a9999999-9999-4999-8999-999999999999")!) }
     /// 승인인데 질문 id가 `approval`이 아니다 (서버 답 route가 400이다)
     static var approvalWithWrongID: String {
-        pending(prompts: [prompt(id: "x", text: "Edit a.txt", header: "Edit file", options: [("Allow", ""), ("Deny", "")])], kind: "approval")
+        pending(prompts: [prompt(id: "x", text: "Edit · a.txt", header: "Allow Claude Code to edit this file?", options: [("Allow", ""), ("Deny", "")])], kind: "approval")
     }
     /// 승인인데 선택지가 둘이 아니다
     static var approvalWithOneOption: String {
-        pending(prompts: [prompt(id: "approval", text: "Edit a.txt", header: "Edit file", options: [("Allow", "")])], kind: "approval")
+        pending(prompts: [prompt(id: "approval", text: "Edit · a.txt", header: "Allow Claude Code to edit this file?", options: [("Allow", "")])], kind: "approval")
     }
     static var missingField: String {
         #"{"question_key":["\#(taskID.uuidString.lowercased())","\#(requestID)"],"provider_request_id":"\#(requestID)","kind":"input","structured":true,"asked_at":"2026-10-18T01:02:03.000Z"}"#

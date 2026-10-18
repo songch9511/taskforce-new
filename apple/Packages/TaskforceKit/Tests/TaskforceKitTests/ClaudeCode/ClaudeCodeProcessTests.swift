@@ -216,7 +216,7 @@ struct ClaudeCodeProcessTests {
         let identity = try await fake.turn(events: first)
         #expect(await first.wait { FakeClaude.ended($0) })
         #expect(first.questions.first?.kind == .approval)
-        #expect(first.questions.first?.text == "Write out.txt")
+        #expect(first.questions.first?.text == "Write · out.txt")
         #expect(!FileManager.default.fileExists(atPath: target))
         let second = EventLog()
         let result = try await fake.answer("toolu_w1", kind: .approval, value: AgentAnswerValue(answers: ["approval": .one(answer)]), external: FakeClaude.providerSession(identity), events: second)
@@ -496,7 +496,7 @@ struct ClaudeCodeProcessTests {
         let events = EventLog()
         _ = try await fake.turn(events: events)
         #expect(await events.wait { FakeClaude.ended($0) })
-        #expect(events.questions.map(\.text) == ["Write .mcp.json"])
+        #expect(events.questions.map(\.text) == ["Write · .mcp.json"])
         #expect(fake.decider.calls.first?.call == .claudeWrite(toolUseID: "toolu_w", permissionMode: "default", tool: "Write",
                                                              target: BridgeV1ToolTarget(realPath: fake.workspace + "/.mcp.json", relPath: ".mcp.json")))
     }

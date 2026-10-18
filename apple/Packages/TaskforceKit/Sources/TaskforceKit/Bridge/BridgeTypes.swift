@@ -65,6 +65,8 @@ public enum BridgeWakeReason: String, Sendable {
 /// 요청 한도를 따로 세는 route (계약 2.11)
 public enum BridgeRoute: String, Sendable, CaseIterable {
     case register, commands, ack, events, heartbeat
+    /// OA D4b-m-2: 이 Mac에서 답한 비밀값을 서버에 표시한다 (값은 가지 않는다). 예산은 따로 두지 않는다 (사용자 행동 한 번당 한 번, 서버 한도가 지킨다)
+    case answerLocal = "answer_local"
 }
 
 // MARK: - 로그 (글 0)

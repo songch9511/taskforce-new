@@ -79,11 +79,11 @@ struct ClaudeCodeRuntimeTests {
         await h.runtime.tick()
         await h.settle(timeout: 60) { (try? await h.ledger.task(created.taskID))?.openRequestID == "toolu_secret" }
         #expect(try await h.ledger.task(created.taskID)?.openRequestSecret == true)
-        await h.secrets.put(requestID: "toolu_secret", value: AgentAnswerValue(text: "CANARY-SECRET-7f3a"))
+        await h.secrets.put(key: LocalSecretKey(taskID: created.taskID, requestID: "toolu_secret"), value: AgentAnswerValue(text: "CANARY-SECRET-7f3a"))
         h.server.enqueueAnswer(bridgeID: h.bridgeID, taskID: created.taskID, requestID: "toolu_secret", locally: true, structured: true)
         h.clock.jump(by: 6)
         await h.runtime.tick()
-        await h.settle(timeout: 60) { h.server.requests.contains { $0.bodyJSON.contains("Run: printf") } }
+        await h.settle(timeout: 60) { h.server.requests.contains { $0.bodyJSON.contains("Run · printf") } }
         // 모델에는 닿았다 (가짜의 MCP 결과 = Claude Code transcript 쪽, Q9)
         #expect((fake.report(1)?["mcp_results"] as? [String])?.first == #"The user answered: {"key":"CANARY-SECRET-7f3a"}"#)
         // 승인 → 두 번째 명령 · 메시지
@@ -91,7 +91,7 @@ struct ClaudeCodeRuntimeTests {
         h.server.enqueueAnswer(bridgeID: h.bridgeID, taskID: created.taskID, requestID: "toolu_c1", answers: ["approval": "Allow"], questionKind: "approval")
         h.clock.jump(by: 6)
         await h.runtime.tick()
-        await h.settle(timeout: 60) { h.server.requests.contains { $0.bodyJSON.contains("Second ") } && h.server.requests.contains { $0.bodyJSON.contains("Run: echo") } }
+        await h.settle(timeout: 60) { h.server.requests.contains { $0.bodyJSON.contains("Second ") } && h.server.requests.contains { $0.bodyJSON.contains("Run · echo") } }
         // 거절로 닫고 다음 턴
         await h.settle(timeout: 60) { (try? await h.ledger.task(created.taskID))?.openRequestID == "toolu_c2" }
         h.server.enqueueAnswer(bridgeID: h.bridgeID, taskID: created.taskID, requestID: "toolu_c2", answers: ["approval": "Deny"], questionKind: "approval")
@@ -110,9 +110,9 @@ struct ClaudeCodeRuntimeTests {
         // 되말한 글 · 승인 카드 글에서는 가렸고, 가린 명령은 서버에 묻지 않았다
         let bodies = h.server.requests.map(\.bodyJSON).joined(separator: "\n")
         #expect(bodies.contains("Your key [redacted] works."))
-        #expect(bodies.contains(#"Run: printf %s 'X-Key: [redacted]' >\/dev\/null\n"# + ClaudeCardReason.secretInCommand), "JSON 본문은 /를 \\/로, 줄바꿈을 \\n으로 쓴다")
+        #expect(bodies.contains(#"Run · printf %s 'X-Key: [redacted]' >\/dev\/null\n"# + ClaudeCardReason.secretInCommand), "JSON 본문은 /를 \\/로, 줄바꿈을 \\n으로 쓴다")
         #expect(bodies.contains("Second [redacted]"), "승인 resume의 메시지")
-        #expect(bodies.contains(#"Run: echo [redacted] >\/dev\/null"#), "두 번째 명령의 카드")
+        #expect(bodies.contains(#"Run · echo [redacted] >\/dev\/null"#), "두 번째 명령의 카드")
         #expect(bodies.contains("Again [redacted]"), "다음 턴")
         #expect(fake.decider.calls.isEmpty, "가린 명령은 서버에 묻지 않는다")
         await h.ledger.checkpoint()

@@ -164,7 +164,7 @@ struct BridgeOutboxFlowTests {
         await h.runtime.tick()
         await h.settle { (try? await h.ledger.task(created.taskID))?.openRequestID == "req-secret" }
         #expect(try await h.ledger.task(created.taskID)?.openRequestSecret == true)
-        await h.secrets.put(requestID: "req-secret", value: AgentAnswerValue(text: "SENTINEL-SECRET-VALUE-9b2e"))
+        await h.secrets.put(key: LocalSecretKey(taskID: created.taskID, requestID: "req-secret"), value: AgentAnswerValue(text: "SENTINEL-SECRET-VALUE-9b2e"))
         #expect(await h.runtime.isBusy(), "아직 전달하지 않은 비밀값 답이 있으면 바쁨")
         h.server.enqueueAnswer(bridgeID: h.bridgeID, taskID: created.taskID, requestID: "req-secret", locally: true, structured: false)
         h.clock.jump(by: 6)
@@ -229,7 +229,7 @@ struct BridgeOutboxFlowTests {
         let created = h.message("SENTINEL-USER-MESSAGE-LOG")
         await h.runtime.tick()
         await h.settle { (try? await h.ledger.task(created.taskID))?.openRequestID == "req-secret" }
-        await h.secrets.put(requestID: "req-secret", value: AgentAnswerValue(text: "SENTINEL-SECRET-LOG"))
+        await h.secrets.put(key: LocalSecretKey(taskID: created.taskID, requestID: "req-secret"), value: AgentAnswerValue(text: "SENTINEL-SECRET-LOG"))
         h.server.enqueueAnswer(bridgeID: h.bridgeID, taskID: created.taskID, requestID: "req-secret", locally: true, structured: false)
         h.clock.jump(by: 6)
         await h.runtime.tick()

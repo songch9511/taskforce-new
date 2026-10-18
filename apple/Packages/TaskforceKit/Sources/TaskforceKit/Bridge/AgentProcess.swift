@@ -433,34 +433,182 @@ extension WorkspaceResolver {
     public var recognizesRecordedPaths: Bool { true }
 }
 
-/// 비밀값 답은 이 Mac의 메모리에만 있다 (계약 3.6): 서버에도 디스크에도 없다. D4b-m의 입력 화면이 넣고 런타임이 한 번 꺼내 간다
-public actor LocalSecretAnswers {
-    private var values: [String: AgentAnswerValue] = [:]
+/// 비밀값 답의 열쇠 (OA D4b-m-2, 결정 D4bm2-01): `(agent_task_id, provider_request_id)`. 다른 task의 같은 요청 id와 섞이지 않는다.
+/// task id는 소문자로 맞춘다 (질문 저장소의 `UUID.uuidString`은 대문자, 서버 명령의 `agent_task_id`는 소문자다)
+public struct LocalSecretKey: Hashable, Sendable {
+    public let taskID: String
+    public let requestID: String
+
+    public init(taskID: String, requestID: String) {
+        self.taskID = taskID.lowercased()
+        self.requestID = requestID
+    }
+}
+
+/// 답 값을 담는 상자. `description` · `debugDescription` · `customMirror` 어디에도 값을 말하지 않는다 (`SecretBox`와 같은 방식, `dump` · 거울에도 값 0).
+/// 값은 `reveal()` 하나로만 나가고 `LocalSecretAnswers.take`가 전달 직전에만 부른다
+struct LocalAnswerBox: Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+    private let value: AgentAnswerValue
+
+    init(_ value: AgentAnswerValue) {
+        self.value = value
+    }
+
+    func reveal() -> AgentAnswerValue { value }
+
+    var description: String { "<secret answer>" }
+    var debugDescription: String { "<secret answer>" }
+    var customMirror: Mirror { Mirror(self, children: []) }
+}
+
+/// 비밀값 답은 이 Mac의 메모리에만 있다 (계약 3.6): 서버에도 디스크에도 로그에도 없다. D4b-m의 입력 화면이 `BridgeRuntime.submitLocalSecret`을 거쳐 넣고, 런타임이 답 명령 전달 때 한 번 꺼내 간다.
+/// **값은 (task, request)마다 하나다** (계약 16.14): `put`은 같은 열쇠의 이전 값을 바꿔 넣는다 (재입력 = 덮어쓰기). 어느 값을 정산이 버리나를 세대 · 시각 · 귀속으로 추정하지 않는다 —
+/// 값은 "adapter가 바로 그 요청을 아직 기다리는 동안"만 둔다 (원장: 열려 있고 `openRequestID == request`이고 닫히지 않음). 그 조건이 거짓이 되면(전달 · 질문 교체 · 요청 닫힘 · 취소) · TTL(24시간) ·
+/// 계정이 떠나거나 · 종료하거나 · 폐기되면 버린다. 덤프에 안전하다: 값은 상자에 있고 이 actor도 값을 말하지 않는다.
+/// 진행 중 표시(종료 확인의 "바쁨")는 값을 지우는 근거가 아니다 — 제출 단위로 센다 (계약 16.15): 값마다 N = 서버가 `answered`로 받은 POST 수(`duplicate`는 세지 않는다),
+/// M = 이 Mac이 정산 · 전달로 끝을 본 답 명령 수(N을 넘지 않는다), 그리고 돌고 있는 제출(put부터 결과까지)이 있으면 바쁘다: 바쁨 = 돌고 있는 제출이 있거나 N > M.
+/// 옛 명령의 정산은 M만 하나 올리므로 다른 제출의 바쁨을 끄지 못한다. 닫힘 정산(질문이 닫혔다)은 N ≤ M이고 돌고 있는 제출이 없을 때 그 task의 값을 버린다.
+/// 돌고 있는 제출이 있어 못 지운 닫힘 정산(M으로 설명 못 한 것)은 표시해 두었다가 그 제출이 끝날 때 버린다 (계약 16.16: 지연된 `answered`가 N만 올려 굳는 것을 막는다)
+public actor LocalSecretAnswers: CustomReflectable, CustomStringConvertible {
+    private struct Entry {
+        let box: LocalAnswerBox
+        let storedAt: Date
+        /// 서버가 `answered`로 받은 POST 수 (N)
+        var answered = 0
+        /// 이 Mac이 정산 · 전달로 끝을 본 답 명령 수 (M, N을 넘지 않는다)
+        var ended = 0
+    }
+
+    private var values: [LocalSecretKey: Entry] = [:]
+    /// 돌고 있는 제출(put부터 결과까지, 재시도 쉬는 시간 포함)의 수. 값이 사라져도 제출이 끝날 때까지 센다
+    private var running: [LocalSecretKey: Int] = [:]
+    /// 돌고 있는 제출이 있는 동안 닫힘 정산이 먼저 닿았다 (그 정산을 M으로 설명할 명령을 세지 못했고, 값은 제출 때문에 못 지웠다): 제출이 끝나면 값을 버린다 (계약 16.16)
+    private var closedWhileRunning: Set<LocalSecretKey> = []
     private var onChange: (@Sendable (Bool) -> Void)?
+    private var lastInFlight = false
 
     public init() {}
 
-    /// 아직 전달하지 않은 비밀값이 있는지 바뀔 때 알린다 (종료 확인의 "바쁨")
+    nonisolated public var customMirror: Mirror { Mirror(self, children: []) }
+    nonisolated public var description: String { "LocalSecretAnswers" }
+
+    /// 제출 · 답 명령이 진행 중인 값이 있는지 바뀔 때 알린다 (종료 확인의 "바쁨")
     public func observe(_ onChange: @escaping @Sendable (Bool) -> Void) {
         self.onChange = onChange
     }
 
-    public func put(requestID: String, value: AgentAnswerValue) {
-        values[requestID] = value
-        onChange?(true)
+    private func notify() {
+        let now = hasInFlight
+        guard now != lastInFlight else { return }
+        lastInFlight = now
+        onChange?(now)
     }
 
-    public func take(requestID: String) -> AgentAnswerValue? {
-        let value = values.removeValue(forKey: requestID)
-        if values.isEmpty { onChange?(false) }
-        return value
+    /// 값을 둔다. 같은 열쇠의 이전 값은 바꿔 넣는다 (재입력 = 덮어쓰기). N · M은 그 열쇠에 이어진다
+    public func put(key: LocalSecretKey, value: AgentAnswerValue, at now: Date = Date()) {
+        let previous = values[key]
+        values[key] = Entry(box: LocalAnswerBox(value), storedAt: now, answered: previous?.answered ?? 0, ended: previous?.ended ?? 0)
+        notify()
     }
 
+    /// 제출 하나가 값을 두고 돌기 시작했다 (`put` 뒤). 끝나면 `endSubmission`
+    /// (닫힘 표시는 이전 제출 몫이다: 새 제출은 닫힘 뒤에 시작했으므로 그 값의 운명은 서버의 답이 정한다)
+    public func beginSubmission(key: LocalSecretKey) {
+        closedWhileRunning.remove(key)
+        running[key, default: 0] += 1
+        notify()
+    }
+
+    /// 제출이 끝났다. 그 제출이 도는 동안 닫힘 정산이 먼저 닿았다면(`closedWhileRunning`) 이제 값을 버린다 — 늦게 온 `answered`가 N만 올려 N > M으로 굳지 않게 (값 없음 = 바쁨 거짓)
+    public func endSubmission(key: LocalSecretKey) {
+        if let count = running[key] {
+            if count <= 1 { running.removeValue(forKey: key) } else { running[key] = count - 1 }
+        }
+        if running[key] == nil, closedWhileRunning.remove(key) != nil { values.removeValue(forKey: key) }
+        notify()
+    }
+
+    /// 서버가 이 열쇠의 POST를 `answered`로 받았다 (새 답 명령이 만들어졌다, N). `duplicate`는 부르지 않는다
+    public func noteAnswered(key: LocalSecretKey) {
+        guard var entry = values[key] else { return }
+        entry.answered += 1
+        values[key] = entry
+        notify()
+    }
+
+    /// 답 명령 하나가 이 Mac에서 끝났다 (정산: M). 어느 열쇠의 명령인지 가르지 않고 그 task의 값마다 M을 하나 올린다 (N을 넘지 않게).
+    /// `closesQuestion`(withdrawn · stale/not_prepared · 404 · declined)이면 끝나지 않은 다른 제출이 없는 값(N ≤ M, 돌고 있는 제출 없음)은 버린다 — 질문이 닫혔다.
+    /// `not_received` 같은 되살림은 값을 두고 M만 올린다. 버린 값의 수
+    @discardableResult
+    public func answerCommandEnded(taskID: String, closesQuestion: Bool) -> Int {
+        let task = taskID.lowercased()
+        var dropped = 0
+        for key in values.keys where key.taskID == task {
+            guard var entry = values[key] else { continue }
+            // 센 명령(N > M)으로 설명되는 정산이면 M을 올린다. 못 올리면(M = N) 센 적 없는 명령의 정산이다 — 돌고 있는 제출의 아직 못 받은 `answered`일 수 있다
+            let explained = entry.ended < entry.answered
+            if explained { entry.ended += 1 }
+            if closesQuestion, entry.answered <= entry.ended {
+                if running[key] == nil {
+                    values.removeValue(forKey: key)
+                    closedWhileRunning.remove(key)
+                    dropped += 1
+                    continue
+                }
+                // 제출이 돌고 있어 지금은 못 지운다: 설명 못 한 닫힘이면 표시해 두고 제출이 끝날 때 버린다 (계약 16.16)
+                if !explained { closedWhileRunning.insert(key) }
+            }
+            values[key] = entry
+        }
+        notify()
+        return dropped
+    }
+
+    /// 전달 직전에 한 번 꺼낸다 (꺼내면 지워진다)
+    public func take(key: LocalSecretKey) -> AgentAnswerValue? {
+        let entry = values.removeValue(forKey: key)
+        closedWhileRunning.remove(key)
+        notify()
+        return entry?.box.reveal()
+    }
+
+    public func contains(key: LocalSecretKey) -> Bool { values[key] != nil }
+
+    /// 값을 버린다 (멱등). 있었으면 true
+    @discardableResult
+    public func discard(key: LocalSecretKey) -> Bool {
+        let had = values.removeValue(forKey: key) != nil
+        closedWhileRunning.remove(key)
+        notify()
+        return had
+    }
+
+    /// 저장한 지 `ttl`초가 넘은 값을 버린다. 버린 수
+    @discardableResult
+    public func dropExpired(now: Date, ttl: TimeInterval) -> Int {
+        let keys = values.filter { now.timeIntervalSince($0.value.storedAt) > ttl }.map(\.key)
+        for key in keys {
+            values.removeValue(forKey: key)
+            closedWhileRunning.remove(key)
+        }
+        notify()
+        return keys.count
+    }
+
+    /// 지금 값이 있는 열쇠 (값은 아니다): 원장과 대조해 더는 기다리지 않는 요청의 값을 버릴 때 쓴다
+    public var keys: [LocalSecretKey] { Array(values.keys) }
+
+    /// 값이 하나라도 있다 (쉬는 값 포함)
     public var hasPending: Bool { !values.isEmpty }
+
+    /// 돌고 있는 제출이 있거나 끝나지 않은 답한 POST가 있다(N > M): 종료 확인 · 업데이트 재시작을 막는 "바쁨"의 비밀값 몫
+    public var hasInFlight: Bool { !running.isEmpty || values.values.contains { $0.answered > $0.ended } }
 
     public func clear() {
         values.removeAll()
-        onChange?(false)
+        running.removeAll()
+        closedWhileRunning.removeAll()
+        notify()
     }
 }
 #endif

@@ -251,18 +251,23 @@ struct BridgeHostTests {
         #expect(await fixture.host.activeRuntime?.status != .stopped)
     }
 
-    @Test func aSecretAnswerWaitingInMemoryAloneCountsAsBusy() async throws {
+    @Test func aSecretAnswerWaitingInMemoryCountsAsBusyOnlyWhileItsAnswerIsInFlight() async throws {
         let fixture = HostFixture()
         defer { fixture.cleanup() }
         await fixture.start()
         _ = await fixture.waitForBridge()
         #expect(!fixture.host.isBusy)
         let secrets = try #require(fixture.host.activeSecrets)
-        await secrets.put(requestID: "req", value: AgentAnswerValue(text: "x"))
+        let key = LocalSecretKey(taskID: UUID().uuidString, requestID: "req")
+        await secrets.put(key: key, value: AgentAnswerValue(text: "x"))
+        // 쉬는 값(되살아난 질문을 기다림)은 종료 확인을 막지 않는다 (계약 16.14 · 16.15)
+        #expect(!fixture.host.isBusy)
+        // 서버가 답 명령을 만들었다(answered): 그 명령이 끝나기까지 바쁘다
+        await secrets.noteAnswered(key: key)
         #expect(await fixture.eventually { fixture.host.isBusy })
         #expect(fixture.host.terminationReply() == .terminateLater)
         #expect(await fixture.eventually { fixture.prompt.asked == 1 })
-        _ = await secrets.take(requestID: "req")
+        _ = await secrets.take(key: key)
         #expect(await fixture.eventually { !fixture.host.isBusy })
     }
 

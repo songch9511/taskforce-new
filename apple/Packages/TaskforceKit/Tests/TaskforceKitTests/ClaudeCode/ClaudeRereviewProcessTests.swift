@@ -79,7 +79,7 @@ struct ClaudeRereviewProcessTests {
         all += next.all
         let texts = Self.texts(all)
         #expect(texts.contains("Second [redacted]"), "승인 resume의 메시지")
-        #expect(texts.contains { $0.hasPrefix("Run: echo [redacted]") }, "두 번째 명령의 카드")
+        #expect(texts.contains { $0.hasPrefix("Run · echo [redacted]") }, "두 번째 명령의 카드")
         #expect(texts.contains("Declined [redacted]"))
         #expect(texts.contains("Again [redacted]"), "다음 턴")
         #expect(!texts.contains { $0.contains(Self.secret) })

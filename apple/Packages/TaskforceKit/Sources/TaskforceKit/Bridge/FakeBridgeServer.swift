@@ -77,8 +77,19 @@ public final class FakeBridgeServer: @unchecked Sendable {
         var lastLiveState: String?
         var lastEventSeq = 0
         var externalTaskID: String?
-        var openQuestion: String?
+        var openQuestion: OpenQuestion?
         var currentCommandID: String?
+    }
+
+    /// 지금 열린 질문 (question 사건에서 안다): `answer-local`이 digest · 비밀값 여부를 대조한다 (OA F2 · D4b-m-2)
+    struct OpenQuestion {
+        var requestID: String
+        var digest: String
+        var kind: String
+        var structured: Bool
+        var secret: Bool
+        /// 이 Mac이 이미 답한 질문이면 그 답 명령의 단계 id (`duplicate`가 돌려준다)
+        var answeredStepID: String?
     }
 
     struct Command {
@@ -131,6 +142,9 @@ public final class FakeBridgeServer: @unchecked Sendable {
     /// 시험이 URL 처리 전에 끼워 넣는 비동기 훅 (예: 요청이 도착한 순간 원장을 읽어 write-ahead를 확인한다)
     public var onRequest: (@Sendable (Recorded) async -> Void)? { get { lock.withLock { _onRequest } } set { lock.withLock { _onRequest = newValue } } }
     private var _onRequest: (@Sendable (Recorded) async -> Void)?
+    /// 서버가 요청을 **처리한 뒤**, 응답을 돌려주기 전에 부른다 (응답이 늦게 도착하는 순서를 만든다: 서버 쪽 효과는 이미 났다)
+    public var onResponse: (@Sendable (Recorded) async -> Void)? { get { lock.withLock { _onResponse } } set { lock.withLock { _onResponse = newValue } } }
+    private var _onResponse: (@Sendable (Recorded) async -> Void)?
     /// 긴 대기를 실제로 붙잡아 둘 최대 시간 (시험이 멈추지 않게)
     public var longPollRealTimeCap: TimeInterval = 5
 
@@ -227,9 +241,26 @@ public final class FakeBridgeServer: @unchecked Sendable {
     public func taskState(_ id: String) -> String? { lock.withLock { tasks[id]?.state } }
     public func taskLastSeq(_ id: String) -> Int? { lock.withLock { tasks[id]?.lastEventSeq } }
 
+    /// 답 명령이 not_received로 정산될 때 서버가 질문을 되살리나 (실제 서버는 run이 아직 queued · running이고 취소 요청이 없을 때만 되살린다, `20261118000000_bridge_commands.sql:394`). false면 run이 끝난 것처럼 task를 failed로 둔다
+    public var restoresQuestionOnNotReceived: Bool { get { lock.withLock { _restoresQuestionOnNotReceived } } set { lock.withLock { _restoresQuestionOnNotReceived = newValue } } }
+    private var _restoresQuestionOnNotReceived = true
+
+    /// 시험 전용: 서버가 이 task의 질문을 되살렸다 (`awaiting_answer`, 다시 답할 수 있다). 정산 없이 되살아난 경우를 만든다
+    public func restoreQuestion(taskID: String) {
+        lock.withLock {
+            tasks[taskID]?.state = "awaiting_answer"
+            tasks[taskID]?.openQuestion?.answeredStepID = nil
+        }
+    }
+
     /// 시험 전용: 서버가 이 task를 다른 세션의 것으로 말한다 (이후 이 task를 가리키는 명령은 그 세션 id를 싣는다)
     public func reassignTask(_ id: String, toSession sessionID: String) {
         lock.withLock { tasks[id]?.sessionID = sessionID }
+    }
+
+    /// 그 task의 이 종류 명령 id들 (만든 순서). 서버가 스스로 만든 명령(`answer-local`의 답 명령)을 시험이 찾는다
+    public func commandIDs(taskID: String, kind: String) -> [String] {
+        lock.withLock { commands.values.filter { $0.taskID == taskID && $0.kind == kind }.sorted { $0.cursor < $1.cursor }.map(\.id) }
     }
 
     public func commandStep(_ id: String) -> String? { lock.withLock { commands[id]?.step.rawValue } }
@@ -268,24 +299,34 @@ public final class FakeBridgeServer: @unchecked Sendable {
         questionKind: String = "input", commandID: String = UUID().uuidString.lowercased(), extra: [String: Any] = [:]
     ) -> Created? {
         lock.withLock {
-            guard let task = tasks[taskID] else { return nil }
-            var command = newCommand(id: commandID, bridgeID: bridgeID, kind: "answer", sessionID: task.sessionID, taskID: taskID, turnSeq: task.turnSeq)
-            let adapter = sessions[task.sessionID]?.adapter ?? "agent:claude-code"
-            var answersValue: Any = NSNull()
-            var textValue: Any = NSNull()
-            if !locally {
-                if let answers { answersValue = answers }
-                if let answerText { textValue = answerText }
-            }
-            command.payload = [
-                "adapter": adapter, "access": "write", "policy_mode": "manual", "provider_request_id": requestID, "question_kind": questionKind, "structured": structured,
-                "answers": answersValue, "answer_text": textValue, "answered_locally": locally,
-            ].merging(extra) { $1 }
-            commands[commandID] = command
-            tasks[taskID]?.currentCommandID = commandID
-            notifyLocked()
-            return Created(commandID: commandID, taskID: taskID, sessionID: task.sessionID, stepID: command.stepID, marker: command.marker)
+            enqueueAnswerLocked(
+                bridgeID: bridgeID, taskID: taskID, requestID: requestID, answers: answers, answerText: answerText, locally: locally, structured: structured,
+                questionKind: questionKind, commandID: commandID, extra: extra
+            )
         }
+    }
+
+    private func enqueueAnswerLocked(
+        bridgeID: String, taskID: String, requestID: String, answers: [String: Any]?, answerText: String?, locally: Bool, structured: Bool, questionKind: String,
+        commandID: String, extra: [String: Any]
+    ) -> Created? {
+        guard let task = tasks[taskID] else { return nil }
+        var command = newCommand(id: commandID, bridgeID: bridgeID, kind: "answer", sessionID: task.sessionID, taskID: taskID, turnSeq: task.turnSeq)
+        let adapter = sessions[task.sessionID]?.adapter ?? "agent:claude-code"
+        var answersValue: Any = NSNull()
+        var textValue: Any = NSNull()
+        if !locally {
+            if let answers { answersValue = answers }
+            if let answerText { textValue = answerText }
+        }
+        command.payload = [
+            "adapter": adapter, "access": "write", "policy_mode": "manual", "provider_request_id": requestID, "question_kind": questionKind, "structured": structured,
+            "answers": answersValue, "answer_text": textValue, "answered_locally": locally,
+        ].merging(extra) { $1 }
+        commands[commandID] = command
+        tasks[taskID]?.currentCommandID = commandID
+        notifyLocked()
+        return Created(commandID: commandID, taskID: taskID, sessionID: task.sessionID, stepID: command.stepID, marker: command.marker)
     }
 
     @discardableResult
@@ -338,6 +379,13 @@ public final class FakeBridgeServer: @unchecked Sendable {
 
     private var dropAfter: Set<String> = []
     private var staleOnce: [String: String] = [:]
+    private var withdrawnOnce: [String: String] = [:]
+
+    /// 이 명령의 다음 lease 요청 하나에 `withdrawn/<reason>`을 준다. 서버 SQL(`withdraw_bridge_command`, `20261127000000_bridge_device_name.sql:63-84`)처럼 답 명령의 단계를 거두고,
+    /// `stale_answer` · `action_closed`가 아니면 질문을 `awaiting_answer`로 되살린다 (`:79-81`). `action_closed`(Done)는 task를 취소한다
+    public func withdrawOnNextLease(_ commandID: String, reason: String) {
+        lock.withLock { withdrawnOnce[commandID] = reason }
+    }
 
     /// 이 명령의 다음 lease 요청 하나에 `stale/<reason>`을 준다 (`heartbeat_first` · `policy_changed` 재시도 시험)
     public func staleOnNextLease(_ commandID: String, reason: String) {
@@ -501,10 +549,12 @@ public final class FakeBridgeServer: @unchecked Sendable {
         case "ack": reply = ack(bridgeID: bridgeID, json: json)
         case "events": reply = events(bridgeID: bridgeID, json: json)
         case "heartbeat": reply = heartbeat(bridgeID: bridgeID, json: json)
+        case "answer-local": reply = answerLocal(bridgeID: bridgeID, json: json)
         case "tool-decision": reply = toolDecision()
         default: reply = Reply(status: 404, body: error("not_found", "route"))
         }
         let dropped = lock.withLock { dropAfter.remove(route) != nil }
+        if let hook = onResponse { await hook(record) }
         return dropped ? Reply(status: 0, transportError: true) : reply
     }
 
@@ -645,6 +695,18 @@ public final class FakeBridgeServer: @unchecked Sendable {
                 leaseCounts[commandID, default: 0] += 1
                 // 시험이 정한 한 번짜리 stale (예: `policy_changed`): 단계는 바꾸지 않는다
                 if let reason = staleOnce.removeValue(forKey: commandID) { return ok(["status": "stale", "reason": reason]) }
+                // 시험이 정한 한 번짜리 withdrawn: 서버가 단계를 거두고 (사유에 따라) 질문을 되살린다
+                if let reason = withdrawnOnce.removeValue(forKey: commandID) {
+                    command.step = reason == "stale_answer" ? .skipped : .failed
+                    commands[commandID] = command
+                    if reason == "action_closed" {
+                        tasks[command.taskID]?.state = "cancelled"
+                    } else if reason != "stale_answer", command.kind == "answer", _restoresQuestionOnNotReceived {
+                        tasks[command.taskID]?.state = "awaiting_answer"
+                        tasks[command.taskID]?.openQuestion?.answeredStepID = nil
+                    }
+                    return ok(["status": "withdrawn", "reason": reason])
+                }
                 // 3.3 4: 단계가 calling이고 lease_owner가 같으면 replay (만료 연장 0, 쓰기 0). 지금 gate를 다시 본다 (정정 ⑨)
                 if command.step == .calling, command.leaseOwner == owner {
                     if !_gateOpen, command.kind != "cancel" { return ok(["status": "stale", "reason": "write_gate_closed"]) }
@@ -706,7 +768,14 @@ public final class FakeBridgeServer: @unchecked Sendable {
                         if tasks[command.taskID]?.state == "dispatched" { tasks[command.taskID]?.state = "accepted" }
                     } else if result == "not_received" {
                         command.step = .failed
-                        tasks[command.taskID]?.state = "failed"
+                        if command.kind == "answer", _restoresQuestionOnNotReceived {
+                            // 실제 서버(`20261118000000_bridge_commands.sql:394`): 답 명령의 not_received는 task를 failed로 만들지 않고 질문을 `awaiting_answer`로 복원한다
+                            // (답은 아직 전달되지 않았다: 사용자가 다시 입력하면 새 답 명령이 만들어진다). 취소 요청 · run 상태 조건은 흉내 내지 않는다
+                            tasks[command.taskID]?.state = "awaiting_answer"
+                            tasks[command.taskID]?.openQuestion?.answeredStepID = nil
+                        } else {
+                            tasks[command.taskID]?.state = "failed"
+                        }
                     }
                     commands[commandID] = command
                     return ok(["status": "settled", "task_state": tasks[command.taskID]?.state ?? "dispatched"])
@@ -803,11 +872,21 @@ public final class FakeBridgeServer: @unchecked Sendable {
         var state = effective
         switch type {
         case "accepted": if state == "dispatched" { state = "accepted" }
-        case "progress", "message", "artifact": state = "running"
-        case "question": state = "awaiting_answer"
-        case "turn_completed": state = "idle"
-        case "failed": state = "failed"
-        case "cancelled": state = "cancelled"
+        case "progress", "message", "artifact":
+            state = "running"
+            task.openQuestion = nil
+        case "question":
+            state = "awaiting_answer"
+            task.openQuestion = Self.openQuestion(in: event)
+        case "turn_completed":
+            state = "idle"
+            task.openQuestion = nil
+        case "failed":
+            state = "failed"
+            task.openQuestion = nil
+        case "cancelled":
+            state = "cancelled"
+            task.openQuestion = nil
         case "reconcile":
             guard task.state == "unreachable" else { tasks[taskID] = task; return ("ignored", task.state) }
             state = task.lastLiveState ?? "running"
@@ -820,6 +899,45 @@ public final class FakeBridgeServer: @unchecked Sendable {
         }
         tasks[taskID] = task
         return ("applied", task.state)
+    }
+
+    // MARK: answer-local (OA F2 · D4b-m-2): 이 Mac이 비밀값 질문에 답했다고 표시한다 (값은 오지 않는다). 실제 서버 규칙을 작게 흉내 낸다
+
+    static func openQuestion(in event: [String: Any]) -> OpenQuestion? {
+        guard let question = event["question"] as? [String: Any], let requestID = question["provider_request_id"] as? String else { return nil }
+        let items = question["questions"] as? [[String: Any]] ?? []
+        return OpenQuestion(
+            requestID: requestID, digest: Self.sha256Hex(requestID), kind: question["kind"] as? String ?? "input", structured: question["structured"] as? Bool ?? false,
+            secret: items.contains { ($0["secret"] as? Bool) == true }
+        )
+    }
+
+    static func sha256Hex(_ text: String) -> String {
+        SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func answerLocal(bridgeID: String, json: [String: Any]) -> Reply {
+        lock.withLock {
+            // 본문은 strict 3키다: 값을 실을 다른 키는 400 (문구는 고정)
+            let digest = json["request_digest"] as? String ?? ""
+            guard Set(json.keys) == ["bridge_id", "agent_task_id", "request_digest"], let taskID = json["agent_task_id"] as? String, UUID(uuidString: taskID) != nil,
+                  digest.count == 64, digest.allSatisfy({ "0123456789abcdef".contains($0) }) else {
+                return Reply(status: 400, body: error("invalid_request", "Invalid local answer request."))
+            }
+            guard let task = tasks[taskID], sessions[task.sessionID]?.bridgeID == bridgeID else { return Reply(status: 404, body: error("not_found", "Local answer target not found.")) }
+            guard task.state == "awaiting_answer", let open = task.openQuestion, open.digest == digest else { return ok(["status": "stale", "reason": "question_closed"]) }
+            guard open.secret, open.kind == "input" else { return ok(["status": "stale", "reason": "not_secret"]) }
+            let now = clock()
+            let heartbeatAlive = bridges[bridgeID]?.lastHeartbeatAt.map { now.timeIntervalSince($0) <= 90 } ?? false
+            guard heartbeatAlive, sessions[task.sessionID]?.status != "unreachable" else { return ok(["status": "stale", "reason": "not_live"]) }
+            if let step = open.answeredStepID { return ok(["status": "duplicate", "step_id": step]) }
+            guard let created = enqueueAnswerLocked(
+                bridgeID: bridgeID, taskID: taskID, requestID: open.requestID, answers: nil, answerText: nil, locally: true, structured: open.structured, questionKind: open.kind,
+                commandID: UUID().uuidString.lowercased(), extra: [:]
+            ) else { return Reply(status: 404, body: error("not_found", "Local answer target not found.")) }
+            tasks[taskID]?.openQuestion?.answeredStepID = created.stepID
+            return ok(["status": "answered", "step_id": created.stepID])
+        }
     }
 
     // MARK: heartbeat (D2a 3.6)
