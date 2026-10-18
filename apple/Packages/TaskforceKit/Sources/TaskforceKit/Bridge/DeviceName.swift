@@ -32,7 +32,7 @@ public enum DeviceName {
             if scalar == " ", collapsed.last == " " { continue }
             collapsed.append(scalar)
         }
-        var text = String(collapsed).trimmingCharacters(in: CharacterSet(charactersIn: " "))
+        let text = String(collapsed).trimmingCharacters(in: CharacterSet(charactersIn: " "))
         var kept = ""
         var points = 0
         for character in text {
