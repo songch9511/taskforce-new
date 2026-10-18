@@ -18,13 +18,15 @@ extension BridgeRuntime {
         let trace = SecretSubmissionTrace()
         let ports = AgentQuestionSecretFlow.Ports(
             heartbeat: { await self.secretHeartbeat(accountStillMatches) },
-            put: { answer in await self.secretPut(answer, key: key, accountStillMatches) },
+            put: { answer in await self.secretPut(answer, key: key, trace: trace, accountStillMatches) },
             erase: { _ in await self.secrets.discard(key: key) },
             reconcile: { await self.secretReconcile() },
             post: { digest in await self.secretPost(digest: digest, key: key, trace: trace, accountStillMatches) },
             pause: { seconds in try? await self.clock.sleep(.seconds(seconds)) }
         )
         let outcome = await AgentQuestionSecretFlow.run(answer, ports: ports)
+        // 돌던 제출이 끝났다 (값을 둔 제출만 셌다): 바쁨의 "돌고 있는 제출"에서 뺀다 (계약 16.15)
+        if trace.didPut { await secrets.endSubmission(key: key) }
         // 어떤 결과든 이 길이 끝나면 값은 lease가 가져갈 것만 남는다: 실패 · 닫힘이면 flow가 이미 지웠다. 끝난 결과(`sent`)만 값을 둔다
         if outcome != .sent { await secrets.discard(key: key) }
         return outcome
@@ -40,9 +42,15 @@ extension BridgeRuntime {
 
     /// 포트 ②: 값을 **먼저** 둔다. 계정이 어긋났거나 종료 중이거나 **이 런타임의 원장이 그 (task, request)를 열린 비밀값 요청으로 모르면** 두지 않는다
     /// (그러면 `POST`도 가지 않는다: `secretPost`가 값이 있는지 본다). 원장 파티션은 계정마다 갈리므로 이 확인 하나가 계정 전환 틈 · 낡은 카드 · 질문 교체를 로컬에서 함께 닫는다
-    func secretPut(_ answer: LocalSecretAnswer, key: LocalSecretKey, _ accountStillMatches: @Sendable () async -> Bool) async {
-        guard await accountStillMatches(), secretPathOpen, await ledgerKnowsOpenSecret(key) else { return }
+    func secretPut(_ answer: LocalSecretAnswer, key: LocalSecretKey, trace: SecretSubmissionTrace, _ accountStillMatches: @Sendable () async -> Bool) async {
+        // 두지 못하면 그 열쇠의 옛 값도 지운다 (보안 F-5): 쉬고 있던 옛 값이 새 제출의 POST로 나가면 사용자가 일부러 바꾼 값 대신 옛 값이 전달된다. 값이 없으면 POST 앞에서 실패한다
+        guard await accountStillMatches(), secretPathOpen, await ledgerKnowsOpenSecret(key) else {
+            await secrets.discard(key: key)
+            return
+        }
         await secrets.put(key: key, value: Self.wireValue(answer), at: clock.now())
+        await secrets.beginSubmission(key: key)
+        trace.markPut()
     }
 
     /// 원장의 그 task가 이 런타임의 adapter 것이고, 그 요청이 지금 열려 있는 비밀값 요청이며 닫히지 않았다. 원장을 읽지 못하면 아니다
@@ -91,6 +99,8 @@ extension BridgeRuntime {
             return .network
         }
         let reply = Self.reply(for: result)
+        // 서버가 새 답 명령을 만들었다 (`answered`): 끝을 볼 명령이 하나 늘었다 (N). `duplicate`는 이미 있는 명령이라 세지 않는다 (계약 16.15)
+        if reply == .answered { await secrets.noteAnswered(key: key) }
         log.log("secret_answer_post", ["result": .code(Self.code(of: reply))])
         return reply
     }
@@ -196,12 +206,16 @@ extension BridgeRuntime {
     }
 }
 
-/// 한 번의 `submitLocalSecret`이 POST를 이미 보냈는지 (재시도 때 "값이 없다"가 전달된 것인지 가르는 데만 쓴다). 값은 담지 않는다
+/// 한 번의 `submitLocalSecret`이 값을 두었는지 · POST를 이미 보냈는지 (재시도 때 "값이 없다"가 전달된 것인지 가르고, 제출의 시작 · 끝 짝을 맞추는 데만 쓴다). 값은 담지 않는다
 final class SecretSubmissionTrace: @unchecked Sendable {
     private let lock = NSLock()
     private var didPost = false
+    private var didPutValue = false
 
     var posted: Bool { lock.withLock { didPost } }
     func markPosted() { lock.withLock { didPost = true } }
+    /// 이 제출이 값을 두고 돌기 시작했다 (`beginSubmission`을 불렀다): 끝날 때 짝을 맞춰 `endSubmission`한다
+    var didPut: Bool { lock.withLock { didPutValue } }
+    func markPut() { lock.withLock { didPutValue = true } }
 }
 #endif

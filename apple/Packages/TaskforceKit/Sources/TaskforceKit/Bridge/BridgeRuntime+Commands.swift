@@ -277,7 +277,7 @@ extension BridgeRuntime {
                 }
                 if result == .notReceived { _ = try? await ledger.updateTask(item.agentTaskID) { $0.lastState = "failed" } }
                 // 답 명령이 결과 확인으로 끝났다: 값은 지우지 않는다 (`not_received`면 서버가 질문을 되살리고 adapter는 여전히 그 요청을 기다린다). 종료 확인 표시만 끈다 (OA D4b-m-2, 계약 16.14)
-                if item.kind == .answer { await secrets.markSettled(taskID: item.agentTaskID) }
+                if item.kind == .answer { await secrets.answerCommandEnded(taskID: item.agentTaskID, closesQuestion: false) }
                 await sendAck(.readback(result, processEnded: ended), commandID: item.commandID, saving: unrecorded)
                 return .acted
             }
@@ -368,7 +368,7 @@ extension BridgeRuntime {
                 record.stateAt = clock.now()
                 try? await ledger.saveCommand(record)
                 deferred.remove(item.cursor)
-                if item.kind == .answer { await secrets.markSettled(taskID: item.agentTaskID) } // 정산: 종료 확인 표시만 끈다. 값을 지울지는 원장이 정한다 (OA D4b-m-2, 계약 16.14)
+                if item.kind == .answer { await secrets.answerCommandEnded(taskID: item.agentTaskID, closesQuestion: true) } // 정산(닫힘): 서버가 이 명령을 모른다 (OA D4b-m-2, 계약 16.15)
                 return .acted
             } catch {
                 // 응답을 모른다: 상태를 그대로 둔다. 다음 목록에서 `leased_by_me`면 lease를 다시 해 `replay`를 받는다
@@ -401,7 +401,7 @@ extension BridgeRuntime {
                 record.stateAt = clock.now()
                 try? await ledger.saveCommand(record)
                 deferred.remove(item.cursor)
-                if item.kind == .answer { await secrets.markSettled(taskID: item.agentTaskID) } // 정산: 종료 확인 표시만 끈다 (OA D4b-m-2, 계약 16.14)
+                if item.kind == .answer { await secrets.answerCommandEnded(taskID: item.agentTaskID, closesQuestion: true) } // 정산(닫힘): 서버가 거뒀다 (OA D4b-m-2, 계약 16.15)
                 return .acted
             case .stale(let staleReason):
                 if !retried, staleReason == .heartbeatFirst || staleReason == .policyChanged {
@@ -417,7 +417,8 @@ extension BridgeRuntime {
                 record.stateAt = clock.now()
                 try? await ledger.saveCommand(record)
                 deferred.remove(item.cursor)
-                if item.kind == .answer { await secrets.markSettled(taskID: item.agentTaskID) } // 정산: 종료 확인 표시만 끈다 (OA D4b-m-2, 계약 16.14)
+                // 정산: `not_prepared`(Stop/Done 등으로 답 단계가 건너뛰어졌다)만 닫힘이다. 그 밖의 오래된 사유는 M만 올린다 (OA D4b-m-2, 계약 16.15)
+                if item.kind == .answer { await secrets.answerCommandEnded(taskID: item.agentTaskID, closesQuestion: staleReason == .notPrepared) }
                 return .acted
             case .settled, .unknown:
                 // 효과를 만들지 않는 쪽: 실행 0, 다음 목록에서 다시 판단한다
@@ -620,7 +621,7 @@ extension BridgeRuntime {
         refused.state = .declined
         refused.reason = why
         refused.stateAt = clock.now()
-        if refused.kind == "answer" { await secrets.markSettled(taskID: refused.agentTaskID) } // 정산: 종료 확인 표시만 끈다 (OA D4b-m-2, 계약 16.14)
+        if refused.kind == "answer" { await secrets.answerCommandEnded(taskID: refused.agentTaskID, closesQuestion: true) } // 정산(닫힘): 거절한 답 명령 (OA D4b-m-2, 계약 16.15)
         // 중단 명령은 결과 확인이 아니라 `complete`로 정산한다 (띄운 프로세스가 없는 task)
         let op: BridgeV1AckOp = refused.kind == "cancel" ? .complete(.taskUnknown) : .readback(.notReceived, processEnded: true)
         await sendAck(op, commandID: record.commandID, saving: refused)

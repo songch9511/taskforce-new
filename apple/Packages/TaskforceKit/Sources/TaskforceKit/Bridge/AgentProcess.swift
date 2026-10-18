@@ -427,16 +427,22 @@ struct LocalAnswerBox: Sendable, CustomStringConvertible, CustomDebugStringConve
 /// **값은 (task, request)마다 하나다** (계약 16.14): `put`은 같은 열쇠의 이전 값을 바꿔 넣는다 (재입력 = 덮어쓰기). 어느 값을 정산이 버리나를 세대 · 시각 · 귀속으로 추정하지 않는다 —
 /// 값은 "adapter가 바로 그 요청을 아직 기다리는 동안"만 둔다 (원장: 열려 있고 `openRequestID == request`이고 닫히지 않음). 그 조건이 거짓이 되면(전달 · 질문 교체 · 요청 닫힘 · 취소) · TTL(24시간) ·
 /// 계정이 떠나거나 · 종료하거나 · 폐기되면 버린다. 덤프에 안전하다: 값은 상자에 있고 이 actor도 값을 말하지 않는다.
-/// `inFlight`는 "종료 확인"용 표시일 뿐 값을 지우는 근거가 아니다: 제출이 진행 중이거나 그 답 명령이 아직 끝나지 않았을 때만 참이고, 정산(결과 확인 · withdrawn · stale …)으로 거짓이 된다 (값은 그대로 쉰다)
+/// 진행 중 표시(종료 확인의 "바쁨")는 값을 지우는 근거가 아니다 — 제출 단위로 센다 (계약 16.15): 값마다 N = 서버가 `answered`로 받은 POST 수(`duplicate`는 세지 않는다),
+/// M = 이 Mac이 정산 · 전달로 끝을 본 답 명령 수(N을 넘지 않는다), 그리고 돌고 있는 제출(put부터 결과까지)이 있으면 바쁘다: 바쁨 = 돌고 있는 제출이 있거나 N > M.
+/// 옛 명령의 정산은 M만 하나 올리므로 다른 제출의 바쁨을 끄지 못한다. 닫힘 정산(질문이 닫혔다)은 N ≤ M이고 돌고 있는 제출이 없을 때 그 task의 값을 버린다
 public actor LocalSecretAnswers: CustomReflectable, CustomStringConvertible {
     private struct Entry {
         let box: LocalAnswerBox
         let storedAt: Date
-        /// 제출이 진행 중이거나 그 답 명령이 진행 중이다 (종료 확인의 "바쁨"). `put`이 켜고 `markSettled`가 끈다
-        var inFlight: Bool
+        /// 서버가 `answered`로 받은 POST 수 (N)
+        var answered = 0
+        /// 이 Mac이 정산 · 전달로 끝을 본 답 명령 수 (M, N을 넘지 않는다)
+        var ended = 0
     }
 
     private var values: [LocalSecretKey: Entry] = [:]
+    /// 돌고 있는 제출(put부터 결과까지, 재시도 쉬는 시간 포함)의 수. 값이 사라져도 제출이 끝날 때까지 센다
+    private var running: [LocalSecretKey: Int] = [:]
     private var onChange: (@Sendable (Bool) -> Void)?
     private var lastInFlight = false
 
@@ -451,26 +457,59 @@ public actor LocalSecretAnswers: CustomReflectable, CustomStringConvertible {
     }
 
     private func notify() {
-        let now = values.values.contains { $0.inFlight }
+        let now = hasInFlight
         guard now != lastInFlight else { return }
         lastInFlight = now
         onChange?(now)
     }
 
-    /// 값을 둔다. 같은 열쇠의 이전 값은 바꿔 넣는다 (재입력 = 덮어쓰기)
+    /// 값을 둔다. 같은 열쇠의 이전 값은 바꿔 넣는다 (재입력 = 덮어쓰기). N · M은 그 열쇠에 이어진다
     public func put(key: LocalSecretKey, value: AgentAnswerValue, at now: Date = Date()) {
-        values[key] = Entry(box: LocalAnswerBox(value), storedAt: now, inFlight: true)
+        let previous = values[key]
+        values[key] = Entry(box: LocalAnswerBox(value), storedAt: now, answered: previous?.answered ?? 0, ended: previous?.ended ?? 0)
         notify()
     }
 
-    /// 답 명령 하나가 끝났다(정산): 그 task의 값은 더는 진행 중이 아니다 — 쉬는 값이다 (지우지 않는다: 서버가 질문을 되살렸다면 adapter는 여전히 그 요청을 기다린다).
-    /// 어느 값이 그 명령의 제출인지 가르지 않는다: 종료 확인 표시만 끄고, 값을 지울지는 원장이 정한다
-    public func markSettled(taskID: String) {
-        let task = taskID.lowercased()
-        for (key, entry) in values where key.taskID == task && entry.inFlight {
-            values[key] = Entry(box: entry.box, storedAt: entry.storedAt, inFlight: false)
+    /// 제출 하나가 값을 두고 돌기 시작했다 (`put` 뒤). 끝나면 `endSubmission`
+    public func beginSubmission(key: LocalSecretKey) {
+        running[key, default: 0] += 1
+        notify()
+    }
+
+    public func endSubmission(key: LocalSecretKey) {
+        if let count = running[key] {
+            if count <= 1 { running.removeValue(forKey: key) } else { running[key] = count - 1 }
         }
         notify()
+    }
+
+    /// 서버가 이 열쇠의 POST를 `answered`로 받았다 (새 답 명령이 만들어졌다, N). `duplicate`는 부르지 않는다
+    public func noteAnswered(key: LocalSecretKey) {
+        guard var entry = values[key] else { return }
+        entry.answered += 1
+        values[key] = entry
+        notify()
+    }
+
+    /// 답 명령 하나가 이 Mac에서 끝났다 (정산: M). 어느 열쇠의 명령인지 가르지 않고 그 task의 값마다 M을 하나 올린다 (N을 넘지 않게).
+    /// `closesQuestion`(withdrawn · stale/not_prepared · 404 · declined)이면 끝나지 않은 다른 제출이 없는 값(N ≤ M, 돌고 있는 제출 없음)은 버린다 — 질문이 닫혔다.
+    /// `not_received` 같은 되살림은 값을 두고 M만 올린다. 버린 값의 수
+    @discardableResult
+    public func answerCommandEnded(taskID: String, closesQuestion: Bool) -> Int {
+        let task = taskID.lowercased()
+        var dropped = 0
+        for key in values.keys where key.taskID == task {
+            guard var entry = values[key] else { continue }
+            if entry.ended < entry.answered { entry.ended += 1 }
+            if closesQuestion, entry.answered <= entry.ended, running[key] == nil {
+                values.removeValue(forKey: key)
+                dropped += 1
+            } else {
+                values[key] = entry
+            }
+        }
+        notify()
+        return dropped
     }
 
     /// 전달 직전에 한 번 꺼낸다 (꺼내면 지워진다)
@@ -505,11 +544,12 @@ public actor LocalSecretAnswers: CustomReflectable, CustomStringConvertible {
     /// 값이 하나라도 있다 (쉬는 값 포함)
     public var hasPending: Bool { !values.isEmpty }
 
-    /// 제출이 진행 중이거나 그 답 명령이 진행 중인 값이 있다: 종료 확인 · 업데이트 재시작을 막는 "바쁨"의 비밀값 몫
-    public var hasInFlight: Bool { values.values.contains { $0.inFlight } }
+    /// 돌고 있는 제출이 있거나 끝나지 않은 답한 POST가 있다(N > M): 종료 확인 · 업데이트 재시작을 막는 "바쁨"의 비밀값 몫
+    public var hasInFlight: Bool { !running.isEmpty || values.values.contains { $0.answered > $0.ended } }
 
     public func clear() {
         values.removeAll()
+        running.removeAll()
         notify()
     }
 }

@@ -66,6 +66,25 @@ enum SecretFixture {
         return done.get() ?? .unavailable
     }
 
+    /// 첫 제출을 내보내고 그 답 명령의 lease 응답을 잃는다 (서버는 lease했지만 이 Mac은 모른다). 답 명령 id를 돌려준다
+    static func submitAndLoseTheLease(_ h: BridgeHarness, created: FakeBridgeServer.Created) async throws -> String {
+        #expect(await submit(h, answer(created, value: canary())) == .sent)
+        let commandID = try #require(h.server.commandIDs(taskID: created.taskID, kind: "answer").first)
+        h.server.dropResponseOnce(route: "ack")
+        await deliver(h)
+        return commandID
+    }
+
+    /// lease가 만료돼 결과 확인 목록에 나오고 `not_received`로 정산된다. 서버는 질문을 되살리고(`restoresQuestionOnNotReceived`) 로컬 task는 failed로 남는다
+    static func settleAsNotReceived(_ h: BridgeHarness, commandID: String) async throws {
+        h.server.markLeasedUnknown(commandID)
+        h.clock.jump(by: 6)
+        await h.runtime.tick()
+        #expect(await h.eventually(timeout: 5) { (try? await h.ledger.command(commandID))?.ackFinalAt != nil }, "정산이 끝났다")
+        let command = try #require(try await h.ledger.command(commandID))
+        #expect(command.state == .settled && command.ackResult == "not_received")
+    }
+
     /// 답 명령이 lease되어 전달되게 한다 (서버가 만든 `answered_locally` 명령)
     static func deliver(_ h: BridgeHarness) async {
         h.clock.jump(by: 6)

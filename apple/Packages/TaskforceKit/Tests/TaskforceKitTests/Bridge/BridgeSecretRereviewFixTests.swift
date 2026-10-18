@@ -58,25 +58,6 @@ struct BridgeSecretRereviewFixTests {
         #expect(!busy)
     }
 
-    /// 답 명령이 lease됐지만 응답이 유실됐고, 만료돼 결과 확인 목록에 나와 not_received로 정산된다. 서버는 질문을 되살리고 (`restoresQuestionOnNotReceived`) 로컬 task는 failed로 남는다
-    private func settleAsNotReceived(_ h: BridgeHarness, commandID: String) async throws {
-        h.server.markLeasedUnknown(commandID) // lease가 만료돼 결과 확인 목록에 나온다
-        h.clock.jump(by: 6)
-        await h.runtime.tick()
-        #expect(await h.eventually(timeout: 5) { (try? await h.ledger.command(commandID))?.ackFinalAt != nil }, "정산이 끝났다")
-        let command = try #require(try await h.ledger.command(commandID))
-        #expect(command.state == .settled && command.ackResult == "not_received")
-    }
-
-    /// 첫 제출을 내보내고 그 답 명령의 lease 응답을 잃는다. 답 명령 id를 돌려준다
-    private func submitAndLoseTheLease(_ h: BridgeHarness, created: FakeBridgeServer.Created) async throws -> String {
-        #expect(await S.submit(h, S.answer(created, value: S.canary())) == .sent)
-        let commandID = try #require(h.server.commandIDs(taskID: created.taskID, kind: "answer").first)
-        h.server.dropResponseOnce(route: "ack") // 서버는 lease했지만 응답이 유실된다
-        await S.deliver(h)
-        return commandID
-    }
-
     /// 재시도 사이의 잠깐을 시계로 돌려 제출 하나가 끝나기를 기다린다
     private func finishSubmission(_ h: BridgeHarness, _ done: Locked<LocalSecretOutcome?>) async {
         let deadline = Date().addingTimeInterval(30)
@@ -91,8 +72,8 @@ struct BridgeSecretRereviewFixTests {
         for ending in Ending.allCases {
             let h = try BridgeHarness()
             let created = try await S.open(h, endsAfterAsking: true)
-            let commandID = try await submitAndLoseTheLease(h, created: created)
-            try await settleAsNotReceived(h, commandID: commandID)
+            let commandID = try await S.submitAndLoseTheLease(h, created: created)
+            try await S.settleAsNotReceived(h, commandID: commandID)
             let task = try #require(try await h.ledger.task(created.taskID))
             #expect(task.lastState == "failed" && task.openRequestID == S.requestID, "로컬은 failed로 남고 요청은 열려 있다")
             #expect(h.server.taskState(created.taskID) == "awaiting_answer", "서버는 질문을 복원했다")
@@ -134,9 +115,9 @@ struct BridgeSecretRereviewFixTests {
             #expect(await S.submit(h, S.answer(created, value: S.canary())) == .sent)
             #expect(h.server.commandIDs(taskID: created.taskID, kind: "answer") == [commandID], "새 명령은 만들어지지 않았다 (duplicate)")
             let inFlight = await h.runtime.isBusy()
-            #expect(inFlight, "방금 내보낸 값은 진행 중이다")
+            #expect(!inFlight, "duplicate는 세지 않는다 (계약 16.15): 제출이 끝났고 새 answered도 없다")
             // C의 lease는 응답이 유실된 채 만료돼 not_received로 정산된다 → 서버가 질문을 되살린다. 값은 그대로 쉰다
-            try await settleAsNotReceived(h, commandID: commandID)
+            try await S.settleAsNotReceived(h, commandID: commandID)
             let rests = await h.secrets.contains(key: S.key(created))
             #expect(rests, "같은 명령의 정산이 재입력한 값을 버리지 않는다")
             let busy = await h.runtime.isBusy()
@@ -153,7 +134,7 @@ struct BridgeSecretRereviewFixTests {
             let h = try BridgeHarness()
             let created = try await S.open(h, endsAfterAsking: true)
             // 옛 명령 C1: 제출 · lease 응답 유실. 이 프로세스는 C1을 봤지만 정산하지 못했다
-            let oldCommand = try await submitAndLoseTheLease(h, created: created)
+            let oldCommand = try await S.submitAndLoseTheLease(h, created: created)
             // 서버가 질문을 되살렸다 (C1의 정산은 아직 로컬에 닿지 않았다): 둘째 제출의 POST는 서버가 처리해 새 명령 C2를 만들지만 응답이 유실되고 재시도가 모두 실패한다
             h.server.restoreQuestion(taskID: created.taskID)
             h.server.dropResponseOnce(route: "answer-local")
@@ -202,7 +183,7 @@ struct BridgeSecretRereviewFixTests {
         for ending in Ending.allCases {
             let h = try BridgeHarness()
             let created = try await S.open(h, endsAfterAsking: true)
-            let commandID = try await submitAndLoseTheLease(h, created: created)
+            let commandID = try await S.submitAndLoseTheLease(h, created: created)
             h.server.markLeasedUnknown(commandID)
             // 만료 뒤 heartbeat를 서버가 느리게 처리한다 (요청 도중 시계가 30초 흐른다): 왕복 중간점 보정이 +15초 어긋난다. 시각에 기대면 값이 틀어진다
             let clock = h.clock
@@ -237,7 +218,7 @@ struct BridgeSecretRereviewFixTests {
         let commandID = try #require(h.server.commandIDs(taskID: created.taskID, kind: "answer").first)
         h.server.dropResponseOnce(route: "ack")
         await S.deliver(h)
-        try await settleAsNotReceived(h, commandID: commandID)
+        try await S.settleAsNotReceived(h, commandID: commandID)
         let rests = await h.secrets.contains(key: S.key(created))
         #expect(rests, "정산이 값을 버리지 않았다")
         // 재시도가 온다: 값이 있고 질문은 복원돼 열려 있다 → 다시 POST하면 서버가 새 답 명령을 만든다
@@ -276,8 +257,8 @@ struct BridgeSecretRereviewFixTests {
         let h = try BridgeHarness()
         h.server.restoresQuestionOnNotReceived = false // run이 끝났다: 서버는 질문을 되살리지 않고 task를 failed로 둔다
         let created = try await S.open(h, endsAfterAsking: true)
-        let commandID = try await submitAndLoseTheLease(h, created: created)
-        try await settleAsNotReceived(h, commandID: commandID)
+        let commandID = try await S.submitAndLoseTheLease(h, created: created)
+        try await S.settleAsNotReceived(h, commandID: commandID)
         #expect(h.server.taskState(created.taskID) == "failed", "서버는 되살리지 않았다")
         // 서버는 끝난 task를 중단으로 정리한다: 이 Mac은 그 task의 열린 요청을 더는 기다리지 않는다
         let bridgeID = h.bridgeID
@@ -299,8 +280,8 @@ struct BridgeSecretRereviewFixTests {
     @Test func aValueRestingForARestoredQuestionIsNotBusyAndIsDroppedAtQuit() async throws {
         let h = try BridgeHarness()
         let created = try await S.open(h, endsAfterAsking: true)
-        let commandID = try await submitAndLoseTheLease(h, created: created)
-        try await settleAsNotReceived(h, commandID: commandID)
+        let commandID = try await S.submitAndLoseTheLease(h, created: created)
+        try await S.settleAsNotReceived(h, commandID: commandID)
         let rests = await h.secrets.contains(key: S.key(created))
         #expect(rests)
         let busy = await h.runtime.isBusy()
