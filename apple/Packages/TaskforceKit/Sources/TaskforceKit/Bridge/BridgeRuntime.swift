@@ -850,17 +850,22 @@ public actor BridgeRuntime {
     }
 
     func register(reactivate: Bool, reason: String) async -> Bool {
+        await registerReportingJoin(reactivate: reactivate, reason: reason).result
+    }
+
+    /// `joined`: 이미 진행 중이던 등록(다른 호출의 요청)에 합쳐졌다. 그 요청에는 내 `connect` · `reactivate`가 실리지 않았을 수 있으므로 부른 쪽이 한 번 더 보낸다
+    func registerReportingJoin(reactivate: Bool, reason: String) async -> (result: Bool, joined: Bool) {
         if let running = registerTask {
             let joined = await running.value
             // 끝난 task를 치운다 (소유자가 아직 못 치웠어도): 이어서 부르는 쪽(`connect`가 한 번 더 보낸다)이 끝난 task에 다시 합쳐지지 않게. 그 사이 새 task가 생겼으면 건드리지 않는다
             if registerTask == running { registerTask = nil }
-            return joined
+            return (joined, true)
         }
         let task = Task { await self.performRegister(reactivate: reactivate, reason: reason) }
         registerTask = task
         let result = await task.value
         if registerTask == task { registerTask = nil }
-        return result
+        return (result, false)
     }
 
     func probeAll() async -> [BridgeV1AdapterReport] {
@@ -988,9 +993,9 @@ public actor BridgeRuntime {
         let connectable = Set(ids).filter { adapters[$0] != nil }
         guard !connectable.isEmpty else { return false }
         pendingConnect = connectable.sorted()
-        var result = await register(reactivate: false, reason: "connect")
-        // 진행 중이던 등록에 합쳐졌으면(그 요청에는 connect가 없다) 한 번 더 보낸다
-        if result, !pendingConnect.isEmpty { result = await register(reactivate: false, reason: "connect") }
+        var (result, joined) = await registerReportingJoin(reactivate: false, reason: "connect")
+        // 진행 중이던 등록에 합쳐졌으면(그 요청에는 connect가 없다) 그 결과가 성공이든 실패든 한 번 더 보낸다: 합쳐진 등록의 실패는 내 요청의 실패가 아니다
+        if joined, result ? !pendingConnect.isEmpty : true { result = await register(reactivate: false, reason: "connect") }
         // 사용자가 누른 한 번의 뜻이다: 실패해도 뒤의 자동 등록(처음 · 401 회복)에 남겨 두지 않는다 (D2a Q7: 연결은 사용자 행동으로만)
         pendingConnect = []
         return result

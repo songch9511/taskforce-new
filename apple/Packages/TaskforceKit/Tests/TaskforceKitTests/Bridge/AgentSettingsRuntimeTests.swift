@@ -356,6 +356,34 @@ struct AgentSettingsRuntimeTests {
         h.agent.killEverything()
     }
 
+    @Test func aReconnectThatJoinedAFailingInFlightRegistrationIsSentAgainAsReactivate() async throws {
+        let (h, _, _, _) = try await runningHarness()
+        _ = await h.runtime.disconnect()
+        await h.runtime.close()
+        try await h.restart(adapters: [h.agent], reopenLedger: true)
+        h.agent.setScript(.normal())
+        let gate = Gate()
+        let arrived = Locked(false)
+        h.server.onRequest = { record in
+            guard record.route == "register", record.method == "POST", !arrived.get() else { return }
+            arrived.set(true)
+            await gate.wait() // 새 런타임의 처음(자동) 등록을 붙잡아 둔다: 장치 secret이 없어 403이다
+        }
+        let runtime = h.runtime
+        await runtime.start()
+        #expect(await h.eventually { arrived.get() })
+        let reconnect = Task { await runtime.reconnectAgent(Self.adapter) }
+        // pendingConnect가 보이면 Reconnect는 이미 진행 중인 등록에 합쳐졌다 (그 사이에 await가 없다)
+        #expect(await h.eventually { await runtime.pendingConnect == [Self.adapter] })
+        gate.open()
+        let outcome = await reconnect.value
+        #expect(outcome == .connected, "합쳐진 등록의 403은 내 요청의 실패가 아니다: reactivate를 한 번 더 보낸다")
+        let last = try #require(registers(h).last)
+        #expect(last.json["reactivate"] as? Bool == true && last.json["connect"] as? [String] == [Self.adapter])
+        #expect(await runtime.pendingConnect.isEmpty)
+        h.agent.killEverything()
+    }
+
     // MARK: Connect (6.1)
 
     @Test func connectRegistersWithConnectOnlyForThatAdapter() async throws {

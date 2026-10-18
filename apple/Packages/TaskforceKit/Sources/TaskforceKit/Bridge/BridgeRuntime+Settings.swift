@@ -94,9 +94,9 @@ extension BridgeRuntime {
         guard !connectable.isEmpty else { return false }
         networkEnabled = true
         pendingConnect = connectable.sorted()
-        var result = await register(reactivate: true, reason: "reactivate")
-        // 진행 중이던 등록에 합쳐졌으면(그 요청에는 connect가 없다) 한 번 더 보낸다
-        if result, !pendingConnect.isEmpty { result = await register(reactivate: true, reason: "reactivate") }
+        var (result, joined) = await registerReportingJoin(reactivate: true, reason: "reactivate")
+        // 진행 중이던 등록에 합쳐졌으면(그 요청에는 connect · reactivate가 없다) 그 결과가 성공이든 실패든 한 번 더 보낸다: 합쳐진 등록의 403은 내 요청의 실패가 아니다
+        if joined, result ? !pendingConnect.isEmpty : true { result = await register(reactivate: true, reason: "reactivate") }
         pendingConnect = []
         if !result, statusValue == .revoked { networkEnabled = false }
         if result, statusValue != .stopped {
