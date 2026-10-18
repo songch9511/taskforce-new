@@ -234,6 +234,18 @@ public final class FakeBridgeServer: @unchecked Sendable {
     public func taskState(_ id: String) -> String? { lock.withLock { tasks[id]?.state } }
     public func taskLastSeq(_ id: String) -> Int? { lock.withLock { tasks[id]?.lastEventSeq } }
 
+    /// 답 명령이 not_received로 정산될 때 서버가 질문을 되살리나 (실제 서버는 run이 아직 queued · running이고 취소 요청이 없을 때만 되살린다, `20261118000000_bridge_commands.sql:394`). false면 run이 끝난 것처럼 task를 failed로 둔다
+    public var restoresQuestionOnNotReceived: Bool { get { lock.withLock { _restoresQuestionOnNotReceived } } set { lock.withLock { _restoresQuestionOnNotReceived = newValue } } }
+    private var _restoresQuestionOnNotReceived = true
+
+    /// 시험 전용: 서버가 이 task의 질문을 되살렸다 (`awaiting_answer`, 다시 답할 수 있다). 정산 없이 되살아난 경우를 만든다
+    public func restoreQuestion(taskID: String) {
+        lock.withLock {
+            tasks[taskID]?.state = "awaiting_answer"
+            tasks[taskID]?.openQuestion?.answeredStepID = nil
+        }
+    }
+
     /// 시험 전용: 서버가 이 task를 다른 세션의 것으로 말한다 (이후 이 task를 가리키는 명령은 그 세션 id를 싣는다)
     public func reassignTask(_ id: String, toSession sessionID: String) {
         lock.withLock { tasks[id]?.sessionID = sessionID }
@@ -721,7 +733,7 @@ public final class FakeBridgeServer: @unchecked Sendable {
                         if tasks[command.taskID]?.state == "dispatched" { tasks[command.taskID]?.state = "accepted" }
                     } else if result == "not_received" {
                         command.step = .failed
-                        if command.kind == "answer" {
+                        if command.kind == "answer", _restoresQuestionOnNotReceived {
                             // 실제 서버(`20261118000000_bridge_commands.sql:394`): 답 명령의 not_received는 task를 failed로 만들지 않고 질문을 `awaiting_answer`로 복원한다
                             // (답은 아직 전달되지 않았다: 사용자가 다시 입력하면 새 답 명령이 만들어진다). 취소 요청 · run 상태 조건은 흉내 내지 않는다
                             tasks[command.taskID]?.state = "awaiting_answer"

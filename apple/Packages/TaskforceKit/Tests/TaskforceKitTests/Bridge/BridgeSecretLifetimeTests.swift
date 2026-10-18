@@ -64,6 +64,17 @@ struct BridgeSecretLifetimeTests {
         #expect(await h.secrets.hasPending == false)
     }
 
+    @Test func aValueWhoseQuestionWasReplacedByAnotherOneIsDroppedAtHousekeeping() async throws {
+        let h = try BridgeHarness()
+        let created = try await S.open(h)
+        #expect(await S.submit(h, S.answer(created, value: S.canary())) == .sent)
+        // adapter가 그 요청을 닫지 않고 다른 질문을 냈다: 이 값이 답하던 요청을 adapter는 더는 기다리지 않는다
+        _ = try await h.ledger.updateTask(created.taskID) { $0.openRequestID = "req-secret-2" }
+        await h.runtime.housekeeping()
+        let pending = await h.secrets.hasPending
+        #expect(!pending)
+    }
+
     @Test func aValueForATaskTheLedgerDoesNotKnowIsDropped() async throws {
         let h = try BridgeHarness()
         _ = try await S.open(h)
@@ -80,30 +91,53 @@ struct BridgeSecretLifetimeTests {
         #expect(await h.secrets.contains(key: S.key(created)))
     }
 
-    // MARK: 정산 때 버린다
+    // MARK: 정산 · 쉬는 값 (계약 16.14: 정산은 값을 지우지 않는다, 종료 확인 표시만 끈다)
 
-    @Test func aWithdrawnAnswerCommandDropsTheValue() async throws {
+    @Test func aWithdrawnAnswerCommandLeavesTheValueRestingAndNotBusy() async throws {
         let h = try BridgeHarness()
-        let created = try await S.open(h)
+        let created = try await S.open(h, endsAfterAsking: true)
         #expect(await S.submit(h, S.answer(created, value: S.canary())) == .sent)
+        let busyBefore = await h.runtime.isBusy()
+        #expect(busyBefore, "답 명령이 진행 중이면 바쁘다")
         h.server.gateOpen = false // lease가 withdrawn/write_gate_closed로 거둔다
         h.clock.jump(by: 6)
         _ = await h.runtime.poll(wait: 0, reason: .heartbeat)
         #expect(h.agent.deliveredAnswers.isEmpty)
-        #expect(await h.secrets.hasPending == false, "정산(withdrawn)에서 값이 0이 된다")
+        let rests = await h.secrets.contains(key: S.key(created))
+        #expect(rests, "정산은 값을 지우지 않는다 (adapter는 그 요청을 여전히 기다린다)")
+        let busy = await h.runtime.isBusy()
+        #expect(!busy, "쉬는 값은 종료 확인을 막지 않는다")
     }
 
-    @Test func aStaleAnswerCommandDropsTheValue() async throws {
+    @Test func aLease404ForTheAnswerCommandLeavesTheValueRestingAndNotBusy() async throws {
         let h = try BridgeHarness()
-        let created = try await S.open(h)
+        let created = try await S.open(h, endsAfterAsking: true)
         #expect(await S.submit(h, S.answer(created, value: S.canary())) == .sent)
-        // 서버가 만든 답 명령의 lease가 stale(run_closed)을 받는다 (다시 시도하지 않는 끝)
+        let busyBefore = await h.runtime.isBusy()
+        #expect(busyBefore)
+        h.server.failNext("ack", .init(status: 404)) // 서버가 그 명령을 모른다 (lease 404)
+        h.clock.jump(by: 6)
+        _ = await h.runtime.poll(wait: 0, reason: .heartbeat)
+        #expect(h.agent.deliveredAnswers.isEmpty)
+        let rests = await h.secrets.contains(key: S.key(created))
+        #expect(rests)
+        let busy = await h.runtime.isBusy()
+        #expect(!busy)
+    }
+
+    @Test func aStaleAnswerCommandLeavesTheValueRestingAndNotBusy() async throws {
+        let h = try BridgeHarness()
+        let created = try await S.open(h, endsAfterAsking: true)
+        #expect(await S.submit(h, S.answer(created, value: S.canary())) == .sent)
         let commandID = try #require(h.server.commandIDs(taskID: created.taskID, kind: "answer").first)
         h.server.staleOnNextLease(commandID, reason: "run_closed")
         h.clock.jump(by: 6)
         _ = await h.runtime.poll(wait: 0, reason: .heartbeat)
         #expect(h.agent.deliveredAnswers.isEmpty)
-        #expect(await h.secrets.hasPending == false, "정산(stale)에서 값이 0이 된다")
+        let rests = await h.secrets.contains(key: S.key(created))
+        #expect(rests)
+        let busy = await h.runtime.isBusy()
+        #expect(!busy)
     }
 
     @Test func closingTheRequestDropsItsValue() async throws {
@@ -115,14 +149,16 @@ struct BridgeSecretLifetimeTests {
         #expect(await h.secrets.hasPending == false)
     }
 
-    @Test func aDeclinedAnswerCommandDropsTheValue() async throws {
+    @Test func aDeclinedAnswerCommandLeavesTheValueRestingAndNotBusy() async throws {
         let h = try BridgeHarness()
-        let created = try await S.open(h)
+        let created = try await S.open(h, endsAfterAsking: true)
         #expect(await S.submit(h, S.answer(created, value: S.canary())) == .sent)
         let record = BridgeTest.command(kind: "answer", task: created.taskID)
-        await h.secrets.noteAnswerCommandSeen(record.commandID, taskID: created.taskID) // 목록에 나와 이 Mac이 처음 본 뒤에 거절한다
         await h.runtime.refuseUnknownPayload(record: record, why: "unknown_payload")
-        #expect(await h.secrets.hasPending == false)
+        let rests = await h.secrets.contains(key: S.key(created))
+        #expect(rests)
+        let busy = await h.runtime.isBusy()
+        #expect(!busy)
     }
 
     @Test func aValuePutAgainDuringDeliveryDoesNotSurviveTheDelivery() async throws {
@@ -171,15 +207,33 @@ struct BridgeSecretLifetimeTests {
         }
     }
 
-    @Test func busyMeansAValueIsWaitingInMemory() async {
+    @Test func putReplacesTheValueOfTheSameKeyAndBusyMeansSomethingIsInFlight() async {
         let secrets = LocalSecretAnswers()
         let flag = Locked<[Bool]>([])
         await secrets.observe { flag.set(flag.get() + [$0]) }
-        let key = LocalSecretKey(taskID: UUID().uuidString, requestID: "r")
-        await secrets.put(key: key, value: AgentAnswerValue(text: "x"))
-        #expect(await secrets.hasPending)
-        _ = await secrets.take(key: key)
-        #expect(await secrets.hasPending == false && flag.get() == [true, false])
+        let task = UUID().uuidString
+        let key = LocalSecretKey(taskID: task, requestID: "r")
+        let otherTask = LocalSecretKey(taskID: UUID().uuidString, requestID: "r")
+        await secrets.put(key: key, value: AgentAnswerValue(text: "first"))
+        await secrets.put(key: otherTask, value: AgentAnswerValue(text: "other"))
+        #expect(await secrets.hasInFlight)
+        // 재입력 = 덮어쓰기: 열쇠마다 값은 하나다
+        await secrets.put(key: key, value: AgentAnswerValue(text: "second"))
+        #expect(await secrets.keys.count == 2)
+        // 정산: 그 task의 표시만 꺼진다 (값은 그대로, 다른 task는 그대로 진행 중)
+        await secrets.markSettled(taskID: task.uppercased())
+        let resting = await [secrets.contains(key: key), secrets.hasInFlight, secrets.hasPending]
+        #expect(resting == [true, true, true], "다른 task의 값이 진행 중이라 바쁨은 남는다")
+        _ = await secrets.take(key: otherTask)
+        let restingInFlight = await secrets.hasInFlight
+        let restingPending = await secrets.hasPending
+        #expect(!restingInFlight && restingPending, "쉬는 값만 남으면 바쁘지 않다")
+        // 쉬는 값 위에 다시 입력하면 다시 진행 중이다 (새 제출)
+        await secrets.put(key: key, value: AgentAnswerValue(text: "third"))
+        #expect(await secrets.hasInFlight)
+        #expect(await secrets.take(key: key)?.text == "third", "마지막으로 입력한 값만 나온다")
+        let leftPending = await secrets.hasPending
+        #expect(!leftPending && flag.get().last == false)
     }
 
     // MARK: 덤프

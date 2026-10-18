@@ -424,78 +424,59 @@ struct LocalAnswerBox: Sendable, CustomStringConvertible, CustomDebugStringConve
 }
 
 /// 비밀값 답은 이 Mac의 메모리에만 있다 (계약 3.6): 서버에도 디스크에도 로그에도 없다. D4b-m의 입력 화면이 `BridgeRuntime.submitLocalSecret`을 거쳐 넣고, 런타임이 답 명령 전달 때 한 번 꺼내 간다.
-/// 값의 수명 (F2 notes 10장 6 · 7): TTL(`deliveryWindow` 24시간)이 지나면 · 그 명령이 정산되면(withdrawn · stale · request_closed · 전달 끝) · 원장이 그 요청을 더는 열린 것으로 보지 않으면 ·
-/// 계정이 떠나거나 · 종료하거나 · 폐기되면 버린다. 덤프에 안전하다: 값은 상자에 있고 이 actor도 값을 말하지 않는다
+/// **값은 (task, request)마다 하나다** (계약 16.14): `put`은 같은 열쇠의 이전 값을 바꿔 넣는다 (재입력 = 덮어쓰기). 어느 값을 정산이 버리나를 세대 · 시각 · 귀속으로 추정하지 않는다 —
+/// 값은 "adapter가 바로 그 요청을 아직 기다리는 동안"만 둔다 (원장: 열려 있고 `openRequestID == request`이고 닫히지 않음). 그 조건이 거짓이 되면(전달 · 질문 교체 · 요청 닫힘 · 취소) · TTL(24시간) ·
+/// 계정이 떠나거나 · 종료하거나 · 폐기되면 버린다. 덤프에 안전하다: 값은 상자에 있고 이 actor도 값을 말하지 않는다.
+/// `inFlight`는 "종료 확인"용 표시일 뿐 값을 지우는 근거가 아니다: 제출이 진행 중이거나 그 답 명령이 아직 끝나지 않았을 때만 참이고, 정산(결과 확인 · withdrawn · stale …)으로 거짓이 된다 (값은 그대로 쉰다)
 public actor LocalSecretAnswers: CustomReflectable, CustomStringConvertible {
     private struct Entry {
         let box: LocalAnswerBox
         let storedAt: Date
-        /// 이 값이 놓인 차례 (`putCount`): 시계가 아니라 순서로 "이 명령이 처음 보이기 전에 둔 값"을 가른다.
-        /// 서버가 `duplicate`로 이미 있는 명령에 귀속시킨 값은 그 명령의 기준으로 낮춘다 (`bindToExistingAnswerCommand`)
-        var generation: Int
+        /// 제출이 진행 중이거나 그 답 명령이 진행 중이다 (종료 확인의 "바쁨"). `put`이 켜고 `markSettled`가 끈다
+        var inFlight: Bool
     }
 
     private var values: [LocalSecretKey: Entry] = [:]
-    /// 지금까지 `put`한 횟수 (값을 둘 때마다 오른다)
-    private var putCount = 0
-    /// 답 명령 id → 그 명령을 이 프로세스가 처음 봤을 때의 `putCount`. 그 명령의 제출은 명령이 만들어지기 **전에** 값을 뒀으므로(put → POST → 서버가 명령을 만든다) 그 값의 차례는 이 수 이하다.
-    /// 정산된 명령의 값을 정확히 가르는 열쇠다 (서버 `step_id`는 lease 응답에만 오고 결과 확인 목록에는 없다). 메모리에만 있고 id와 수뿐이다
-    private var commandSeenAt: [String: (taskID: String, mark: Int)] = [:]
-    private static let maxTrackedCommands = 512
     private var onChange: (@Sendable (Bool) -> Void)?
+    private var lastInFlight = false
 
     public init() {}
 
     nonisolated public var customMirror: Mirror { Mirror(self, children: []) }
     nonisolated public var description: String { "LocalSecretAnswers" }
 
-    /// 아직 전달하지 않은 비밀값이 있는지 바뀔 때 알린다 (종료 확인의 "바쁨")
+    /// 제출 · 답 명령이 진행 중인 값이 있는지 바뀔 때 알린다 (종료 확인의 "바쁨")
     public func observe(_ onChange: @escaping @Sendable (Bool) -> Void) {
         self.onChange = onChange
     }
 
+    private func notify() {
+        let now = values.values.contains { $0.inFlight }
+        guard now != lastInFlight else { return }
+        lastInFlight = now
+        onChange?(now)
+    }
+
+    /// 값을 둔다. 같은 열쇠의 이전 값은 바꿔 넣는다 (재입력 = 덮어쓰기)
     public func put(key: LocalSecretKey, value: AgentAnswerValue, at now: Date = Date()) {
-        putCount += 1
-        values[key] = Entry(box: LocalAnswerBox(value), storedAt: now, generation: putCount)
-        onChange?(true)
+        values[key] = Entry(box: LocalAnswerBox(value), storedAt: now, inFlight: true)
+        notify()
     }
 
-    /// 답 명령을 이 프로세스가 처음 봤다 (목록에 나왔다). 이미 봤으면 그대로 둔다: 다시 목록에 나와도 기준은 처음 본 때다
-    public func noteAnswerCommandSeen(_ commandID: String, taskID: String) {
-        if commandSeenAt.count >= Self.maxTrackedCommands { commandSeenAt.removeAll() } // 넘치면 기준을 잃을 뿐이다: 값은 보관 정리 · TTL이 맡는다
-        if commandSeenAt[commandID] == nil { commandSeenAt[commandID] = (taskID.lowercased(), putCount) }
-    }
-
-    /// 서버가 `duplicate`로 답했다: 이 값은 그 (task, request)에 **이미 있는** 답 명령에 귀속된다 (새 명령이 아니다). 그 task에서 아직 정산되지 않은 명령의 기준(가장 늦게 본 것)보다 늦은 차례면
-    /// 그 기준으로 낮춰, 그 명령이 정산될 때 함께 버려지게 한다. 명령을 아직 본 적 없으면 그대로 둔다: 처음 볼 때의 기준이 이 값을 덮는다.
-    /// (`answered`는 새 명령이다: 늦은 차례를 그대로 둬, 복원 뒤 새 제출이 옛 명령의 정산에 지워지지 않게 한다)
-    public func bindToExistingAnswerCommand(_ key: LocalSecretKey) {
-        guard var entry = values[key], let mark = commandSeenAt.values.filter({ $0.taskID == key.taskID }).map(\.mark).max(), mark < entry.generation else { return }
-        entry.generation = mark
-        values[key] = entry
-    }
-
-    /// 그 명령을 끝까지 다뤘다 (값을 가르는 일이 더는 없다)
-    public func forgetAnswerCommand(_ commandID: String) {
-        commandSeenAt[commandID] = nil
-    }
-
-    /// 정산된 답 명령의 제출 값만 버린다: 그 명령을 처음 보기 전에 둔 그 task의 값. 그 뒤에 다시 입력한 값(복원된 같은 요청이든 새 요청이든)과 다른 task의 값은 그대로다.
-    /// 처음 본 기록이 없으면(이 프로세스가 보지 못한 명령) 아무것도 버리지 않는다. 버린 수
-    @discardableResult
-    public func discard(taskID: String, settledCommand commandID: String) -> Int {
-        guard let mark = commandSeenAt.removeValue(forKey: commandID)?.mark else { return 0 }
+    /// 답 명령 하나가 끝났다(정산): 그 task의 값은 더는 진행 중이 아니다 — 쉬는 값이다 (지우지 않는다: 서버가 질문을 되살렸다면 adapter는 여전히 그 요청을 기다린다).
+    /// 어느 값이 그 명령의 제출인지 가르지 않는다: 종료 확인 표시만 끄고, 값을 지울지는 원장이 정한다
+    public func markSettled(taskID: String) {
         let task = taskID.lowercased()
-        let keys = values.filter { $0.key.taskID == task && $0.value.generation <= mark }.map(\.key)
-        for key in keys { values.removeValue(forKey: key) }
-        if !keys.isEmpty, values.isEmpty { onChange?(false) }
-        return keys.count
+        for (key, entry) in values where key.taskID == task && entry.inFlight {
+            values[key] = Entry(box: entry.box, storedAt: entry.storedAt, inFlight: false)
+        }
+        notify()
     }
 
     /// 전달 직전에 한 번 꺼낸다 (꺼내면 지워진다)
     public func take(key: LocalSecretKey) -> AgentAnswerValue? {
         let entry = values.removeValue(forKey: key)
-        if values.isEmpty { onChange?(false) }
+        notify()
         return entry?.box.reveal()
     }
 
@@ -505,7 +486,7 @@ public actor LocalSecretAnswers: CustomReflectable, CustomStringConvertible {
     @discardableResult
     public func discard(key: LocalSecretKey) -> Bool {
         let had = values.removeValue(forKey: key) != nil
-        if had, values.isEmpty { onChange?(false) }
+        notify()
         return had
     }
 
@@ -514,20 +495,22 @@ public actor LocalSecretAnswers: CustomReflectable, CustomStringConvertible {
     public func dropExpired(now: Date, ttl: TimeInterval) -> Int {
         let keys = values.filter { now.timeIntervalSince($0.value.storedAt) > ttl }.map(\.key)
         for key in keys { values.removeValue(forKey: key) }
-        if !keys.isEmpty, values.isEmpty { onChange?(false) }
+        notify()
         return keys.count
     }
 
-    /// 지금 값이 있는 열쇠 (값은 아니다): 원장과 대조해 닫힌 요청의 값을 버릴 때 쓴다
+    /// 지금 값이 있는 열쇠 (값은 아니다): 원장과 대조해 더는 기다리지 않는 요청의 값을 버릴 때 쓴다
     public var keys: [LocalSecretKey] { Array(values.keys) }
 
+    /// 값이 하나라도 있다 (쉬는 값 포함)
     public var hasPending: Bool { !values.isEmpty }
 
+    /// 제출이 진행 중이거나 그 답 명령이 진행 중인 값이 있다: 종료 확인 · 업데이트 재시작을 막는 "바쁨"의 비밀값 몫
+    public var hasInFlight: Bool { values.values.contains { $0.inFlight } }
+
     public func clear() {
-        let had = !values.isEmpty
         values.removeAll()
-        commandSeenAt.removeAll()
-        if had { onChange?(false) }
+        notify()
     }
 }
 #endif

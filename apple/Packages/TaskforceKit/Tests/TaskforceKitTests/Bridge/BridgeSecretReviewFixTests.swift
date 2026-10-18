@@ -34,32 +34,7 @@ struct BridgeSecretReviewFixTests {
         #expect(!pending)
     }
 
-    // MARK: F-2 (Astra P2) — 결과 확인으로 정산한 답 명령 뒤에 값이 남지 않는다
-
-    @Test func aReadbackNotReceivedSettleLeavesNoValueAndNoQuitPrompt() async throws {
-        let h = try BridgeHarness()
-        let created = try await S.open(h, endsAfterAsking: true)
-        #expect(await S.submit(h, S.answer(created, value: S.canary())) == .sent)
-        let commandID = try #require(h.server.commandIDs(taskID: created.taskID, kind: "answer").first)
-        h.server.dropResponseOnce(route: "ack") // 서버는 lease했지만 응답이 유실된다
-        await S.deliver(h)
-        h.server.markLeasedUnknown(commandID) // lease가 만료돼 결과 확인 목록에 나온다
-        h.clock.jump(by: 6)
-        await h.runtime.tick()
-        #expect(await h.eventually(timeout: 5) { (try? await h.ledger.command(commandID))?.ackFinalAt != nil }, "정산이 끝났다")
-        let command = try #require(try await h.ledger.command(commandID))
-        #expect(command.state == .settled && command.ackResult == "not_received", "양성 대조: readback not_received로 정산됐다: \(command.state) \(String(describing: command.ackResult))")
-        #expect(h.agent.deliveredAnswers.isEmpty)
-        #expect(h.server.taskState(created.taskID) == "awaiting_answer", "서버는 질문을 awaiting_answer로 복원했다 (실제 서버 394행): 로컬 task의 failed는 영구 종료가 아니다")
-        let pendingAtSettle = await h.secrets.hasPending
-        #expect(!pendingAtSettle, "정산 바로 뒤(보관 정리 전)에 값 0: 정산이 직접 버린다")
-        h.clock.jump(by: 120)
-        await h.runtime.housekeeping()
-        let pending = await h.secrets.hasPending
-        #expect(!pending, "보관 정리 뒤에도 값 0")
-        let busy = await h.runtime.isBusy()
-        #expect(!busy, "바쁨이 아니다: 종료 확인 창이 뜨지 않는다")
-    }
+    // MARK: F-2 — 끝난 task
 
     @Test func onlyACancelledTaskDropsItsValuesAtHousekeepingAFailedOneKeepsThem() async throws {
         // `cancelled`는 서버에서도 원장에서도 끝이다 → 열린 요청이 남아 있어도 버린다.
@@ -73,40 +48,6 @@ struct BridgeSecretReviewFixTests {
             let pending = await h.secrets.hasPending
             #expect(pending == !dropped, Comment(rawValue: "\(terminal): 값 \(dropped ? "0" : "그대로")"))
         }
-    }
-
-    @Test func aNotReceivedSettleDropsOnlyTheSettledCommandsSubmissionNotANewerValueNorOtherTasks() async throws {
-        let task = UUID().uuidString.lowercased()
-        let other = LocalSecretKey(taskID: UUID().uuidString, requestID: "r1")
-        let settled = LocalSecretKey(taskID: task, requestID: "r1") // 정산되는 답 명령의 제출: 명령이 만들어지기 전에 값을 뒀다
-        let newer = LocalSecretKey(taskID: task, requestID: "r2") // 정산 뒤 다시 입력한 값 (다른 요청)
-        /// 값 셋을 두고 명령 `cmd`를 처음 본 시점을 기록한다: `settled`는 그 전, `newer`는 그 뒤
-        func prepare(_ h: BridgeHarness) async {
-            await h.secrets.put(key: other, value: AgentAnswerValue(text: "v-other"))
-            await h.secrets.put(key: settled, value: AgentAnswerValue(text: "v-r1"))
-            await h.secrets.noteAnswerCommandSeen("cmd", taskID: task)
-            await h.secrets.put(key: newer, value: AgentAnswerValue(text: "v-r2"))
-            await h.secrets.noteAnswerCommandSeen("cmd", taskID: task) // 다시 목록에 나와도 기준은 처음 본 때다 (새 값은 그 뒤)
-        }
-        func state(_ h: BridgeHarness) async -> [Bool] { await [h.secrets.contains(key: settled), h.secrets.contains(key: newer), h.secrets.contains(key: other)] }
-        // 받았다 · 모른다 · message 명령 · 처음 본 적 없는 명령: 값을 건드리지 않는다
-        for (name, command, kind, result) in [("받았다", "cmd", BridgeV1CommandKind.answer, BridgeV1ReadbackResult.received), ("모른다", "cmd", .answer, .unknown), ("message", "cmd", .message, .notReceived), ("처음 본 적 없음", "cmd-unseen", .answer, .notReceived)] {
-            let h = try BridgeHarness()
-            await prepare(h)
-            await h.runtime.settleSecretsAfterReadback(commandID: command, taskID: task, kind: kind, result: result)
-            #expect(await state(h) == [true, true, true], Comment(rawValue: name))
-        }
-        // 받았다 뒤에는 그 명령의 기준을 잊는다: 나중에 not_received가 와도 건드리지 않는다
-        let forgotten = try BridgeHarness()
-        await prepare(forgotten)
-        await forgotten.runtime.settleSecretsAfterReadback(commandID: "cmd", taskID: task, kind: .answer, result: .received)
-        await forgotten.runtime.settleSecretsAfterReadback(commandID: "cmd", taskID: task, kind: .answer, result: .notReceived)
-        #expect(await state(forgotten) == [true, true, true])
-        // answer가 not_received로 정산됐다: 그 명령을 처음 보기 전에 둔 그 task의 값만 버린다. 뒤에 다시 입력한 값(다른 요청)과 다른 task의 값은 그대로
-        let h = try BridgeHarness()
-        await prepare(h)
-        await h.runtime.settleSecretsAfterReadback(commandID: "cmd", taskID: task, kind: .answer, result: .notReceived)
-        #expect(await state(h) == [false, true, true])
     }
 
     // MARK: F-3 — put 앞에서 원장이 그 (task, request)를 열린 비밀값 요청으로 아는지 본다

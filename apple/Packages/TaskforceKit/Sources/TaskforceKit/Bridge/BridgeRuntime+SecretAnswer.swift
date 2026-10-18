@@ -92,8 +92,6 @@ extension BridgeRuntime {
         }
         let reply = Self.reply(for: result)
         log.log("secret_answer_post", ["result": .code(Self.code(of: reply))])
-        // `duplicate`: 이 값은 이미 있는 답 명령에 귀속된다 → 그 명령의 정산 범위에 든다 (`answered`는 새 명령이라 늦은 차례 그대로)
-        if reply == .duplicate { await secrets.bindToExistingAnswerCommand(key) }
         return reply
     }
 
@@ -134,24 +132,6 @@ extension BridgeRuntime {
     /// 정산 때 버린다: 요청 id를 아는 정산 (닫기 · 전달 끝)
     func settleSecret(taskID: String, requestID: String) async {
         await secrets.discard(key: LocalSecretKey(taskID: taskID, requestID: requestID))
-    }
-
-    /// 정산 때 버린다: 요청 id를 모르는 정산 (lease가 거둔 · 오래된 · 거절한 answer 명령은 payload가 오지 않고, 결과 확인 목록에도 요청 id가 없다). 그 **명령의 제출 값만** 버린다:
-    /// 그 명령을 이 프로세스가 처음 보기 전에 둔 그 task의 값 (`LocalSecretAnswers.discard(taskID:settledCommand:)`). 시계도 task 전체도 쓰지 않는다
-    func settleAnswerCommand(commandID: String, taskID: String) async {
-        await secrets.discard(taskID: taskID, settledCommand: commandID)
-    }
-
-    /// 결과 확인(readback)으로 정산한 답 명령 (lease 응답이 유실돼 만료된 것). `not_received`는 **task의 끝이 아니다**: 서버가 질문을 `awaiting_answer`로 복원하고
-    /// (`20261118000000_bridge_commands.sql:394`) 로컬 task만 `failed`로 남는다. 그래서 그 명령의 제출 값만 버린다: 복원된 질문에 다시 입력한 값은 새 제출이라 남는다.
-    /// 그 밖의 결과(`received` · `unknown`)는 값을 건드리지 않는다 (`take`가 이미 일어났거나 task가 계속 열려 있다). 서버 `step_id`는 결과 확인 목록에 없다 (`contract.ts` readbacks)
-    func settleSecretsAfterReadback(commandID: String, taskID: String, kind: BridgeV1CommandKind, result: BridgeV1ReadbackResult) async {
-        guard kind == .answer else { return }
-        if result == .notReceived {
-            await settleAnswerCommand(commandID: commandID, taskID: taskID)
-        } else {
-            await secrets.forgetAnswerCommand(commandID)
-        }
     }
 
     // MARK: 변환 · 결과 표

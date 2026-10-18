@@ -243,7 +243,7 @@ public actor BridgeRuntime {
     public func isBusy() async -> Bool {
         let tasks = (try? await ledger.allTasks()) ?? []
         if tasks.contains(where: { $0.alive && $0.lastState != "idle" && supervised[$0.agentTaskID] != nil }) { return true }
-        return await secrets.hasPending
+        return await secrets.hasInFlight // 제출 · 답 명령이 진행 중인 비밀값만 (쉬는 값은 종료 때 그냥 버린다, 계약 16.14)
     }
 
     func setStatus(_ value: BridgeStatus) {
