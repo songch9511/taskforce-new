@@ -191,6 +191,11 @@ public actor ClaudeCodeProcess: AgentProcess {
         await probeActor.report()
     }
 
+    /// 로그인 캐시(5분)를 비운다: 다음 `probe()`가 `auth status`를 다시 묻는다 (버전은 실행 파일이 같으면 그대로 쓴다)
+    public func refreshProbe() async {
+        await probeActor.invalidateLogin()
+    }
+
     public nonisolated func supportsVersion(_ version: String?) -> Bool {
         ClaudeCodeSupport.supports(version)
     }

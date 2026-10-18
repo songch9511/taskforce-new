@@ -324,19 +324,23 @@ public struct BridgeV1RegisterRequest: Encodable, Equatable, Sendable {
     public var adapters: [BridgeV1AdapterReport]
     public var connect: [String]
     public var reactivate: Bool
+    /// 표시용 Mac 이름 (OA F1m, 서버 F1s `bridgeV1RegisterRequestWithDeviceSchema`): `DeviceName.normalized`를 지난 값만 싣는다. 없으면 키를 뺀다 (null 금지)
+    public var deviceName: String?
 
-    public init(deviceID: String, appVersion: String, adapters: [BridgeV1AdapterReport], connect: [String], reactivate: Bool) {
+    public init(deviceID: String, appVersion: String, adapters: [BridgeV1AdapterReport], connect: [String], reactivate: Bool, deviceName: String? = nil) {
         self.deviceID = deviceID
         self.appVersion = appVersion
         self.adapters = adapters
         self.connect = connect
         self.reactivate = reactivate
+        self.deviceName = deviceName
     }
 
     enum CodingKeys: String, CodingKey {
         case adapters, connect, reactivate
         case deviceID = "device_id"
         case appVersion = "app_version"
+        case deviceName = "device_name"
     }
 }
 
@@ -1113,13 +1117,18 @@ public struct BridgeV1HeartbeatRequest: Encodable, Equatable, Sendable {
     public var tasks: [BridgeV1HeartbeatTask]
     /// 시작 때와 probe 결과가 바뀔 때만 (없으면 키를 뺀다)
     public var adapters: [BridgeV1AdapterReport]?
+    /// 표시용 Mac 이름 (OA F1m): heartbeat마다 싣는다 (서버가 쓰기 실패를 삼키므로 다음 heartbeat가 고친다). 정규화한 값만, 없으면 키를 뺀다
+    public var deviceName: String?
 
-    public init(bridgeID: String, sentAt: Date, appVersion: String?, tasks: [BridgeV1HeartbeatTask], adapters: [BridgeV1AdapterReport]?) {
+    public init(
+        bridgeID: String, sentAt: Date, appVersion: String?, tasks: [BridgeV1HeartbeatTask], adapters: [BridgeV1AdapterReport]?, deviceName: String? = nil
+    ) {
         self.bridgeID = bridgeID
         self.sentAt = sentAt
         self.appVersion = appVersion
         self.tasks = tasks
         self.adapters = adapters
+        self.deviceName = deviceName
     }
 
     enum CodingKeys: String, CodingKey {
@@ -1127,6 +1136,7 @@ public struct BridgeV1HeartbeatRequest: Encodable, Equatable, Sendable {
         case bridgeID = "bridge_id"
         case sentAt = "sent_at"
         case appVersion = "app_version"
+        case deviceName = "device_name"
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1136,6 +1146,7 @@ public struct BridgeV1HeartbeatRequest: Encodable, Equatable, Sendable {
         try c.encodeIfPresent(appVersion, forKey: .appVersion)
         try c.encode(tasks, forKey: .tasks)
         try c.encodeIfPresent(adapters, forKey: .adapters)
+        try c.encodeIfPresent(deviceName, forKey: .deviceName)
     }
 }
 

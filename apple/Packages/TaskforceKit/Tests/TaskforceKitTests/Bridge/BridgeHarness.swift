@@ -28,7 +28,7 @@ final class BridgeHarness: @unchecked Sendable {
     let token: String
     let temp = TempDirectory()
     let partition: BridgePartition
-    let credentials = InMemoryBridgeCredentialStore()
+    let credentials: InMemoryBridgeCredentialStore
     let agent: FakeAgentProcess
     let secrets = LocalSecretAnswers()
     let log = CapturingLog()
@@ -42,12 +42,16 @@ final class BridgeHarness: @unchecked Sendable {
     private(set) var runtime: BridgeRuntime
     private let mode: BridgeRuntimeConfiguration.Mode
     private let jitter: Double
+    /// 표시용 Mac 이름의 원천 (OA F1m): nil이면 이름을 보내지 않는다
+    private let deviceName: (@Sendable () -> String?)?
 
     init(
         agent: FakeAgentProcess? = nil, mode: BridgeRuntimeConfiguration.Mode = .normal, wake: FakeBridgeWake? = nil, userID: UUID = UUID(),
-        server: FakeBridgeServer? = nil, withAdapter: Bool = true, workspace: String? = "workspace-test", jitter: Double = 0, serverClockOffset: TimeInterval = 0
+        server: FakeBridgeServer? = nil, withAdapter: Bool = true, workspace: String? = "workspace-test", jitter: Double = 0, serverClockOffset: TimeInterval = 0,
+        deviceName: (@Sendable () -> String?)? = nil, credentials: InMemoryBridgeCredentialStore? = nil
     ) throws {
         self.jitter = jitter
+        self.deviceName = deviceName
         let clock = ManualBridgeClock()
         self.clock = clock
         let server = server ?? FakeBridgeServer(clock: { clock.now.addingTimeInterval(serverClockOffset) })
@@ -62,13 +66,16 @@ final class BridgeHarness: @unchecked Sendable {
         self.agent = agent
         self.wake = wake
         self.mode = mode
+        let store = credentials ?? InMemoryBridgeCredentialStore()
+        self.credentials = store
         let resolver = workspace.map { FixedWorkspace(path: $0) }
         self.workspaces = resolver
         let directory = partition.directory(in: temp.url)
         let ledger = try BridgeLedger(directory: directory, now: { clock.now })
         self.ledger = ledger
         runtime = BridgeHarness.makeRuntime(
-            server, userID, token, partition, ledger, credentials, withAdapter ? [agent] : [], clock, wake, secrets, resolver, log, mode, jitter, sessionValid, bearerUser
+            server, userID, token, partition, ledger, store, withAdapter ? [agent] : [], clock, wake, secrets, resolver, log, mode, jitter, sessionValid, bearerUser,
+            deviceName
         )
     }
 
@@ -79,13 +86,14 @@ final class BridgeHarness: @unchecked Sendable {
     private static func makeRuntime(
         _ server: FakeBridgeServer, _ userID: UUID, _ token: String, _ partition: BridgePartition, _ ledger: BridgeLedger, _ credentials: InMemoryBridgeCredentialStore,
         _ adapters: [any AgentProcess], _ clock: ManualBridgeClock, _ wake: FakeBridgeWake?, _ secrets: LocalSecretAnswers, _ workspaces: WorkspaceResolver?,
-        _ log: CapturingLog, _ mode: BridgeRuntimeConfiguration.Mode, _ jitter: Double, _ sessionValid: Locked<Bool>, _ bearerUser: Locked<UUID?>
+        _ log: CapturingLog, _ mode: BridgeRuntimeConfiguration.Mode, _ jitter: Double, _ sessionValid: Locked<Bool>, _ bearerUser: Locked<UUID?>,
+        _ deviceName: (@Sendable () -> String?)?
     ) -> BridgeRuntime {
         let client = BridgeClient(
             baseURL: server.baseURL, session: server.makeSession(), expectedUserID: userID, bearer: { BridgeBearer(userID: bearerUser.get() ?? userID, accessToken: token) }
         )
         return BridgeRuntime(
-            configuration: BridgeRuntimeConfiguration(partition: partition, appVersion: "0.2.0-test", mode: mode, heartbeatJitterSeconds: jitter), client: client, ledger: ledger,
+            configuration: BridgeRuntimeConfiguration(partition: partition, appVersion: "0.2.0-test", mode: mode, heartbeatJitterSeconds: jitter, deviceName: deviceName), client: client, ledger: ledger,
             credentials: credentials, adapters: adapters, clock: clock.clock, wake: wake, secrets: secrets, workspaces: workspaces,
             sessionStillValid: { sessionValid.get() }, log: log
         )
@@ -100,7 +108,7 @@ final class BridgeHarness: @unchecked Sendable {
         }
         runtime = BridgeHarness.makeRuntime(
             server, userID, token, partition, ledger, credentials, adapters ?? [agent], clock, wake ?? self.wake, secrets, workspaces, log, mode ?? self.mode, jitter,
-            sessionValid, bearerUser
+            sessionValid, bearerUser, deviceName
         )
     }
 

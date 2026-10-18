@@ -64,6 +64,21 @@ struct BridgeV1ContractsTests {
         try expectSameJSON(reactivate, file["request_reactivate"])
     }
 
+    /// OA F1m: 표시용 Mac 이름은 선택 키 `device_name`이다 (서버 `bridgeV1RegisterRequestWithDeviceSchema`). 없으면 키를 뺀다 (위 두 요청 파일에는 키가 없다)
+    @Test func registerRequestCarriesTheDeviceNameKeyOnlyWhenThereIsAName() throws {
+        let file = try BridgeFixtures.file("register")
+        let request = BridgeV1RegisterRequest(
+            deviceID: "Zm9vYmFyYmF6cXV4Zm9vYmFyYmF6cXV4Zm9vYmFyYmE", appVersion: "0.2.0",
+            adapters: [BridgeV1AdapterReport(adapter: "agent:claude-code", installed: true, version: "2.1.241", signedIn: .yes, managedSettings: false)],
+            connect: ["agent:claude-code"], reactivate: false, deviceName: "Daniel's MacBook Pro"
+        )
+        try expectSameJSON(request, file["request_with_device"])
+        var without = request
+        without.deviceName = nil
+        let object = try #require(try JSONSerialization.jsonObject(with: try TaskforceJSON.encoder().encode(without)) as? [String: Any])
+        #expect(object["device_name"] == nil, "null 금지: 키를 뺀다")
+    }
+
     @Test func aMissingAdapterVersionIsSentAsNullNotOmitted() throws {
         let report = BridgeV1AdapterReport(adapter: "agent:codex", installed: false, version: nil, signedIn: .no, managedSettings: true)
         let data = try TaskforceJSON.encoder().encode(report)
@@ -113,6 +128,10 @@ struct BridgeV1ContractsTests {
         try expectSameJSON(full, file["request"])
         let minimal = BridgeV1HeartbeatRequest(bridgeID: Self.bridgeID, sentAt: date("2026-10-14T05:00:30.000Z"), appVersion: nil, tasks: [], adapters: nil)
         try expectSameJSON(minimal, file["request_minimal"])
+        let named = BridgeV1HeartbeatRequest(
+            bridgeID: Self.bridgeID, sentAt: date("2026-10-14T05:01:00.000Z"), appVersion: nil, tasks: [], adapters: nil, deviceName: "Daniel's MacBook Pro"
+        )
+        try expectSameJSON(named, file["request_with_device"])
         let data = try TaskforceJSON.encoder().encode(minimal)
         let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
         #expect(object["app_version"] == nil && object["adapters"] == nil)

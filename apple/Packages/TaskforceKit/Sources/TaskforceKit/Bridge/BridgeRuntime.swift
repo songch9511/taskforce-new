@@ -21,12 +21,18 @@ public struct BridgeRuntimeConfiguration: Sendable {
     public var mode: Mode
     /// heartbeat 주기 흔들기 (±초, 계약 2.9: ±2초)
     public var heartbeatJitterSeconds: Double
+    /// 표시용 Mac 이름의 원천 (OA F1m). nil이면 이름을 보내지 않는다 (키를 뺀다): 호스트가 `DeviceNamePolicy`로 보내도 되는 빌드 · 서버일 때만 준다.
+    /// 마무리 모드(`.drain`)에서는 있어도 보내지 않는다 (bridge가 꺼진 것으로 본다). 런타임이 `DeviceName.normalized`를 한 번 더 지난다
+    public var deviceName: (@Sendable () -> String?)?
 
-    public init(partition: BridgePartition, appVersion: String, mode: Mode = .normal, heartbeatJitterSeconds: Double = 0) {
+    public init(
+        partition: BridgePartition, appVersion: String, mode: Mode = .normal, heartbeatJitterSeconds: Double = 0, deviceName: (@Sendable () -> String?)? = nil
+    ) {
         self.partition = partition
         self.appVersion = appVersion
         self.mode = mode
         self.heartbeatJitterSeconds = heartbeatJitterSeconds
+        self.deviceName = deviceName
     }
 }
 
@@ -179,6 +185,13 @@ public actor BridgeRuntime {
     var heartbeatInFlight = false
     var registerTask: Task<Bool, Never>?
     var pendingConnect: [String] = []
+    /// 마지막 등록 시도가 서버에서 받은 오류 (성공하면 nil): Settings가 "서버 문제"와 "오프라인"을 가른다 (OA Settings › Your agents 6.1)
+    var lastRegisterError: BridgeClientError?
+    /// Settings의 Disconnect가 돌고 있다: 겹친 호출은 같은 결과를 기다린다
+    var disconnectTask: Task<AgentDisconnectOutcome, Never>?
+    /// `refreshAdapterReports`의 마지막 시각과 그때 얻은 보고 (10초에 한 번까지)
+    var lastReportsRefresh: Date?
+    var lastRefreshedReports: [BridgeV1AdapterReport] = []
     var lastSnapshot: BridgeRuntimeSnapshot?
     var failureStreak = 0
     var firstPollDone = false
@@ -589,8 +602,8 @@ public actor BridgeRuntime {
             await housekeeping()
             guard !Task.isCancelled, isCurrent(gen) else { return }
             if [.revoked, .tooManyBridges, .credentialRejected].contains(statusValue) {
-                // 사용자 행동을 기다린다 (Connect · Reconnect this Mac)
-                try? await clock.sleep(.seconds(30))
+                // 사용자 행동을 기다린다 (Connect · Reconnect this Mac). Reconnect가 성공하면 `nudge`로 바로 깬다 (30초를 기다리지 않는다)
+                _ = await waitForWake(timeout: 30)
                 continue
             }
             let started = clock.now()
@@ -837,11 +850,16 @@ public actor BridgeRuntime {
     }
 
     func register(reactivate: Bool, reason: String) async -> Bool {
-        if let running = registerTask { return await running.value }
+        if let running = registerTask {
+            let joined = await running.value
+            // 끝난 task를 치운다 (소유자가 아직 못 치웠어도): 이어서 부르는 쪽(`connect`가 한 번 더 보낸다)이 끝난 task에 다시 합쳐지지 않게. 그 사이 새 task가 생겼으면 건드리지 않는다
+            if registerTask == running { registerTask = nil }
+            return joined
+        }
         let task = Task { await self.performRegister(reactivate: reactivate, reason: reason) }
         registerTask = task
         let result = await task.value
-        registerTask = nil
+        if registerTask == task { registerTask = nil }
         return result
     }
 
@@ -895,13 +913,16 @@ public actor BridgeRuntime {
             return false
         }
         let reports = await probeAll()
-        let request = BridgeV1RegisterRequest(deviceID: deviceID, appVersion: config.appVersion, adapters: reports, connect: pendingConnect, reactivate: reactivate)
+        let request = BridgeV1RegisterRequest(
+            deviceID: deviceID, appVersion: config.appVersion, adapters: reports, connect: pendingConnect, reactivate: reactivate, deviceName: sendableDeviceName()
+        )
         setStatus(.connecting)
         let response: BridgeV1RegisterResponse
         do {
             response = try await client.register(request)
         } catch let error as BridgeClientError {
             guard isCurrent(gen) else { return false }
+            lastRegisterError = error
             switch error {
             case .forbidden:
                 setStatus(.revoked)
@@ -946,7 +967,9 @@ public actor BridgeRuntime {
             $0.unreachableAfterSeconds = response.unreachableAfterSeconds
             $0.longPollMaxSeconds = response.longPollMaxSeconds
         }
-        pendingConnect = []
+        // 이 요청에 실어 보낸 것만 지운다: 요청이 날아가는 사이 사용자가 더한 Connect는 남겨 둔다 (`connect`가 한 번 더 보낸다)
+        pendingConnect.removeAll { request.connect.contains($0) }
+        lastRegisterError = nil
         appVersionSent = false
         forceHeartbeat = true
         forceFullList = true
@@ -965,7 +988,12 @@ public actor BridgeRuntime {
         let connectable = Set(ids).filter { adapters[$0] != nil }
         guard !connectable.isEmpty else { return false }
         pendingConnect = connectable.sorted()
-        return await register(reactivate: false, reason: "connect")
+        var result = await register(reactivate: false, reason: "connect")
+        // 진행 중이던 등록에 합쳐졌으면(그 요청에는 connect가 없다) 한 번 더 보낸다
+        if result, !pendingConnect.isEmpty { result = await register(reactivate: false, reason: "connect") }
+        // 사용자가 누른 한 번의 뜻이다: 실패해도 뒤의 자동 등록(처음 · 401 회복)에 남겨 두지 않는다 (D2a Q7: 연결은 사용자 행동으로만)
+        pendingConnect = []
+        return result
     }
 
     /// 사용자가 Reconnect this Mac을 눌렀다: 폐기된 Mac을 `reactivate: true`로 되살린다. 자동으로는 부르지 않는다 (Q21)
