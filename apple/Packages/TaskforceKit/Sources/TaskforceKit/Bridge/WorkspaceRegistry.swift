@@ -68,7 +68,7 @@ public final class WorkspaceRegistry: @unchecked Sendable {
     @discardableResult
     public func setFolder(_ path: String, forProject contextID: UUID) throws -> String {
         let real = try accept(path)
-        try write { tables in
+        try write(adding: real) { tables in
             let ref = Self.ensureRef(for: real, in: &tables)
             tables.projects[Self.key(contextID)] = ref
         }
@@ -100,7 +100,7 @@ public final class WorkspaceRegistry: @unchecked Sendable {
     /// 세션에 폴더를 꽂는다 (이미 있으면 바꾸지 않는다: 세션을 연 뒤에는 폴더가 따라 움직이지 않는다). 규칙을 통과한 폴더만 받는다
     public func pin(session sessionID: String, to path: String) throws {
         let real = try accept(path)
-        try write { tables in
+        try write(adding: real) { tables in
             let key = Self.key(sessionID)
             guard tables.sessions[key] == nil else { return }
             tables.sessions[key] = Self.ensureRef(for: real, in: &tables)
@@ -117,7 +117,7 @@ public final class WorkspaceRegistry: @unchecked Sendable {
     @discardableResult
     public func setPending(_ path: String, conversation conversationID: UUID) throws -> String {
         let real = try accept(path)
-        try write { tables in
+        try write(adding: real) { tables in
             let ref = Self.ensureRef(for: real, in: &tables)
             tables.pending[Self.key(conversationID)] = ref
         }
@@ -175,14 +175,22 @@ public final class WorkspaceRegistry: @unchecked Sendable {
         }
     }
 
-    /// 표를 바꾸고 디스크에 쓴다. 쓰지 못하면 표를 되돌리고 던진다
-    private func write(_ change: (inout Tables) -> Void) throws {
+    /// 한 폴더(realpath)가 다른 폴더의 조상이거나 자손인가. 같은 실제 경로는 겹침이 아니다 (두 프로젝트가 한 폴더를 쓰면 같은 `ws_id`다).
+    /// 겹치는 폴더를 따로 등록하면 같은 파일이 폴더마다 다른 가상 경로가 되어 서버의 경로 잠금이 갈라진다 (재검토 1, Astra 1)
+    private static func overlaps(_ real: String, among others: some Sequence<String>) -> Bool {
+        others.contains { $0 != real && (GateFileSystem.isInside(real, root: $0) || GateFileSystem.isInside($0, root: real)) }
+    }
+
+    /// 표를 바꾸고 디스크에 쓴다. 쓰지 못하면 표를 되돌리고 던진다.
+    /// - adding: 이 쓰기가 새로 등록하는 폴더(realpath). 바꾼 뒤 쓰이는 다른 폴더와 겹치면 던진다 (자기 옛 폴더는 바꾼 뒤 쓰이지 않으니 겹침이 아니다)
+    private func write(adding real: String? = nil, _ change: (inout Tables) -> Void) throws {
         try state.withLock { state in
             loadIfNeeded(&state)
             var next = state.tables
             change(&next)
             Self.collect(&next)
             if next == state.tables { return }
+            if let real, Self.overlaps(real, among: next.refs.values) { throw RegistryError.rejected(.overlapsRegisteredFolder) }
             guard persist(next, moveCorruptAside: state.corruptOnDisk) else { throw RegistryError.writeFailed }
             state.tables = next
             state.corruptOnDisk = false
@@ -271,8 +279,17 @@ extension WorkspaceRegistry: AgentWorkspaceFolders {
     }
 
     public func accepts(path: String) -> Bool {
-        if case .success = rules.validate(path) { return true }
-        return false
+        guard case .success(let real) = rules.validate(path) else { return false }
+        return !read { Self.overlaps(real, among: $0.refs.values) }
+    }
+
+    /// 받아 주지 않는 폴더를 고른 사용자에게 창 안에서 보일 문장 (승인된 문구): 겹치는 폴더 · 민감 폴더는 자기 문장이고 나머지는 일반 거절 문장이다
+    public func rejectionMessage(forPath path: String) -> String {
+        switch rules.validate(path) {
+        case .failure(.sensitiveFolder): AgentWorkspaceCopy.sensitiveFolder
+        case .failure: AgentWorkspaceCopy.rejected
+        case .success(let real): read { Self.overlaps(real, among: $0.refs.values) } ? AgentWorkspaceCopy.overlappingFolder : AgentWorkspaceCopy.rejected
+        }
     }
 
     public func register(path: String, scope: AgentWorkspaceGate.Scope) throws {

@@ -21,6 +21,10 @@ public enum AgentWorkspaceCopy {
     public static let choose = "Choose"
     /// 고른 폴더가 거절일 때 폴더 창 안에 보이는 검증 문구
     public static let rejected = "Choose a folder inside your home folder or on an external drive."
+    /// 이미 등록된 다른 폴더의 조상이거나 자손일 때 (사용자 승인 2026-10-18, 재검토 1)
+    public static let overlappingFolder = "Another project already uses this folder or one inside it."
+    /// 폴더 경로에 `.git` · `.claude` 같은 민감 폴더 성분이 있을 때 (사용자 승인 2026-10-18, 재검토 1)
+    public static let sensitiveFolder = "Choose a project folder, not a .git or settings folder."
 }
 
 public enum AgentWorkspaceGate {
@@ -152,16 +156,30 @@ public protocol AgentWorkspaceFolders: Sendable {
     func hasFolder(forProject id: UUID) -> Bool
     /// 이 대화가 보내기 전에 고른, 지금도 받아 줄 폴더가 있나
     func hasFolder(forConversation id: UUID) -> Bool
-    /// 폴더 창 안 검증: 받아 줄 폴더인가 (거절 규칙은 `WorkspaceFolderRules`)
+    /// 폴더 창 안 검증: 받아 줄 폴더인가 (거절 규칙은 `WorkspaceFolderRules`, 겹치는 폴더 거절 포함)
     func accepts(path: String) -> Bool
+    /// 받아 주지 않는 폴더를 고른 사용자에게 창 안에서 보일 한 문장 (승인된 문구). 기본은 일반 거절 문구다
+    func rejectionMessage(forPath path: String) -> String
     /// 등록한다. 규칙을 통과하지 못하면 던진다
     func register(path: String, scope: AgentWorkspaceGate.Scope) throws
+}
+
+extension AgentWorkspaceFolders {
+    public func rejectionMessage(forPath path: String) -> String { AgentWorkspaceCopy.rejected }
 }
 
 /// 시스템 폴더 창 (앱은 `NSOpenPanel`, 폴더만 · 한 개). 거절되는 폴더를 고르면 창 안에서 `rejection` 문구를 보이고 창을 닫지 않는다. 취소하면 nil
 @MainActor
 public protocol AgentWorkspacePicking {
     func pickFolder(message: String, prompt: String, rejection: String, accepts: @escaping @Sendable (String) -> Bool) async -> String?
+    /// 같은 창인데 거절 문구를 폴더마다 정한다 (`reason`: 거절된 폴더의 문구 — 겹치는 폴더 · 민감 폴더는 일반 문구와 다르다). 기본은 `rejection` 하나로 보인다
+    func pickFolder(message: String, prompt: String, rejection: String, accepts: @escaping @Sendable (String) -> Bool, reason: @escaping @Sendable (String) -> String) async -> String?
+}
+
+extension AgentWorkspacePicking {
+    public func pickFolder(message: String, prompt: String, rejection: String, accepts: @escaping @Sendable (String) -> Bool, reason: @escaping @Sendable (String) -> String) async -> String? {
+        await pickFolder(message: message, prompt: prompt, rejection: rejection, accepts: accepts)
+    }
 }
 
 /// 보내기 전에 묻는 순서 (D4a2-05). 보내기 입구가 `prepare`를 먼저 부르고 `.proceed`일 때만 보낸다
@@ -216,7 +234,8 @@ public final class AgentWorkspaceSendGate {
         guard AgentWorkspaceGate.decide(facts) != .send else { return .proceed }
         let registry = folders
         let accepts: @Sendable (String) -> Bool = { registry.accepts(path: $0) }
-        guard let path = await picker.pickFolder(message: ask.message, prompt: ask.prompt, rejection: AgentWorkspaceCopy.rejected, accepts: accepts) else { return .cancelled }
+        let reason: @Sendable (String) -> String = { registry.rejectionMessage(forPath: $0) }
+        guard let path = await picker.pickFolder(message: ask.message, prompt: ask.prompt, rejection: AgentWorkspaceCopy.rejected, accepts: accepts, reason: reason) else { return .cancelled }
         // 창을 기다리는 동안 바뀌었으면 고른 폴더를 (옛 프로젝트 · 대화에) 등록하지 않는다
         guard stillCurrent() else { return .cancelled }
         do {

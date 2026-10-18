@@ -224,6 +224,43 @@ struct BridgeVirtualPathsTests {
         #expect(!r.wire.contains(stranger))
     }
 
+    // MARK: 명령 안의 가상 경로 (재검토 1, Astra 3)
+
+    @Test func aCommandThatNamesAVirtualPathItselfIsNeverRebuiltIntoARealFile() async throws {
+        let r = try await Rig()
+        try Data("x".utf8).write(to: URL(fileURLWithPath: r.workspace + "/pricing.mdx"))
+        for literal in [r.root + "/pricing.mdx", "/taskforce-session/cwd/pricing.mdx", "/taskforce-outside"] {
+            r.h.server.setToolDecisionResponse([
+                "decision": "allow", "reason": "readonly_command", "card_flags": [String](),
+                "parse": ["wrapper": "none", "argv": ["cat", literal], "paths": [["index": 1, "absolute": literal]], "implicit_cwd": false] as [String: Any],
+            ])
+            let outcome = await r.evaluate("Bash", #"{"command":"cat \#(literal)"}"#, cwd: r.workspace, id: "toolu_lit")
+            #expect(outcome.response.decision != .allow && outcome.code == "parse_check_failed", "\(literal)")
+            #expect(outcome.response.command == nil)
+        }
+    }
+
+    @Test func aRelativePathStillComesBackAsTheRealFileButALiteralAbsoluteArgumentDoesNot() {
+        let literal = Self.root + "/a.txt"
+        let parse = BridgeV1ToolDecisionParse(
+            wrapper: "none", argv: ["cat", "b.txt", literal], paths: [.init(index: 1, absolute: Self.root + "/b.txt"), .init(index: 2, absolute: literal), .init(index: nil, absolute: Self.root)],
+            implicitCwd: true
+        )
+        let response = BridgeV1ToolDecisionResponse(decision: .allow, reason: .readonlyCommand, parse: parse, agentNote: nil, holder: nil, cardFlags: [], serverTime: Date())
+        let restored = paths.restore(response)
+        #expect(restored.parse?.paths.map(\.absolute) == [Self.ws + "/b.txt", literal, Self.ws], "Mac이 가상화한 칸(상대 인자 · 암묵 cwd)만 되돌린다: 명령에 적힌 절대 경로는 그대로")
+    }
+
+    @Test func commandRebuildRefusesACommandWhoseTextHasAVirtualPrefix() {
+        let parse = BridgeV1ToolDecisionParse(wrapper: "none", argv: ["cat", "/taskforce-outside"], paths: [], implicitCwd: false)
+        #expect(CommandRebuild.rebuild(parse, command: "cat /taskforce-outside", childPATH: "/usr/bin:/bin", workspaceRealPath: Self.ws, fileSystem: .live) == nil)
+        let inside = BridgeV1ToolDecisionParse(wrapper: "none", argv: ["cat", "/taskforce/x"], paths: [], implicitCwd: false)
+        #expect(CommandRebuild.rebuild(inside, command: "cat /taskforce/x", childPATH: "/usr/bin:/bin", workspaceRealPath: Self.ws, fileSystem: .live) == nil)
+        // 접두가 아닌 비슷한 글은 막지 않는다
+        let plain = BridgeV1ToolDecisionParse(wrapper: "none", argv: ["pwd"], paths: [], implicitCwd: true)
+        #expect(CommandRebuild.rebuild(plain, command: "pwd", childPATH: "/usr/bin:/bin", workspaceRealPath: Self.ws, fileSystem: .live)?.hasSuffix("pwd'") == true)
+    }
+
     // MARK: 서버가 돌려준 값 (보안 F3)
 
     /// 무엇이든 인정하되 부른 값을 적어 두는 resolver. 등록부 resolver처럼 기록된 경로를 인정하지 않는다

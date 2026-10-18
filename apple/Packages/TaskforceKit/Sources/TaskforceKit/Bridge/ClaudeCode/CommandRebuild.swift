@@ -88,6 +88,8 @@ public enum CommandRebuild {
     public static let allowedCommands: [String] = ["cat", "file", "find", "grep", "head", "ls", "pwd", "rg", "stat", "tail", "wc"]
 
     public static func rebuild(_ parse: BridgeV1ToolDecisionParse, command: String, childPATH: String, workspaceRealPath: String, fileSystem: GateFileSystem) -> String? {
+        // 명령 글에 가상 루트 접두(`/taskforce/` · `/taskforce-`)가 있으면 다시 만들지 않는다: 서버가 그 글자를 경로로 돌려주면 되돌리기가 다른 실제 파일을 가리키게 된다 (재검토 1, Astra 3)
+        guard !VirtualWorkspacePaths.commandPrefixes.contains(where: { command.contains($0) }) else { return nil }
         // Swift `==`는 정규 동등(é = e + ́)으로 비교한다: 코드 포인트로 비교한다
         guard parse.wrapper == "none", let name = parse.argv.first, allowedCommands.contains(name),
               split(command)?.map({ Array($0.unicodeScalars) }) == parse.argv.map({ Array($0.unicodeScalars) }) else { return nil }

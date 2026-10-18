@@ -16,7 +16,15 @@ public struct WorkspaceFolderRules: Sendable {
     public enum Rejection: String, Error, Sendable, Equatable {
         case notAbsolute, notFound, notADirectory, notOwnedByUser
         case root, homeOrAncestor, userLibrary, claudeConfig, credentials, appData, system, volumesRoot, outsideAllowedAreas
+        /// 실제 경로의 어떤 성분이 서버의 민감 디렉터리 이름이다 (`.git` · `.claude` …, 재검토 1)
+        case sensitiveFolder
+        /// 같은 계정 파티션에 이미 등록된 다른 폴더의 조상이거나 자손이다 (같은 실제 경로는 겹침이 아니다, 재검토 1)
+        case overlapsRegisteredFolder
     }
+
+    /// 서버 `tool-decision.ts`의 `TOOL_SENSITIVE_PATH_PATTERN`이 폴더 성분으로 보는 이름 (`/(\.git|…)(/|$)`). 서버 원천과 같은 목록인지는 시험이 소스를 읽어 대조한다 (`WorkspaceSensitiveNamesTests`).
+    /// 작업 폴더 realpath에 이 이름의 성분이 있으면 가상 루트에서 그 성분이 사라져 서버의 `tool_config_write` 확인이 빠지므로 폴더로 받지 않는다
+    public static let sensitiveDirectoryNames: [String] = [".git", ".claude", ".codex", ".vscode", ".idea", ".husky", ".githooks", ".cargo"]
 
     /// 파일 시스템 사실 둘 (시험은 가짜로 바꾼다)
     public struct Facts: Sendable {
@@ -86,6 +94,21 @@ public struct WorkspaceFolderRules: Sendable {
         )
     }
 
+    /// 서버 `toolSensitivePath`와 같게 접는다: NFC · `ſ`→`s` · ASCII 소문자
+    static func folded(_ name: String) -> String {
+        String(String.UnicodeScalarView(name.precomposedStringWithCanonicalMapping.unicodeScalars.map { scalar -> Unicode.Scalar in
+            if scalar == "\u{17F}" { return "s" }
+            if scalar.value >= 0x41 && scalar.value <= 0x5A { return Unicode.Scalar(scalar.value + 0x20) ?? scalar }
+            return scalar
+        }))
+    }
+
+    /// 경로의 어떤 성분이 민감 디렉터리 이름인가
+    static func hasSensitiveComponent(_ real: String) -> Bool {
+        let names = Set(sensitiveDirectoryNames)
+        return real.split(separator: "/").contains { names.contains(folded(String($0))) }
+    }
+
     /// 받아 줄 폴더면 그 realpath, 아니면 이유. 절대 경로가 아니거나 NUL이 있으면 거절한다
     public func validate(_ path: String) -> Result<String, Rejection> {
         guard path.hasPrefix("/"), !path.utf8.contains(0) else { return .failure(.notAbsolute) }
@@ -100,6 +123,8 @@ public struct WorkspaceFolderRules: Sendable {
         for (root, why) in denyExact where real == root { return .failure(why) }
         // 앱 데이터 · 앱 번들 · 설정 · 자격 폴더: 그 안이거나, 그것을 품는 폴더 (원장 · 세션 폴더 · 훅을 품은 폴더를 작업 폴더로 받지 않는다)
         for (root, why) in denyAround where GateFileSystem.isInside(real, root: root) || GateFileSystem.isInside(root, root: real) { return .failure(why) }
+        // 서버의 민감 디렉터리 이름이 성분에 든 폴더: 가상 루트에서 그 성분이 사라지면 서버의 `tool_config_write` 확인이 빠진다 (구체적인 위 규칙이 먼저 답한다)
+        if Self.hasSensitiveComponent(real) { return .failure(.sensitiveFolder) }
         // 허용 구역: 홈 아래 또는 외장 볼륨 아래
         guard GateFileSystem.isInside(real, root: home) || GateFileSystem.isInside(real, root: volumesRoot) else { return .failure(.outsideAllowedAreas) }
         return .success(real)
