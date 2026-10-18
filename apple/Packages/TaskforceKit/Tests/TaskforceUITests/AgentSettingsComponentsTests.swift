@@ -59,6 +59,20 @@ struct AgentSettingsComponentsTests {
         #expect(colorLiterals == 0, "Color(...) 리터럴 \(colorLiterals)")
     }
 
+    /// Level은 고칠 수 없는 `Value`다 (SA-01 A): SwiftUI의 접근성 트리는 시험 호스트에서 읽히지 않아, 오른쪽 컨트롤 분기의 모양을 소스로 고정한다.
+    /// `.level` 분기는 `SettingsValue` 하나이고 고르는 컨트롤(Picker · Menu · DropdownButton · Toggle · TextField)은 `AgentRow` 밖(폴더 줄의 메뉴)에만 있다
+    @Test func levelIsAReadOnlyValueInTheSource() throws {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appending(path: "Sources/TaskforceUI/AgentSettingsComponents.swift"), encoding: .utf8)
+        let levelBranch = try #require(source.components(separatedBy: "case .level:\n            SettingsValue(").dropFirst().first, "`.level` 분기는 SettingsValue로 시작한다")
+        let body = String(levelBranch.prefix(200))
+        #expect(body.hasPrefix("AgentSettingsCopy.canWrite)"), "값은 Can write 하나")
+        let rowSource = String(source[source.range(of: "public struct AgentRow: View")!.lowerBound..<source.range(of: "public struct AgentDetailHeader: View")!.lowerBound])
+        for control in ["Picker(", "Menu", "DropdownButton", "Toggle(", "TextField(", "Select("] {
+            #expect(!rowSource.contains(control), "\(control)")
+        }
+    }
+
     @Test func onlyTheDesignedValuesAreBold() {
         #expect(AgentSettingsValue("Unsupported", bold: true).bold && !AgentSettingsValue("Can write").bold)
         let line = Self.line(installed: false)

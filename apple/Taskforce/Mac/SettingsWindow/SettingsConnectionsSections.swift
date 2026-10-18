@@ -6,7 +6,7 @@ import TaskforceUI
 
 // Settings › Connections (디자인 SettingsPage Connections · ConnectionsPage): AI processing → Sources → More services.
 // 기존 창의 Connections(`ConnectionsView`)와 Privacy & AI Data(`ConsentSettingsView`)를 옮겼다. 같은 `AccountStore`를 쓴다.
-// Your agents(Claude Code)는 에이전트 adapter gate가 꺼져 있어 넣지 않는다. 연결 상세의 Capabilities · Behavior는 데이터가 없어 넣지 않는다.
+// Your agents(Claude Code)는 `SettingsAgentsSections.swift`다. 연결 상세의 Capabilities · Behavior는 데이터가 없어 넣지 않는다.
 
 /// 외부 AI 처리 동의 스위치 (`Use AI on new sources`: 처리방침 · 심사 문서가 부르는 이름 그대로).
 /// 켜기 → 동의 화면(Allow를 눌러야 동의), 끄기 → 트레이 안에서 철회 확인 (`ConsentSwitch`). 각주는 지금 상태의 결과.

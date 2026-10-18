@@ -46,6 +46,7 @@ public struct AgentActionButton: View {
     let prominent: Bool
     let accessibilityName: String
     let action: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
 
     /// - prominent: 잉크 버튼(DS `attention`: Reconnect · 상세 머리의 Connect). 아니면 `bg/field` 면(Connect)
     public init(_ title: String, busy: Bool = false, prominent: Bool = false, accessibilityName: String? = nil, action: @escaping () -> Void) {
@@ -59,7 +60,11 @@ public struct AgentActionButton: View {
     public var body: some View {
         Button(action: busyAwareAction) {
             HStack(spacing: 6) {
-                if busy { ProgressView().controlSize(.small).scaleEffect(0.75).frame(width: 12, height: 12) }
+                if busy {
+                    // 잉크 버튼 위의 스피너는 면의 반대 색으로 (그 면 위에서 읽히게)
+                    ProgressView().controlSize(.small).scaleEffect(0.75).frame(width: 12, height: 12)
+                        .environment(\.colorScheme, prominent ? (colorScheme == .dark ? .light : .dark) : colorScheme)
+                }
                 Text(title)
             }
         }
@@ -233,6 +238,9 @@ public struct AgentFolderRow: View {
     let onRemove: () -> Void
     @State private var hovering = false
 
+    /// 이름이 가져갈 수 있는 최대 폭: 긴 이름은 이 안에서 줄바꿈하고, 경로가 남는 폭으로 줄어든다
+    static let nameMaxWidth: CGFloat = 260
+
     public init(line: AgentFolderLine, onChange: @escaping () -> Void = {}, onRemove: @escaping () -> Void = {}) {
         self.line = line
         self.onChange = onChange
@@ -286,8 +294,10 @@ public struct AgentFolderRow: View {
                         .foregroundStyle(TFColor.textPrimary)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            // 이름은 제 폭만큼 (길면 줄바꿈, 폭의 일부까지): 남는 폭은 경로가 가져가 가운데를 줄인다
+            .frame(maxWidth: Self.nameMaxWidth, alignment: .leading)
             .layoutPriority(1)
+            Spacer(minLength: TFSpace.md)
             Text(line.display)
                 .font(TFFont.footnote)
                 .foregroundStyle(hovering ? TFColor.textSecondarySelected : TFColor.textSecondary)

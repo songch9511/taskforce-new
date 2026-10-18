@@ -84,18 +84,24 @@ enum SettingsWindowDetail: Hashable {
     case remembered
     /// Account › Remembered › 기억 하나 (RememberedDetail). 정정 · 확인 · 옮기기로 새 행이 생기면 `MemoryStore.resolve`가 따라간다
     case memory(UUID)
+    /// Connections › Your agents › Claude Code: 상태 · 접근 · 작업 폴더 · 이 Mac 끊기 (OA Settings › Your agents 5.3)
+    case agent
+    /// Connections › 이 계정의 Mac 목록 (10대일 때, 다른 Mac 지우기, 6.4)
+    case macs
 
     var title: String {
         switch self {
         case .privacy: "Privacy & AI Data"
         case .connection(let provider): SettingsConnectionLine.name(provider)
         case .remembered, .memory: "Remembered"
+        case .agent: AgentSettingsCopy.agentName
+        case .macs: AgentSettingsCopy.macsTitle
         }
     }
 
     var tab: SettingsWindowTab {
         switch self {
-        case .privacy, .connection: .connections
+        case .privacy, .connection, .agent, .macs: .connections
         case .remembered, .memory: .account
         }
     }
@@ -114,6 +120,12 @@ enum SettingsWindowConfirm: Hashable {
     case disconnect(ConnectionProvider)
     /// Account › Remembered › 기억 하나: Forget
     case forgetMemory(UUID)
+    /// Connections › Your agents › Claude Code: Disconnect this Mac (6.3)
+    case disconnectAgent
+    /// Connections › Your agents › Claude Code › Folders: 그 프로젝트의 폴더 지우기 (7장)
+    case removeFolder(UUID)
+    /// Connections › Macs: 그 Mac 지우기 (6.4)
+    case removeMac(UUID)
 }
 
 /// 창의 상세 · 확인 상태. 탭은 `settings.tab`에 저장되고(마지막 탭을 기억), 상세 · 확인은 창 밖에서 열면 지운다.
@@ -129,6 +141,8 @@ final class SettingsWindowModel {
     var confirming: SettingsWindowConfirm?
     /// 연결을 시작하라는 요청 (줄 · 상세의 Connect · Reconnect). Connections 탭의 `ConnectionFlow`가 받아 시작한다
     var connectRequest: ConnectionProvider?
+    /// Connections › Your agents의 상태 · 동작 (OA Settings › Your agents). 창 · 탭을 옮겨도 눌림 · 읽은 값이 남는다 — 끊는 동안 창을 닫아도 일은 계속한다
+    let agents = AgentSettingsModel()
 
     /// 창 제목: 연 상세, 없으면 탭 이름 (그 탭의 상세만)
     func title(on tab: SettingsWindowTab) -> String {
@@ -143,12 +157,14 @@ final class SettingsWindowModel {
     func open(_ detail: SettingsWindowDetail) {
         self.detail = detail
         confirming = nil
+        agents.dismissFailure()
     }
 
     /// Back · 탭 바꾸기 · 창 밖에서 열기 (More 메뉴 · 메뉴 막대 · 알림)
     func close() {
         detail = nil
         confirming = nil
+        agents.dismissFailure()
     }
 
     /// Back 링크: 기억 하나에서는 목록으로, 그 밖은 탭 첫 화면으로
@@ -163,11 +179,40 @@ final class SettingsWindowModel {
     /// 대화 · 기억 상태 (앱 시작 때 `AppRuntime.chatRuntime`이 붙인다). 플래그가 꺼져 있으면 nil
     private(set) var chatRuntime: ChatRuntime?
 
+    // MARK: Your agents의 동작 (OA Settings › Your agents): 확인 줄 · 화면 이동까지 한 곳에서 (시험이 직접 부른다)
+
+    /// 실제 면을 붙인다 (Your agents 절 · 상세가 처음 보일 때). 이미 있으면(시험 · 견본의 가짜) 바꾸지 않는다. 대화 상태가 없으면(플래그가 꺼짐) 붙이지 않는다: 이 빌드는 못 띄운다고 말한다
+    func attachAgentEnvironment(services: AppServices?) {
+        guard agents.environment == nil, let runtime = chatRuntime else { return }
+        agents.attach(LiveAgentSettingsEnvironment(targets: runtime.targets, reads: services?.reads, picker: runtime.workspacePicker))
+    }
+
+    /// 확인 줄의 Disconnect: 서버가 폐기를 받으면 확인 줄을 닫는다. 실패하면 이 Mac에서 바뀐 것이 0이라 줄이 그대로 남고 실패 줄이 붙는다
+    func disconnectAgent() async {
+        if await agents.disconnect() { confirming = nil }
+    }
+
+    /// 확인 줄의 Remove(Mac): 성공하면 확인 줄을 닫고, 자리가 생겼으면(Notice가 사라짐) Connect가 다시 열린 탭으로 돌아간다
+    func removeMac(_ id: UUID) async {
+        guard await agents.removeMac(id) else { return }
+        confirming = nil
+        if !agents.showsMacsNotice, detail == .macs { close() }
+    }
+
+    /// 확인 줄의 Remove(폴더)
+    func removeFolder(project: UUID) async {
+        await agents.removeFolder(project: project)
+        confirming = nil
+    }
+
     /// 대화 · 기억 상태에 붙는다: 계정이 떠나면 열린 기억 상세를 닫는다 (다른 계정의 기억 id로 상세가 남지 않게)
     func bind(to runtime: ChatRuntime) {
         guard chatRuntime == nil else { return }
         chatRuntime = runtime
-        runtime.scope.onLeft { [weak self] in self?.close() }
+        runtime.scope.onLeft { [weak self] in
+            self?.close()
+            self?.agents.accountLeft()
+        }
     }
 }
 
@@ -321,6 +366,10 @@ final class ProfileDraft {
 enum SettingsWindowSection: String, CaseIterable, Identifiable {
     case profile, signIn, remembered, deleteAccount, about, legal
     case aiProcessing, sources, moreServices
+    /// Connections › Your agents (OA Settings › Your agents): Claude Code 한 줄
+    case yourAgents
+    /// 탭 맨 위 Notice 하나: 이 계정의 Mac이 10대일 때만 (`sections(_:macsNotice:)`)
+    case macsNotice
     case runWithAI
     case notifications
     case launcher, panelKeys
@@ -336,11 +385,12 @@ enum SettingsWindowSection: String, CaseIterable, Identifiable {
         case .about: "About"
         case .aiProcessing: "AI processing"
         case .sources: "Sources"
+        case .yourAgents: AgentSettingsCopy.sectionTitle
         case .runWithAI: "Run with AI"
         case .notifications: "Notifications"
         case .launcher: "Launcher"
         case .panelKeys: "In the panel"
-        case .deleteAccount, .legal, .moreServices, .signInRequired, .remembered: nil
+        case .deleteAccount, .legal, .moreServices, .signInRequired, .remembered, .macsNotice: nil
         }
     }
 }
@@ -351,13 +401,14 @@ enum SettingsWindowAccess: Equatable {
 }
 
 extension SettingsWindowTab {
-    /// 탭의 주제, 위에서부터. 아직 연결되지 않은 것(`SettingsWindowHidden`)은 넣지 않는다
-    func sections(_ access: SettingsWindowAccess) -> [SettingsWindowSection] {
+    /// 탭의 주제, 위에서부터. 아직 연결되지 않은 것(`SettingsWindowHidden`)은 넣지 않는다.
+    /// `macsNotice`: 이 계정의 Mac이 10대라 Connections 탭 맨 위에 Notice 하나가 선다 (README "at most one Notice")
+    func sections(_ access: SettingsWindowAccess, macsNotice: Bool = false) -> [SettingsWindowSection] {
         switch (self, access) {
         case (.account, .signedIn): [.profile, .signIn, .remembered, .deleteAccount, .about, .legal]
         // 로그아웃: 로그인 화면, 그 아래 About · 링크는 그대로 (읽는 중이면 로그인 자리에 진행 표시)
         case (.account, _): [.signIn, .about, .legal]
-        case (.connections, .signedIn): [.aiProcessing, .sources, .moreServices]
+        case (.connections, .signedIn): (macsNotice ? [.macsNotice] : []) + [.aiProcessing, .sources, .moreServices, .yourAgents]
         case (.execution, .signedIn): [.runWithAI]
         case (.connections, _), (.execution, _): [.signInRequired]
         case (.reports, _): [.notifications]
@@ -372,7 +423,6 @@ enum SettingsWindowHidden: String, CaseIterable {
     case planAndUsage = "Plan & usage"
     case usageAndCredits = "Usage & Credits"
     case subscription = "Subscription"
-    case yourAgents = "Your agents"
     case policyDefault = "Default for new work"
     case policyOverrides = "Overrides"
     case externalCosts = "Spending outside Taskforce"
@@ -382,7 +432,6 @@ enum SettingsWindowHidden: String, CaseIterable {
     var tab: SettingsWindowTab {
         switch self {
         case .planAndUsage, .usageAndCredits, .subscription, .taskList: .account
-        case .yourAgents: .connections
         case .policyDefault, .policyOverrides, .externalCosts: .execution
         case .reportsDelivery: .reports
         }
@@ -393,7 +442,6 @@ enum SettingsWindowHidden: String, CaseIterable {
         switch self {
         case .planAndUsage, .usageAndCredits, .subscription, .externalCosts:
             "G2: 10-09 가격(Lemon Squeezy v2)이 $9.99 구독 · credits를 대신한다. UsageCreditsPane · 구독은 기존 창에 남는다"
-        case .yourAgents: "D4: 에이전트 adapter gate가 꺼져 있다"
         case .policyDefault, .policyOverrides: "실행 정책 데이터 · API가 아직 없다"
         case .reportsDelivery: "H2: 보고 설정을 아직 저장 · 보내지 않는다"
         case .taskList: "런처 전용 구역 수 제한. Edge 패널은 쓰지 않는다 (기존 창에 남는다)"
