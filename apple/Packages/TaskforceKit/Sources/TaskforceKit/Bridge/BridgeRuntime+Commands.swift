@@ -609,6 +609,78 @@ extension BridgeRuntime {
         await publish()
     }
 
+    // MARK: 겹치는 폴더에서 동시에 돌지 않게 (계약 13.13 덧붙임)
+
+    /// 이 턴이 `folder`에서 띄워져도 되는지 보고, 되면 같은 단계에서 예약한다. 되는 조건: 이 파티션의 **다른** 세션 중 살아 있는 것의 폴더가 모두 `folder`와 겹치지 않는다
+    /// (조상 · 자손만 겹침, 같은 실제 경로는 아니다). 살아 있음 = 원장 `alive` · 감독 중(`supervised`) · 확인 안 된 고아 · adapter 닫기 실행(`closing`) · adapter의 세션 실행이 끝나지 않았거나 모름(`sessionRun`) ·
+    /// 다른 턴이 시작을 예약함(`startReservations`). 증명 못 한 중단(`unproven`)은 늘 `alive`와 함께 있어 거기 든다(끝이 증명돼 `alive`가 꺼진 뒤 남은 옛 글자는 세지 않는다).
+    /// **상태를 읽지 못하거나, 살아 있는 실행의 폴더를 모르면 막는다** (fail-closed). 원장 · adapter를 읽는 await는 모으기 단계에만 있고, 검사 → 예약 사이에는 await가 없다 —
+    /// 겹치는 두 턴이 둘 다 통과할 수 없다(뒤에 오는 쪽은 앞의 예약을 본다)
+    func reserveStart(taskID: String, session: String, folder: String) async -> Bool {
+        // 1) 모으기 (await 허용)
+        #if DEBUG
+        let unreadable = liveStateUnreadableForTest
+        #else
+        let unreadable = false
+        #endif
+        guard !unreadable, let all = try? await ledger.allTasks() else { return false }
+        let mine = session.lowercased()
+        struct Candidate { var session: String; var folder: String? }
+        var persisted: [String: Candidate] = [:] // 원장이 살아 있다고 하는 task (또는 adapter가 그 세션의 실행이 끝나지 않았다고 하는 세션의 task)
+        var bySession: [String: [BridgeTaskRecord]] = [:]
+        for task in all { bySession[task.agentSessionID.lowercased(), default: []].append(task) }
+        for (other, tasks) in bySession where other != mine {
+            let alive = tasks.filter(\.alive)
+            for task in alive { persisted[task.agentTaskID] = Candidate(session: other, folder: task.workspaceRef) }
+            if alive.isEmpty, let newest = tasks.first, let adapter = adapters[newest.adapter], let run = await adapter.sessionRun(newest.agentSessionID) {
+                if case .ended = run.liveness {} else { persisted[newest.agentTaskID] = Candidate(session: other, folder: newest.workspaceRef) }
+            }
+        }
+        // 2) 검사 → 예약 (await 없음)
+        var live = Array(persisted.values)
+        let known = Dictionary(uniqueKeysWithValues: all.map { ($0.agentTaskID, $0) })
+        func sessionAndFolder(of taskID: String, session hint: String?, folder hintFolder: String?) -> Candidate? {
+            guard let owner = hint?.lowercased() ?? known[taskID]?.agentSessionID.lowercased() else { return nil }
+            return Candidate(session: owner, folder: hintFolder ?? known[taskID]?.workspaceRef)
+        }
+        for (taskID, entry) in supervised where persisted[taskID] == nil {
+            // 세션을 모르는 감독 실행은 막는다 (알 수 없음)
+            guard let candidate = sessionAndFolder(of: taskID, session: entry.session, folder: entry.workspace) else { return false }
+            live.append(candidate)
+        }
+        for taskID in orphanLiveness.keys where persisted[taskID] == nil && supervised[taskID] == nil {
+            guard let candidate = sessionAndFolder(of: taskID, session: nil, folder: nil) else { return false }
+            live.append(candidate)
+        }
+        for (taskID, entry) in closing where persisted[taskID] == nil && supervised[taskID] == nil {
+            live.append(Candidate(session: entry.session.lowercased(), folder: known[taskID]?.workspaceRef))
+        }
+        for reservation in startReservations.values { live.append(Candidate(session: reservation.session.lowercased(), folder: reservation.folder)) }
+        for candidate in live where candidate.session != mine {
+            guard let other = candidate.folder, !other.isEmpty else { return false } // 폴더를 모르는 살아 있는 실행
+            if WorkspaceFolderRules.overlap(folder, other) { return false }
+        }
+        startReservations[taskID] = StartReservation(session: session, folder: folder)
+        return true
+    }
+
+    #if DEBUG
+    func setLiveStateUnreadableForTest(_ value: Bool) { liveStateUnreadableForTest = value }
+
+    /// 시험 전용 (Release에는 없다): 메모리의 실행 상태를 직접 심는다 (원장이 아직 모르는 감독 실행 · 고아 · 닫기 실행)
+    func seedSupervisedForTest(taskID: String, session: String, workspace: String?) {
+        supervised[taskID] = Supervised(runID: UUID(), adapterID: "agent:claude-code", identity: nil, session: session, workspace: workspace)
+    }
+
+    func seedOrphanForTest(taskID: String) { orphanLiveness[taskID] = .unknown }
+
+    func seedClosingForTest(taskID: String, session: String) { closing[taskID] = (session: session, count: 1) }
+
+    func clearOrphanForTest(taskID: String) { orphanLiveness[taskID] = nil }
+
+    func releaseReservationForTest(taskID: String) { startReservations[taskID] = nil }
+    #endif
+
     /// payload에 모르는 값이 있다: 띄우지 않았다는 것이 원장으로 증명된다 → `readback not_received, process_ended: true`
     func refuseUnknownPayload(record: BridgeCommandRecord, why: String = "unknown_payload") async {
         var refused = (try? await ledger.command(record.commandID)) ?? record
@@ -694,6 +766,15 @@ extension BridgeRuntime {
             log.log("workspace_overlap_blocked", ["task": .id(common.agentTaskID)])
             return await failBeforeAcceptance(taskID: common.agentTaskID, commandID: record.commandID, reason: .spawnFailed)
         }
+        // 겹치는 폴더에서 세션이 동시에 돌지 않게 (계약 13.13 덧붙임, Astra 재검토 5): 이 파티션에 다른 세션이 살아 있고 그 폴더가 이 폴더와 겹치면(조상 · 자손, 같은 실제 경로는 아니다) 띄우지 않는다.
+        // 살아 있는지 모르거나 읽지 못해도 막는다. 검사와 예약은 한 actor 단계다(`reserveStart`) — 기존 "Session didn't start" 길
+        if let folder = workspace {
+            guard await reserveStart(taskID: common.agentTaskID, session: common.agentSessionID, folder: folder) else {
+                log.log("live_overlap_blocked", ["task": .id(common.agentTaskID)])
+                return await failBeforeAcceptance(taskID: common.agentTaskID, commandID: record.commandID, reason: .spawnFailed)
+            }
+        }
+        defer { startReservations[common.agentTaskID] = nil }
         // writer 하나를 한 번 더 (lease 뒤 경쟁)
         if (try? await ledger.liveTask(inSession: common.agentSessionID, excluding: common.agentTaskID)) != nil {
             return await failBeforeAcceptance(taskID: common.agentTaskID, commandID: record.commandID, reason: .spawnFailed)
@@ -739,7 +820,7 @@ extension BridgeRuntime {
             log.log("ledger_write_failed", ["step": .code("start_intent")])
             return
         }
-        supervised[common.agentTaskID] = Supervised(runID: runID, adapterID: common.adapter, identity: nil)
+        supervised[common.agentTaskID] = Supervised(runID: runID, adapterID: common.adapter, identity: nil, session: common.agentSessionID, workspace: resolvedWorkspace)
         await publish()
         #if DEBUG
         await afterStartIntent?()

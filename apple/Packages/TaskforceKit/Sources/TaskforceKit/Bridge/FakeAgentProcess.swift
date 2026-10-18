@@ -133,6 +133,7 @@ public final class FakeAgentProcess: AgentProcess, @unchecked Sendable {
     private var _interruptOverride: AgentInterruptResult?
     private var _forgotten: [String] = []
     private var _terminal: AgentTerminalSession?
+    private var _sessionRuns: [String: AgentLiveness] = [:]
     public var processCounter = 0
 
     public init(adapter: String = "agent:claude-code", version: String = "2.1.241", clock: BridgeClock = .system) {
@@ -176,6 +177,8 @@ public final class FakeAgentProcess: AgentProcess, @unchecked Sendable {
     public func setInterruptResult(_ value: AgentInterruptResult?) { lock.withLock { _interruptOverride = value } }
     /// D4a2-06: `terminalSession`이 돌려줄 값 (nil이면 터미널로 이어받을 수 없는 adapter)
     public func setTerminalSession(_ value: AgentTerminalSession?) { lock.withLock { _terminal = value } }
+    /// 세션 단위 실행 상태를 가진 adapter 흉내 (Claude Code처럼): 그 세션의 지금 실행이 이 상태다. 정하지 않은 세션은 상태가 없다(nil)
+    public func setSessionRun(_ sessionID: String, _ liveness: AgentLiveness?) { lock.withLock { _sessionRuns[sessionID.lowercased()] = liveness } }
     public func onStart(_ hook: (@Sendable (AgentTurnStart) async -> Void)?) { lock.withLock { _hookStart = hook } }
     public func onDeliver(_ hook: (@Sendable (AgentAnswerDelivery) async -> Void)?) { lock.withLock { _hookDeliver = hook } }
 
@@ -195,6 +198,10 @@ public final class FakeAgentProcess: AgentProcess, @unchecked Sendable {
     public func forgetSession(_ sessionID: String) async { lock.withLock { _forgotten.append(sessionID) } }
 
     public func terminalSession(_ sessionID: String) async -> AgentTerminalSession? { lock.withLock { _terminal } }
+
+    public func sessionRun(_ sessionID: String) async -> AgentSessionRun? {
+        lock.withLock { _sessionRuns[sessionID.lowercased()] }.map { AgentSessionRun(liveness: $0, identity: nil) }
+    }
 
     public func supportsVersion(_ version: String?) -> Bool { lock.withLock { _versionSupported }(version) }
 

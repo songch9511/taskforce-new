@@ -94,6 +94,11 @@ public struct WorkspaceFolderRules: Sendable {
         )
     }
 
+    /// 두 폴더(realpath)가 겹치나: 서로 다른 폴더이고 한쪽이 다른 쪽의 조상이다. 같은 실제 경로는 겹침이 아니다 (경로 lease 키가 같다 — 같은 `ws_id`)
+    public static func overlap(_ a: String, _ b: String) -> Bool {
+        a != b && (GateFileSystem.isInside(a, root: b) || GateFileSystem.isInside(b, root: a))
+    }
+
     /// 서버 `toolSensitivePath`와 같게 접는다: NFC · `ſ`→`s` · ASCII 소문자
     static func folded(_ name: String) -> String {
         String(String.UnicodeScalarView(name.precomposedStringWithCanonicalMapping.unicodeScalars.map { scalar -> Unicode.Scalar in

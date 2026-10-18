@@ -93,6 +93,15 @@ public actor BridgeRuntime {
         var inputReachedAt: Date?
         /// 답을 `request_closed`로 정산했는데 그 실행이 아직 돈다 (OA D3a 14장 2): 끝 사건만 받아 끝을 정산한다 (그 밖의 사건은 버린다)
         var endOnly = false
+        /// 새 턴(message)이 띄운 실행의 세션과 작업 폴더: 다른 세션의 겹치는 턴 시작 검사가 원장을 읽기 전에도 이 실행을 본다 (계약 13.13 덧붙임). 답으로 이어 띄운 실행은 nil — 원장이 알려 준다
+        var session: String?
+        var workspace: String?
+    }
+
+    /// 턴 시작을 예약한 task와 그 세션 · 작업 폴더 (계약 13.13 덧붙임): 겹침 검사와 **같은 actor 단계에서**(사이에 await 없이) 적고, `runMessage`가 어떻게 끝나든 지운다
+    struct StartReservation {
+        let session: String
+        let folder: String
     }
 
     // MARK: 의존성
@@ -141,6 +150,7 @@ public actor BridgeRuntime {
     var pausedUntil: [BridgeRoute: Date] = [:]
     var requestTimes: [BridgeRoute: [Date]] = [:]
     var supervised: [String: Supervised] = [:]
+    var startReservations: [String: StartReservation] = [:]
     /// 원장은 살아 있다고 하지만 감독하는 실행이 없는 task가 마지막으로 확인된 상태: `.alive`(끝내지 못했다) · `.unknown`(끝을 증명하지 못했다)
     var orphanLiveness: [String: AgentLiveness] = [:]
     /// adapter 닫기(`closeRequest`)가 도는 task와 그 세션 (OA D3a 16장 1): 닫기 spawn은 시작부터 생존 판단(`hasLiveProcess` · 종료)에 든다
@@ -154,6 +164,10 @@ public actor BridgeRuntime {
     /// 최근 1시간의 등록 시도 시각 (자동 등록 예산 · 물러서기)
     var registerTimes: [Date] = []
     var terminatedByUs: Set<String> = []
+    #if DEBUG
+    /// 시험 전용 (Release에는 없다): 살아 있는 세션 상태를 읽을 수 없는 경우를 흉내 낸다
+    var liveStateUnreadableForTest = false
+    #endif
     var pendingWake: BridgeWakeReason?
     var wakeWaiter: CheckedContinuation<BridgeWakeReason?, Never>?
     var loopTask: Task<Void, Never>?

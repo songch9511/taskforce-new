@@ -181,7 +181,7 @@ public final class WorkspaceRegistry: @unchecked Sendable {
     /// 한 폴더(realpath)가 다른 폴더의 조상이거나 자손인가. 같은 실제 경로는 겹침이 아니다 (두 프로젝트가 한 폴더를 쓰면 같은 `ws_id`다).
     /// 겹치는 폴더에서 세션이 동시에 돌면 같은 파일이 폴더마다 다른 가상 경로가 되어 서버의 경로 잠금이 갈라진다 (재검토 1, Astra)
     private static func overlaps(_ real: String, among others: some Sequence<String>) -> Bool {
-        others.contains { $0 != real && (GateFileSystem.isInside(real, root: $0) || GateFileSystem.isInside($0, root: real)) }
+        others.contains { WorkspaceFolderRules.overlap(real, $0) }
     }
 
     /// 프로젝트들의 지금 폴더 (realpath). `project`는 그 프로젝트 자신의 것을 뺀다. **세션 핀 · 대화 폴더는 보지 않는다**: 핀은 세션의 폴더 기록일 뿐 수명 관리 대상이 아니다 (계약 13.13)
