@@ -122,11 +122,11 @@ extension BridgeRuntime {
         }
     }
 
-    /// 서버에 닿지 못한 이유: 전송 오류 중 "인터넷에 연결되어 있지 않다"(-1009) · 로밍 꺼짐(-1018) · 데이터 허용 안 됨(-1020)만 오프라인이다. 그 밖은 서버 문제로 말한다
+    /// 서버에 닿지 못한 이유: 전송 오류 중 "인터넷에 연결되어 있지 않다"(-1009) · "연결이 끊겼다"(-1005)만 오프라인이다 (`AgentQuestionAnswerResult.of`와 같은 판단). 그 밖은 서버 문제로 말한다
     static func failure(of error: BridgeClientError?) -> AgentSettingsFailure {
         guard case .transport(let detail)? = error else { return .other }
         // `BridgeClient`는 `String(describing: URLError.code)`를 싣는다: "Code(rawValue: -1009)" (모양은 시험이 실제 URLError로 고정한다)
-        return ["-1009", "-1018", "-1020"].contains { detail.contains("rawValue: \($0))") } ? .offline : .other
+        return ["-1009", "-1005"].contains { detail.contains("rawValue: \($0))") } ? .offline : .other
     }
 
     // MARK: Disconnect this Mac (6.3)
