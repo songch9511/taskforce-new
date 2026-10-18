@@ -165,7 +165,7 @@ struct WorkspacePinReleaseRegistryTests {
         try registry.pin(session: session, to: sub, conversation: conversation)
         try registry.setPending(sub, conversation: other) // 같은 폴더를 고른 다른 대화 (세션 없음)
         #expect(throws: WorkspaceRegistry.RegistryError.rejected(.overlapsRegisteredFolder)) { try registry.setFolder(fixture.folder("a"), forProject: UUID()) }
-        #expect(registry.releaseSession(session))
+        #expect(registry.releaseSession(session) == .released)
         #expect(registry.pinned(session: session) == nil && registry.pending(conversation: conversation) == nil, "핀과 그 세션을 만든 대화 참조를 푼다")
         #expect(registry.pending(conversation: other) == fixture.real("a") + "/sub", "다른 대화가 고른 폴더는 건드리지 않는다")
         // 다른 대화의 폴더가 남아 있으니 아직 겹침이다
@@ -182,14 +182,14 @@ struct WorkspacePinReleaseRegistryTests {
         try registry.setPending(sub, conversation: conversation)
         try registry.pin(session: session, to: sub, conversation: conversation)
         #expect(fixture.registry().pinned(session: session) == fixture.real("a") + "/sub", "핀을 파일에 쓴다")
-        #expect(!registry.releaseSession("5e551011-0000-4000-8000-0000000000ff"), "모르는 세션")
+        #expect(registry.releaseSession("5e551011-0000-4000-8000-0000000000ff") == .nothingToRelease, "모르는 세션")
         // 다시 시작한 앱(새 인스턴스)이 파일에서 연결을 읽어 대화 폴더 참조까지 푼다
         let restarted = fixture.registry()
-        #expect(restarted.releaseSession(session.uppercased()), "세션 id는 대소문자를 가리지 않는다")
+        #expect(restarted.releaseSession(session.uppercased()) == .released, "세션 id는 대소문자를 가리지 않는다")
         #expect(restarted.pinned(session: session) == nil && restarted.pending(conversation: conversation) == nil, "연결을 파일에 썼다")
         let again = fixture.registry()
         #expect(again.pinned(session: session) == nil && again.pending(conversation: conversation) == nil, "푼 것을 파일에 썼다")
-        #expect(!again.releaseSession(session), "두 번째는 할 일이 없다")
+        #expect(again.releaseSession(session) == .nothingToRelease, "두 번째는 할 일이 없다")
     }
 
     @Test func aFileWrittenBeforeTheConversationLinkExistedStillReads() throws {
@@ -199,7 +199,7 @@ struct WorkspacePinReleaseRegistryTests {
         try Data(text.utf8).write(to: fixture.file)
         let registry = fixture.registry()
         #expect(registry.pinned(session: session) == fixture.real("a"))
-        #expect(registry.releaseSession(session) && registry.pinned(session: session) == nil)
+        #expect(registry.releaseSession(session) == .released && registry.pinned(session: session) == nil)
     }
 
     @Test func aWriteThatFailsLeavesThePinInPlace() throws {
@@ -207,7 +207,7 @@ struct WorkspacePinReleaseRegistryTests {
         let registry = fixture.registry()
         try registry.pin(session: session, to: fixture.folder("a"))
         try FileManager.default.removeItem(at: fixture.file.deletingLastPathComponent()) // 파티션 폴더가 없어 쓰지 못한다
-        #expect(!registry.releaseSession(session))
+        #expect(registry.releaseSession(session) == .failed)
         #expect(registry.pinned(session: session) == fixture.real("a"), "쓰지 못하면 핀을 둔다 (안전한 쪽)")
     }
 
@@ -220,7 +220,7 @@ struct WorkspacePinReleaseRegistryTests {
         try f.registry.setPending(sub, conversation: conversation)
         #expect(await f.found() == f.fixture.real("a") + "/sub")
         #expect(f.registry.pinned(session: WorkspaceRegistryResolverTests.sessionID) != nil)
-        await f.resolver.releaseSession(WorkspaceRegistryResolverTests.sessionID)
+        #expect(await f.resolver.releaseSession(WorkspaceRegistryResolverTests.sessionID))
         #expect(f.registry.pinned(session: WorkspaceRegistryResolverTests.sessionID) == nil && f.registry.pending(conversation: conversation) == nil)
         try f.registry.setFolder(f.fixture.folder("a"), forProject: UUID())
     }

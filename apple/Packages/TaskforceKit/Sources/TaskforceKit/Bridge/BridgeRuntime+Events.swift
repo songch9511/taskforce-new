@@ -188,10 +188,15 @@ extension BridgeRuntime {
     public func forgetSessions(adapter adapterID: String? = nil) async -> Int {
         var seen = Set<String>()
         var count = 0
-        for task in (try? await ledger.allTasks()) ?? [] where adapterID == nil || task.adapter == adapterID {
+        guard let tasks = try? await ledger.allTasks() else {
+            log.log("forget_ledger_unreadable", [:])
+            return 0
+        }
+        for task in tasks where adapterID == nil || task.adapter == adapterID {
             guard let adapter = adapters[task.adapter], seen.insert(task.adapter + "|" + task.agentSessionID).inserted else { continue }
             await adapter.forgetSession(task.agentSessionID)
-            retiredSessions.insert(task.agentSessionID)
+            // "영구히 닫힘"을 원장에 적는다 (앱을 다시 시작해도 · task가 오래돼도 남는다). 적지 못하면 이번에는 핀을 풀지 않는다 (다음 잊기가 다시 적는다)
+            try? await ledger.markSessionRetired(task.agentSessionID)
             await releaseWorkspaceIfRetired(session: task.agentSessionID)
             count += 1
         }
@@ -199,14 +204,23 @@ extension BridgeRuntime {
         return count
     }
 
-    /// 영구히 닫힌 세션(폐기됐거나 `forgetSessions`로 잊었다)의 모든 실행이 끝났다고 **증명됐으면** 작업 폴더 핀을 푼다 (재검토 2, Astra): 옛 핀이 겹침 검사에 영구히 남아
-    /// 정상적인 폴더 변경을 막지 않게. 증명 = 원장 `alive`가 아니고 · 감독 중이 아니고 · 확인 안 된 고아가 아니고 · 중단이 `unproven`이 아님 — 하나라도 아니면 핀을 둔다(끝을 증명하지 못한 것을 끝났다고 하지 않는다).
-    /// 새 타이머는 없다: 잊기(`forgetSessions`)와 프로세스 끝(`finishEnded` · 답 정산)에서 부른다
+    /// 영구히 닫힌 세션(원장에 "닫힘"이 적혔다: `forgetSessions`로 잊었다 — 폐기도 같은 길)의 모든 실행이 끝났다고 **증명됐으면** 작업 폴더 핀을 푼다 (재검토 2·3, Astra): 옛 핀이 겹침 검사에 영구히 남아
+    /// 정상적인 폴더 변경을 막지 않게. 증명 = task가 하나 이상 있고, 모두 원장 `alive`가 아니고 · 감독 중이 아니고 · 확인 안 된 고아가 아님(`alive`는 끝이 증명될 때만 꺼진다; 증명 못 한 중단 `unproven`은 늘 `alive`와 함께 있고, 끝이 증명되면 `finishEnded`가 정산한다 — 예전 `unproven` 글자가 핀 풀기를 막지 않는다).
+    /// **읽기가 하나라도 실패하면 증명하지 못한 것이다**: `try?`를 "없음"으로 읽지 않고 핀을 둔 채 돌아간다 (기준 (a)). 푼 뒤에만 "닫힘" 표를 지운다 (쓰지 못해 핀이 남았으면 표가 남아 다시 시도한다).
+    /// 새 타이머는 없다: 잊기(`forgetSessions`) · 프로세스 끝(`finishEnded` · 답 정산) · 원장 정리 직전(`pruneIfDue`)에서 부른다
     func releaseWorkspaceIfRetired(session sessionID: String) async {
-        guard statusValue == .revoked || retiredSessions.contains(sessionID), let resolver = workspaces else { return }
-        let tasks = ((try? await ledger.allTasks()) ?? []).filter { $0.agentSessionID == sessionID }
-        guard !tasks.contains(where: { $0.alive || $0.cancelState == "unproven" || supervised[$0.agentTaskID] != nil || orphanLiveness[$0.agentTaskID] != nil }) else { return }
-        await resolver.releaseSession(sessionID)
+        guard let resolver = workspaces, let retired = try? await ledger.isSessionRetired(sessionID), retired, let all = try? await ledger.allTasks() else { return }
+        let wanted = sessionID.lowercased()
+        let tasks = all.filter { $0.agentSessionID.lowercased() == wanted }
+        guard !tasks.isEmpty, !tasks.contains(where: { $0.alive || supervised[$0.agentTaskID] != nil || orphanLiveness[$0.agentTaskID] != nil }) else { return }
+        guard await resolver.releaseSession(sessionID) else { return }
+        try? await ledger.clearSessionRetired(sessionID)
+    }
+
+    /// 아직 핀을 못 푼 영구히 닫힌 세션들을 한 번씩 본다 (원장 정리 직전). 목록을 읽지 못하면 아무것도 하지 않는다
+    func releaseRetiredPins() async {
+        guard let sessions = try? await ledger.retiredSessions() else { return }
+        for session in sessions { await releaseWorkspaceIfRetired(session: session) }
     }
 
     // MARK: 프로세스 끝
@@ -271,7 +285,11 @@ extension BridgeRuntime {
         case .nothing:
             break
         }
-        _ = try? await ledger.updateTask(taskID) { $0.alive = stillAlive }
+        // 이 실행의 끝이 증명됐으면 증명 못 한 중단(`unproven`)을 정산한다: "중단 의도만 적힘"(`requested`)으로 — 끝난 뒤에도 `unproven`이 남아 핀 풀기를 영구히 막지 않게 (재검토 3)
+        _ = try? await ledger.updateTask(taskID) {
+            $0.alive = stillAlive
+            if !stillAlive, $0.cancelState == "unproven" { $0.cancelState = "requested" }
+        }
         if let commandID = task.currentCommandID {
             _ = try? await ledger.updateCommand(commandID) {
                 if ($0.state.rank ?? 0) < (BridgeCommandState.ended.rank ?? 7), !$0.state.isFinished {

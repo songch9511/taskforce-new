@@ -112,16 +112,26 @@ public final class WorkspaceRegistry: @unchecked Sendable {
     }
 
     /// 세션 핀과 그 핀이 남긴 대화 폴더 참조를 푼다 (재검토 2): 세션이 영구히 닫혔고 프로세스의 끝이 증명됐을 때 런타임이 부른다.
-    /// 풀면 그 폴더는 겹침 검사에서 빠진다(다른 표가 쓰지 않으면 id도 사라진다). 핀이 없으면 아무것도 하지 않는다. 쓰지 못하면 핀이 남는다(안전한 쪽) — 풀었으면 true
+    /// 풀면 그 폴더는 겹침 검사에서 빠진다(다른 표가 쓰지 않으면 id도 사라진다). 핀이 없으면 아무것도 하지 않는다. 쓰지 못하면 핀이 남는다(안전한 쪽)
     @discardableResult
-    public func releaseSession(_ sessionID: String) -> Bool {
+    public func releaseSession(_ sessionID: String) -> ReleaseResult {
         let key = Self.key(sessionID)
-        guard pinned(session: sessionID) != nil else { return false }
-        return (try? write { tables in
+        guard pinned(session: sessionID) != nil else { return .nothingToRelease }
+        let written: Void? = try? write { tables in
             if let conversation = tables.sessionConversations[key], tables.pending[conversation] == tables.sessions[key] { tables.pending[conversation] = nil }
             tables.sessionConversations[key] = nil
             tables.sessions[key] = nil
-        }) != nil
+        }
+        return written == nil ? .failed : .released
+    }
+
+    public enum ReleaseResult: Equatable, Sendable {
+        /// 핀을 풀었다
+        case released
+        /// 풀 핀이 없었다
+        case nothingToRelease
+        /// 쓰지 못했다: 핀이 남아 있다
+        case failed
     }
 
     // MARK: 대화 (Ungrouped)

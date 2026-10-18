@@ -80,8 +80,15 @@ public final class RegistryWorkspaceResolver: WorkspaceResolver {
 
     public var recognizesRecordedPaths: Bool { false }
 
-    public func releaseSession(_ sessionID: String) async {
-        if registry.releaseSession(sessionID) { log.log("workspace_pin_released", [:]) }
+    /// 핀이 더는 없으면 true (풀었거나 원래 없었다), 쓰지 못해 핀이 남았으면 false
+    public func releaseSession(_ sessionID: String) async -> Bool {
+        switch registry.releaseSession(sessionID) {
+        case .released:
+            log.log("workspace_pin_released", [:])
+            return true
+        case .nothingToRelease: return true
+        case .failed: return false
+        }
     }
 
     public func workspaceRef(forPath path: String) async -> String? { registry.ref(forPath: path) }

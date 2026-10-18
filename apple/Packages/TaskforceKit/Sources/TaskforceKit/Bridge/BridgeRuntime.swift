@@ -154,8 +154,6 @@ public actor BridgeRuntime {
     /// 최근 1시간의 등록 시도 시각 (자동 등록 예산 · 물러서기)
     var registerTimes: [Date] = []
     var terminatedByUs: Set<String> = []
-    /// 영구히 닫힌 세션(`forgetSessions`로 잊었다): 프로세스의 끝이 증명되는 순간 작업 폴더 핀을 푼다 (재검토 2). 메모리뿐이다
-    var retiredSessions: Set<String> = []
     var pendingWake: BridgeWakeReason?
     var wakeWaiter: CheckedContinuation<BridgeWakeReason?, Never>?
     var loopTask: Task<Void, Never>?
@@ -708,6 +706,8 @@ public actor BridgeRuntime {
         let now = clock.now()
         if let last = lastPrune, now.timeIntervalSince(last) < 3600 { return }
         lastPrune = now
+        // 지우기 전에: 영구히 닫힌 세션 중 끝이 증명된 것의 핀을 푼다 (prune은 아직 못 푼 세션의 task를 지우지 않는다: 증명할 기록이 남는다)
+        await releaseRetiredPins()
         guard let report = try? await ledger.prune(now: now) else { return }
         log.log("pruned", ["commands": .count(report.commands), "dead": .count(report.deadLetters), "expired": .count(report.expiredEvents), "texts": .count(report.fullTexts)])
     }

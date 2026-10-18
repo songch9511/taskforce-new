@@ -420,12 +420,13 @@ public protocol WorkspaceResolver: Sendable {
     /// 서버가 준 값이 `authorize`를 통과하지 못해도, 이 Mac이 그 세션에 기록한 값과 같으면 인정하나 (옛 절대 경로 세션 · 정규화 차이). 기본: true.
     /// 등록부 resolver는 false다 — 규칙을 다시 본 `authorize`의 거절을 원장에 적힌 옛 경로로 뒤집지 못하게 한다
     var recognizesRecordedPaths: Bool { get }
-    /// 세션이 영구히 닫혔고(폐기됨 · 잊음) 그 프로세스의 끝이 증명됐다: 그 세션의 작업 폴더 핀을 푼다 (재검토 2). 증명하지 못한 세션에는 부르지 않는다. 기본: 아무것도 하지 않는다
-    func releaseSession(_ sessionID: String) async
+    /// 세션이 영구히 닫혔고(폐기됨 · 잊음) 그 프로세스의 끝이 증명됐다: 그 세션의 작업 폴더 핀을 푼다 (재검토 2). 증명하지 못한 세션에는 부르지 않는다.
+    /// 핀이 더는 없으면 true(풀었거나 원래 없었다), 쓰지 못해 남았으면 false — 런타임은 true일 때만 "닫힘" 표를 지운다. 기본: 할 일 없음(true)
+    func releaseSession(_ sessionID: String) async -> Bool
 }
 
 extension WorkspaceResolver {
-    public func releaseSession(_ sessionID: String) async {}
+    public func releaseSession(_ sessionID: String) async -> Bool { true }
     public func authorize(workspaceRef: String, session sessionID: String, adapter: String) async -> Bool { false }
     public func workspaceRef(forPath path: String) async -> String? { nil }
     public func workspacePath(forRef ref: String) async -> String? { nil }

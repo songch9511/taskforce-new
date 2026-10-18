@@ -344,6 +344,31 @@ public actor BridgeLedger {
         try db.rows("SELECT \(Self.taskColumns) FROM tasks ORDER BY updated_at DESC, agent_task_id", [], Self.task(from:))
     }
 
+    // MARK: 영구히 닫힌 세션 (재검토 3)
+
+    private static let retiredPrefix = "retired:"
+
+    /// 세션을 영구히 닫힌 것으로 적는다 (멱등): 폐기됐거나 잊었다. 작업 폴더 핀을 풀 때까지 남는다 — 앱을 다시 시작해도, task가 오래돼도(prune은 이 표가 있는 세션의 task를 지우지 않는다).
+    /// 새 칸이 아니라 기존 `counters` 표의 `retired:<세션>` 줄이다 (스키마 변경 없음)
+    public func markSessionRetired(_ sessionID: String) throws {
+        try db.run("INSERT OR IGNORE INTO counters (name, value) VALUES (?, 1)", [.text(Self.retiredPrefix + sessionID.lowercased())])
+    }
+
+    /// 영구히 닫힌 세션으로 적혀 있나. 읽지 못하면 던진다 (호출하는 쪽이 "아님"으로 읽으면 안 된다)
+    public func isSessionRetired(_ sessionID: String) throws -> Bool {
+        (try db.scalarInt("SELECT COUNT(*) FROM counters WHERE name = ?", [.text(Self.retiredPrefix + sessionID.lowercased())]) ?? 0) > 0
+    }
+
+    /// 핀을 풀었으면 표를 지운다 (멱등)
+    public func clearSessionRetired(_ sessionID: String) throws {
+        try db.run("DELETE FROM counters WHERE name = ?", [.text(Self.retiredPrefix + sessionID.lowercased())])
+    }
+
+    /// 아직 핀을 풀지 못한 영구히 닫힌 세션들 (소문자)
+    public func retiredSessions() throws -> [String] {
+        try db.rows("SELECT name FROM counters WHERE name LIKE 'retired:%' ORDER BY name", []) { String(($0.text(0) ?? "").dropFirst(Self.retiredPrefix.count)) }
+    }
+
     public func saveTask(_ record: BridgeTaskRecord) throws {
         let placeholders = Array(repeating: "?", count: 24).joined(separator: ",")
         try db.run("INSERT OR REPLACE INTO tasks (\(Self.taskColumns)) VALUES (\(placeholders))", Self.binds(record))
@@ -581,6 +606,7 @@ public actor BridgeLedger {
                 DELETE FROM tasks WHERE alive = 0 AND updated_at < ? AND last_state IN ('idle', 'failed', 'cancelled', 'dispatched', 'awaiting_answer')
                   AND NOT (last_state = 'awaiting_answer' AND open_request_id IS NOT NULL)
                   AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.agent_task_id = tasks.agent_task_id)
+                  AND NOT EXISTS (SELECT 1 FROM counters r WHERE r.name = 'retired:' || lower(tasks.agent_session_id))
                   AND NOT EXISTS (SELECT 1 FROM commands c WHERE c.agent_task_id = tasks.agent_task_id AND c.state NOT IN (\(finished)))
                 """,
                 [.date(week)]
