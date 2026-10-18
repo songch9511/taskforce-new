@@ -36,20 +36,18 @@ final class ProjectWorkspaces: @unchecked Sendable {
         self.connectionBridgeID = connectionBridgeID
     }
 
-    /// 작업 폴더로 받지 않고 Edit/Write도 막는 앱 폴더 (OA D4a2-03 · 코디네이터 13.11 · 보안 F2): 앱 데이터 폴더 · 파티션 뿌리 · **앱 번들**(`Contents/Helpers`의 훅 · 지킴이 — 에이전트가 바꾸면 게이트를 영구히 우회한다).
-    /// 번들이 `/Applications` 밖(예: 내려받은 폴더)에 있어도 그 번들을 품은 폴더를 고를 수 없다. 폴더 규칙(`denyAround`)과 adapter(`protectedRealPaths`)가 이 한 목록을 함께 쓴다 — 두 곳이 어긋나지 않게
-    static func protectedRoots(support: URL, bundleID: String, root: URL, bundleURL: URL = Bundle.main.bundleURL) -> [URL] {
-        [
-            support.appending(path: bundleID, directoryHint: .isDirectory), root,
-            URL(fileURLWithPath: GateFileSystem.realpath(bundleURL.path) ?? bundleURL.path, isDirectory: true),
-        ]
+    /// 작업 폴더로 받지 않고 Edit/Write도 막는 앱 폴더 (OA D4a2-03 · 코디네이터 13.11–13.12 · 보안 F2 · N1): 앱 데이터 폴더 · 파티션 뿌리 · **앱 번들**(`Contents/Helpers`의 훅 · 지킴이 — 에이전트가 바꾸면 게이트를 영구히 우회한다).
+    /// 번들이 `/Applications` 밖(예: 내려받은 폴더)에 있어도 그 번들을 품은 폴더를 고를 수 없다. 번들이 App Translocation으로 옮겨져 실행 중이면 원래 번들 경로도 들어간다 (`AppBundleProtection`).
+    /// 폴더 규칙(`denyAround`)과 adapter(`protectedRealPaths`)가 이 한 목록을 함께 쓴다 — 두 곳이 어긋나지 않게
+    static func protectedRoots(support: URL, bundleID: String, root: URL, bundle: AppBundleProtection = AppBundleProtection()) -> [URL] {
+        [support.appending(path: bundleID, directoryHint: .isDirectory), root] + bundle.roots
     }
 
     /// 실제 앱 연결: 서버 읽기는 RLS(`TaskforceReads` · `LiveContextGateway`), 이 Mac의 bridge id는 활성 런타임이 안다
-    static func live(services: AppServices, root: URL, support: URL, bundleID: String) -> ProjectWorkspaces {
+    static func live(services: AppServices, root: URL, support: URL, bundleID: String, bundle: AppBundleProtection = AppBundleProtection()) -> ProjectWorkspaces {
         let supabase = services.supabase
         return ProjectWorkspaces(
-            root: root, home: NSHomeDirectory(), protectedRoots: protectedRoots(support: support, bundleID: bundleID, root: root),
+            root: root, home: NSHomeDirectory(), protectedRoots: protectedRoots(support: support, bundleID: bundleID, root: root, bundle: bundle),
             sessions: services.reads, contexts: LiveContextGateway(services: services),
             localBridgeID: {
                 guard let runtime = await MainActor.run(body: { BridgeHost.shared?.activeRuntime }) else { return nil }
@@ -97,5 +95,76 @@ final class ProjectWorkspaces: @unchecked Sendable {
 struct AgentWorkspaceAsking {
     let folders: any AgentWorkspaceFolders
     let isThisMac: @Sendable (UUID) async -> Bool
+}
+/// Gatekeeper의 App Translocation: 격리 표시가 붙은 앱을 옮기지 않고 실행하면 시스템이 번들을 읽기 전용 뷰(`.../AppTranslocation/<UUID>/d/<앱>`, nullfs)로 열어 실행한다.
+/// 이 뷰의 realpath는 원래 번들이 아니라서, 보호 목록에 이 경로만 있으면 원래 폴더(`~/Downloads`)를 작업 폴더로 고를 수 있고 훅을 바꿔치기할 수 있다 (보안 N1).
+/// 감지: `SecTranslocateIsTranslocatedURL`(Security.framework, dlsym) 또는 경로 성분 `AppTranslocation`. 원래 경로: `SecTranslocateCreateOriginalPathForURL`. 시험은 두 함수를 바꿔 넣는다
+struct AppTranslocation: Sendable {
+    /// 번들 URL이 translocate됐나 (API를 부르지 못하면 nil)
+    var isTranslocated: @Sendable (URL) -> Bool?
+    /// translocate된 번들의 원래 경로 (구하지 못하면 nil)
+    var originalPath: @Sendable (URL) -> String?
+
+    /// translocate되지 않은 실행 (시험)
+    static let notTranslocated = AppTranslocation(isTranslocated: { _ in false }, originalPath: { _ in nil })
+
+    static let live = AppTranslocation(isTranslocated: liveIsTranslocated, originalPath: liveOriginalPath)
+
+    private typealias IsTranslocatedFunction = @convention(c) (CFURL, UnsafeMutablePointer<Bool>, UnsafeMutablePointer<Unmanaged<CFError>?>?) -> Bool
+    private typealias OriginalPathFunction = @convention(c) (CFURL, UnsafeMutablePointer<Unmanaged<CFError>?>?) -> Unmanaged<CFURL>?
+
+    private static func symbol(_ name: String) -> UnsafeMutableRawPointer? {
+        guard let handle = dlopen("/System/Library/Frameworks/Security.framework/Security", RTLD_LAZY) else { return nil }
+        return dlsym(handle, name)
+    }
+
+    private static func liveIsTranslocated(_ url: URL) -> Bool? {
+        guard let address = symbol("SecTranslocateIsTranslocatedURL") else { return nil }
+        let function = unsafeBitCast(address, to: IsTranslocatedFunction.self)
+        var translocated = false
+        var error: Unmanaged<CFError>?
+        guard function(url as CFURL, &translocated, &error) else {
+            error?.release()
+            return nil
+        }
+        return translocated
+    }
+
+    private static func liveOriginalPath(_ url: URL) -> String? {
+        guard let address = symbol("SecTranslocateCreateOriginalPathForURL") else { return nil }
+        let function = unsafeBitCast(address, to: OriginalPathFunction.self)
+        var error: Unmanaged<CFError>?
+        guard let original = function(url as CFURL, &error)?.takeRetainedValue() else {
+            error?.release()
+            return nil
+        }
+        return (original as URL).path
+    }
+}
+
+/// 이 실행의 앱 번들 보호 (보안 F2 · N1): 보호 루트에 더할 번들 realpath들과, 원래 번들을 알 수 없는 translocate 실행인지(`failClosed`).
+/// `failClosed`면 그 실행에서는 Claude Code adapter를 만들지 않는다 — 원래 번들을 보호할 수 없는 채 에이전트에게 쓰기를 주지 않는다
+struct AppBundleProtection: Equatable {
+    /// 번들 realpath. translocate됐고 원래 경로를 알면 그 realpath도
+    let roots: [URL]
+    /// translocate됐는데 원래 경로를 구하지 못했다
+    let failClosed: Bool
+
+    init(bundleURL: URL = Bundle.main.bundleURL, translocation: AppTranslocation = .live) {
+        func real(_ path: String) -> URL { URL(fileURLWithPath: GateFileSystem.realpath(path) ?? path, isDirectory: true) }
+        var roots = [real(bundleURL.path)]
+        let marker = "AppTranslocation"
+        let translocated = (translocation.isTranslocated(bundleURL) ?? false) || bundleURL.pathComponents.contains(marker)
+        var failClosed = false
+        if translocated {
+            if let original = translocation.originalPath(bundleURL), original.hasPrefix("/"), !URL(fileURLWithPath: original).pathComponents.contains(marker) {
+                roots.append(real(original))
+            } else {
+                failClosed = true
+            }
+        }
+        self.roots = roots
+        self.failClosed = failClosed
+    }
 }
 #endif

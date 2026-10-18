@@ -368,6 +368,11 @@ final class BridgeHost {
         return registered()
     }
 
+    /// Claude Code adapter를 만든다. translocate된 실행인데 원래 번들 경로를 모르면 만들지 않는다 (nil, 보안 N1: fail-closed): 원래 번들의 훅을 에이전트가 바꾸지 못한다고 말할 수 없다
+    static func claudeCodeAdapter<Adapter>(bundle: AppBundleProtection, make: () -> Adapter) -> Adapter? {
+        bundle.failClosed ? nil : make()
+    }
+
     /// bridge가 켜졌을 때만 소켓을 연다 (꺼진 빌드는 소켓 파일 0). 열지 못하면 nil (Claude Code 새 턴은 `spawn_failed`)
     static func startHookServer(enabled: Bool, path: String, log: any BridgeLogSink) -> HookSocketServer? {
         guard enabled else { return nil }
@@ -393,7 +398,9 @@ final class BridgeHost {
         let hookServer = startHookServer(enabled: enabled, path: HookSocketServer.socketPath(applicationSupport: support, bundleID: bundleID), log: BridgeOSLog())
         let choice = agentChoice(isDebugBuild: AppRuntime.isDebugBuild, arguments: BridgeFlag.currentArguments, apiBaseURL: services.api.baseURL)
         // 작업 폴더 등록부 · resolver (D4a2): 파티션 폴더 안의 `workspaces.json`. 서버에는 경로를 보내지 않는다. bridge가 꺼진 빌드는 만들지 않는다
-        let projectWorkspaces = enabled ? ProjectWorkspaces.live(services: services, root: root, support: support, bundleID: bundleID) : nil
+        // 앱 번들 보호 (보안 F2 · N1): translocate된 실행이면 원래 번들 경로도 보호하고, 원래 경로를 모르면 이 실행에서는 Claude Code adapter를 만들지 않는다
+        let bundle = AppBundleProtection()
+        let projectWorkspaces = enabled ? ProjectWorkspaces.live(services: services, root: root, support: support, bundleID: bundleID, bundle: bundle) : nil
         if enabled { AgentTerminalLauncherLive.sweepOldFiles() }
         #if DEBUG
         let connectAtStart: String? = enabled ? BridgeFlag.connectAdapter(arguments: BridgeFlag.currentArguments, isDebugBuild: AppRuntime.isDebugBuild, apiBaseURL: services.api.baseURL) : nil
@@ -418,11 +425,18 @@ final class BridgeHost {
                 case .claudeCode(let disposable):
                     // 세션 폴더는 파티션 아래 (계정 삭제가 파티션째 지운다). init은 부수 효과 0: probe · 폴더 만들기는 런타임이 부를 때만.
                     // 앱 Application Support 안의 Edit/Write는 막는다 (OA D3a 10장 5). 다른 부팅의 혈통 파일은 런타임을 만들 때 끝 기록으로 바꾼다 (10장 4 · 결정 11-1)
-                    let claudeCode = ClaudeCodeProcess(
-                        sessionsRoot: partition.directory(in: root).appending(path: "claude-code", directoryHint: .isDirectory), hookServer: hookServer,
-                        helpers: .inBundle(), locator: .standard(home: NSHomeDirectory()), log: BridgeOSLog(),
-                        protectedRoots: ProjectWorkspaces.protectedRoots(support: support, bundleID: bundleID, root: root)
-                    )
+                    guard let claudeCode = BridgeHost.claudeCodeAdapter(bundle: bundle, make: {
+                        ClaudeCodeProcess(
+                            sessionsRoot: partition.directory(in: root).appending(path: "claude-code", directoryHint: .isDirectory), hookServer: hookServer,
+                            helpers: .inBundle(), locator: .standard(home: NSHomeDirectory()), log: BridgeOSLog(),
+                            protectedRoots: ProjectWorkspaces.protectedRoots(support: support, bundleID: bundleID, root: root, bundle: bundle)
+                        )
+                    }) else {
+                        BridgeOSLog().log("app_translocation_unresolved", [:])
+                        adapters = []
+                        workspaces = nil
+                        break
+                    }
                     claudeCode.purgeLineageOfOtherBoots()
                     adapters = [claudeCode]
                     workspaces = BridgeHost.claudeCodeWorkspaces(

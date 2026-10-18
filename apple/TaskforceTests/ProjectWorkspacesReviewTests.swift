@@ -25,7 +25,7 @@ struct ProjectWorkspacesReviewTests {
         // 번들이 기호 링크로 닿는 경우에도 실제 경로가 들어간다
         let link = rig.temp.appending(path: "launcher.app")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: bundle)
-        let roots = ProjectWorkspaces.protectedRoots(support: rig.support, bundleID: Self.bundleID, root: rig.root, bundleURL: link).map(\.path)
+        let roots = ProjectWorkspaces.protectedRoots(support: rig.support, bundleID: Self.bundleID, root: rig.root, bundle: AppBundleProtection(bundleURL: link, translocation: .notTranslocated)).map(\.path)
         #expect(roots == [rig.support.appending(path: Self.bundleID).path, rig.root.path, GateFileSystem.realpath(bundle.path) ?? "-"], "\(roots)")
         // 기본값은 이 실행의 번들이다
         let current = ProjectWorkspaces.protectedRoots(support: rig.support, bundleID: Self.bundleID, root: rig.root).map(\.path)
@@ -39,7 +39,7 @@ struct ProjectWorkspacesReviewTests {
         let home = rig.home
         let reads = rig.reads
         let workspaces = ProjectWorkspaces(
-            root: rig.root, home: home, protectedRoots: ProjectWorkspaces.protectedRoots(support: rig.support, bundleID: Self.bundleID, root: rig.root, bundleURL: bundle),
+            root: rig.root, home: home, protectedRoots: ProjectWorkspaces.protectedRoots(support: rig.support, bundleID: Self.bundleID, root: rig.root, bundle: AppBundleProtection(bundleURL: bundle, translocation: .notTranslocated)),
             rules: { WorkspaceFolderRules(home: home, systemRoots: [], protectedRoots: $0) }, sessions: reads, contexts: reads, localBridgeID: { nil }, connectionBridgeID: { _ in nil }
         )
         let p = BridgePartition(apiOrigin: "http://localhost:3000", userID: UUID())

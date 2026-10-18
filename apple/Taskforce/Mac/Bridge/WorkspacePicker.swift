@@ -9,6 +9,13 @@ import TaskforceKit
 @MainActor
 final class WorkspacePicker: AgentWorkspacePicking {
     func pickFolder(message: String, prompt: String, rejection: String, accepts: @escaping @Sendable (String) -> Bool) async -> String? {
+        await pickFolder(message: message, prompt: prompt, rejection: rejection, accepts: accepts, reason: { _ in rejection })
+    }
+
+    /// 겹치는 폴더 · 민감 폴더는 일반 거절 문장 대신 자기 문장을 창 안에 보인다 (`reason`)
+    func pickFolder(
+        message: String, prompt: String, rejection: String, accepts: @escaping @Sendable (String) -> Bool, reason: @escaping @Sendable (String) -> String
+    ) async -> String? {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
@@ -17,7 +24,7 @@ final class WorkspacePicker: AgentWorkspacePicking {
         panel.resolvesAliases = true
         panel.message = message
         panel.prompt = prompt
-        let validator = FolderValidator(accepts: accepts, rejection: rejection)
+        let validator = FolderValidator(accepts: accepts, reason: reason)
         panel.delegate = validator
         // 메뉴 막대 앱 · 떠 있는 Assistant 창 위에서 열린다
         NSApp.activate()
@@ -29,19 +36,19 @@ final class WorkspacePicker: AgentWorkspacePicking {
     }
 }
 
-/// 폴더 창 안 검증: 거절이면 `NSError`를 던져 창이 그 문구를 보이게 한다
+/// 폴더 창 안 검증: 거절이면 `NSError`를 던져 창이 그 폴더의 거절 문구를 보이게 한다
 private final class FolderValidator: NSObject, NSOpenSavePanelDelegate, @unchecked Sendable {
     let accepts: @Sendable (String) -> Bool
-    let rejection: String
+    let reason: @Sendable (String) -> String
 
-    init(accepts: @escaping @Sendable (String) -> Bool, rejection: String) {
+    init(accepts: @escaping @Sendable (String) -> Bool, reason: @escaping @Sendable (String) -> String) {
         self.accepts = accepts
-        self.rejection = rejection
+        self.reason = reason
     }
 
     func panel(_ sender: Any, validate url: URL) throws {
         guard accepts(url.path) else {
-            throw NSError(domain: "dev.taskforcelabs.workspace-picker", code: 1, userInfo: [NSLocalizedDescriptionKey: rejection])
+            throw NSError(domain: "dev.taskforcelabs.workspace-picker", code: 1, userInfo: [NSLocalizedDescriptionKey: reason(url.path)])
         }
     }
 }
