@@ -689,6 +689,11 @@ extension BridgeRuntime {
                 return await failBeforeAcceptance(taskID: common.agentTaskID, commandID: record.commandID, reason: .spawnFailed)
             }
         }
+        // 겹치는 폴더 막기 (계약 13.13): 이 세션의 폴더가 어떤 프로젝트의 지금 폴더와 겹치면 띄우지 않는다 — 기존 "Session didn't start" 길. 상태 없는 규칙이다 (지금 표만 본다)
+        if let resolver = workspaces, let folder = workspace, !(await resolver.allowsTurn(in: folder, session: common.agentSessionID, adapter: common.adapter)) {
+            log.log("workspace_overlap_blocked", ["task": .id(common.agentTaskID)])
+            return await failBeforeAcceptance(taskID: common.agentTaskID, commandID: record.commandID, reason: .spawnFailed)
+        }
         // writer 하나를 한 번 더 (lease 뒤 경쟁)
         if (try? await ledger.liveTask(inSession: common.agentSessionID, excluding: common.agentTaskID)) != nil {
             return await failBeforeAcceptance(taskID: common.agentTaskID, commandID: record.commandID, reason: .spawnFailed)
@@ -954,7 +959,6 @@ extension BridgeRuntime {
             if let left { return await keepUnproven(taskID: taskID, identity: left) }
             supervised[taskID] = nil
             _ = try? await ledger.updateTask(taskID) { $0.alive = false }
-            await releaseWorkspaceIfRetired(session: session)
             return
         }
         switch run.liveness {
@@ -962,7 +966,6 @@ extension BridgeRuntime {
             supervised[taskID] = nil
             orphanLiveness[taskID] = nil
             _ = try? await ledger.updateTask(taskID) { $0.alive = false }
-            await releaseWorkspaceIfRetired(session: session)
         case .alive where supervised[taskID] != nil:
             supervised[taskID]?.endOnly = true
         case .alive:

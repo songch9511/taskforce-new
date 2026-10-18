@@ -160,12 +160,17 @@ public protocol AgentWorkspaceFolders: Sendable {
     func accepts(path: String) -> Bool
     /// 받아 주지 않는 폴더를 고른 사용자에게 창 안에서 보일 한 문장 (승인된 문구). 기본은 일반 거절 문구다
     func rejectionMessage(forPath path: String) -> String
+    /// 같은 두 물음에 폴더를 어디에 등록하는지(`scope`)를 더한다: 프로젝트면 그 프로젝트 자신의 옛 폴더는 겹침으로 세지 않는다. 기본은 범위 없는 물음으로 넘긴다
+    func accepts(path: String, scope: AgentWorkspaceGate.Scope) -> Bool
+    func rejectionMessage(forPath path: String, scope: AgentWorkspaceGate.Scope) -> String
     /// 등록한다. 규칙을 통과하지 못하면 던진다
     func register(path: String, scope: AgentWorkspaceGate.Scope) throws
 }
 
 extension AgentWorkspaceFolders {
     public func rejectionMessage(forPath path: String) -> String { AgentWorkspaceCopy.rejected }
+    public func accepts(path: String, scope: AgentWorkspaceGate.Scope) -> Bool { accepts(path: path) }
+    public func rejectionMessage(forPath path: String, scope: AgentWorkspaceGate.Scope) -> String { rejectionMessage(forPath: path) }
 }
 
 /// 시스템 폴더 창 (앱은 `NSOpenPanel`, 폴더만 · 한 개). 거절되는 폴더를 고르면 창 안에서 `rejection` 문구를 보이고 창을 닫지 않는다. 취소하면 nil
@@ -233,8 +238,9 @@ public final class AgentWorkspaceSendGate {
         // 다른 Mac의 연결이면 묻지 않는다 (그 Mac이 정한다)
         guard AgentWorkspaceGate.decide(facts) != .send else { return .proceed }
         let registry = folders
-        let accepts: @Sendable (String) -> Bool = { registry.accepts(path: $0) }
-        let reason: @Sendable (String) -> String = { registry.rejectionMessage(forPath: $0) }
+        let scope = ask.scope
+        let accepts: @Sendable (String) -> Bool = { registry.accepts(path: $0, scope: scope) }
+        let reason: @Sendable (String) -> String = { registry.rejectionMessage(forPath: $0, scope: scope) }
         guard let path = await picker.pickFolder(message: ask.message, prompt: ask.prompt, rejection: AgentWorkspaceCopy.rejected, accepts: accepts, reason: reason) else { return .cancelled }
         // 창을 기다리는 동안 바뀌었으면 고른 폴더를 (옛 프로젝트 · 대화에) 등록하지 않는다
         guard stillCurrent() else { return .cancelled }

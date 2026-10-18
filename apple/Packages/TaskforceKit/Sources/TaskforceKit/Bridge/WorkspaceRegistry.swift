@@ -27,8 +27,6 @@ public final class WorkspaceRegistry: @unchecked Sendable {
         var projects: [String: String] = [:]
         var sessions: [String: String] = [:]
         var pending: [String: String] = [:]
-        /// 세션 → 그 세션을 만든 대화 (대화 폴더에서 핀을 꽂았을 때만): 세션 핀을 풀 때 남은 대화 폴더 참조도 함께 푼다 (재검토 2)
-        var sessionConversations: [String: String] = [:]
     }
 
     private struct State {
@@ -70,9 +68,11 @@ public final class WorkspaceRegistry: @unchecked Sendable {
     @discardableResult
     public func setFolder(_ path: String, forProject contextID: UUID) throws -> String {
         let real = try accept(path)
-        try write(adding: real) { tables in
+        let key = Self.key(contextID)
+        // 다른 프로젝트의 지금 폴더와 겹치면 받지 않는다 (세션 핀은 보지 않는다: 계약 13.13). 같은 실제 경로는 허용 — 같은 `ws_id`
+        try write(rejectingWhen: { Self.overlaps(real, among: Self.projectFolders(in: $0, excluding: key)) }) { tables in
             let ref = Self.ensureRef(for: real, in: &tables)
-            tables.projects[Self.key(contextID)] = ref
+            tables.projects[key] = ref
         }
         return real
     }
@@ -99,39 +99,14 @@ public final class WorkspaceRegistry: @unchecked Sendable {
         read { tables in tables.sessions[Self.key(sessionID)].flatMap { tables.refs[$0] } }
     }
 
-    /// 세션에 폴더를 꽂는다 (이미 있으면 바꾸지 않는다: 세션을 연 뒤에는 폴더가 따라 움직이지 않는다). 규칙을 통과한 폴더만 받는다.
-    /// - conversation: 이 핀이 그 대화의 폴더에서 왔다 (핀을 풀 때 그 대화 폴더 참조도 함께 푼다)
-    public func pin(session sessionID: String, to path: String, conversation: UUID? = nil) throws {
+    /// 세션에 폴더를 꽂는다 (이미 있으면 바꾸지 않는다: 세션을 연 뒤에는 폴더가 따라 움직이지 않는다). 규칙을 통과한 폴더만 받는다
+    public func pin(session sessionID: String, to path: String) throws {
         let real = try accept(path)
-        try write(adding: real) { tables in
+        try write { tables in
             let key = Self.key(sessionID)
             guard tables.sessions[key] == nil else { return }
             tables.sessions[key] = Self.ensureRef(for: real, in: &tables)
-            if let conversation { tables.sessionConversations[key] = Self.key(conversation) }
         }
-    }
-
-    /// 세션 핀과 그 핀이 남긴 대화 폴더 참조를 푼다 (재검토 2): 세션이 영구히 닫혔고 프로세스의 끝이 증명됐을 때 런타임이 부른다.
-    /// 풀면 그 폴더는 겹침 검사에서 빠진다(다른 표가 쓰지 않으면 id도 사라진다). 핀이 없으면 아무것도 하지 않는다. 쓰지 못하면 핀이 남는다(안전한 쪽)
-    @discardableResult
-    public func releaseSession(_ sessionID: String) -> ReleaseResult {
-        let key = Self.key(sessionID)
-        guard pinned(session: sessionID) != nil else { return .nothingToRelease }
-        let written: Void? = try? write { tables in
-            if let conversation = tables.sessionConversations[key], tables.pending[conversation] == tables.sessions[key] { tables.pending[conversation] = nil }
-            tables.sessionConversations[key] = nil
-            tables.sessions[key] = nil
-        }
-        return written == nil ? .failed : .released
-    }
-
-    public enum ReleaseResult: Equatable, Sendable {
-        /// 핀을 풀었다
-        case released
-        /// 풀 핀이 없었다
-        case nothingToRelease
-        /// 쓰지 못했다: 핀이 남아 있다
-        case failed
     }
 
     // MARK: 대화 (Ungrouped)
@@ -144,7 +119,8 @@ public final class WorkspaceRegistry: @unchecked Sendable {
     @discardableResult
     public func setPending(_ path: String, conversation conversationID: UUID) throws -> String {
         let real = try accept(path)
-        try write(adding: real) { tables in
+        // Ungrouped 대화의 폴더도 어떤 프로젝트의 지금 폴더와 겹치면 받지 않는다 (다른 대화의 폴더 · 세션 핀은 보지 않는다)
+        try write(rejectingWhen: { Self.overlaps(real, among: Self.projectFolders(in: $0)) }) { tables in
             let ref = Self.ensureRef(for: real, in: &tables)
             tables.pending[Self.key(conversationID)] = ref
         }
@@ -203,21 +179,26 @@ public final class WorkspaceRegistry: @unchecked Sendable {
     }
 
     /// 한 폴더(realpath)가 다른 폴더의 조상이거나 자손인가. 같은 실제 경로는 겹침이 아니다 (두 프로젝트가 한 폴더를 쓰면 같은 `ws_id`다).
-    /// 겹치는 폴더를 따로 등록하면 같은 파일이 폴더마다 다른 가상 경로가 되어 서버의 경로 잠금이 갈라진다 (재검토 1, Astra 1)
+    /// 겹치는 폴더에서 세션이 동시에 돌면 같은 파일이 폴더마다 다른 가상 경로가 되어 서버의 경로 잠금이 갈라진다 (재검토 1, Astra)
     private static func overlaps(_ real: String, among others: some Sequence<String>) -> Bool {
         others.contains { $0 != real && (GateFileSystem.isInside(real, root: $0) || GateFileSystem.isInside($0, root: real)) }
     }
 
+    /// 프로젝트들의 지금 폴더 (realpath). `project`는 그 프로젝트 자신의 것을 뺀다. **세션 핀 · 대화 폴더는 보지 않는다**: 핀은 세션의 폴더 기록일 뿐 수명 관리 대상이 아니다 (계약 13.13)
+    private static func projectFolders(in tables: Tables, excluding project: String? = nil) -> [String] {
+        tables.projects.filter { $0.key != project }.compactMap { tables.refs[$0.value] }
+    }
+
     /// 표를 바꾸고 디스크에 쓴다. 쓰지 못하면 표를 되돌리고 던진다.
-    /// - adding: 이 쓰기가 새로 등록하는 폴더(realpath). 바꾼 뒤 쓰이는 다른 폴더와 겹치면 던진다 (자기 옛 폴더는 바꾼 뒤 쓰이지 않으니 겹침이 아니다)
-    private func write(adding real: String? = nil, _ change: (inout Tables) -> Void) throws {
+    /// - rejectingWhen: 바꾼 뒤의 표로 보아 이 쓰기를 받으면 안 되면 true (겹침). 던진 쓰기는 표도 파일도 바꾸지 않는다
+    private func write(rejectingWhen reject: ((Tables) -> Bool)? = nil, _ change: (inout Tables) -> Void) throws {
         try state.withLock { state in
             loadIfNeeded(&state)
             var next = state.tables
             change(&next)
             Self.collect(&next)
             if next == state.tables { return }
-            if let real, Self.overlaps(real, among: next.refs.values) { throw RegistryError.rejected(.overlapsRegisteredFolder) }
+            if let reject, reject(next) { throw RegistryError.rejected(.overlapsRegisteredFolder) }
             guard persist(next, moveCorruptAside: state.corruptOnDisk) else { throw RegistryError.writeFailed }
             state.tables = next
             state.corruptOnDisk = false
@@ -246,9 +227,7 @@ public final class WorkspaceRegistry: @unchecked Sendable {
         guard refs.keys.allSatisfy(isOpaqueRef) else { return nil }
         // 표가 모르는 id를 가리키면 그 줄은 버린다 (가리킬 폴더가 없다)
         func known(_ table: [String: String]) -> [String: String] { table.filter { refs[$0.value] != nil } }
-        // 세션 → 대화 연결은 나중에 더한 선택 칸이다 (없는 옛 파일도 읽는다). 핀이 없는 세션의 줄은 버린다
-        let links = (object["session_conversations"] as? [String: String] ?? [:]).filter { sessions[$0.key] != nil }
-        return Tables(refs: refs, projects: known(projects), sessions: known(sessions), pending: known(pending), sessionConversations: links)
+        return Tables(refs: refs, projects: known(projects), sessions: known(sessions), pending: known(pending))
     }
 
     /// 0600으로 만든 임시 파일에 쓰고 이름을 바꾼다 (다른 사용자가 읽을 수 있는 순간이 없다)
@@ -287,10 +266,7 @@ public final class WorkspaceRegistry: @unchecked Sendable {
                 try fileManager.moveItem(at: file, to: aside)
                 try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: aside.path)
             }
-            let object: [String: Any] = [
-                "v": Self.version, "refs": tables.refs, "projects": tables.projects, "sessions": tables.sessions, "pending": tables.pending,
-                "session_conversations": tables.sessionConversations,
-            ]
+            let object: [String: Any] = ["v": Self.version, "refs": tables.refs, "projects": tables.projects, "sessions": tables.sessions, "pending": tables.pending]
             let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
             try Self.atomicWrite(data, to: file)
             return true
@@ -303,24 +279,58 @@ public final class WorkspaceRegistry: @unchecked Sendable {
 /// 보내기 전에 묻는 쪽(`AgentWorkspaceSendGate`)이 보는 면: "폴더가 있다"는 지금도 규칙을 통과하는 폴더가 있다는 뜻이다 (지워졌거나 기호 링크로 바뀐 폴더는 없는 것으로 보고 다시 묻는다)
 extension WorkspaceRegistry: AgentWorkspaceFolders {
     public func hasFolder(forProject id: UUID) -> Bool {
-        folder(forProject: id).map(accepts(path:)) ?? false
+        folder(forProject: id).map { if case .success = rules.validate($0) { true } else { false } } ?? false
     }
 
     public func hasFolder(forConversation id: UUID) -> Bool {
-        pending(conversation: id).map(accepts(path:)) ?? false
+        pending(conversation: id).map { if case .success = rules.validate($0) { true } else { false } } ?? false
     }
 
+    /// 폴더 창 검증 (범위 없이): 규칙을 통과하고 어떤 프로젝트의 지금 폴더와도 겹치지 않는다
     public func accepts(path: String) -> Bool {
+        acceptsPath(path, scope: nil)
+    }
+
+    /// - scope: 그 폴더를 어디에 등록하나. 프로젝트면 그 프로젝트 자신의 (지워졌거나 규칙에서 빠진) 옛 폴더는 겹침으로 세지 않는다
+    public func accepts(path: String, scope: AgentWorkspaceGate.Scope) -> Bool {
+        acceptsPath(path, scope: scope)
+    }
+
+    private func acceptsPath(_ path: String, scope: AgentWorkspaceGate.Scope?) -> Bool {
         guard case .success(let real) = rules.validate(path) else { return false }
-        return !read { Self.overlaps(real, among: $0.refs.values) }
+        return !overlapsOtherProjects(real, scope: scope)
     }
 
     /// 받아 주지 않는 폴더를 고른 사용자에게 창 안에서 보일 문장 (승인된 문구): 겹치는 폴더 · 민감 폴더는 자기 문장이고 나머지는 일반 거절 문장이다
     public func rejectionMessage(forPath path: String) -> String {
+        message(forPath: path, scope: nil)
+    }
+
+    public func rejectionMessage(forPath path: String, scope: AgentWorkspaceGate.Scope) -> String {
+        message(forPath: path, scope: scope)
+    }
+
+    private func message(forPath path: String, scope: AgentWorkspaceGate.Scope?) -> String {
         switch rules.validate(path) {
         case .failure(.sensitiveFolder): AgentWorkspaceCopy.sensitiveFolder
         case .failure: AgentWorkspaceCopy.rejected
-        case .success(let real): read { Self.overlaps(real, among: $0.refs.values) } ? AgentWorkspaceCopy.overlappingFolder : AgentWorkspaceCopy.rejected
+        case .success(let real): overlapsOtherProjects(real, scope: scope) ? AgentWorkspaceCopy.overlappingFolder : AgentWorkspaceCopy.rejected
+        }
+    }
+
+    private func overlapsOtherProjects(_ real: String, scope: AgentWorkspaceGate.Scope?) -> Bool {
+        let own: String? = if case .project(let id)? = scope { Self.key(id) } else { nil }
+        return read { Self.overlaps(real, among: Self.projectFolders(in: $0, excluding: own)) }
+    }
+
+    /// 이 세션이 이 폴더에서 턴을 시작해도 되나 (재검토 1–4, 계약 13.13): 세션 핀이 이 폴더이고, 그 폴더가 어떤 프로젝트의 지금 폴더와도 겹치지 않을 때만 (같은 폴더는 겹침이 아니다).
+    /// 핀을 모르면(없거나 읽지 못한 표) false다 — 겹침을 알 수 없으면 띄우지 않는다. 그래서 프로젝트 폴더를 겹치는 곳으로 바꾼 뒤 그 프로젝트의 옛 세션은 이어 갈 수 없고(새 세션을 연다),
+    /// 겹치는 두 폴더에서 세션이 동시에 돌아 경로 lease 키가 갈리는 일이 없다. 상태를 두지 않는다: 지금 표만 본다
+    public func sessionMayRun(in folder: String, session sessionID: String) -> Bool {
+        guard let real = rules.facts.realpath(folder) else { return false }
+        return read { tables in
+            guard let ref = tables.sessions[Self.key(sessionID)], tables.refs[ref] == real else { return false }
+            return !Self.overlaps(real, among: Self.projectFolders(in: tables))
         }
     }
 

@@ -34,8 +34,8 @@ public final class RegistryWorkspaceResolver: WorkspaceResolver {
     }
 
     /// 세션에 핀을 꽂고 **성공해서 읽힌 실제 핀**만 돌려준다. 저장하지 못하면 nil로 닫는다: 핀 없이 띄우면 다음 턴이 `authorize`에서 거절되고 핀을 다시 만들 길도 없다
-    private func pinned(_ sessionID: String, to path: String, conversation: UUID? = nil) -> String? {
-        do { try registry.pin(session: sessionID, to: path, conversation: conversation) } catch {
+    private func pinned(_ sessionID: String, to path: String) -> String? {
+        do { try registry.pin(session: sessionID, to: path) } catch {
             log.log("workspace_pin_failed", [:])
             return nil
         }
@@ -54,7 +54,7 @@ public final class RegistryWorkspaceResolver: WorkspaceResolver {
         }
         // 2. 대화 핀
         for conversation in snapshot.conversations where conversation.agentSessionID == session {
-            if let path = registry.pending(conversation: conversation.id), let real = usable(path) { return pinned(sessionID, to: real, conversation: conversation.id) }
+            if let path = registry.pending(conversation: conversation.id), let real = usable(path) { return pinned(sessionID, to: real) }
         }
         // 3. 프로젝트
         let actions = Set(snapshot.runs.filter { $0.agentSessionID == session }.map(\.actionID))
@@ -80,15 +80,8 @@ public final class RegistryWorkspaceResolver: WorkspaceResolver {
 
     public var recognizesRecordedPaths: Bool { false }
 
-    /// 핀이 더는 없으면 true (풀었거나 원래 없었다), 쓰지 못해 핀이 남았으면 false
-    public func releaseSession(_ sessionID: String) async -> Bool {
-        switch registry.releaseSession(sessionID) {
-        case .released:
-            log.log("workspace_pin_released", [:])
-            return true
-        case .nothingToRelease: return true
-        case .failed: return false
-        }
+    public func allowsTurn(in workspace: String, session sessionID: String, adapter: String) async -> Bool {
+        registry.sessionMayRun(in: workspace, session: sessionID)
     }
 
     public func workspaceRef(forPath path: String) async -> String? { registry.ref(forPath: path) }

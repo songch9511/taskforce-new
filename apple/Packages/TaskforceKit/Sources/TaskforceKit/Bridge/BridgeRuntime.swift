@@ -706,8 +706,6 @@ public actor BridgeRuntime {
         let now = clock.now()
         if let last = lastPrune, now.timeIntervalSince(last) < 3600 { return }
         lastPrune = now
-        // 지우기 전에: 영구히 닫힌 세션 중 끝이 증명된 것의 핀을 푼다 (prune은 아직 못 푼 세션의 task를 지우지 않는다: 증명할 기록이 남는다)
-        await releaseRetiredPins()
         guard let report = try? await ledger.prune(now: now) else { return }
         log.log("pruned", ["commands": .count(report.commands), "dead": .count(report.deadLetters), "expired": .count(report.expiredEvents), "texts": .count(report.fullTexts)])
     }
