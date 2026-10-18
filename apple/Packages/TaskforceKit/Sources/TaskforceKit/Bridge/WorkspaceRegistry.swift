@@ -27,6 +27,8 @@ public final class WorkspaceRegistry: @unchecked Sendable {
         var projects: [String: String] = [:]
         var sessions: [String: String] = [:]
         var pending: [String: String] = [:]
+        /// 세션 → 그 세션을 만든 대화 (대화 폴더에서 핀을 꽂았을 때만): 세션 핀을 풀 때 남은 대화 폴더 참조도 함께 푼다 (재검토 2)
+        var sessionConversations: [String: String] = [:]
     }
 
     private struct State {
@@ -97,14 +99,29 @@ public final class WorkspaceRegistry: @unchecked Sendable {
         read { tables in tables.sessions[Self.key(sessionID)].flatMap { tables.refs[$0] } }
     }
 
-    /// 세션에 폴더를 꽂는다 (이미 있으면 바꾸지 않는다: 세션을 연 뒤에는 폴더가 따라 움직이지 않는다). 규칙을 통과한 폴더만 받는다
-    public func pin(session sessionID: String, to path: String) throws {
+    /// 세션에 폴더를 꽂는다 (이미 있으면 바꾸지 않는다: 세션을 연 뒤에는 폴더가 따라 움직이지 않는다). 규칙을 통과한 폴더만 받는다.
+    /// - conversation: 이 핀이 그 대화의 폴더에서 왔다 (핀을 풀 때 그 대화 폴더 참조도 함께 푼다)
+    public func pin(session sessionID: String, to path: String, conversation: UUID? = nil) throws {
         let real = try accept(path)
         try write(adding: real) { tables in
             let key = Self.key(sessionID)
             guard tables.sessions[key] == nil else { return }
             tables.sessions[key] = Self.ensureRef(for: real, in: &tables)
+            if let conversation { tables.sessionConversations[key] = Self.key(conversation) }
         }
+    }
+
+    /// 세션 핀과 그 핀이 남긴 대화 폴더 참조를 푼다 (재검토 2): 세션이 영구히 닫혔고 프로세스의 끝이 증명됐을 때 런타임이 부른다.
+    /// 풀면 그 폴더는 겹침 검사에서 빠진다(다른 표가 쓰지 않으면 id도 사라진다). 핀이 없으면 아무것도 하지 않는다. 쓰지 못하면 핀이 남는다(안전한 쪽) — 풀었으면 true
+    @discardableResult
+    public func releaseSession(_ sessionID: String) -> Bool {
+        let key = Self.key(sessionID)
+        guard pinned(session: sessionID) != nil else { return false }
+        return (try? write { tables in
+            if let conversation = tables.sessionConversations[key], tables.pending[conversation] == tables.sessions[key] { tables.pending[conversation] = nil }
+            tables.sessionConversations[key] = nil
+            tables.sessions[key] = nil
+        }) != nil
     }
 
     // MARK: 대화 (Ungrouped)
@@ -219,7 +236,9 @@ public final class WorkspaceRegistry: @unchecked Sendable {
         guard refs.keys.allSatisfy(isOpaqueRef) else { return nil }
         // 표가 모르는 id를 가리키면 그 줄은 버린다 (가리킬 폴더가 없다)
         func known(_ table: [String: String]) -> [String: String] { table.filter { refs[$0.value] != nil } }
-        return Tables(refs: refs, projects: known(projects), sessions: known(sessions), pending: known(pending))
+        // 세션 → 대화 연결은 나중에 더한 선택 칸이다 (없는 옛 파일도 읽는다). 핀이 없는 세션의 줄은 버린다
+        let links = (object["session_conversations"] as? [String: String] ?? [:]).filter { sessions[$0.key] != nil }
+        return Tables(refs: refs, projects: known(projects), sessions: known(sessions), pending: known(pending), sessionConversations: links)
     }
 
     /// 0600으로 만든 임시 파일에 쓰고 이름을 바꾼다 (다른 사용자가 읽을 수 있는 순간이 없다)
@@ -258,7 +277,10 @@ public final class WorkspaceRegistry: @unchecked Sendable {
                 try fileManager.moveItem(at: file, to: aside)
                 try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: aside.path)
             }
-            let object: [String: Any] = ["v": Self.version, "refs": tables.refs, "projects": tables.projects, "sessions": tables.sessions, "pending": tables.pending]
+            let object: [String: Any] = [
+                "v": Self.version, "refs": tables.refs, "projects": tables.projects, "sessions": tables.sessions, "pending": tables.pending,
+                "session_conversations": tables.sessionConversations,
+            ]
             let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
             try Self.atomicWrite(data, to: file)
             return true

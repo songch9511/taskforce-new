@@ -154,6 +154,8 @@ public actor BridgeRuntime {
     /// 최근 1시간의 등록 시도 시각 (자동 등록 예산 · 물러서기)
     var registerTimes: [Date] = []
     var terminatedByUs: Set<String> = []
+    /// 영구히 닫힌 세션(`forgetSessions`로 잊었다): 프로세스의 끝이 증명되는 순간 작업 폴더 핀을 푼다 (재검토 2). 메모리뿐이다
+    var retiredSessions: Set<String> = []
     var pendingWake: BridgeWakeReason?
     var wakeWaiter: CheckedContinuation<BridgeWakeReason?, Never>?
     var loopTask: Task<Void, Never>?

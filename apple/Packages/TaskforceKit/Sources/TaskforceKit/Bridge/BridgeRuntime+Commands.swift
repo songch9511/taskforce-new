@@ -954,6 +954,7 @@ extension BridgeRuntime {
             if let left { return await keepUnproven(taskID: taskID, identity: left) }
             supervised[taskID] = nil
             _ = try? await ledger.updateTask(taskID) { $0.alive = false }
+            await releaseWorkspaceIfRetired(session: session)
             return
         }
         switch run.liveness {
@@ -961,6 +962,7 @@ extension BridgeRuntime {
             supervised[taskID] = nil
             orphanLiveness[taskID] = nil
             _ = try? await ledger.updateTask(taskID) { $0.alive = false }
+            await releaseWorkspaceIfRetired(session: session)
         case .alive where supervised[taskID] != nil:
             supervised[taskID]?.endOnly = true
         case .alive:

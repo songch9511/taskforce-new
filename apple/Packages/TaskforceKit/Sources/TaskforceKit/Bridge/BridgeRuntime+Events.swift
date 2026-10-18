@@ -191,10 +191,22 @@ extension BridgeRuntime {
         for task in (try? await ledger.allTasks()) ?? [] where adapterID == nil || task.adapter == adapterID {
             guard let adapter = adapters[task.adapter], seen.insert(task.adapter + "|" + task.agentSessionID).inserted else { continue }
             await adapter.forgetSession(task.agentSessionID)
+            retiredSessions.insert(task.agentSessionID)
+            await releaseWorkspaceIfRetired(session: task.agentSessionID)
             count += 1
         }
         if count > 0 { log.log("sessions_forgotten", ["count": .count(count)]) }
         return count
+    }
+
+    /// 영구히 닫힌 세션(폐기됐거나 `forgetSessions`로 잊었다)의 모든 실행이 끝났다고 **증명됐으면** 작업 폴더 핀을 푼다 (재검토 2, Astra): 옛 핀이 겹침 검사에 영구히 남아
+    /// 정상적인 폴더 변경을 막지 않게. 증명 = 원장 `alive`가 아니고 · 감독 중이 아니고 · 확인 안 된 고아가 아니고 · 중단이 `unproven`이 아님 — 하나라도 아니면 핀을 둔다(끝을 증명하지 못한 것을 끝났다고 하지 않는다).
+    /// 새 타이머는 없다: 잊기(`forgetSessions`)와 프로세스 끝(`finishEnded` · 답 정산)에서 부른다
+    func releaseWorkspaceIfRetired(session sessionID: String) async {
+        guard statusValue == .revoked || retiredSessions.contains(sessionID), let resolver = workspaces else { return }
+        let tasks = ((try? await ledger.allTasks()) ?? []).filter { $0.agentSessionID == sessionID }
+        guard !tasks.contains(where: { $0.alive || $0.cancelState == "unproven" || supervised[$0.agentTaskID] != nil || orphanLiveness[$0.agentTaskID] != nil }) else { return }
+        await resolver.releaseSession(sessionID)
     }
 
     // MARK: 프로세스 끝
@@ -268,6 +280,7 @@ extension BridgeRuntime {
                 }
             }
         }
+        await releaseWorkspaceIfRetired(session: task.agentSessionID)
         await publish()
         scheduleFlush()
     }

@@ -34,8 +34,8 @@ public final class RegistryWorkspaceResolver: WorkspaceResolver {
     }
 
     /// 세션에 핀을 꽂고 **성공해서 읽힌 실제 핀**만 돌려준다. 저장하지 못하면 nil로 닫는다: 핀 없이 띄우면 다음 턴이 `authorize`에서 거절되고 핀을 다시 만들 길도 없다
-    private func pinned(_ sessionID: String, to path: String) -> String? {
-        do { try registry.pin(session: sessionID, to: path) } catch {
+    private func pinned(_ sessionID: String, to path: String, conversation: UUID? = nil) -> String? {
+        do { try registry.pin(session: sessionID, to: path, conversation: conversation) } catch {
             log.log("workspace_pin_failed", [:])
             return nil
         }
@@ -54,7 +54,7 @@ public final class RegistryWorkspaceResolver: WorkspaceResolver {
         }
         // 2. 대화 핀
         for conversation in snapshot.conversations where conversation.agentSessionID == session {
-            if let path = registry.pending(conversation: conversation.id), let real = usable(path) { return pinned(sessionID, to: real) }
+            if let path = registry.pending(conversation: conversation.id), let real = usable(path) { return pinned(sessionID, to: real, conversation: conversation.id) }
         }
         // 3. 프로젝트
         let actions = Set(snapshot.runs.filter { $0.agentSessionID == session }.map(\.actionID))
@@ -79,6 +79,10 @@ public final class RegistryWorkspaceResolver: WorkspaceResolver {
     }
 
     public var recognizesRecordedPaths: Bool { false }
+
+    public func releaseSession(_ sessionID: String) async {
+        if registry.releaseSession(sessionID) { log.log("workspace_pin_released", [:]) }
+    }
 
     public func workspaceRef(forPath path: String) async -> String? { registry.ref(forPath: path) }
 
