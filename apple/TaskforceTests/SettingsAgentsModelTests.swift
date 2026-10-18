@@ -138,6 +138,44 @@ struct SettingsAgentsModelTests {
         #expect(env.refreshProbeCalls == 2 && env.probeCalls == 2 && env.targetCalls == 4, "동작 뒤 읽기는 probe를 새로 하지 않고 읽기만 한다")
     }
 
+    /// ch.21 4: 진행 중인 `.again`에 `.windowKey`가 합쳐지면, 그 전체 새로 고침(로그인 캐시 비움 + 서버 보고)을 잃지 않고 다음 반복에서 한다
+    @Test func anAgainInFlightThatMeetsAWindowKeyKeepsTheFullRefreshForTheNextRound() async {
+        let env = Self.connected()
+        env.targetsGate = AgentTestGate()
+        let model = Self.model(env)
+        let first = Task { await model.refresh(.again) }
+        while !(env.targetsGate?.arrived ?? false) { try? await Task.sleep(for: .milliseconds(2)) }
+        await model.refresh(.windowKey) // Terminal에서 로그인하고 돌아왔다: 합쳐진다
+        env.targetsGate?.open()
+        await first.value
+        #expect(env.refreshProbeCalls == 1, "합쳐진 요청의 로그인 캐시 비움 · 서버 보고를 다음 반복에서 한다")
+        #expect(env.probeCalls == 1, "처음 반복은 읽기만")
+        #expect(env.targetCalls == 2)
+    }
+
+    @Test func aFullRefreshInFlightThatMeetsAnAgainStaysFullOnceAndTheNextRoundOnlyReads() async {
+        let env = Self.connected()
+        env.targetsGate = AgentTestGate()
+        let model = Self.model(env)
+        let first = Task { await model.refresh(.shown) }
+        while !(env.targetsGate?.arrived ?? false) { try? await Task.sleep(for: .milliseconds(2)) }
+        await model.refresh(.again)
+        env.targetsGate?.open()
+        await first.value
+        #expect(env.refreshProbeCalls == 1 && env.probeCalls == 1 && env.targetCalls == 2, "전체 한 번 + 읽기만 한 번")
+    }
+
+    @Test func againNeverSpendsTheTenSecondBudgetOfTheFullRefresh() async {
+        let env = Self.connected()
+        let model = Self.model(env)
+        await model.refresh(.again)
+        await model.refresh(.again)
+        await model.refresh(.shown)
+        #expect(env.refreshProbeCalls == 1, "읽기만 하는 새로 고침은 전체 새로 고침의 10초 예산을 쓰지 않는다")
+        await model.refresh(.windowKey)
+        #expect(env.refreshProbeCalls == 1, "전체 새로 고침이 예산을 쓴다")
+    }
+
     @Test func refreshCleansTheAlreadyReadValuesWhenTheAccountLeaves() async {
         let env = Self.connected()
         env.name = "Studio"
@@ -464,6 +502,108 @@ struct SettingsAgentsModelTests {
         env.projectsRead = Dictionary(uniqueKeysWithValues: projects.map { ($0.id, $0) })
         await model.refresh(.again)
         #expect(env.store?.removed == [gone] && model.folderLines.count == 4, "읽은 목록에 없는 프로젝트의 폴더는 등록부에서 지운다")
+    }
+
+    /// ch.21 3: 등록된 프로젝트 id를 하나도 빼지 않고 직접 묻는다 — 이름순 500 목록으로 판단하지 않는다
+    @Test func registeredFoldersAreAskedByTheirOwnIdsSoAFiveHundredAndOneRegistryLosesNothing() async {
+        let env = Self.connected()
+        var projects: [UUID: AgentFolderProject] = [:]
+        var folders: [UUID: String] = [:]
+        for index in 0..<501 {
+            let project = AgentFolderProject(id: UUID(), name: "Project \(index)", icon: .folder)
+            projects[project.id] = project
+            folders[project.id] = "/Users/alex/p\(index)"
+        }
+        env.projectsRead = projects
+        env.store?.registerFolders(folders)
+        let model = Self.model(env)
+        await model.refresh(.shown)
+        #expect(env.projectIDsAsked.last.map(Set.init) == Set(folders.keys) && env.projectIDsAsked.last?.count == 501, "등록된 501개를 모두 물었다")
+        #expect(env.store?.removed.isEmpty == true, "정상 프로젝트의 매핑을 지우지 않는다")
+        #expect(model.folderLines.count == 502)
+    }
+
+    @Test func anAccountChangeWhileTheProjectsAreBeingReadNeverPrunes() async {
+        let (env, _) = foldersFixture()
+        let gone = UUID()
+        env.store?.registerFolders([gone: "/Users/alex/gone-project"])
+        env.projectsGate = AgentTestGate()
+        let model = Self.model(env)
+        let task = Task { await model.refresh(.shown) }
+        while !(env.projectsGate?.arrived ?? false) { try? await Task.sleep(for: .milliseconds(2)) }
+        model.accountLeft() // 읽는 사이 계정이 떠났다
+        env.projectsGate?.open()
+        await task.value
+        #expect(env.store?.removed.isEmpty == true, "계정 세대가 바뀌었으면 읽은 답이 \"없다\"여도 지우지 않는다")
+        #expect(model.folderLines.map(\.name) == ["Ungrouped"], "옛 계정의 줄을 새 화면에 채우지 않는다")
+    }
+
+    @Test func anAccountChangeWhileTheFoldersAreBeingCheckedNeverPrunes() async {
+        let (env, _) = foldersFixture()
+        let gone = UUID()
+        env.store?.registerFolders([gone: "/Users/alex/gone-project"])
+        env.existingGate = AgentTestGate()
+        let model = Self.model(env)
+        let task = Task { await model.refresh(.shown) }
+        while !(env.existingGate?.arrived ?? false) { try? await Task.sleep(for: .milliseconds(2)) }
+        model.accountLeft() // 폴더가 있는지 보는 사이 계정이 떠났다
+        env.existingGate?.open()
+        await task.value
+        #expect(env.store?.removed.isEmpty == true && model.folderLines.map(\.name) == ["Ungrouped"])
+    }
+
+    @Test func aRegistryReplacedWhileTheReadWasInFlightIsNeverPruned() async {
+        let (env, _) = foldersFixture()
+        let gone = UUID()
+        env.store?.registerFolders([gone: "/Users/alex/gone-project"])
+        let first = env.store
+        env.projectsGate = AgentTestGate()
+        let model = Self.model(env)
+        let task = Task { await model.refresh(.shown) }
+        while !(env.projectsGate?.arrived ?? false) { try? await Task.sleep(for: .milliseconds(2)) }
+        env.store = FakeFolderStore() // 다른 계정의 등록부로 바뀌었다
+        env.projectsGate?.open()
+        await task.value
+        #expect(first?.removed.isEmpty == true && env.store?.removed.isEmpty == true, "읽던 등록부가 아니면 지우지 않는다")
+    }
+
+    @Test func aFolderThatChangedWhileTheReadWasInFlightIsNotPruned() async {
+        let (env, _) = foldersFixture()
+        let gone = UUID()
+        env.store?.registerFolders([gone: "/Users/alex/gone-project"])
+        env.projectsGate = AgentTestGate()
+        let model = Self.model(env)
+        let task = Task { await model.refresh(.shown) }
+        while !(env.projectsGate?.arrived ?? false) { try? await Task.sleep(for: .milliseconds(2)) }
+        env.store?.forceFolder(gone, "/Users/alex/moved-project") // 읽는 사이 그 프로젝트의 폴더가 바뀌었다 (Change…)
+        env.projectsGate?.open()
+        await task.value
+        #expect(env.store?.removed.isEmpty == true, "읽은 값 그대로일 때만 지운다")
+    }
+
+    /// ch.21 5: 거절이 아닌 쓰기 실패는 있는 문장을 조용한 회색 줄로 보인다
+    @Test func aFolderThatCouldNotBeSavedShowsTheExistingSentenceInGrayAndKeepsTheOldFolder() async {
+        let (env, projects) = foldersFixture()
+        env.picker.result = "/Users/alex/Projects/acme-v2"
+        env.store?.writeFails = true
+        let model = Self.model(env)
+        await model.refresh(.shown)
+        await model.changeFolder(project: projects[1])
+        #expect(model.folderHint == "Something went wrong. Try again in a moment.", "있는 문장")
+        #expect(model.folderLines.first { $0.project?.id == projects[1].id }?.display == "~/Projects/acme-site", "옛 폴더 그대로")
+        env.store?.writeFails = false
+        await model.changeFolder(project: projects[1])
+        #expect(model.folderHint == nil && model.folderLines.first { $0.project?.id == projects[1].id }?.display == "~/Projects/acme-v2", "다음에 저장되면 줄이 사라진다")
+    }
+
+    @Test func aRejectionIsNotASaveFailureSoNoLineIsShown() async {
+        let (env, projects) = foldersFixture()
+        env.picker.result = "/etc/x"
+        env.picker.respectsAccepts = false
+        let model = Self.model(env)
+        await model.refresh(.shown)
+        await model.changeFolder(project: projects[1])
+        #expect(model.folderHint == nil && model.failure == nil)
     }
 
     @Test func changeOpensTheSameFolderWindowWithTheSameRulesAndRegistersWhatIsChosen() async {

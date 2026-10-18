@@ -24,7 +24,8 @@ private struct AgentSettingsLifecycle: ViewModifier {
                 guard state == .key else { return }
                 Task { await model.agents.refresh(.windowKey) }
             }
-            .onChange(of: model.agents.facts.status) {
+            // 상태가 바뀔 때와, 상태가 그대로여도 실행이 시작 · 끝날 때(상세의 "Active since")
+            .onChange(of: model.agents.runtimeSignature) {
                 Task { await model.agents.refresh(.again) }
             }
     }
@@ -106,6 +107,13 @@ struct SettingsAgentDetail: View {
 
     /// Folders: 늘 보인다 (연결 전에도, 없으면 Ungrouped · "Ask each time" 한 줄). 프로젝트 줄을 누르면 Change… · Remove…
     private func folders(_ agents: AgentSettingsModel) -> some View {
+        VStack(alignment: .leading, spacing: TFSpace.sm) {
+            foldersSection(agents)
+            if let hint = agents.folderHint { AgentHintLine(hint).padding(.horizontal, TFSpace.md) }
+        }
+    }
+
+    private func foldersSection(_ agents: AgentSettingsModel) -> some View {
         SettingsSection(AgentSettingsCopy.folders, footnote: AgentSettingsCopy.foldersFootnote) {
             ForEach(agents.folderLines) { line in
                 if let project = line.project, model.confirming == .removeFolder(project.id) {

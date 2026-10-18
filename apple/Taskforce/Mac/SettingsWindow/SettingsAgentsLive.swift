@@ -11,6 +11,8 @@ final class LiveAgentSettingsEnvironment: AgentSettingsEnvironment {
     private let host: @MainActor () -> BridgeHost?
     private let targets: AssistantTargetsStore?
     private let reads: TaskforceReads?
+    /// 그 id의 프로젝트(범위)를 RLS로 묻는다: 실제는 `reads.workContexts(ids:)`, 시험은 가짜
+    private let contexts: (@Sendable ([UUID]) async throws -> [WorkContext])?
     private let picker: any AgentWorkspacePicking
     private let notify: @MainActor () async -> Void
     private let adapter: String
@@ -18,15 +20,18 @@ final class LiveAgentSettingsEnvironment: AgentSettingsEnvironment {
     /// - host: 지금 앱의 호스트 (bridge가 꺼진 빌드 · 시험이면 nil이거나 런타임이 없다)
     /// - targets: 대상 목록 저장소 (`ChatRuntime.targets`). 없으면 읽지 못한 것이다
     /// - reads: 서버 읽기 (RLS). 없으면 이름 · 프로젝트 · Mac 목록을 모른다
+    /// - contexts: 프로젝트를 id로 묻는 읽기. 비우면 `reads`로 읽는다
     /// - picker: 시스템 폴더 창 (`ChatRuntime.workspacePicker`와 같은 것 — 시험은 가짜 패널)
     init(
         host: @escaping @MainActor () -> BridgeHost? = { BridgeHost.shared }, targets: AssistantTargetsStore?, reads: TaskforceReads?,
+        contexts: (@Sendable ([UUID]) async throws -> [WorkContext])? = nil,
         picker: any AgentWorkspacePicking, adapter: String = ClaudeCodeSupport.adapterID,
         notify: @escaping @MainActor () async -> Void = { await PushCenter.shared.requestIfNeeded(hasConnections: true) }
     ) {
         self.host = host
         self.targets = targets
         self.reads = reads
+        self.contexts = contexts ?? reads.map { reads in { @Sendable ids in try await reads.workContexts(ids: ids) } }
         self.picker = picker
         self.adapter = adapter
         self.notify = notify
@@ -71,9 +76,11 @@ final class LiveAgentSettingsEnvironment: AgentSettingsEnvironment {
     }
 
     func reconnect() async -> AgentConnectOutcome {
+        // 누른 계정을 잡아 둔다: 아래 기다리기(남은 프로세스 끝내기, 세션마다 최대 16초) 사이에 다른 계정으로 바뀌면 그 계정의 Mac을 사용자의 행동 없이 연결하지 않는다 (D2a Q7 · Q21, ch.21 2)
+        let stamp = host()?.accountStamp
         // Disconnect 뒤 끝내지 못한 프로세스가 끝났으면 먼저 새 런타임으로 바꾼다
         await host()?.renewRetiredRuntimeIfIdle()
-        guard let runtime else { return .unavailable }
+        guard let stamp, host()?.accountStamp == stamp, let runtime else { return .unavailable }
         return await runtime.reconnectAgent(adapter)
     }
 
@@ -97,9 +104,13 @@ final class LiveAgentSettingsEnvironment: AgentSettingsEnvironment {
 
     var folders: (any AgentSettingsFolderStore)? { host()?.activeWorkspaceRegistry }
 
-    func projects() async -> [UUID: AgentFolderProject]? {
-        guard let reads, let contexts = try? await reads.workContexts() else { return nil }
-        return Dictionary(contexts.map { ($0.id, AgentFolderProject($0)) }, uniquingKeysWith: { first, _ in first })
+    func projects(ids: [UUID]) async -> [UUID: AgentFolderProject]? {
+        // 이 Mac의 등록부(활성 파티션)의 사용자와 지금 로그인한 사용자가 같을 때만 그 사용자의 RLS 읽기로 판단한다: 다르면 빈 응답도 "없다"가 아니다
+        guard let contexts, let host = host(), let owner = host.activePartition?.userID, host.sessionUserID == owner else { return nil }
+        guard let found = try? await contexts(ids) else { return nil }
+        // 읽는 사이 계정이 바뀌었으면 그 답은 다른 사용자의 것일 수 있다
+        guard host.sessionUserID == owner, host.activePartition?.userID == owner else { return nil }
+        return Dictionary(found.map { ($0.id, AgentFolderProject($0)) }, uniquingKeysWith: { first, _ in first })
     }
 
     var homes: [String] {

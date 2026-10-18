@@ -205,7 +205,7 @@ enum SettingsAgentsSnapshot {
         func removeMac(_ bridgeID: UUID) async -> AgentRemoveMacOutcome { .refused }
         func macs() async -> [AgentMacRecord]? { scenario.macsRead }
 
-        func projects() async -> [UUID: AgentFolderProject]? {
+        func projects(ids: [UUID]) async -> [UUID: AgentFolderProject]? {
             Dictionary(uniqueKeysWithValues: scenario.folders.enumerated().map { index, item in
                 (SettingsAgentsSnapshot.projectID(index), AgentFolderProject(id: SettingsAgentsSnapshot.projectID(index), name: item.name, icon: item.icon))
             })

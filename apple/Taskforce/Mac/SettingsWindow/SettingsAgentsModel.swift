@@ -60,8 +60,9 @@ protocol AgentSettingsEnvironment: AnyObject {
 
     // 작업 폴더 (W)
     var folders: (any AgentSettingsFolderStore)? { get }
-    /// 프로젝트 이름 · 아이콘 (RLS). 읽지 못하면 nil — 모르는 채로 아무것도 정리하지 않는다
-    func projects() async -> [UUID: AgentFolderProject]?
+    /// 그 id의 프로젝트 이름 · 아이콘을 **id로 직접** 묻는다 (RLS, 보관된 것 포함). 돌려주는 것은 있는 프로젝트뿐이고, 물은 id가 없으면 "없다고 확인된" 것이다.
+    /// 묻기 실패 · 이 Mac 등록부의 사용자와 로그인한 사용자가 다름 · 읽는 사이 계정이 바뀜이면 nil — 모르는 채로 아무것도 정리하지 않는다
+    func projects(ids: [UUID]) async -> [UUID: AgentFolderProject]?
     var homes: [String] { get }
     /// 등록된 폴더 중 지금 있는 것 (파일 시스템은 메인 밖에서 본다)
     func existingFolders(among paths: [String]) async -> Set<String>
@@ -88,6 +89,8 @@ final class AgentSettingsModel {
         enum Action: Equatable {
             case connect, reconnect, disconnect
             case removeMac(UUID)
+            /// 폴더를 바꿨는데 저장하지 못했다 (거절이 아닌 쓰기 실패)
+            case changeFolder(UUID)
         }
 
         let action: Action
@@ -121,6 +124,8 @@ final class AgentSettingsModel {
     @ObservationIgnored private var lastFullRefresh: Date?
     @ObservationIgnored private var refreshing = false
     @ObservationIgnored private var refreshAgain = false
+    /// 다음 반복이 전체 새로 고침(로그인 캐시 비움 + 서버 보고)이어야 하나: 합쳐진 요청 중 센 쪽을 지킨다 (ch.21 4)
+    @ObservationIgnored private var refreshFull = false
     @ObservationIgnored private let now: @Sendable () -> Date
 
     init(now: @escaping @Sendable () -> Date = { Date() }) {
@@ -161,6 +166,7 @@ final class AgentSettingsModel {
         lastFullRefresh = nil
         refreshing = false
         refreshAgain = false
+        refreshFull = false
         folderLines = AgentSettingsFolders.lines(folders: [:], projects: nil, homes: [], exists: { _ in true }).lines
     }
 
@@ -171,6 +177,16 @@ final class AgentSettingsModel {
             canRunAgents: environment?.canRunAgents ?? false, status: environment?.runtimeStatus, hasLiveProcess: environment?.runtimeHasLiveProcess ?? false,
             report: report, target: target, deviceName: deviceName, liveSince: liveSince
         )
+    }
+
+    /// 런타임에서 화면이 따라가야 하는 값: 상태와 살아 있는 실행 여부. 바뀌면 지금 값을 다시 읽는다 (상태가 그대로여도 실행이 시작 · 끝나면 "Active since"가 바뀐다)
+    struct RuntimeSignature: Equatable {
+        let status: BridgeStatus?
+        let hasLiveProcess: Bool
+    }
+
+    var runtimeSignature: RuntimeSignature {
+        RuntimeSignature(status: environment?.runtimeStatus, hasLiveProcess: environment?.runtimeHasLiveProcess ?? false)
     }
 
     var line: AgentSettingsLine { AgentSettingsRules.line(facts) }
@@ -189,27 +205,39 @@ final class AgentSettingsModel {
 
     func macHint(_ id: UUID) -> String? { failure?.action == .removeMac(id) ? failure?.text : nil }
 
+    /// Folders 절 아래 조용한 회색 줄: 폴더를 저장하지 못했다 (있는 문장). 거절은 폴더 창 안에서 끝나므로 여기에 없다
+    var folderHint: String? {
+        guard case .changeFolder = failure?.action else { return nil }
+        return failure?.text
+    }
+
     // MARK: 읽기 (SA-06)
 
     /// 새로 고침. `.shown` · `.windowKey`는 10초에 한 번까지 (그 안의 두 번째는 아무것도 하지 않는다)
     func refresh(_ reason: Refresh) async {
         guard let environment else { return }
-        if reason != .again {
+        let wantsFull = reason != .again
+        // 전체 새로 고침만 10초 예산을 쓴다: 읽기만 하는 `.again`은 쓰지 않는다
+        if wantsFull {
             let at = now()
             if let last = lastFullRefresh, at.timeIntervalSince(last) < Self.refreshInterval { return }
             lastFullRefresh = at
         }
-        // 겹친 읽기는 하나로: 도는 동안 온 요청은 끝난 뒤 한 번 더 읽는다
+        // 겹친 읽기는 하나로: 도는 동안 온 요청은 끝난 뒤 한 번 더 읽는다. 합쳐질 때 센 쪽(전체)을 잃지 않는다 — 예산은 이미 썼으니 다음 반복이 전체 새로 고침이어야 한다
         if refreshing {
             refreshAgain = true
+            if wantsFull { refreshFull = true }
             return
         }
         refreshing = true
+        refreshFull = wantsFull
         let started = generation
         defer { if started == generation { refreshing = false } }
         repeat {
             refreshAgain = false
-            await read(environment, full: reason != .again, started: started)
+            let full = refreshFull
+            refreshFull = false
+            await read(environment, full: full, started: started)
             guard started == generation else { return }
         } while refreshAgain
     }
@@ -368,13 +396,17 @@ final class AgentSettingsModel {
 
     private func reloadFolders(_ environment: any AgentSettingsEnvironment, started: Int) async {
         guard let store = environment.folders else { return }
-        let projects = await environment.projects()
-        guard started == generation else { return }
         let registered = store.projectFolders()
+        // 지워진 프로젝트의 매핑은 등록된 프로젝트 id로 직접 물어 "없다"고 확인된 것만 지운다 (이름순 500 목록으로 판단하지 않는다, ch.21 3).
+        // 묻기 실패 · 사용자 불일치(nil) · 계정 세대가 바뀜이면 지우지 않는다. 등록된 것이 없으면 물을 것도 없다
+        let projects: [UUID: AgentFolderProject]? = registered.isEmpty ? [:] : await environment.projects(ids: Array(registered.keys))
         let existing = await environment.existingFolders(among: Array(registered.values))
-        guard started == generation else { return }
+        // 두 읽기가 끝난 지금 한 번만 본다: 그 사이 계정이 바뀌었거나(세대) 읽던 등록부가 바뀌었으면 줄도 정리도 하지 않는다
+        guard started == generation, environment.folders === store else { return }
         let result = AgentSettingsFolders.lines(folders: registered, projects: projects, homes: environment.homes, exists: { existing.contains($0) })
-        for orphan in result.orphans { store.removeFolder(forProject: orphan) }
+        // 읽는 사이 그 프로젝트의 폴더가 바뀌었으면(Change…) 지우지 않는다: 읽은 값 그대로일 때만
+        let current = store.projectFolders()
+        for orphan in result.orphans where current[orphan] == registered[orphan] { store.removeFolder(forProject: orphan) }
         folderLines = result.lines
     }
 
@@ -390,8 +422,14 @@ final class AgentSettingsModel {
             reason: { [store = UncheckedStore(store)] in store.value.rejectionMessage(forPath: $0, scope: scope) }
         )
         guard started == generation, let picked else { return }
-        // 등록부가 다시 거른다 (창 밖에서 온 값이어도 규칙 한 곳): 거절이면 아무것도 바뀌지 않는다
-        try? store.register(path: picked, scope: scope)
+        failure = nil
+        // 등록부가 다시 거른다 (창 밖에서 온 값이어도 규칙 한 곳): 거절이면 아무것도 바뀌지 않고 줄도 없다 (폴더 창 안의 글로 끝).
+        // 거절이 아닌 쓰기 실패는 있는 문장을 조용한 회색 줄로 보인다 (옛 폴더 그대로)
+        do {
+            try store.register(path: picked, scope: scope)
+        } catch WorkspaceRegistry.RegistryError.writeFailed {
+            failure = Failure(action: .changeFolder(project.id), text: Self.text(.other))
+        } catch {}
         await reloadFolders()
     }
 

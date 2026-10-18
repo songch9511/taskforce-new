@@ -103,6 +103,17 @@ final class BridgeHost {
 
     var activePartition: BridgePartition? { activePartitionID.flatMap { entries[$0]?.partition } }
 
+    /// 지금 로그인한 사용자 (앱 세션): 사용자 데이터(RLS)를 읽는 이름이다. 활성 파티션의 사용자와 같을 때만 이 Mac의 등록부를 그 읽기로 판단한다
+    var sessionUserID: UUID? { currentUser() }
+
+    /// 활성 계정의 표식: 파티션(계정) + 계정 세대. 오래 기다리기 전에 잡아 두고 기다린 뒤 같을 때만 서버에 쓴다 (Settings의 Reconnect, ch.21 2)
+    struct AccountStamp: Equatable {
+        let partitionID: String
+        let epoch: Int
+    }
+
+    var accountStamp: AccountStamp? { activePartitionID.map { AccountStamp(partitionID: $0, epoch: epoch()) } }
+
     /// 지금 계정의 작업 폴더 등록부 (계정이 없거나 이 빌드에 등록부가 없으면 nil)
     var activeWorkspaceRegistry: WorkspaceRegistry? { activePartition.flatMap { partition in workspaces?.registry(for: partition) } }
 
@@ -270,7 +281,7 @@ final class BridgeHost {
     /// 바꿀지는 `performRenew`가 정한다: 아직 끝나지 않았으면 그대로 둔다 — 그 런타임은 다시 쓰지 않는다 (Reconnect는 실패 줄로 끝난다)
     func renewRetiredRuntimeIfIdle() async {
         guard let id = activePartitionID, let entry = entries[id], retiring.contains(entry.id) else { return }
-        _ = await entry.runtime.interruptLiveTurns()
+        _ = await entry.runtime.interruptLiveTurns(reason: "disconnect")
         await renewRuntime(replacing: entry.runtime)
     }
 

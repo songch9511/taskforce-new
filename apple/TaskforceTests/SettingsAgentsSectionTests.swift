@@ -112,6 +112,71 @@ struct SettingsAgentsRenderedTests {
         }
     }
 
+    /// ch.21 6: 상태가 `connected`인 채 실행이 시작 · 끝나도 상세의 "Active since"가 따라간다
+    @Test func theActiveSinceTimeFollowsARunStartingOrEndingWhileTheStatusStaysConnected() async {
+        let env = FakeAgentSettingsEnvironment()
+        env.targetsRead = env.serverRow(state: .ready)
+        await withModel(env) {
+            SettingsWindowModel.shared.open(.agent)
+            let (window, _) = await show(SettingsAgentDetail())
+            defer { window.orderOut(nil) }
+            let agents = SettingsWindowModel.shared.agents
+            @MainActor func eventually(_ condition: @MainActor () -> Bool) async -> Bool {
+                let deadline = Date().addingTimeInterval(4)
+                while Date() < deadline {
+                    if condition() { return true }
+                    try? await Task.sleep(for: .milliseconds(10))
+                }
+                return condition()
+            }
+            #expect(agents.liveSince == nil && agents.detail.session.text == AgentSettingsCopy.none)
+            let started = Date(timeIntervalSince1970: 1_790_849_520)
+            env.since = started
+            env.runtimeHasLiveProcess = true // 상태(runtimeStatus)는 그대로다
+            let followedStart = await eventually { agents.liveSince == started }
+            #expect(followedStart, "실행이 시작되면 시각을 다시 읽는다")
+            #expect(agents.detail.session.text.hasPrefix("Active since"))
+            env.since = nil
+            env.runtimeHasLiveProcess = false
+            let followedEnd = await eventually { agents.liveSince == nil }
+            #expect(followedEnd, "실행이 끝나면 None으로 돌아간다")
+            #expect(agents.detail.session.text == AgentSettingsCopy.none)
+        }
+    }
+
+    /// ch.21 5: 폴더를 저장하지 못했을 때 Folders 절 아래에 조용한 회색 줄이 그려진다
+    @Test func aFolderSaveFailureLineIsDrawnUnderTheFoldersSection() async {
+        let project = AgentFolderProject(id: UUID(), name: "Acme website", icon: .briefcase)
+        func make() -> FakeAgentSettingsEnvironment {
+            let env = FakeAgentSettingsEnvironment()
+            env.targetsRead = env.serverRow(state: .ready)
+            env.projectsRead = [project.id: project]
+            env.store?.registerFolders([project.id: "/Users/alex/Projects/acme-site"])
+            env.picker.result = "/Users/alex/Projects/acme-v2"
+            return env
+        }
+        var plainHeight: CGFloat = 0
+        await withModel(make()) {
+            SettingsWindowModel.shared.open(.agent)
+            let (window, size) = await show(SettingsAgentDetail())
+            defer { window.orderOut(nil) }
+            plainHeight = size.height
+        }
+        let failing = make()
+        failing.store?.writeFails = true
+        var failedHeight: CGFloat = 0
+        await withModel(failing) {
+            SettingsWindowModel.shared.open(.agent)
+            await SettingsWindowModel.shared.agents.refresh(.shown)
+            await SettingsWindowModel.shared.agents.changeFolder(project: project)
+            #expect(SettingsWindowModel.shared.agents.folderHint != nil)
+            let (window, size) = await show(SettingsAgentDetail())
+            defer { window.orderOut(nil) }
+            failedHeight = size.height
+        }
+        #expect(failedHeight > plainHeight + 8, "저장 실패 줄이 그려졌다: \(plainHeight) → \(failedHeight)")
+    }
+
     @Test func theDetailReadsWhenItAppearsAndDrawsEveryStateInsideTheWidth() async {
         let project = AgentFolderProject(id: UUID(), name: String(repeating: "Northwind Traders 2026 website relaunch ", count: 4), icon: .briefcase)
         var states: [(String, FakeAgentSettingsEnvironment)] = []

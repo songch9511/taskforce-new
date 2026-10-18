@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 @testable import TaskforceKit
 @testable import Taskforce
 
@@ -47,6 +48,8 @@ final class FakeFolderStore: AgentSettingsFolderStore, @unchecked Sendable {
     /// 이 접두어로 시작하는 폴더만 받아 준다 (홈 아래 같은 규칙의 대역)
     var acceptedPrefixes: [String] = ["/Users/alex/"]
     var registerThrows = false
+    /// true면 규칙은 통과하지만 파일을 쓰지 못한다 (거절이 아닌 쓰기 실패)
+    var writeFails = false
 
     init(folders: [UUID: String] = [:]) {
         _folders = folders
@@ -66,6 +69,7 @@ final class FakeFolderStore: AgentSettingsFolderStore, @unchecked Sendable {
     func register(path: String, scope: AgentWorkspaceGate.Scope) throws {
         struct Rejected: Error {}
         guard !registerThrows, accepts(path: path, scope: scope) else { throw Rejected() }
+        if writeFails { throw WorkspaceRegistry.RegistryError.writeFailed }
         lock.withLock {
             _registered.append((path, scope))
             if case .project(let id) = scope { _folders[id] = path }
@@ -112,6 +116,7 @@ final class FakeAgentFolderPicker {
 
 /// 가짜 면: 읽는 값은 시험이 정하고, 동작은 호출을 세고 정한 결과를 돌려준다. 실제 런타임 · 서버 · Keychain · 알림 센터 0
 @MainActor
+@Observable
 final class FakeAgentSettingsEnvironment: AgentSettingsEnvironment {
     static let adapter = "agent:claude-code"
 
@@ -126,7 +131,7 @@ final class FakeAgentSettingsEnvironment: AgentSettingsEnvironment {
     var macsRead: [AgentMacRecord]? = []
     var projectsRead: [UUID: AgentFolderProject]? = [:]
     var existing: Set<String>?
-    let store: FakeFolderStore?
+    var store: FakeFolderStore?
     let picker = FakeAgentFolderPicker()
     var homes = ["/Users/alex"]
 
@@ -140,6 +145,10 @@ final class FakeAgentSettingsEnvironment: AgentSettingsEnvironment {
     var removeGate: AgentTestGate?
     /// 대상 목록을 읽는 동안 붙잡는 문 (읽는 중에 계정이 떠나는 경쟁)
     var targetsGate: AgentTestGate?
+    /// 프로젝트를 읽는 동안 붙잡는 문 (읽는 중에 계정이 떠나는 경쟁)
+    var projectsGate: AgentTestGate?
+    /// 등록된 폴더가 지금 있는지 보는 동안 붙잡는 문
+    var existingGate: AgentTestGate?
     /// 동작이 끝나기 전에 일어날 일 (서버가 상태를 바꾼다)
     var onConnect: (() -> Void)?
     var onReconnect: (() -> Void)?
@@ -155,6 +164,8 @@ final class FakeAgentSettingsEnvironment: AgentSettingsEnvironment {
     private(set) var removed: [UUID] = []
     private(set) var notificationCalls = 0
     private(set) var macsCalls = 0
+    /// 프로젝트를 물을 때 넘긴 id들
+    private(set) var projectIDsAsked: [[UUID]] = []
 
     init(store: FakeFolderStore? = FakeFolderStore()) {
         self.store = store
@@ -221,9 +232,19 @@ final class FakeAgentSettingsEnvironment: AgentSettingsEnvironment {
         return macsRead
     }
 
-    func projects() async -> [UUID: AgentFolderProject]? { projectsRead }
+    func projects(ids: [UUID]) async -> [UUID: AgentFolderProject]? {
+        projectIDsAsked.append(ids)
+        await projectsGate?.wait()
+        guard let projectsRead else { return nil }
+        // 물은 id 중 있는 것만 돌려준다: 물은 id가 답에 없으면 "없다고 확인된" 것이다
+        let asked = Set(ids)
+        return projectsRead.filter { asked.contains($0.key) }
+    }
 
-    func existingFolders(among paths: [String]) async -> Set<String> { existing ?? Set(paths) }
+    func existingFolders(among paths: [String]) async -> Set<String> {
+        await existingGate?.wait()
+        return existing ?? Set(paths)
+    }
 
     func pickFolder(
         message: String, prompt: String, rejection: String, accepts: @escaping @Sendable (String) -> Bool, reason: @escaping @Sendable (String) -> String
