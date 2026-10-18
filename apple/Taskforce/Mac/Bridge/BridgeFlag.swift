@@ -39,6 +39,20 @@ enum BridgeFlag {
         return value
     }
 
+    #if DEBUG
+    /// Debug 전용 (OA D4a2-10, D4a-22 A): `-TF_BRIDGE_CONNECT agent:claude-code` — 런타임을 시작한 뒤 그 adapter로 `connect`를 한 번 부른다. Settings › Your agents가 들어오기 전
+    /// MS-2 Mac 확인이 `agent_connections` 행을 만들 길이다. **Release에는 이 이름도 코드도 없다** (`#if DEBUG`)
+    static let connectKey = "TF_BRIDGE_CONNECT"
+
+    /// 서버 주소가 loopback인 Debug 실행에서 인자가 `agent:<이름>` 모양일 때만 그 adapter id (아니면 nil)
+    static func connectAdapter(arguments: [String: Any], isDebugBuild: Bool, apiBaseURL: URL) -> String? {
+        guard isDebugBuild, BridgeEndpointPolicy.isLoopback(apiBaseURL),
+              let value = (arguments[connectKey] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              value.wholeMatch(of: /agent:[a-z][a-z0-9-]{0,40}/) != nil else { return nil }
+        return value
+    }
+    #endif
+
     static var current: Bool {
         isEnabled(info: Bundle.main.infoDictionary, arguments: argumentDomain, isDebugBuild: AppRuntime.isDebugBuild)
     }

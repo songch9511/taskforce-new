@@ -620,7 +620,8 @@ public struct ClaudeToolGate: Sendable {
             Self.deferLocally(request, question: question, target: target, code: code, source: source)
         }
         let query = BridgeV1ToolDecisionQuery(
-            agentSessionID: context.agentSessionID, agentTaskID: context.agentTaskID, turnSeq: context.turnSeq, workspaceRealPath: context.workspaceRealPath, call: call
+            agentSessionID: context.agentSessionID, agentTaskID: context.agentTaskID, turnSeq: context.turnSeq, workspaceRealPath: context.workspaceRealPath, call: call,
+            sessionCwdRealPath: context.sessionCwdRealPath
         )
         guard BridgeV1ToolDecisionLimits.fits(query) else { return deferLocally("over_limit") }
         guard let decide else { return deferLocally("not_attached") }

@@ -127,6 +127,7 @@ public final class FakeBridgeServer: @unchecked Sendable {
     private var waiters: [UUID: CheckedContinuation<Void, Never>] = [:]
     private var registerCount = 0
     private var _eventResults: [(eventID: String, type: String, status: String)] = []
+    private var _toolDecisionResponse: [String: Any]?
     private var retryOnce: Set<String> = []
 
     /// false면 새 전달(message · answer)의 lease를 `withdrawn/write_gate_closed`로 거둔다 (cancel은 보지 않는다)
@@ -200,6 +201,9 @@ public final class FakeBridgeServer: @unchecked Sendable {
     }
 
     public var eventResults: [(eventID: String, type: String, status: String)] { lock.withLock { _eventResults } }
+
+    /// tool-decision 응답을 정한다 (`decision` · `reason` · `parse` …, `server_time`은 대역이 채운다). 정하지 않으면 `defer / server_busy`
+    public func setToolDecisionResponse(_ body: [String: Any]?) { lock.withLock { _toolDecisionResponse = body } }
 
     public func bridgeID(userID: UUID) -> String? { lock.withLock { bridges.values.first { $0.userID == userID }?.id } }
     public func secret(bridgeID: String) -> String? { lock.withLock { bridges[bridgeID]?.secret } }
@@ -546,6 +550,7 @@ public final class FakeBridgeServer: @unchecked Sendable {
         case "events": reply = events(bridgeID: bridgeID, json: json)
         case "heartbeat": reply = heartbeat(bridgeID: bridgeID, json: json)
         case "answer-local": reply = answerLocal(bridgeID: bridgeID, json: json)
+        case "tool-decision": reply = toolDecision()
         default: reply = Reply(status: 404, body: error("not_found", "route"))
         }
         let dropped = lock.withLock { dropAfter.remove(route) != nil }
@@ -555,6 +560,13 @@ public final class FakeBridgeServer: @unchecked Sendable {
 
     private func error(_ code: String, _ message: String) -> Data {
         (try? JSONSerialization.data(withJSONObject: ["error": ["code": code, "message": message]])) ?? Data()
+    }
+
+    // MARK: tool-decision (D3c-2, 시험 대역: 본문은 `requests("tool-decision")`로 읽고, 응답은 `setToolDecisionResponse`로 정한다)
+
+    private func toolDecision() -> Reply {
+        let response = lock.withLock { _toolDecisionResponse } ?? ["decision": "defer", "reason": "server_busy", "card_flags": [String]()]
+        return ok(response.merging(["server_time": iso(clock())]) { current, _ in current })
     }
 
     private func ok(_ object: [String: Any]) -> Reply {

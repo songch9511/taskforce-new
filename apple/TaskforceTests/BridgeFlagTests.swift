@@ -171,4 +171,23 @@ struct BridgeFlagTests {
             }
         }
     }
+
+    // MARK: Debug 연결 인자 (OA D4a2-10)
+
+    #if DEBUG
+    @Test func theConnectArgumentExistsOnlyInDebugOnALoopbackServerWithAnAdapterShapedValue() {
+        let local = URL(string: "http://localhost:3000")!
+        let arguments: [String: Any] = ["TF_BRIDGE_CONNECT": "agent:claude-code"]
+        #expect(BridgeFlag.connectAdapter(arguments: arguments, isDebugBuild: true, apiBaseURL: local) == "agent:claude-code")
+        #expect(BridgeFlag.connectAdapter(arguments: ["TF_BRIDGE_CONNECT": "  agent:claude-code \n"], isDebugBuild: true, apiBaseURL: local) == "agent:claude-code")
+        #expect(BridgeFlag.connectAdapter(arguments: arguments, isDebugBuild: false, apiBaseURL: local) == nil, "Release는 인자가 있어도 연결하지 않는다")
+        #expect(BridgeFlag.connectAdapter(arguments: [:], isDebugBuild: true, apiBaseURL: local) == nil)
+        for remote in ["https://api.taskforce.example", "http://192.168.0.5:3000", "http://localhost.evil.com:3000"] {
+            #expect(BridgeFlag.connectAdapter(arguments: arguments, isDebugBuild: true, apiBaseURL: URL(string: remote)!) == nil, "loopback이 아니면 연결하지 않는다: \(remote)")
+        }
+        for bad in ["", "claude-code", "agent:", "agent:Claude", "agent:claude code", "agent:claude-code; rm", "agent:" + String(repeating: "a", count: 60), "Agent:claude-code"] {
+            #expect(BridgeFlag.connectAdapter(arguments: ["TF_BRIDGE_CONNECT": bad], isDebugBuild: true, apiBaseURL: local) == nil, "\(bad.debugDescription)")
+        }
+    }
+    #endif
 }
