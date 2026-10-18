@@ -137,6 +137,52 @@ struct BridgeSecretFinalFixTests {
         await task.value
     }
 
+    // MARK: ② 늦은 응답 (계약 16.16, Astra 재검토 6)
+
+    /// 서버는 POST를 처리해 C1을 만들었지만 응답이 늦다. 그 사이 목록 조회 → Stop/Done → 늦은 `stale/not_prepared` lease(닫힘 정산)가 먼저 끝나고, 응답이 `answered`로 뒤늦게 도착한다.
+    /// 닫힘 정산은 그때 N = 0이라 M을 올리지 못했고 돌고 있는 제출 때문에 값도 지우지 못했다: 늦은 `answered`가 N만 올려 N=1 · M=0이 되면 값과 바쁨이 TTL까지 남는다
+    @Test func aClosureSettleThatArrivesBeforeTheDelayedAnsweredResponseStillEndsWithNoValueAndNotBusy() async throws {
+        let h = try BridgeHarness()
+        let created = try await S.open(h, endsAfterAsking: true)
+        let server = h.server
+        let taskID = created.taskID
+        let release = Locked<Bool>(false)
+        server.onResponse = { record in
+            // answer-local의 응답만 붙든다 (서버는 이미 처리했다)
+            if record.route == "answer-local" {
+                let deadline = Date().addingTimeInterval(20)
+                while !release.get(), Date() < deadline { try? await Task.sleep(for: .milliseconds(2)) }
+            }
+        }
+        let done = Locked<LocalSecretOutcome?>(nil)
+        let submit = Task { done.set(await S.submit(h, S.answer(created, value: S.canary()))) }
+        #expect(await h.eventually { server.commandIDs(taskID: taskID, kind: "answer").count == 1 }, "서버는 POST를 처리해 C1을 만들었다")
+        let commandID = try #require(server.commandIDs(taskID: taskID, kind: "answer").first)
+        #expect(done.get() == nil, "응답이 아직 오지 않았다")
+        // 목록 조회 → lease 직전에 Stop/Done → 늦은 stale/not_prepared (닫힘 정산)
+        server.onRequest = { record in
+            if record.route == "ack", record.json["op"] as? String == "lease" {
+                server.setCommandStep(commandID, "skipped")
+                server.setTaskState(taskID, "cancelled")
+            }
+        }
+        h.clock.jump(by: 6)
+        await h.runtime.tick()
+        server.onRequest = nil
+        #expect(await h.eventually(timeout: 5) { (try? await h.ledger.command(commandID))?.state == .stale }, "닫힘 정산이 먼저 끝났다")
+        let during = await h.secrets.contains(key: S.key(created))
+        #expect(during, "POST가 아직 돌고 있다: 그 제출의 값은 그 동안 둔다")
+        // 응답이 뒤늦게 `answered`로 도착한다
+        release.set(true)
+        #expect(await h.eventually(timeout: 10) { done.get() != nil }, "제출이 끝났다")
+        await submit.value
+        let pending = await h.secrets.hasPending
+        let busy = await h.runtime.isBusy()
+        #expect(!pending, "닫힘 정산이 먼저 왔으니 값 0 (TTL까지 남지 않는다)")
+        #expect(!busy, "N=1 · M=0으로 굳지 않는다: 바쁨 거짓")
+        #expect(h.agent.deliveredAnswers.isEmpty)
+    }
+
     // MARK: ③ put이 건너뛰어지면 옛 값을 지운다 (보안 F-5)
 
     @Test func aSkippedPutNeverLetsTheOldRestingValueGoOutForTheNewSubmission() async throws {

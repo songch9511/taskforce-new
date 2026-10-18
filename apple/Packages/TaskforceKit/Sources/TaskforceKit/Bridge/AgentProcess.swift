@@ -429,7 +429,8 @@ struct LocalAnswerBox: Sendable, CustomStringConvertible, CustomDebugStringConve
 /// 계정이 떠나거나 · 종료하거나 · 폐기되면 버린다. 덤프에 안전하다: 값은 상자에 있고 이 actor도 값을 말하지 않는다.
 /// 진행 중 표시(종료 확인의 "바쁨")는 값을 지우는 근거가 아니다 — 제출 단위로 센다 (계약 16.15): 값마다 N = 서버가 `answered`로 받은 POST 수(`duplicate`는 세지 않는다),
 /// M = 이 Mac이 정산 · 전달로 끝을 본 답 명령 수(N을 넘지 않는다), 그리고 돌고 있는 제출(put부터 결과까지)이 있으면 바쁘다: 바쁨 = 돌고 있는 제출이 있거나 N > M.
-/// 옛 명령의 정산은 M만 하나 올리므로 다른 제출의 바쁨을 끄지 못한다. 닫힘 정산(질문이 닫혔다)은 N ≤ M이고 돌고 있는 제출이 없을 때 그 task의 값을 버린다
+/// 옛 명령의 정산은 M만 하나 올리므로 다른 제출의 바쁨을 끄지 못한다. 닫힘 정산(질문이 닫혔다)은 N ≤ M이고 돌고 있는 제출이 없을 때 그 task의 값을 버린다.
+/// 돌고 있는 제출이 있어 못 지운 닫힘 정산(M으로 설명 못 한 것)은 표시해 두었다가 그 제출이 끝날 때 버린다 (계약 16.16: 지연된 `answered`가 N만 올려 굳는 것을 막는다)
 public actor LocalSecretAnswers: CustomReflectable, CustomStringConvertible {
     private struct Entry {
         let box: LocalAnswerBox
@@ -443,6 +444,8 @@ public actor LocalSecretAnswers: CustomReflectable, CustomStringConvertible {
     private var values: [LocalSecretKey: Entry] = [:]
     /// 돌고 있는 제출(put부터 결과까지, 재시도 쉬는 시간 포함)의 수. 값이 사라져도 제출이 끝날 때까지 센다
     private var running: [LocalSecretKey: Int] = [:]
+    /// 돌고 있는 제출이 있는 동안 닫힘 정산이 먼저 닿았다 (그 정산을 M으로 설명할 명령을 세지 못했고, 값은 제출 때문에 못 지웠다): 제출이 끝나면 값을 버린다 (계약 16.16)
+    private var closedWhileRunning: Set<LocalSecretKey> = []
     private var onChange: (@Sendable (Bool) -> Void)?
     private var lastInFlight = false
 
@@ -471,15 +474,19 @@ public actor LocalSecretAnswers: CustomReflectable, CustomStringConvertible {
     }
 
     /// 제출 하나가 값을 두고 돌기 시작했다 (`put` 뒤). 끝나면 `endSubmission`
+    /// (닫힘 표시는 이전 제출 몫이다: 새 제출은 닫힘 뒤에 시작했으므로 그 값의 운명은 서버의 답이 정한다)
     public func beginSubmission(key: LocalSecretKey) {
+        closedWhileRunning.remove(key)
         running[key, default: 0] += 1
         notify()
     }
 
+    /// 제출이 끝났다. 그 제출이 도는 동안 닫힘 정산이 먼저 닿았다면(`closedWhileRunning`) 이제 값을 버린다 — 늦게 온 `answered`가 N만 올려 N > M으로 굳지 않게 (값 없음 = 바쁨 거짓)
     public func endSubmission(key: LocalSecretKey) {
         if let count = running[key] {
             if count <= 1 { running.removeValue(forKey: key) } else { running[key] = count - 1 }
         }
+        if running[key] == nil, closedWhileRunning.remove(key) != nil { values.removeValue(forKey: key) }
         notify()
     }
 
@@ -500,13 +507,20 @@ public actor LocalSecretAnswers: CustomReflectable, CustomStringConvertible {
         var dropped = 0
         for key in values.keys where key.taskID == task {
             guard var entry = values[key] else { continue }
-            if entry.ended < entry.answered { entry.ended += 1 }
-            if closesQuestion, entry.answered <= entry.ended, running[key] == nil {
-                values.removeValue(forKey: key)
-                dropped += 1
-            } else {
-                values[key] = entry
+            // 센 명령(N > M)으로 설명되는 정산이면 M을 올린다. 못 올리면(M = N) 센 적 없는 명령의 정산이다 — 돌고 있는 제출의 아직 못 받은 `answered`일 수 있다
+            let explained = entry.ended < entry.answered
+            if explained { entry.ended += 1 }
+            if closesQuestion, entry.answered <= entry.ended {
+                if running[key] == nil {
+                    values.removeValue(forKey: key)
+                    closedWhileRunning.remove(key)
+                    dropped += 1
+                    continue
+                }
+                // 제출이 돌고 있어 지금은 못 지운다: 설명 못 한 닫힘이면 표시해 두고 제출이 끝날 때 버린다 (계약 16.16)
+                if !explained { closedWhileRunning.insert(key) }
             }
+            values[key] = entry
         }
         notify()
         return dropped
@@ -515,6 +529,7 @@ public actor LocalSecretAnswers: CustomReflectable, CustomStringConvertible {
     /// 전달 직전에 한 번 꺼낸다 (꺼내면 지워진다)
     public func take(key: LocalSecretKey) -> AgentAnswerValue? {
         let entry = values.removeValue(forKey: key)
+        closedWhileRunning.remove(key)
         notify()
         return entry?.box.reveal()
     }
@@ -525,6 +540,7 @@ public actor LocalSecretAnswers: CustomReflectable, CustomStringConvertible {
     @discardableResult
     public func discard(key: LocalSecretKey) -> Bool {
         let had = values.removeValue(forKey: key) != nil
+        closedWhileRunning.remove(key)
         notify()
         return had
     }
@@ -533,7 +549,10 @@ public actor LocalSecretAnswers: CustomReflectable, CustomStringConvertible {
     @discardableResult
     public func dropExpired(now: Date, ttl: TimeInterval) -> Int {
         let keys = values.filter { now.timeIntervalSince($0.value.storedAt) > ttl }.map(\.key)
-        for key in keys { values.removeValue(forKey: key) }
+        for key in keys {
+            values.removeValue(forKey: key)
+            closedWhileRunning.remove(key)
+        }
         notify()
         return keys.count
     }
@@ -550,6 +569,7 @@ public actor LocalSecretAnswers: CustomReflectable, CustomStringConvertible {
     public func clear() {
         values.removeAll()
         running.removeAll()
+        closedWhileRunning.removeAll()
         notify()
     }
 }

@@ -141,6 +141,9 @@ public final class FakeBridgeServer: @unchecked Sendable {
     /// 시험이 URL 처리 전에 끼워 넣는 비동기 훅 (예: 요청이 도착한 순간 원장을 읽어 write-ahead를 확인한다)
     public var onRequest: (@Sendable (Recorded) async -> Void)? { get { lock.withLock { _onRequest } } set { lock.withLock { _onRequest = newValue } } }
     private var _onRequest: (@Sendable (Recorded) async -> Void)?
+    /// 서버가 요청을 **처리한 뒤**, 응답을 돌려주기 전에 부른다 (응답이 늦게 도착하는 순서를 만든다: 서버 쪽 효과는 이미 났다)
+    public var onResponse: (@Sendable (Recorded) async -> Void)? { get { lock.withLock { _onResponse } } set { lock.withLock { _onResponse = newValue } } }
+    private var _onResponse: (@Sendable (Recorded) async -> Void)?
     /// 긴 대기를 실제로 붙잡아 둘 최대 시간 (시험이 멈추지 않게)
     public var longPollRealTimeCap: TimeInterval = 5
 
@@ -539,6 +542,7 @@ public final class FakeBridgeServer: @unchecked Sendable {
         default: reply = Reply(status: 404, body: error("not_found", "route"))
         }
         let dropped = lock.withLock { dropAfter.remove(route) != nil }
+        if let hook = onResponse { await hook(record) }
         return dropped ? Reply(status: 0, transportError: true) : reply
     }
 
