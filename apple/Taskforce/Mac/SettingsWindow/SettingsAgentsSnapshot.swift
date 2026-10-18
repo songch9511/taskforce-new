@@ -138,6 +138,12 @@ enum SettingsAgentsSnapshot {
             $0.folders = [("Northwind Traders · 2026 website relaunch and brand refresh for the partner program", .briefcase, "\(home)/Documents/Northwind/site", false), ("Shape launch", .rocket, projects[0].path, false), ("Acme website", .briefcase, projects[1].path, false)]
             $0.scrollEnd = true
         }
+        add("detail-folders-save-failed", .detail) {
+            $0.target = row(.ready)
+            $0.folders = folders(3)
+            $0.failure = AgentSettingsModel.Failure(action: .changeFolder(UUID()), text: AgentSettingsCopy.somethingWentWrong)
+            $0.scrollEnd = true
+        }
         add("detail-folders-missing", .detail) { $0.target = row(.ready); $0.folders = folders(3, missing: ["Acme website"]); $0.scrollEnd = true }
         add("detail-folders-remove-confirm", .detail) {
             $0.target = row(.ready)

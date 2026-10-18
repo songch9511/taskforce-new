@@ -266,35 +266,23 @@ struct SettingsAgentsHostTests {
         #expect(fixture.server.requests("register").filter { $0.method == "POST" && $0.json["reactivate"] as? Bool == true }.isEmpty, "어느 계정에도 Reconnect 등록이 가지 않았다")
     }
 
-    /// 같은 계정이라도 로그아웃 · 다시 로그인(계정 세대가 바뀜)을 거쳤으면 그 사이 누른 Reconnect는 이어지지 않는다
-    @Test func aReconnectPressedBeforeASignOutAndSignInOfTheSameAccountDoesNotContinue() async throws {
+    /// 계정 표식은 파티션(계정)과 계정 세대를 따로 따라간다: 둘 중 하나만 바뀌어도 오래 기다리기 전에 잡은 표식과 달라진다 (같은 계정이 로그아웃 · 다시 로그인한 때 포함)
+    @Test func theAccountStampFollowsThePartitionAndTheAccountGenerationSeparately() async throws {
         let alice = UUID()
+        let bob = UUID()
         let fixture = HostFixture(user: alice)
         defer { fixture.cleanup() }
-        fixture.agent.setScript(.staysRunning())
         await fixture.start()
-        _ = try #require(await fixture.message())
-        #expect(await fixture.eventually(timeout: Self.patience) { fixture.agent.startedTurns.count == 1 })
-        let env = environment(fixture)
-        fixture.agent.setIgnoreInterruptForever(true)
-        fixture.agent.setTerminateResult(.alive)
-        let clock = fixture.advancingClock()
-        #expect(await env.disconnect() == .disconnected(unresolvedProcesses: 1))
-        let gate = AgentTestGate()
-        fixture.agent.onInterrupt { _ in await gate.wait() }
-        let reconnect = Task { await env.reconnect() }
-        while !gate.arrived { try? await Task.sleep(for: .milliseconds(2)) }
-        fixture.user.value = nil
-        fixture.epoch.value += 1
+        let first = try #require(fixture.host.accountStamp)
+        #expect(fixture.host.accountStamp == first, "아무것도 바뀌지 않으면 같다")
+        fixture.epoch.value += 1 // 계정 세대만 바뀐다 (같은 계정이 로그아웃 · 다시 로그인)
+        #expect(fixture.host.accountStamp != first, "계정 세대가 바뀌었다")
+        fixture.epoch.value -= 1
+        #expect(fixture.host.accountStamp == first)
+        fixture.user.value = bob // 파티션만 바뀐다 (계정 세대는 그대로)
         await fixture.host.syncAccount()
-        fixture.user.value = alice
-        fixture.epoch.value += 1
-        await fixture.host.syncAccount()
-        gate.open()
-        let outcome = await reconnect.value
-        clock.cancel()
-        #expect(outcome == .unavailable)
-        #expect(fixture.server.requests("register").filter { $0.method == "POST" && $0.json["reactivate"] as? Bool == true }.isEmpty)
+        let second = try #require(fixture.host.accountStamp)
+        #expect(second.partitionID != first.partitionID && second.epoch == first.epoch && second != first, "파티션이 바뀌었다")
     }
 
     // MARK: 폴더 정리의 근거 (ch.21 3): 사용자가 같고 · 읽기가 성공하고 · 읽는 사이 바뀌지 않았을 때만
