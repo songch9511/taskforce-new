@@ -37,6 +37,12 @@ final class ChatRuntime {
     var isQuestionVisible: (UUID) -> Bool = { _ in false }
     /// 인용의 원문 링크를 연다 (테스트는 가짜로 바꾼다)
     var openURL: (URL) -> Void = { NSWorkspace.shared.open($0) }
+    /// 보내기 전에 작업 폴더를 묻는 시스템 폴더 창 (OA D4a2-05). 시험은 가짜 패널로 바꾼다 (실제 `NSOpenPanel`을 열지 않는다)
+    var workspacePicker: any AgentWorkspacePicking = WorkspacePicker()
+    /// 지금 계정의 폴더 등록부 + 연결 확인 (bridge가 꺼져 있으면 nil: 묻지 않는다). 시험은 가짜로 바꾼다
+    var workspaceAsking: @MainActor () -> AgentWorkspaceAsking? = { BridgeHost.shared?.workspaceAsking }
+    /// 폴더 창이 떠 있다 (두 번 눌러도 한 창)
+    private var isAskingWorkspace = false
     #if DEBUG
     /// 견본이면 가짜 서버 (스냅샷이 상태를 바꿔 가며 담는다)
     var sampleGateway: SampleChatGateway?
@@ -74,13 +80,15 @@ final class ChatRuntime {
         chat.agentConversation = conversationRoutes
         panelDesk = AgentTurnDesk(chat: chat)
         stop = AgentStopStore(conversations: conversationRoutes, sessions: sessionRoutes, scope: scope)
-        // launcher는 D4a-2가 넣는다: 지금은 없다 (Open in Terminal 알약을 그리지 않는다). 견본(`-TFEdgeSnapshotAgentChat`)만 터미널을 열지 않는 가짜를 달아 알약 모양을 Figma와 맞춰 본다
+        // launcher (OA D4a2-06): `.command` 파일을 기본 처리 앱으로 연다. 견본(`-TFEdgeSnapshotAgentChat`)만 터미널을 열지 않는 가짜를 달아 알약 모양을 Figma와 맞춰 본다.
+        // 프로세스 검사기(D4a2-07)는 이 Mac 상태가 묶은 Claude 세션 id로 프로세스를 훑는다 (메인 스레드 밖)
         #if DEBUG
-        let launcher: (any AgentTerminalLauncher)? = AgentChatSnapshot.isEnabled || QuestionSnapshot.isEnabled ? SnapshotTerminalLauncher() : nil
+        let launcher: (any AgentTerminalLauncher)? = AgentChatSnapshot.isEnabled || QuestionSnapshot.isEnabled ? SnapshotTerminalLauncher() : AgentTerminalLauncherLive.launcher()
         #else
-        let launcher: (any AgentTerminalLauncher)? = nil
+        let launcher: (any AgentTerminalLauncher)? = AgentTerminalLauncherLive.launcher()
         #endif
-        pillFlow = sessionRoutes.map { AgentSessionPillFlow(requests: $0, launcher: launcher, scope: scope) }
+        let inspector = AgentTerminalLauncherLive.inspector()
+        pillFlow = sessionRoutes.map { AgentSessionPillFlow(requests: $0, launcher: launcher, inspector: inspector, scope: scope) }
         let sessionReads = gateway as? any AgentSessionGateway
         let chatForFocus = chat
         agentTurns = sessionReads.map { AgentSessionStore(gateway: $0, scope: scope, now: now, focus: { chatForFocus.viewedAgentSessionIDs() }) }
@@ -140,6 +148,37 @@ final class ChatRuntime {
             notifications = nil
         }
         followSleep()
+    }
+
+    /// 에이전트 대화의 **첫 보내기 직전** 작업 폴더를 묻는다 (OA D4a2-05). `true`면 보내도 된다(묻지 않았거나, 골라서 등록했다). `false`면 보내지 않는다 —
+    /// 폴더 창을 취소했거나 이미 묻는 중이다. 글은 입력 칸에 그대로 둔다. 묻는 조건은 `AgentWorkspaceGate`: 세션이 아직 없음 ∧ 대상이 이 Mac의 연결 ∧ 그 프로젝트에 폴더가 없음(Ungrouped는 그 대화가 고른 폴더가 없음)
+    /// `stillCurrent`: 보내려던 곳이 아직 그대로인가 (`AgentSendTicket`): 폴더를 기다리는 동안 바뀌면 `false`
+    func prepareAgentSend(
+        conversationID: UUID, hasSession: Bool, target: AssistantTargetPick, chips: [AssistantChip], stillCurrent: @MainActor () -> Bool = { true }
+    ) async -> Bool {
+        guard !isAskingWorkspace else { return false }
+        guard target.isAgent, !hasSession, let asking = workspaceAsking() else { return true }
+        isAskingWorkspace = true
+        let gate = AgentWorkspaceSendGate(folders: asking.folders, picker: workspacePicker, isThisMac: asking.isThisMac)
+        let projects = AgentWorkspaceGate.projects(chips: chips, index: contexts?.index)
+        let outcome = await gate.prepare(conversationID: conversationID, hasSession: hasSession, target: target, projects: projects, stillCurrent: stillCurrent)
+        isAskingWorkspace = false
+        return outcome == .proceed
+    }
+
+    /// Assistant 창의 보내기 (OA D4a2-05 · Astra P2-2). 에이전트 대화의 첫 보내기 직전에는 작업 폴더를 먼저 묻는다: 취소하면 보내지 않고 글은 입력 칸에 그대로 둔다.
+    /// 묻는 동안 계정 · 창 · 대화 · 대상 · 칩 · 초안이 바뀌면 (`AgentSendTicket`) 등록도 전송도 하지 않고 초안도 지우지 않는다 — 폴더 창을 기다린 뒤 다른 대화로 보내지 않게
+    func sendFromWindow(_ model: AssistantWindowModel) async {
+        let text = model.draft
+        guard model.canSend(text) else { return }
+        if model.toAgent {
+            let ticket = model.sendTicket(account: scope.token)
+            let unchanged: @MainActor () -> Bool = { [scope] in model.sendTicket(account: scope.token) == ticket }
+            guard await prepareAgentSend(
+                conversationID: model.conversationID, hasSession: model.sessionID != nil, target: model.pick, chips: model.chips.chips, stillCurrent: unchanged
+            ), unchanged() else { return }
+        }
+        await model.send(text)
     }
 
     /// 잠자기: 자는 동안 전달 읽기 · 세션 읽기 5초 시계가 멈추고, 깨면 한 번 읽는다 (OA D4a-10 · U2-35). 세션 패널이 켜진 구성은 컨트롤러가 U2 저장소를 따로 잇는다

@@ -278,6 +278,9 @@ public enum AgentInterruptResult: Sendable, Equatable {
     case signalled
     /// 돌고 있는 실행이 없다
     case notRunning
+    /// 신호를 보냈다고 증명하지 못했다 (OA D4a2-09): 잠금을 끝내지 못했거나 · 정체를 모르거나 · 고아를 끝내지 못했다. 런타임은 "보냈다"고 적지 않는다 —
+    /// 실행을 그대로 감독 · 잠그고 중단 상태를 `unproven`으로 둔다 (ack는 `complete(sent)` 그대로: 서버 말은 "Stop requested · not confirmed")
+    case unknown
 }
 
 public enum AgentLiveness: Sendable, Equatable {
@@ -360,6 +363,25 @@ public protocol AgentProcess: Sendable {
     func stopSpawning() async
     /// 이 adapter의 실행 등록부에 띄우기 의도부터 끝 증명까지의 spawn이 하나라도 있나 (OA D3a 17장 1: 종료 판단 · Quit 확인). 기본: false
     func hasRegisteredRuns() async -> Bool
+    /// 그 세션을 잊는다 (OA D4a2-08): 건넨 비밀값의 가리개 · 열린 비밀 항목을 메모리에서 지운다. 런타임이 폐기(revoke) 때 원장의 모든 세션에 부르고, Settings의 Disconnect 성공 뒤에도 부른다. 기본: 할 일 없음
+    func forgetSession(_ sessionID: String) async
+    /// 이 Mac의 터미널이 그 세션을 이어받는 데 필요한 값 (OA D4a2-06): 이 adapter 상태(세션 폴더 상태 · 실행 파일)에서만 읽는다. 서버가 준 값은 쓰지 않는다.
+    /// 터미널에서 이어받을 수 없으면(세션이 묶이지 않았다 · 실행 파일을 못 찾았다 · 이어받는 길이 없는 adapter) nil. 기본: nil
+    func terminalSession(_ sessionID: String) async -> AgentTerminalSession?
+}
+
+/// 터미널에서 이어받는 데 필요한 adapter 쪽 값 셋 (OA D4a2-06): provider 세션 id(Claude Code `--resume <id>`) · 실행 파일의 realpath · 그 세션을 띄운 **세션 cwd**의 realpath.
+/// Claude Code는 대화 기록을 cwd별로 두므로(`~/.claude/projects/<cwd>`) 터미널도 adapter가 띄운 cwd에서 이어받는다. 작업 폴더는 런타임이 등록부에서 더한다
+public struct AgentTerminalSession: Sendable, Equatable {
+    public var providerSessionID: String
+    public var executableRealPath: String
+    public var sessionCwd: String
+
+    public init(providerSessionID: String, executableRealPath: String, sessionCwd: String) {
+        self.providerSessionID = providerSessionID
+        self.executableRealPath = executableRealPath
+        self.sessionCwd = sessionCwd
+    }
 }
 
 /// 세션의 지금 실행 (OA D3a 15장 1): 그 정체(모르면 nil)와 끝 증명
@@ -381,6 +403,8 @@ extension AgentProcess {
     public func terminateSessionRun(_ sessionID: String) async -> AgentLiveness { .unknown }
     public func stopSpawning() async {}
     public func hasRegisteredRuns() async -> Bool { false }
+    public func forgetSession(_ sessionID: String) async {}
+    public func terminalSession(_ sessionID: String) async -> AgentTerminalSession? { nil }
 }
 
 /// 새 세션의 작업 폴더를 정한다 (D4a가 채운다). 사용자 폴더를 짐작해 쓰기 권한을 주지 않는다 (Q26)
@@ -389,10 +413,24 @@ public protocol WorkspaceResolver: Sendable {
     /// 서버가 명령에 실어 준 `workspace_ref`를 이 Mac이 만든(사용자가 고른) 값으로 인정하나. 서버 값을 그대로 작업 폴더로 쓰지 않는다 (검토 반영 7장 C11):
     /// 침해된 서버가 임의 경로를 보내도 이 Mac이 고른 적 없는 폴더에서는 실행하지 않는다. 기본은 거절이다 (D4a의 폴더 레지스트리가 구현한다)
     func authorize(workspaceRef: String, session sessionID: String, adapter: String) async -> Bool
+    /// 서버로 보낼 불투명 id (OA D4a2-03): 서버에는 경로를 보내지 않는다. 이 resolver가 등록한 폴더의 id를 돌려주고, 모르는 경로는 nil이다 (그러면 `workspace_ref`를 보내지 않는다). 기본: nil
+    func workspaceRef(forPath path: String) async -> String?
+    /// 서버가 명령에 실어 준 불투명 id가 가리키는 폴더 (런타임이 `authorize` 전에 바꾼다). 모르는 id는 nil이다. 기본: nil
+    func workspacePath(forRef ref: String) async -> String?
+    /// 서버가 준 값이 `authorize`를 통과하지 못해도, 이 Mac이 그 세션에 기록한 값과 같으면 인정하나 (옛 절대 경로 세션 · 정규화 차이). 기본: true.
+    /// 등록부 resolver는 false다 — 규칙을 다시 본 `authorize`의 거절을 원장에 적힌 옛 경로로 뒤집지 못하게 한다
+    var recognizesRecordedPaths: Bool { get }
+    /// 이 세션이 이 폴더에서 턴을 시작해도 되나 (계약 13.13): 세션 폴더가 어떤 프로젝트의 지금 폴더와 겹치면(조상 · 자손) false — 겹치는 두 폴더에서 세션이 동시에 돌면 경로 lease 키가 갈린다.
+    /// false면 그 턴은 접수 전에 실패한다("Session didn't start", 새 문구 없음). 기본: true
+    func allowsTurn(in workspace: String, session sessionID: String, adapter: String) async -> Bool
 }
 
 extension WorkspaceResolver {
+    public func allowsTurn(in workspace: String, session sessionID: String, adapter: String) async -> Bool { true }
     public func authorize(workspaceRef: String, session sessionID: String, adapter: String) async -> Bool { false }
+    public func workspaceRef(forPath path: String) async -> String? { nil }
+    public func workspacePath(forRef ref: String) async -> String? { nil }
+    public var recognizesRecordedPaths: Bool { true }
 }
 
 /// 비밀값 답은 이 Mac의 메모리에만 있다 (계약 3.6): 서버에도 디스크에도 없다. D4b-m의 입력 화면이 넣고 런타임이 한 번 꺼내 간다

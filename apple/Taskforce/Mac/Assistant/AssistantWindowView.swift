@@ -230,6 +230,11 @@ struct AssistantWindowView: View {
         Button(ChatCopy.tryAgain, action: action).buttonStyle(TFButtonStyle(.secondary, size: size))
     }
 
+    /// 보내기. 에이전트 대화의 첫 보내기 직전의 작업 폴더 묻기와 그동안의 변경 확인은 런타임이 한다 (`ChatRuntime.sendFromWindow`)
+    private func send() async {
+        await runtime.sendFromWindow(model)
+    }
+
     // MARK: 입력 영역
 
     private var footer: some View {
@@ -253,7 +258,7 @@ struct AssistantWindowView: View {
                 isRunning: model.stopPresentation.showsStop,
                 canSend: model.canSend,
                 focusRequest: model.focusRequest,
-                onSend: { Task { await model.send(model.draft) } },
+                onSend: { Task { await send() } },
                 onStop: { Task { await model.stop() } },
                 onRemoveChip: { model.removeChip($0) },
                 onTargetTap: actions.toggleTargetMenu,

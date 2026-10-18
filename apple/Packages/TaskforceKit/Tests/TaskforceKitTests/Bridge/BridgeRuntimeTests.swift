@@ -41,7 +41,7 @@ struct BridgeRuntimeTests {
         #expect(h.server.eventResults.allSatisfy { $0.status == "applied" })
         #expect(try await h.ledger.outboxRows().isEmpty, "응답의 accepted_event_ids만 outbox를 지운다")
         let session = try #require(h.server.sessionState(created.sessionID))
-        #expect(session.externalSessionID == "fake-session-1" && session.workspaceRef == "workspace-fake")
+        #expect(session.externalSessionID == "fake-session-1" && session.workspaceRef == nil, "경로는 서버에 가지 않는다 (D4a2-03): 등록하지 않은 폴더는 workspace_ref가 없다")
     }
 
     @Test func eventIDsAreTaskScopedSeqIDsAndSessionBoundUsesTheSessionScopedID() async throws {
