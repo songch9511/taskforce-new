@@ -86,6 +86,16 @@
    "expected": "Test Mac"
   },
   {
+   "name": "a run of spaces before a combining mark collapses by code point",
+   "raw": "Test  ́Mac",
+   "expected": "Test ́Mac"
+  },
+  {
+   "name": "a space before a combining mark at the edge is trimmed like the server does",
+   "raw": " ́Mac  ",
+   "expected": "́Mac"
+  },
+  {
    "name": "tabs and newlines",
    "raw": "Test \t \n\r Mac",
    "expected": "Test Mac"

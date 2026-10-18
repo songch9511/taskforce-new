@@ -378,15 +378,16 @@ public actor BridgeRuntime {
 
     /// 계정 삭제: 살아 있는 턴을 모두 중단한다 (원장 · 자격은 호출한 쪽이 지운다, Q22).
     /// 돌려주는 값은 **끝내지 못했거나 끝을 증명하지 못한 프로세스 수**다: 원장을 지우면 그 정체(pid · marker)도 사라져 감독 밖 writer가 남을 수 있으므로, 호출한 쪽이 정리가 덜 됐다고 알린다 (검토 반영 2 8장 6)
+    /// `reason`은 부르는 쪽이 넘기는 로그 사유 코드다 (계정 삭제는 기본값 `account_deleted`, Settings의 Disconnect는 `disconnect`): 사고 분석에서 둘이 섞이지 않게
     @discardableResult
-    public func interruptLiveTurns() async -> Int {
+    public func interruptLiveTurns(reason: String = "account_deleted") async -> Int {
         await stopSpawning()
         await secrets.clear()
-        await interruptAll(reason: "account_deleted")
+        await interruptAll(reason: reason)
         await endRemainingRuns()
         await settleOrphans() // 감독 밖에 남은 프로세스도 끝낸다 (원장을 지우기 전에 감독 밖 writer를 남기지 않는다)
         let unresolved = Set(supervised.keys).union(orphanLiveness.keys).count
-        if unresolved > 0 { log.log("account_deleted_unresolved", ["count": .count(unresolved)]) }
+        if unresolved > 0 { log.log("\(reason)_unresolved", ["count": .count(unresolved)]) }
         return unresolved
     }
 

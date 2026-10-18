@@ -26,9 +26,13 @@ public enum DeviceName {
             default: scalars.append(scalar)
             }
         }
-        var text = String(scalars).precomposedStringWithCanonicalMapping
-        while text.contains("  ") { text = text.replacingOccurrences(of: "  ", with: " ") }
-        text = text.trimmingCharacters(in: CharacterSet(charactersIn: " "))
+        // 공백 덩어리는 코드 포인트 단위로 하나로 합친다 (서버 `/ {2,}/`): Swift의 문자열 비교는 글자소(공백 + 결합 문자 = 한 글자)로 보므로 `replacingOccurrences`를 쓰지 않는다
+        var collapsed = String.UnicodeScalarView()
+        for scalar in String(scalars).precomposedStringWithCanonicalMapping.unicodeScalars {
+            if scalar == " ", collapsed.last == " " { continue }
+            collapsed.append(scalar)
+        }
+        var text = String(collapsed).trimmingCharacters(in: CharacterSet(charactersIn: " "))
         var kept = ""
         var points = 0
         for character in text {

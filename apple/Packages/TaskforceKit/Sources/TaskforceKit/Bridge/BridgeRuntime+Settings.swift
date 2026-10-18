@@ -161,13 +161,14 @@ extension BridgeRuntime {
                 return .failed(failure)
             }
         }
-        // 응답을 기다리는 사이 계정이 바뀌었다: 이 Mac에서 바꾸지 않는다 (옛 계정이 돌아오면 다음 heartbeat의 403이 같은 정리를 한다)
-        guard isCurrent(gen) else {
+        // 응답을 기다리는 사이 계정이 바뀌었다(세대가 달라졌다): 이 Mac에서 바꾸지 않는다 (옛 계정이 돌아오면 다음 heartbeat의 403이 같은 정리를 한다).
+        // 늦음은 **계정 세대만** 본다: 그 사이 다른 요청의 403이 먼저 `handleRevoked()`로 네트워크를 껐어도(세대는 그대로) 서버가 폐기를 받았으니 정리는 전부 한다
+        guard gen == generation else {
             log.log("settings_agent_disconnect", ["result": .code("late")])
             return .failed(.other)
         }
         // 2. 이 Mac의 정리
-        let unresolved = await interruptLiveTurns()
+        let unresolved = await interruptLiveTurns(reason: "disconnect")
         await forgetSessions()
         await secrets.clear()
         do {

@@ -175,6 +175,51 @@ struct AgentSettingsRuntimeTests {
         #expect(h.server.requests.count == before, "끊은 뒤 heartbeat · 목록 0")
     }
 
+    /// ch.21 1: DELETE가 성공했는데 그 응답보다 다른 요청(heartbeat)의 403이 먼저 처리돼 네트워크가 꺼져 있어도, 정리는 전부 한다 (늦음은 계정 세대만 본다)
+    @Test func aRevokeAnswerThatComesAfterAnotherRequestsForbiddenStillCleansUpEverything() async throws {
+        let (h, _, log, created) = try await runningHarness()
+        let credentials = h.credentials
+        let partition = h.partition.id
+        let runtime = h.runtime
+        let server = h.server
+        let clock = h.clock
+        let bridge = h.bridgeID
+        await h.secrets.put(key: LocalSecretKey(taskID: created.taskID, requestID: "req-1"), value: AgentAnswerValue(text: "canary"))
+        h.server.onRequest = { record in
+            guard record.route == "register", record.method == "DELETE" else { return }
+            // 응답을 기다리는 사이 다른 요청이 403을 먼저 받았다: 상태는 revoked, 네트워크는 꺼진다 (계정 세대는 그대로)
+            server.revoke(bridgeID: bridge)
+            clock.jump(by: 40)
+            await runtime.tick()
+        }
+        let outcome = await h.runtime.disconnect()
+        #expect(outcome == .disconnected(unresolvedProcesses: 0), "서버가 폐기를 받았으니 정리를 끝까지 한다: \(outcome)")
+        #expect(log.lines.contains { $0.hasPrefix("stopSpawning") }, "끝내기(stopSpawning)까지 갔다: \(log.lines)")
+        #expect(try credentials.secret(partition: partition) == nil, "장치 secret을 지웠다")
+        #expect(try credentials.deviceID(partition: partition) != nil, "device_id는 둔다")
+        #expect(await h.secrets.hasPending == false)
+        #expect(await h.runtime.status == .revoked)
+        #expect(h.agent.liveRunCount == 0)
+        #expect(await h.runtime.shuttingDown, "호스트가 이 런타임을 놓고 새로 만들 수 있다 (stopSpawning이 켜졌다)")
+    }
+
+    /// ch.21 8: 로그 사유는 부르는 쪽이 넘긴다 (Disconnect가 `account_deleted`로 남지 않는다)
+    @Test func theInterruptReasonInTheLogIsTheCallersNotAlwaysAccountDeleted() async throws {
+        let (h, _, _, _) = try await runningHarness()
+        let worker = advancing(h)
+        _ = await h.runtime.disconnect()
+        worker.cancel()
+        let interrupts = h.log.lines.filter { $0.hasPrefix("interrupt_all") }
+        #expect(interrupts.contains { $0.contains("disconnect") }, "Disconnect의 사유: \(h.log.lines)")
+        #expect(!h.log.lines.contains { $0.contains("account_deleted") }, "계정 삭제로 남지 않는다")
+        // 계정 삭제 경로는 지금 그대로다
+        let (g, _, _, _) = try await runningHarness()
+        let worker2 = advancing(g)
+        _ = await g.runtime.interruptLiveTurns()
+        worker2.cancel()
+        #expect(g.log.lines.contains { $0.hasPrefix("interrupt_all") && $0.contains("account_deleted") })
+    }
+
     @Test func aRevokeThatFailsChangesNothingOnThisMac() async throws {
         for (label, failure, expected) in [
             ("서버 오류", FakeBridgeServer.Failure(status: 500), AgentSettingsFailure.other),

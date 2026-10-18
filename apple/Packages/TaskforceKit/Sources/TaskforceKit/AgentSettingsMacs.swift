@@ -72,3 +72,35 @@ extension TaskforceReads {
         try await rows(supabase.from("bridges").select(AgentMacRecord.columns).eq("status", value: "active"))
     }
 }
+
+// 폴더 줄의 프로젝트 이름 읽기 (Folders, 7장): 같은 RLS 읽기 확장에 둔다
+extension TaskforceReads {
+    private static let projectIDChunk = 100
+
+    /// 그 id의 범위(프로젝트)만 직접 묻는다 (RLS 본인 행, 보관된 것도). 이름순 500 목록으로 판단하지 않는다: 등록된 폴더의 프로젝트가 "없다"고 확인하려면 물은 id가 답에 없어야 하고,
+    /// 501개 이상에서도 물은 id는 하나도 빠지지 않는다 (100개씩 묶어 묻는다). 하나라도 실패하면 던진다 — 부분 답으로 없다고 판단하지 않는다
+    public func workContexts(ids: [UUID]) async throws -> [WorkContext] {
+        let unique = Array(Set(ids))
+        guard !unique.isEmpty else { return [] }
+        var result: [WorkContext] = []
+        for start in stride(from: 0, to: unique.count, by: Self.projectIDChunk) {
+            let chunk = unique[start..<min(start + Self.projectIDChunk, unique.count)].map(\.lowercased)
+            result += try await contexts(inIDs: chunk)
+        }
+        return result
+    }
+
+    /// `work_contexts.icon` · `version` 열이 아직 없는 DB(마이그레이션 전)면 그 열 없이 다시 읽는다 (`workContexts()`와 같은 규칙)
+    private func contexts(inIDs chunk: [String]) async throws -> [WorkContext] {
+        func read(_ columns: String) async throws -> [WorkContext] {
+            try await rows(supabase.from("work_contexts").select(columns).in("id", values: chunk))
+        }
+        if missingContextIcon.isSet { return try await read(WorkContext.columnsWithoutIcon) }
+        do {
+            return try await read(WorkContext.columns)
+        } catch let error as PostgrestError where error.code == Self.undefinedColumn {
+            missingContextIcon.set()
+            return try await read(WorkContext.columnsWithoutIcon)
+        }
+    }
+}
