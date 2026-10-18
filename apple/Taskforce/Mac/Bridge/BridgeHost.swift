@@ -266,11 +266,11 @@ final class BridgeHost {
         await task.value
     }
 
-    /// 보류한 런타임이 있으면 남은 프로세스를 다시 끝내 보고(멱등: 새 실행은 이미 막혔다), 모두 끝났으면 바꾼다 (Reconnect 앞에서 부른다).
-    /// 끝나지 않았으면 그대로 둔다: 그 런타임은 다시 쓰지 않는다 (Reconnect는 실패 줄로 끝난다)
+    /// 보류한 런타임이 있으면 남은 프로세스를 다시 끝내 보고(멱등: 새 실행은 이미 막혔다) 바꾸려 해 본다 (Reconnect 앞에서 부른다).
+    /// 바꿀지는 `performRenew`가 정한다: 아직 끝나지 않았으면 그대로 둔다 — 그 런타임은 다시 쓰지 않는다 (Reconnect는 실패 줄로 끝난다)
     func renewRetiredRuntimeIfIdle() async {
         guard let id = activePartitionID, let entry = entries[id], retiring.contains(entry.id) else { return }
-        guard await entry.runtime.interruptLiveTurns() == 0 else { return }
+        _ = await entry.runtime.interruptLiveTurns()
         await renewRuntime(replacing: entry.runtime)
     }
 

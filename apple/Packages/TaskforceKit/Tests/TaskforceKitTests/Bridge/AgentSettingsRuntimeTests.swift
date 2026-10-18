@@ -356,6 +356,21 @@ struct AgentSettingsRuntimeTests {
         h.agent.killEverything()
     }
 
+    @Test func aReconnectThatFailsAtTheServerIsSentOnceAndWordedByWhereItStopped() async throws {
+        for (failure, expected) in [
+            (FakeBridgeServer.Failure(status: 0, transport: true), AgentConnectOutcome.failed(.offline)),
+            (FakeBridgeServer.Failure(status: 500), .failed(.other)),
+            (FakeBridgeServer.Failure(status: 429, headers: ["Retry-After": "60"]), .failed(.other)),
+        ] {
+            let h = try await idle()
+            h.server.failNext("register", failure)
+            let before = registers(h).count
+            #expect(await h.runtime.reconnectAgent(Self.adapter) == expected)
+            #expect(registers(h).count == before + 1, "합치지 않고 보낸 내 요청의 실패는 되풀이하지 않는다 (사용자가 다시 누른다)")
+            #expect(await h.runtime.pendingConnect.isEmpty, "실패한 Reconnect를 뒤의 자동 등록에 남기지 않는다")
+        }
+    }
+
     @Test func aReconnectThatJoinedAFailingInFlightRegistrationIsSentAgainAsReactivate() async throws {
         let (h, _, _, _) = try await runningHarness()
         _ = await h.runtime.disconnect()

@@ -7,6 +7,8 @@ import Testing
 struct DeviceNameTests {
     // MARK: 정규화: 서버와 같은 표
 
+    private func scalars(_ text: String?) -> [UInt32]? { text.map { $0.unicodeScalars.map(\.value) } }
+
     /// 서버 시험(`swift-fixtures.test.ts`)이 같은 파일(`Fixtures/bridge-v1/device-name.json`)을 `normalizeDeviceName`으로 읽는다
     @Test func theSharedTableNormalizesLikeTheServer() throws {
         let cases = try #require(try BridgeFixtures.file("device-name")["cases"] as? [[String: Any]])
@@ -15,7 +17,8 @@ struct DeviceNameTests {
             let name = try #require(item["name"] as? String)
             let raw = try #require(item["raw"] as? String)
             let expected = item["expected"] as? String
-            #expect(DeviceName.normalized(raw) == expected, "\(name): \(raw.unicodeScalars.map { String($0.value, radix: 16) })")
+            // Swift의 `==`는 정준 동등을 같다고 본다 ("e\u{301}" == "\u{e9}"): NFC까지 증명하려면 코드 포인트로 비교한다
+            #expect(scalars(DeviceName.normalized(raw)) == scalars(expected), "\(name): \(raw.unicodeScalars.map { String($0.value, radix: 16) })")
         }
     }
 
@@ -30,7 +33,7 @@ struct DeviceNameTests {
         let cases = try #require(try BridgeFixtures.file("device-name")["cases"] as? [[String: Any]])
         for item in cases {
             guard let expected = item["expected"] as? String else { continue }
-            #expect(DeviceName.normalized(expected) == expected, "\(expected)")
+            #expect(scalars(DeviceName.normalized(expected)) == scalars(expected), "\(expected)")
         }
     }
 

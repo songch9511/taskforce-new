@@ -145,6 +145,7 @@ struct SettingsAgentsHostTests {
         let outcome = await env.disconnect()
         #expect(outcome == .disconnected(unresolvedProcesses: 1), "끝내지 못한 프로세스 수")
         #expect(fixture.host.activeRuntime === old, "감독 밖 writer를 아는 유일한 원장이라 바로 놓지 않는다")
+        #expect(await old.status == .revoked, "끝내지 못한 프로세스가 남은 런타임은 멈추지 않는다 (감독을 이어 간다)")
         #expect(await env.reconnect() == .unavailable, "끝나지 않았으면 Reconnect는 실패 줄로 끝난다 (옛 런타임은 다시 쓰지 않는다)")
         #expect(fixture.host.activeRuntime === old)
         // 프로세스가 사라졌다: 다음 Reconnect가 남은 것을 다시 끝내 보고 새 런타임으로 바꾼다
@@ -153,6 +154,50 @@ struct SettingsAgentsHostTests {
         #expect(await env.reconnect() == .connected)
         clock.cancel()
         #expect(fixture.host.activeRuntime !== old && fixture.host.runtimeCount == 1)
+    }
+
+    @Test func whenTheLeftoverProcessEndsByItselfTheHostReplacesTheRuntimeWithoutAReconnect() async throws {
+        let fixture = HostFixture()
+        defer { fixture.cleanup() }
+        // 5000초 뒤 스스로 끝나는 실행 (수동 시계를 넘기면 끝난다)
+        fixture.agent.setScript(.init([
+            .sessionBound(external: "fake-session-1", workspace: "workspace-fake"), .accepted, .progress, .wait(5000), .end(AgentExit(code: 0)),
+        ]))
+        await fixture.start()
+        _ = try #require(await fixture.message())
+        #expect(await fixture.eventually { fixture.agent.startedTurns.count == 1 })
+        let env = environment(fixture)
+        let old = try #require(fixture.host.activeRuntime)
+        fixture.agent.setIgnoreInterruptForever(true)
+        fixture.agent.setTerminateResult(.alive)
+        let clock = fixture.advancingClock()
+        #expect(await env.disconnect() == .disconnected(unresolvedProcesses: 1))
+        #expect(fixture.host.activeRuntime === old, "끝내지 못한 프로세스가 남아 바로 바꾸지 않는다")
+        // 프로세스가 스스로 끝났다: Reconnect를 누르지 않아도 호스트가 보류했던 런타임을 바꾼다
+        fixture.clock.jump(by: 6000)
+        let replaced = await fixture.eventually { fixture.host.activeRuntime !== old && fixture.host.runtimeCount == 1 }
+        clock.cancel()
+        #expect(replaced, "끝난 뒤 이어서 바꾼다")
+    }
+
+    // MARK: 마무리 모드
+
+    @Test func aDrainRuntimeIsNeverHandedToTheSettingsActions() async throws {
+        let fixture = HostFixture(enabled: false)
+        defer { fixture.cleanup() }
+        let userID = try #require(fixture.user.value)
+        let partition = BridgePartition(apiBaseURL: fixture.server.baseURL, userID: userID)
+        let ledger = try BridgeLedger(directory: partition.directory(in: fixture.root))
+        try await ledger.saveCommand(BridgeCommandRecord(
+            commandID: "c1", kind: "message", agentSessionID: "s", agentTaskID: "t", turnSeq: 1, cursor: 1, state: .leased, stateAt: fixture.clock.now
+        ))
+        await ledger.close()
+        await fixture.start()
+        #expect(fixture.host.runtimeCount == 1 && fixture.host.activeRuntime != nil, "마무리 모드 런타임이 있다")
+        #expect(fixture.host.activeAgentRuntime == nil, "마무리 모드는 새 등록 · Connect 0이라 설정 동작에 내주지 않는다")
+        let env = environment(fixture)
+        #expect(!env.canRunAgents)
+        #expect(await env.connect() == .unavailable && fixture.server.registerAttempts == 0)
     }
 
     // MARK: 다른 Mac 지우기 (6.4)

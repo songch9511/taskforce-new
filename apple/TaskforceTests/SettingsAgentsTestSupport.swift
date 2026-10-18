@@ -2,7 +2,8 @@ import Foundation
 @testable import TaskforceKit
 @testable import Taskforce
 
-/// 한 호출을 붙잡아 두는 문 (눌림 · 늦은 응답 시험): `wait()`는 `open()`까지 멈춘다
+/// 한 호출을 붙잡아 두는 문 (눌림 · 늦은 응답 시험): 처음 온 `wait()`가 `open()`까지 멈춘다.
+/// 겹쳐 온 두 번째 호출은 기다리지 않는다: 막아야 할 호출이 새어 나가도 시험이 멈추지 않고 호출 수로 빨개진다
 final class AgentTestGate: @unchecked Sendable {
     private let lock = NSLock()
     private var waiter: CheckedContinuation<Void, Never>?
@@ -12,7 +13,11 @@ final class AgentTestGate: @unchecked Sendable {
     var arrived: Bool { lock.withLock { arrivedFlag } }
 
     func wait() async {
-        lock.withLock { arrivedFlag = true }
+        let first = lock.withLock { () -> Bool in
+            defer { arrivedFlag = true }
+            return !arrivedFlag
+        }
+        guard first else { return }
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             let resumeNow = lock.withLock { () -> Bool in
                 if opened { return true }
