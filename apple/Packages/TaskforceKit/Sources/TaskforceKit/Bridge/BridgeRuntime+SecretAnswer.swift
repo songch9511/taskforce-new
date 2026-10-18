@@ -139,6 +139,30 @@ extension BridgeRuntime {
     /// 서버에서도 원장에서도 끝인 task 상태. `failed`는 넣지 않는다: 답 명령이 `not_received`로 정산되면 서버는 질문을 복원하는데 로컬 task만 `failed`로 남는다 (재검토 1)
     static let terminalTaskStates: Set<String> = ["cancelled"]
 
+    // MARK: 닫힘 정산의 분류 (Astra 최종 점검, 서버 SQL에서 도출)
+
+    // 서버가 질문을 되살리는 길은 둘뿐이고 둘 다 "run이 queued · running이고 취소 요청이 없고 답한 질문이 남아 있을 때"다:
+    //   · `settle_bridge_command`의 결과 확인 `not_received` (`20261118000000_bridge_commands.sql:393-395`)
+    //   · `withdraw_bridge_command`의 `stale_answer`가 아닌 모든 사유 (`20261127000000_bridge_device_name.sql:78-81`)
+    // 되살림 뒤의 새 답은 사용자가 방금 입력한 값이다: 이 Mac이 조건(서버 상태)을 볼 수 없는 정산으로 그 값을 지우면 답이 사라진다(전달 0).
+    // 그래서 **서버가 되살릴 수 없다고 SQL이 보이는 정산만** 닫힘으로 본다. 확실하지 않으면 되살림 쪽으로 보고 값을 둔다 (남는 것은 P3, 답 손실은 막는다).
+    // 닫힘(확실): `withdrawn/stale_answer`(되살림 제외 `:79`, 단계 `skipped` `:73`) · `withdrawn/action_closed`(Done: task를 취소하고 run을 stopped로 닫는다, `bridge_commands.sql:227-234`,
+    //   run이 닫히면 되살림 조건 `r.state in ('queued','running')`이 거짓) · `stale/run_closed`(run이 이미 닫혔다, `bridge_commands.sql:224`).
+    // 되살림 또는 모름: 그 밖의 `withdrawn`(write_gate_closed · expired · session_closed · session_external · not_connected · unsupported, `bridge_commands.sql:241-262,348`) ·
+    //   `stale/not_prepared`(Stop/Done이 단계를 건너뛴 경우 `20261128000000_agent_delivery_fixes.sql:86-92`와 앞선 정산이 단계를 failed로 둔 되살림 경우를 가를 수 없다, `bridge_commands.sql:222,280`) ·
+    //   그 밖의 stale(heartbeat_first · policy_changed · write_gate_closed · wrong_state · 모르는 사유: 상태를 바꾸지 않는 일시 거절) · 404(서버가 그 명령을 모른다, `bridge_commands.sql:213`) ·
+    //   거절(declined: 결과 확인 `not_received`) · 결과 확인.
+
+    /// lease `withdrawn`이 서버가 질문을 되살리지 않고 확실히 닫는 사유인가
+    static func closesQuestion(withdrawn reason: BridgeV1WithdrawnReason) -> Bool {
+        reason == .staleAnswer || reason == .actionClosed
+    }
+
+    /// lease `stale`이 run이 이미 닫혔다는 확실한 닫힘인가
+    static func closesQuestion(stale reason: BridgeV1StaleReason?) -> Bool {
+        reason == .runClosed
+    }
+
     /// 정산 때 버린다: 요청 id를 아는 정산 (닫기 · 전달 끝)
     func settleSecret(taskID: String, requestID: String) async {
         await secrets.discard(key: LocalSecretKey(taskID: taskID, requestID: requestID))

@@ -375,6 +375,13 @@ public final class FakeBridgeServer: @unchecked Sendable {
 
     private var dropAfter: Set<String> = []
     private var staleOnce: [String: String] = [:]
+    private var withdrawnOnce: [String: String] = [:]
+
+    /// 이 명령의 다음 lease 요청 하나에 `withdrawn/<reason>`을 준다. 서버 SQL(`withdraw_bridge_command`, `20261127000000_bridge_device_name.sql:63-84`)처럼 답 명령의 단계를 거두고,
+    /// `stale_answer` · `action_closed`가 아니면 질문을 `awaiting_answer`로 되살린다 (`:79-81`). `action_closed`(Done)는 task를 취소한다
+    public func withdrawOnNextLease(_ commandID: String, reason: String) {
+        lock.withLock { withdrawnOnce[commandID] = reason }
+    }
 
     /// 이 명령의 다음 lease 요청 하나에 `stale/<reason>`을 준다 (`heartbeat_first` · `policy_changed` 재시도 시험)
     public func staleOnNextLease(_ commandID: String, reason: String) {
@@ -676,6 +683,18 @@ public final class FakeBridgeServer: @unchecked Sendable {
                 leaseCounts[commandID, default: 0] += 1
                 // 시험이 정한 한 번짜리 stale (예: `policy_changed`): 단계는 바꾸지 않는다
                 if let reason = staleOnce.removeValue(forKey: commandID) { return ok(["status": "stale", "reason": reason]) }
+                // 시험이 정한 한 번짜리 withdrawn: 서버가 단계를 거두고 (사유에 따라) 질문을 되살린다
+                if let reason = withdrawnOnce.removeValue(forKey: commandID) {
+                    command.step = reason == "stale_answer" ? .skipped : .failed
+                    commands[commandID] = command
+                    if reason == "action_closed" {
+                        tasks[command.taskID]?.state = "cancelled"
+                    } else if reason != "stale_answer", command.kind == "answer", _restoresQuestionOnNotReceived {
+                        tasks[command.taskID]?.state = "awaiting_answer"
+                        tasks[command.taskID]?.openQuestion?.answeredStepID = nil
+                    }
+                    return ok(["status": "withdrawn", "reason": reason])
+                }
                 // 3.3 4: 단계가 calling이고 lease_owner가 같으면 replay (만료 연장 0, 쓰기 0). 지금 gate를 다시 본다 (정정 ⑨)
                 if command.step == .calling, command.leaseOwner == owner {
                     if !_gateOpen, command.kind != "cancel" { return ok(["status": "stale", "reason": "write_gate_closed"]) }

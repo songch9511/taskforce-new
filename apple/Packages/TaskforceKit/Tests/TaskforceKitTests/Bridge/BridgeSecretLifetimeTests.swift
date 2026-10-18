@@ -91,53 +91,66 @@ struct BridgeSecretLifetimeTests {
         #expect(await h.secrets.contains(key: S.key(created)))
     }
 
-    // MARK: 정산 (계약 16.14 · 16.15): 닫힘 종류(withdrawn · stale/not_prepared · 404 · declined)는 끝나지 않은 다른 제출이 없으면 값을 버린다. 그 밖의 정산은 값을 두고 M만 올린다
+    // MARK: 정산 (계약 16.14 · 16.15 · 최종 점검): 서버가 질문을 되살리지 않고 **확실히 닫는** 정산만 (끝나지 않은 다른 제출이 없으면) 값을 버린다.
+    // 되살릴 수 있거나 모르는 정산은 값을 둔다 (남는 것은 P3, 사용자 답을 잃는 것은 막는다)
 
-    @Test func aWithdrawnAnswerCommandDropsTheValueAndIsNotBusy() async throws {
-        let h = try BridgeHarness()
-        let created = try await S.open(h, endsAfterAsking: true)
-        #expect(await S.submit(h, S.answer(created, value: S.canary())) == .sent)
-        let busyBefore = await h.runtime.isBusy()
-        #expect(busyBefore, "답 명령이 진행 중이면 바쁘다")
-        h.server.gateOpen = false // lease가 withdrawn/write_gate_closed로 거둔다
-        h.clock.jump(by: 6)
-        _ = await h.runtime.poll(wait: 0, reason: .heartbeat)
-        #expect(h.agent.deliveredAnswers.isEmpty)
-        let pending = await h.secrets.hasPending
-        #expect(!pending, "withdrawn은 닫힘 정산이다: 끝나지 않은 다른 제출이 없으니 값을 버린다")
-        let busy = await h.runtime.isBusy()
-        #expect(!busy)
-    }
-
-    @Test func aLease404ForTheAnswerCommandDropsTheValueAndIsNotBusy() async throws {
-        let h = try BridgeHarness()
-        let created = try await S.open(h, endsAfterAsking: true)
-        #expect(await S.submit(h, S.answer(created, value: S.canary())) == .sent)
-        let busyBefore = await h.runtime.isBusy()
-        #expect(busyBefore)
-        h.server.failNext("ack", .init(status: 404)) // 서버가 그 명령을 모른다 (lease 404)
-        h.clock.jump(by: 6)
-        _ = await h.runtime.poll(wait: 0, reason: .heartbeat)
-        #expect(h.agent.deliveredAnswers.isEmpty)
-        let pending = await h.secrets.hasPending
-        #expect(!pending, "404도 닫힘 정산이다")
-        let busy = await h.runtime.isBusy()
-        #expect(!busy)
-    }
-
-    @Test func aStaleAnswerCommandLeavesTheValueRestingAndNotBusy() async throws {
-        let h = try BridgeHarness()
-        let created = try await S.open(h, endsAfterAsking: true)
+    /// 값을 내보낸 뒤 그 답 명령의 lease가 `configure`가 정한 정산을 받게 한다
+    private func settleTheLease(_ h: BridgeHarness, _ created: FakeBridgeServer.Created, configure: (FakeBridgeServer, String) -> Void) async throws {
         #expect(await S.submit(h, S.answer(created, value: S.canary())) == .sent)
         let commandID = try #require(h.server.commandIDs(taskID: created.taskID, kind: "answer").first)
-        h.server.staleOnNextLease(commandID, reason: "run_closed")
+        let busyBefore = await h.runtime.isBusy()
+        #expect(busyBefore, "답 명령이 진행 중이면 바쁘다")
+        configure(h.server, commandID)
         h.clock.jump(by: 6)
         _ = await h.runtime.poll(wait: 0, reason: .heartbeat)
         #expect(h.agent.deliveredAnswers.isEmpty)
-        let rests = await h.secrets.contains(key: S.key(created))
-        #expect(rests)
-        let busy = await h.runtime.isBusy()
-        #expect(!busy)
+    }
+
+    @Test func theSettleKindsThatTheServerDefinitelyClosesDropTheValueAndAreNotBusy() async throws {
+        // 서버 SQL: withdraw_bridge_command(…, 'stale_answer')는 되살리지 않는다 (`20261127000000_bridge_device_name.sql:79`), action_closed는 run을 stopped로 닫는다 (`bridge_commands.sql:227-234`),
+        // run_closed는 run이 이미 닫혔다 (`bridge_commands.sql:224`): 되살림은 run이 queued · running일 때만 (`bridge_commands.sql:393`, `20261127000000_bridge_device_name.sql:80`)
+        let kinds: [(String, (FakeBridgeServer, String) -> Void)] = [
+            ("withdrawn/stale_answer", { $0.withdrawOnNextLease($1, reason: "stale_answer") }),
+            ("withdrawn/action_closed", { $0.withdrawOnNextLease($1, reason: "action_closed") }),
+            ("stale/run_closed", { $0.staleOnNextLease($1, reason: "run_closed") }),
+        ]
+        for (name, configure) in kinds {
+            let h = try BridgeHarness()
+            let created = try await S.open(h, endsAfterAsking: true)
+            try await settleTheLease(h, created, configure: configure)
+            let pending = await h.secrets.hasPending
+            #expect(!pending, Comment(rawValue: "\(name): 확실한 닫힘이니 값 0"))
+            let busy = await h.runtime.isBusy()
+            #expect(!busy, Comment(rawValue: name))
+        }
+    }
+
+    @Test func theSettleKindsThatTheServerMayRestoreOrWeCannotTellApartKeepTheValueAndAreNotBusy() async throws {
+        // withdraw_bridge_command의 그 밖의 사유는 조건이 맞으면 질문을 되살린다 (`20261127000000_bridge_device_name.sql:78-81`), 결과 확인 not_received도 (`bridge_commands.sql:393-395`).
+        // stale/not_prepared는 Stop/Done이 단계를 건너뛴 경우(`20261128000000_agent_delivery_fixes.sql:86-92`)와 앞선 정산이 단계를 failed로 둔 경우(되살림)를 가르지 못한다 (`bridge_commands.sql:222`).
+        // 404는 서버가 그 명령을 모른다는 것뿐이다. 모르는 사유도 같다
+        let kinds: [(String, (FakeBridgeServer, String) -> Void)] = [
+            ("withdrawn/write_gate_closed", { $0.withdrawOnNextLease($1, reason: "write_gate_closed") }),
+            ("withdrawn/expired", { $0.withdrawOnNextLease($1, reason: "expired") }),
+            ("withdrawn/session_closed", { $0.withdrawOnNextLease($1, reason: "session_closed") }),
+            ("withdrawn/session_external", { $0.withdrawOnNextLease($1, reason: "session_external") }),
+            ("withdrawn/not_connected", { $0.withdrawOnNextLease($1, reason: "not_connected") }),
+            ("withdrawn/something_new", { $0.withdrawOnNextLease($1, reason: "something_new") }),
+            ("stale/not_prepared", { $0.staleOnNextLease($1, reason: "not_prepared") }),
+            ("stale/write_gate_closed", { $0.staleOnNextLease($1, reason: "write_gate_closed") }),
+            ("stale/wrong_state", { $0.staleOnNextLease($1, reason: "wrong_state") }),
+            ("stale/something_new", { $0.staleOnNextLease($1, reason: "something_new") }),
+            ("404", { server, _ in server.failNext("ack", .init(status: 404)) }),
+        ]
+        for (name, configure) in kinds {
+            let h = try BridgeHarness()
+            let created = try await S.open(h, endsAfterAsking: true)
+            try await settleTheLease(h, created, configure: configure)
+            let rests = await h.secrets.contains(key: S.key(created))
+            #expect(rests, Comment(rawValue: "\(name): 되살릴 수 있거나 모르니 값을 둔다"))
+            let busy = await h.runtime.isBusy()
+            #expect(!busy, Comment(rawValue: "\(name): 쉬는 값은 바쁘지 않다"))
+        }
     }
 
     @Test func closingTheRequestDropsItsValue() async throws {
@@ -149,14 +162,15 @@ struct BridgeSecretLifetimeTests {
         #expect(await h.secrets.hasPending == false)
     }
 
-    @Test func aDeclinedAnswerCommandDropsTheValueAndIsNotBusy() async throws {
+    @Test func aDeclinedAnswerCommandLeavesTheValueRestingAndNotBusy() async throws {
+        // 거절은 결과 확인 not_received로 정산된다 (서버가 질문을 되살릴 수 있다, `bridge_commands.sql:393-395`)
         let h = try BridgeHarness()
         let created = try await S.open(h, endsAfterAsking: true)
         #expect(await S.submit(h, S.answer(created, value: S.canary())) == .sent)
         let record = BridgeTest.command(kind: "answer", task: created.taskID)
         await h.runtime.refuseUnknownPayload(record: record, why: "unknown_payload")
-        let pending = await h.secrets.hasPending
-        #expect(!pending, "거절(declined)도 닫힘 정산이다")
+        let rests = await h.secrets.contains(key: S.key(created))
+        #expect(rests, "거절(declined)은 되살림 쪽 정산이다: 값을 둔다")
         let busy = await h.runtime.isBusy()
         #expect(!busy)
     }

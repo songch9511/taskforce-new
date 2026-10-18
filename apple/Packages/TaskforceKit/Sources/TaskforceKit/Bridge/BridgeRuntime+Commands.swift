@@ -368,7 +368,7 @@ extension BridgeRuntime {
                 record.stateAt = clock.now()
                 try? await ledger.saveCommand(record)
                 deferred.remove(item.cursor)
-                if item.kind == .answer { await secrets.answerCommandEnded(taskID: item.agentTaskID, closesQuestion: true) } // 정산(닫힘): 서버가 이 명령을 모른다 (OA D4b-m-2, 계약 16.15)
+                if item.kind == .answer { await secrets.answerCommandEnded(taskID: item.agentTaskID, closesQuestion: false) } // 정산: 서버가 이 명령을 모른다 — 되살렸는지 알 수 없으니 닫힘이 아니다 (Astra 최종 점검)
                 return .acted
             } catch {
                 // 응답을 모른다: 상태를 그대로 둔다. 다음 목록에서 `leased_by_me`면 lease를 다시 해 `replay`를 받는다
@@ -401,7 +401,8 @@ extension BridgeRuntime {
                 record.stateAt = clock.now()
                 try? await ledger.saveCommand(record)
                 deferred.remove(item.cursor)
-                if item.kind == .answer { await secrets.answerCommandEnded(taskID: item.agentTaskID, closesQuestion: true) } // 정산(닫힘): 서버가 거뒀다 (OA D4b-m-2, 계약 16.15)
+                // 정산: 서버가 거뒀다. 질문을 되살리지 않는 사유(`stale_answer` · `action_closed`)만 닫힘이다 (Astra 최종 점검)
+                if item.kind == .answer { await secrets.answerCommandEnded(taskID: item.agentTaskID, closesQuestion: Self.closesQuestion(withdrawn: withdrawn)) }
                 return .acted
             case .stale(let staleReason):
                 if !retried, staleReason == .heartbeatFirst || staleReason == .policyChanged {
@@ -417,8 +418,8 @@ extension BridgeRuntime {
                 record.stateAt = clock.now()
                 try? await ledger.saveCommand(record)
                 deferred.remove(item.cursor)
-                // 정산: `not_prepared`(Stop/Done 등으로 답 단계가 건너뛰어졌다)만 닫힘이다. 그 밖의 오래된 사유는 M만 올린다 (OA D4b-m-2, 계약 16.15)
-                if item.kind == .answer { await secrets.answerCommandEnded(taskID: item.agentTaskID, closesQuestion: staleReason == .notPrepared) }
+                // 정산: run이 이미 닫혔다(`run_closed`)만 닫힘이다. `not_prepared`는 Stop/Done의 건너뜀과 되살림 뒤의 failed 단계를 가를 수 없어 닫힘이 아니다 (Astra 최종 점검)
+                if item.kind == .answer { await secrets.answerCommandEnded(taskID: item.agentTaskID, closesQuestion: Self.closesQuestion(stale: staleReason)) }
                 return .acted
             case .settled, .unknown:
                 // 효과를 만들지 않는 쪽: 실행 0, 다음 목록에서 다시 판단한다
@@ -621,7 +622,7 @@ extension BridgeRuntime {
         refused.state = .declined
         refused.reason = why
         refused.stateAt = clock.now()
-        if refused.kind == "answer" { await secrets.answerCommandEnded(taskID: refused.agentTaskID, closesQuestion: true) } // 정산(닫힘): 거절한 답 명령 (OA D4b-m-2, 계약 16.15)
+        if refused.kind == "answer" { await secrets.answerCommandEnded(taskID: refused.agentTaskID, closesQuestion: false) } // 정산: 거절은 결과 확인 `not_received`로 서버에 닿는다 — 질문이 되살아날 수 있다 (Astra 최종 점검)
         // 중단 명령은 결과 확인이 아니라 `complete`로 정산한다 (띄운 프로세스가 없는 task)
         let op: BridgeV1AckOp = refused.kind == "cancel" ? .complete(.taskUnknown) : .readback(.notReceived, processEnded: true)
         await sendAck(op, commandID: record.commandID, saving: refused)
