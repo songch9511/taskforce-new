@@ -5,7 +5,8 @@ import { describe, expect, it } from "vitest";
 import { AppleAuthError, appleClientSecret, appleIdTokenClaims, appleSignInConfigFromEnv, revokeAppleSignIn, type AppleSignInConfig } from "./sign-in";
 
 const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
-const config: AppleSignInConfig = { teamId: "TEAM123456", keyId: "KEY1234567", key: privateKey, clientId: "dev.taskforcelabs.taskforce" };
+const SERVICES_ID = "dev.taskforcelabs.taskforce.signin";
+const config: AppleSignInConfig = { teamId: "TEAM123456", keyId: "KEY1234567", key: privateKey, clientId: "dev.taskforcelabs.taskforce", servicesId: SERVICES_ID };
 const NOW = new Date("2026-09-27T01:00:00Z");
 
 type Call = { url: string; form: Record<string, string> };
@@ -96,6 +97,46 @@ describe("revokeAppleSignIn", () => {
   });
 });
 
+describe("revokeAppleSignIn — Mac 웹 재확인 (client = web)", () => {
+  const WEB_ID_TOKEN = idToken({ iss: "https://appleid.apple.com", aud: SERVICES_ID, sub: SUB });
+
+  it("client secret의 sub · 교환 · 폐기의 client_id · aud 확인이 모두 Services ID다", async () => {
+    const { fetch, calls } = fakeFetch([{ body: { refresh_token: "rt", id_token: WEB_ID_TOKEN } }, { body: undefined }]);
+    expect(await revokeAppleSignIn(config, "auth-code", SUB, { fetch, now: NOW, client: "web" })).toBe("revoked");
+    expect(calls[0].form).toMatchObject({ client_id: SERVICES_ID, code: "auth-code", grant_type: "authorization_code" });
+    expect(decode(calls[0].form.client_secret.split(".")[1])).toMatchObject({ iss: "TEAM123456", sub: SERVICES_ID });
+    expect(calls[1].form).toMatchObject({ client_id: SERVICES_ID, token: "rt", token_type_hint: "refresh_token" });
+    expect(decode(calls[1].form.client_secret.split(".")[1])).toMatchObject({ sub: SERVICES_ID });
+  });
+
+  it("web인데 토큰의 aud가 번들 id면(서로 바뀐 code) 폐기하지 않는다", async () => {
+    const { fetch, calls } = fakeFetch([{ body: { refresh_token: "rt", id_token: ID_TOKEN } }, { body: undefined }]);
+    expect(await revokeAppleSignIn(config, "auth-code", SUB, { fetch, now: NOW, client: "web" })).toBe("mismatch");
+    expect(calls.map((c) => c.url)).toEqual(["https://appleid.apple.com/auth/token"]);
+  });
+
+  it("app(기본)인데 토큰의 aud가 Services ID면 폐기하지 않는다", async () => {
+    const { fetch, calls } = fakeFetch([{ body: { refresh_token: "rt", id_token: WEB_ID_TOKEN } }]);
+    expect(await revokeAppleSignIn(config, "auth-code", SUB, { fetch, now: NOW })).toBe("mismatch");
+    expect(await revokeAppleSignIn(config, "auth-code", SUB, { fetch, now: NOW, client: "app" })).toBe("mismatch");
+    expect(calls.map((c) => c.url)).toEqual(["https://appleid.apple.com/auth/token", "https://appleid.apple.com/auth/token"]);
+    expect(calls.every((c) => c.form.client_id === "dev.taskforcelabs.taskforce")).toBe(true);
+  });
+
+  it("Services ID가 설정되지 않았으면 not_configured: Apple을 부르지 않는다", async () => {
+    const { fetch, calls } = fakeFetch([{ body: {} }]);
+    const withoutServicesId: AppleSignInConfig = { ...config, servicesId: undefined };
+    expect(await revokeAppleSignIn(withoutServicesId, "auth-code", SUB, { fetch, client: "web" })).toBe("not_configured");
+    expect(await revokeAppleSignIn({ ...config, servicesId: "" }, "auth-code", SUB, { fetch, client: "web" })).toBe("not_configured");
+    expect(calls).toEqual([]);
+  });
+
+  it("Services ID가 없어도 app 폐기는 그대로 된다", async () => {
+    const { fetch } = fakeFetch([{ body: { refresh_token: "rt", id_token: ID_TOKEN } }, { body: undefined }]);
+    expect(await revokeAppleSignIn({ ...config, servicesId: undefined }, "auth-code", SUB, { fetch, now: NOW })).toBe("revoked");
+  });
+});
+
 describe("appleIdTokenClaims", () => {
   it("sub · aud를 읽고, 형식이 다르면 null", () => {
     expect(appleIdTokenClaims(ID_TOKEN)).toEqual({ sub: SUB, aud: "dev.taskforcelabs.taskforce" });
@@ -111,5 +152,13 @@ describe("appleSignInConfigFromEnv", () => {
     const parsed = appleSignInConfigFromEnv({ APPLE_TEAM_ID: "T", APPLE_KEY_ID: "K", APPLE_PRIVATE_KEY: pem });
     expect(parsed).toMatchObject({ teamId: "T", keyId: "K", clientId: "dev.taskforcelabs.taskforce" });
     expect(appleSignInConfigFromEnv({ APPLE_TEAM_ID: "T", APPLE_KEY_ID: "K" })).toBeNull();
+  });
+
+  it("APPLE_SERVICES_ID는 선택: 있으면 읽고, 비우면 없음", () => {
+    const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString().replace(/\n/g, "\\n");
+    const base = { APPLE_TEAM_ID: "T", APPLE_KEY_ID: "K", APPLE_PRIVATE_KEY: pem };
+    expect(appleSignInConfigFromEnv({ ...base, APPLE_SERVICES_ID: SERVICES_ID })?.servicesId).toBe(SERVICES_ID);
+    expect(appleSignInConfigFromEnv({ ...base, APPLE_SERVICES_ID: "" })?.servicesId).toBeUndefined();
+    expect(appleSignInConfigFromEnv(base)?.servicesId).toBeUndefined();
   });
 });

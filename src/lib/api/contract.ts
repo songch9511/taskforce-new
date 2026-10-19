@@ -484,8 +484,29 @@ export type AskResponse = z.infer<typeof askResponseSchema>;
 // 폐기가 실패해도 삭제는 계속한다.
 export const deleteAccountRequestSchema = z.object({ apple_authorization_code: z.string().min(1).max(2000).optional() });
 export type DeleteAccountRequest = z.infer<typeof deleteAccountRequestSchema>;
+// Mac은 브라우저 창(Apple 웹 로그인)으로 재확인한 code를 보낸다: 그 code는 Services ID 것이라 서버가 폐기할 client를 알아야 한다.
+// apple_client: "app"(기본, 번들 id: iPhone 앱 안 로그인의 code) · "web"(Services ID: Mac 웹 재확인의 code). 더하기만 하는 optional 필드라 v1 경로 그대로다.
+// 동결된 deleteAccountRequestSchema(contract-v1-freeze.test.ts의 지문)는 건드리지 않고, 서버는 이 확장을 읽는다 (옛 본문은 그대로 파싱된다).
+export const appleClientSchema = z.enum(["app", "web"]);
+export type AppleClient = z.infer<typeof appleClientSchema>;
+export const deleteAccountWithAppleClientRequestSchema = deleteAccountRequestSchema.extend({ apple_client: appleClientSchema.optional() });
+export type DeleteAccountWithAppleClientRequest = z.infer<typeof deleteAccountWithAppleClientRequestSchema>;
 export const deleteAccountResponseSchema = z.object({ deleted: z.literal(true) });
 export type DeleteAccountResponse = z.infer<typeof deleteAccountResponseSchema>;
+
+// POST /api/v1/apple/return — Mac의 Apple 웹 로그인(브라우저 창)이 form_post로 돌아오는 곳 (로그인 없음, 저장 · 기록 0).
+// Apple이 application/x-www-form-urlencoded로 보낸 결과를 taskforce://auth/apple?… 로 넘기기만 한다 (src/lib/apple/web-return.ts).
+// state는 앱이 만든 무작위 값(앱이 자기 것인지 확인한다). user(첫 로그인 때 오는 이름 · 이메일 JSON)는 받되 버린다.
+export const APPLE_RETURN_MAX_BYTES = 16 * 1024;
+export const appleReturnStateSchema = z.string().regex(/^[A-Za-z0-9_-]{16,128}$/);
+export const appleReturnFormSchema = z.object({
+  state: appleReturnStateSchema,
+  code: z.string().min(1).max(2000).optional(),
+  id_token: z.string().min(1).max(8000).optional(),
+  error: z.string().min(1).max(100).optional(),
+  user: z.string().optional(),
+});
+export type AppleReturnForm = z.infer<typeof appleReturnFormSchema>;
 
 // ─── 처리방침 변경 안내 ─────────────────────────────────────
 // GET /api/v1/legal — 개인정보 처리방침의 현재 판 · 시행 예정 판과 이 계정에 보일 변경 안내 (Bearer 또는 웹 쿠키).

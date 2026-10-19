@@ -1,4 +1,4 @@
-import { deleteAccountRequestSchema, type DeleteAccountResponse } from "./contract";
+import { deleteAccountWithAppleClientRequestSchema, type AppleClient, type DeleteAccountResponse } from "./contract";
 import { errorResponse, parseBody, unauthorized } from "./respond";
 
 // DELETE /api/v1/account 처리. 인증 · 토큰 폐기 · 삭제를 인자로 받아 Route Handler 밖에서 테스트한다.
@@ -15,8 +15,11 @@ export type DeleteAccountDeps<User extends { id: string }> = {
   beforeDelete?: (user: User) => Promise<void>;
   /** 연동 토큰을 서비스 쪽에서도 폐기한다 (폐기 API가 있는 서비스만) */
   revokeConnectorTokens?: (user: User) => Promise<void>;
-  /** Sign in with Apple 토큰 폐기. 앱이 보낸 authorization code가 있으면 그것으로 토큰을 받아 폐기한다 */
-  revokeAppleToken?: (user: User, authorizationCode: string | undefined) => Promise<void>;
+  /**
+   * Sign in with Apple 토큰 폐기. 앱이 보낸 authorization code가 있으면 그것으로 토큰을 받아 폐기한다.
+   * appleClient: code를 받은 client. "app"(번들 id, 생략하면 이것) · "web"(Services ID, Mac의 브라우저 창 재확인).
+   */
+  revokeAppleToken?: (user: User, authorizationCode: string | undefined, appleClient: AppleClient) => Promise<void>;
   /** auth 사용자를 지운다. 사용자 테이블은 모두 auth.users에 on delete cascade로 걸려 있어 함께 지워진다. */
   deleteUser: (userId: string) => Promise<void>;
   revocationTimeoutMs?: number;
@@ -28,7 +31,7 @@ export async function handleDeleteAccount<User extends { id: string }>(
 ): Promise<Response> {
   const user = await deps.authenticate(request);
   if (!user) return unauthorized();
-  const body = await parseBody(request, deleteAccountRequestSchema);
+  const body = await parseBody(request, deleteAccountWithAppleClientRequestSchema);
   if ("error" in body) return body.error;
 
   try {
@@ -49,7 +52,7 @@ export async function handleDeleteAccount<User extends { id: string }>(
   };
   const revocations = Promise.all([
     bestEffort("연동 토큰 폐기", deps.revokeConnectorTokens && (() => deps.revokeConnectorTokens!(user))),
-    bestEffort("Apple 토큰 폐기", deps.revokeAppleToken && (() => deps.revokeAppleToken!(user, body.data.apple_authorization_code))),
+    bestEffort("Apple 토큰 폐기", deps.revokeAppleToken && (() => deps.revokeAppleToken!(user, body.data.apple_authorization_code, body.data.apple_client ?? "app"))),
   ]).then(() => "done" as const);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<"timeout">((resolve) => {
