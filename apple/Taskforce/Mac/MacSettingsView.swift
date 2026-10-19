@@ -644,13 +644,7 @@ private struct MacAccountPane: View {
                         }
                     }
                     Spacer()
-                    Button("Delete Account…", role: .destructive) {
-                        if session.signInMethods.needsAppleReauthorization {
-                            message = AccountDeletion.unavailableMessage
-                        } else {
-                            confirmingDelete = true
-                        }
-                    }
+                    Button("Delete Account…", role: .destructive) { confirmingDelete = true }
                         .disabled(deleting)
                 }
             } footer: {

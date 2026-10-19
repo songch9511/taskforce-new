@@ -290,7 +290,7 @@ enum Startup {
             // 요청은 디스크 캐시 없는 세션으로 (`TaskforceClient.urlSession`). 예전 빌드가 공유 캐시에 남긴 응답 사본은 시작할 때 지운다
             URLCache.shared.removeAllCachedResponses()
             // 계정별로 이 기기에 남기는 데이터(목록 · 저장본)는 계정이 떠날 때 `SessionStore.onSignedOut`에서 지운다 (Mac 런처: `LauncherModel`)
-            let session = SessionStore(auth: supabase.auth, googleOnly: true)
+            let session = SessionStore(auth: supabase.auth)
             return .ready(session, AppServices(config: config, supabase: supabase, session: TaskforceClient.urlSession))
         } catch {
             return .misconfigured(String(describing: error))
