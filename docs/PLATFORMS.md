@@ -142,7 +142,8 @@ Server Action은 웹 폼 전용이라 Swift 앱에서 부를 수 없다.
 | `POST /api/v1/ask` | 물어보기 `{ question }`(500자까지) → `{ answer, unknown, citations }`. 내 할 일 · 근거 원문에서 찾아 답하고, 인용은 원문과 기계로 대조해 원문에서 잘라 낸 구절만 남긴다. 남는 인용이 없으면 답하지 않고 "모른다"(`unknown: true`). 외부 AI 처리 동의 전 409, 사용자별 10분에 20번을 넘으면 429. 질문 · 답은 로그에 남기지 않는다 | go live ✅ |
 | `POST` · `DELETE /api/v1/consent` | 외부 AI 처리 동의 `{ ai_processing: true }` · 철회 → 204. `profiles.ai_consent_at`에 시각을 적거나 비운다. 동의 전에는 원문을 외부 AI로 보내지 않고, 그런 요청(원문 보내기 · 빠진 할 일 신고 · 물어보기 · 연결 시작 · 연결 마치기 · 동기화)은 409 | go live ✅ |
 | `GET /api/v1/legal` | 처리방침 변경 안내 → `{ privacy: { current, upcoming, notice } }`(판마다 `version` · `effective_date` · `url: { ko, en }`, `notice`는 `kind: updated \| upcoming`을 더한 판 또는 null). 판 · 시행일은 `src/lib/legal/policy.ts` 한 곳. 시행 예정 판이 있으면 모든 계정에(그 판의 버전 주소로), 없으면 현재 판 시행일 전에 가입한 계정에만 시행 뒤 30일 동안 안내한다. 읽기만 한다: 앱은 열거나 닫은 판을 기기에 계정별로 적고, 계정마다 30분에 한 번 읽는다 | go live ✅ |
-| `DELETE /api/v1/account` | 계정 삭제 (본문 선택 `{ apple_authorization_code? }`) → `{ deleted: true }`. 연동 토큰(Notion · Slack)과 Sign in with Apple 토큰을 서비스 쪽에서 동시에 폐기하고(20초 한도, 실패해도 계속) 사용자를 지운다. 사용자 테이블은 on delete cascade로 함께 지워지고, 이미 지워진 계정이면 성공으로 답한다 | go live ✅ |
+| `POST /api/v1/apple/return` | Mac의 Apple 웹 로그인(브라우저 창) 중계: Apple이 `form_post`로 보낸 결과를 `taskforce://auth/apple?…`로 303으로 넘기기만 한다. **로그인 없음 · 저장 0 · 기록 0 · 외부 호출 0.** 4장 "Sign in with Apple (Mac)" | go live 전 (OA 로그인) |
+| `DELETE /api/v1/account` | 계정 삭제 (본문 선택 `{ apple_authorization_code?, apple_client? }`: `apple_client`는 `app`(기본, 번들 id) · `web`(Mac 브라우저 창 재확인, Services ID)) → `{ deleted: true }`. 연동 토큰(Notion · Slack)과 Sign in with Apple 토큰을 서비스 쪽에서 동시에 폐기하고(20초 한도, 실패해도 계속) 사용자를 지운다. 사용자 테이블은 on delete cascade로 함께 지워지고, 이미 지워진 계정이면 성공으로 답한다 | go live ✅ |
 | `POST /api/v1/connections/{provider}/start` | 연결 시작 → `{ url }`(서명된 `state`를 담은 권한 화면 주소). 경로의 `[id]` 자리가 서비스 이름이다. 모르는 서비스 404, 열지 않은 서비스 400, 동의 전 409, 10분에 10번을 넘으면 429. 권한 화면 뒤 `taskforce://connections/{provider}?handoff=…`로 돌아온다 | go live ✅ |
 | `POST /api/v1/connections/{provider}/complete` | 연결 마치기 `{ handoff }` → `{ status }`. 연결을 시작한 사용자만 2분 안에 한 번 쓸 수 있고, 연결되면 응답 뒤(`after()`) 첫 동기화를 돌린다. handoff가 없거나 만료 · 재사용 · 남의 것이면 404, 동의 전 409, 토큰 교환 실패 502 | go live ✅ |
 | `POST /api/v1/connections/sync` | 지금 동기화: 내 연결만 바로 돌린다 → `{ connections }`(연결마다 결과). 동의 전 409. 모든 연결이 동기화 중이거나 1분 안에 다시 부르면 429 | go live ✅ |
@@ -162,7 +163,7 @@ Server Action은 웹 폼 전용이라 Swift 앱에서 부를 수 없다.
 
 | 방식 | 웹 | iOS · macOS |
 |---|---|---|
-| Sign in with Apple | 이후 | **기본** (Supabase `signInWithIdToken`) |
+| Sign in with Apple | 이후 | **기본** (Supabase `signInWithIdToken`). iPhone은 앱 안 로그인, **Mac은 브라우저 창**(Developer ID 앱은 앱 안 Apple 로그인을 쓸 수 없다, 아래) |
 | Sign in with Google | 쓰지 않음 | **기본** (Apple 아래 같은 크기, Google Sign-In SDK → Supabase `signInWithIdToken`, 로그인만). 2026-09-30 |
 | 이메일 + 비밀번호 | 쓰지 않음 | App Store 심사 계정용만 (가입 화면 없음). 허용 목록(`review_accounts`) 밖 이메일 가입은 DB 훅이 막는다 (Supabase 대시보드에서 훅을 켠 경우) |
 | 이메일 6자리 코드 | 이후 | 아직 없음 ([남은 일](GO_LIVE.md#10-남은-일-go-live-조건-아님)) |
@@ -173,6 +174,20 @@ Server Action은 웹 폼 전용이라 Swift 앱에서 부를 수 없다.
   받아쓰기 회의록은 이름 문자열뿐이라 프로필의 별칭과 코드의 오타 후보 탐지(한 글자 차이 → '확인 필요')를 쓴다.
   앱은 메일 · 캘린더 원문을 보낼 때 보낸 사람 · 받는 사람 · 참조 · 참석자를 함께 보낸다.
 - 공유 확장과 위젯은 앱 본체와 로그인 세션을 공유해야 하므로, 세션을 **App Group + 공유 Keychain 접근 그룹**에 저장한다.
+
+### Sign in with Apple (Mac, 브라우저 창)
+
+Mac 앱은 Developer ID DMG로 배포한다(DEC-1 A). **Developer ID 프로필에는 `com.apple.developer.applesignin` 권한이 들어갈 수 없다**(Apple "Supported capabilities (macOS)" 표에서 Sign in with Apple은 Developer ID 열이 비었다). 그래서 앱 안(native) Apple 로그인을 쓸 수 없다. 10-05에 권한을 넣은 채 export하다가 실패했고, 그때는 Google 전용으로 공증을 통과했다. 이제 Mac의 Apple 로그인은 **브라우저 창(Apple 웹 로그인)** 으로 한다. 권한 · 프로필이 필요 없어서 서명 · 공증 · DMG · Sparkle · helper는 그대로다. iPhone은 iOS 기능 표에서 Sign in with Apple이 App Store 열에 있어 앱 안 로그인이 된다(iPhone 앱 타깃은 0.2.0 Mac 출시 뒤 계획).
+
+- 흐름: 앱이 `ASWebAuthenticationSession`으로 `https://appleid.apple.com/auth/authorize?client_id=<Services ID>&redirect_uri=<return URL>&response_type=code%20id_token&response_mode=form_post&scope=email&state=<무작위>&nonce=<해시>`를 연다 → Apple이 `POST https://<서버>/api/v1/apple/return`(form: `state` · `code` · `id_token` · 첫 로그인이면 `user`) → 서버가 `taskforce://auth/apple?state=…&code=…&id_token=…`로 **303**(저장 · 기록 0, 목적지는 상수 하나, `user`는 버림) → 세션이 그 주소를 받는다 → 앱이 state를 확인하고 `SessionStore.signInWithApple(idToken:nonce:)`(`signInWithIdToken(.apple)`). Supabase가 ID 토큰의 서명 · aud(= Services ID) · nonce(해시는 Apple에, 원본은 Supabase에 보낸다, iPhone과 같은 `SignInNonce`)를 확인한다.
+  - 범위는 `email`만이다(이름 없음): 처리방침 "Apple에서 이름은 받지 않습니다" 그대로. 공백은 `%20`(`+` 아님).
+  - 왜 서버를 거치나: Apple은 return URL로 https 도메인만 받는다(IP · localhost · `#` 불가). `taskforce://`로 바로 돌아올 수 없다. 그 서버 route가 하는 일은 주소를 만드는 것뿐이다. 열린 리다이렉트가 아니다.
+  - 왜 Supabase 웹 OAuth(`signInWithOAuth(.apple)`)가 아닌가: Apple Secret Key를 6개월마다 다시 만들어야 하고(잊으면 Mac Apple 로그인이 멈춘다), Supabase가 늘 `name`을 요청해 처리방침이 바뀌고, 삭제 재확인은 어차피 따로 만들어야 한다.
+- 설정: Info.plist `AppleServicesID` ← `$(APPLE_SERVICES_ID)`, `AppleWebReturnURL` ← `$(APPLE_WEB_RETURN_URL)`. 둘 다 공개 값이라 `Release.xcconfig`에 커밋한다(`dev.taskforcelabs.taskforce.signin` · `https://api.taskforcelabs.dev/api/v1/apple/return`). Debug는 `Secrets.xcconfig`(선택). 값이 비었거나 return URL이 https · `/api/v1/apple/return`이 아니거나 도메인이 아니면(`AppleWebSignInConfig`) Apple 버튼 · 런처 행을 숨긴다. **서버 route가 먼저 배포돼 있어야 한다.**
+- 흐름은 하나만 띄운다. 로그인 화면이 사라지면 떠 있는 창을 닫는다. 런처 행은 흐름 동안 패널이 닫히지 않게 한다(Google과 같다). `prefersEphemeralWebBrowserSession = false`: 브라우저에 이미 로그인돼 있으면 다시 입력하지 않는다.
+- 앱 밖에서 열린 `taskforce://auth/apple…`은 버린다(`MacAppDelegate.routeOpenedURLs`: 토큰을 쓰지 않고 연결 콜백으로도 넘기지 않는다). 앱은 자기 세션 안에서 자기가 만든 state일 때만 받는다.
+- **회귀 막기:** `Taskforce-macOS.entitlements`에 `com.apple.developer.applesignin`이 있으면 `MacEntitlementsTests`가 실패하고, `scripts/release-mac-dmg.sh`가 서명 뒤 공증 전에 멈춘다(`reject_apple_signin_entitlement`). Xcode에서 기능 하나를 켜면 export가 다시 깨지기 때문이다.
+- 계정 삭제 재확인도 같은 route를 쓴다(`response_type=code`, 범위 · nonce 없음): 5장의 `apple_client: web`.
 
 ### Sign in with Google (2026-09-30)
 
@@ -199,9 +214,12 @@ Server Action은 웹 폼 전용이라 Swift 앱에서 부를 수 없다.
 - 로그아웃: Taskforce 로그인이 풀릴 때마다(Sign Out · 세션 만료 · 다른 곳에서 모두 로그아웃 · 계정 삭제, iPhone `RootView` · Mac `MacAppDelegate`의 로그인 상태 변화) 이 기기의 Google SDK 로그인도 지운다(권한은 남는다). 다음에 로그인한 다른 Taskforce 계정이 전 계정의 Google 토큰을 폐기하는 일이 없게.
 - 계정 삭제: Apple 로그인이 붙은 계정만 Apple 재확인(토큰 폐기용 code)을 받는다. Google 로그인이 붙은 계정은 삭제한 뒤 앱이 `GIDSignIn.disconnect()`로 Google 권한을 폐기한다(기다리지 않고, 실패해도 삭제는 끝났다). 이 기기에 Google 토큰이 없으면(다른 기기에서만 Google로 로그인) 폐기하지 못한다: 사용자가 Google 계정 → 보안 → 서드파티 앱에서 지울 수 있다. 이메일(심사 계정)은 폐기할 것이 없다. 무엇을 할지는 **삭제 직전에 서버에서 새로 읽은 사용자**(`auth.user()`)의 identities · `app_metadata`로 정한다(`AccountDeletionPlan`): 세션의 사용자는 토큰을 받은 때의 것이라, Google로 가입한 뒤 다른 기기에서 Apple을 이었으면 빠져 있다. 새로 읽지 못하거나, 새로 읽은 쪽에 없어도 세션에 Apple이 있으면 Apple 재확인을 받는다.
 - 가입 훅: Before User Created 훅(`hook_before_user_created`)은 `provider = email`만 막는다. Google 가입은 통과한다(`tests/db/review-accounts.test.ts`).
-- **계정 연결:** Supabase는 확인된 같은 이메일의 로그인을 한 계정으로 자동으로 잇는다(Apple 실제 주소 = Google 주소면 한 계정). Apple "나의 이메일 가리기"(`@privaterelay.appleid.com`)로 가입한 사용자가 나중에 Google로 로그인하면 이메일이 달라 **별도 계정**이 된다. 수동으로 잇는 화면은 지금 두지 않는다.
+- **계정 연결:** Supabase는 확인된 같은 이메일의 로그인을 한 계정으로 자동으로 잇는다(Apple 실제 주소 = Google 주소면 한 계정). Apple "나의 이메일 가리기"(`@privaterelay.appleid.com`)로 가입한 사용자가 나중에 Google로 로그인하면 이메일이 달라 **별도 계정**이 된다. 수동으로 잇는 길은 위 "로그인 방법 이어 붙이기"다.
   **받아들인 위험:** 자동 연결은 "확인된 같은 이메일 = 같은 사람"을 믿는다. 그 이메일의 Google 계정(또는 Apple ID)을 가진 사람은 그 Taskforce 계정에 들어온다. Google · Apple 모두 확인한 주소만 "확인됨"으로 주므로 받아들인다(확인되지 않은 주소는 잇지 않는다). 연결하지 않으면 같은 사람이 로그인 방식마다 다른 계정을 갖게 된다.
 - 설정(iPhone 설정 시트 · Mac 설정 Account)의 로그인 계정 줄은 가입 방식에 따라 "Apple ID" · "Google Account" · "Email"이다.
+- **Mac은 Google 전용이 아니다 (2026-10-19 사용자 결정: iPhone · Mac 모두 Apple + Google).** 10-05 베타의 "Google만" 막기(`googleOnly` · 안내 문구)는 없앴다. 로그인 방법이 무엇이든 세션은 그대로 로그인 상태다.
+- **로그인 방법 이어 붙이기 (OA 로그인):** 0.2.0 Settings › Account › Sign-in에서 이어지지 않은 쪽(Apple 또는 Google)을 "Add"로 이어 붙인다(`SessionStore.linkApple` · `linkGoogle`, supabase-swift `linkIdentityWithIdToken`). Supabase에서 manual linking을 켜야 한다(꺼져 있으면 `manual_linking_disabled`). 이미 다른 Taskforce 계정의 Apple · Google이면 `identity_already_exists`라 한 줄로 알린다. **두 계정의 데이터는 합치지 않는다.** 흐름을 시작한 계정이 아니면 서버에 쓰기 전에 버리고, 응답을 기다리는 사이 계정이 바뀌어도 결과를 쓰지 않는다. 옛 Settings 창(`MacSettingsView`)에는 두지 않는다(같은 이메일은 어느 창에서든 자동으로 이어진다). 이어진 방법이 먼저 보이고, 이메일(App Store 심사 계정)은 Email 줄만이다. 오류는 조용한 회색 한 줄이다(문구는 사용자 승인 2026-10-19).
+- **자동 연결과 중복:** Mac 베타에서 Google로 쓴 사람이 같은 이메일의 Apple로 로그인하면 Supabase가 한 계정으로 잇는다. "이메일 가리기"를 고르면 이메일이 달라 새 빈 계정이 된다(서버는 같은 사람인지 알 수 없다). 그 사람은 쓰던 계정에서 Add로 이어 붙이거나, 빈 계정을 지우고(Apple 토큰도 폐기) 다시 Add 한다.
 
 ---
 
@@ -245,8 +263,8 @@ taskforce-new/
 
   App ID와 App Group은 Xcode 자동 서명이 개발자 계정에 등록한다 (Phase A0에서 등록됨). 값은 `apple/Config/Base.xcconfig` 한 곳에 있다.
   Mac 앱은 App Sandbox 없이 Developer ID DMG로 배포한다(DEC-1 A, 2026-10-13: 샌드박스 앱이 띄운 자식 프로세스는 사용자의 `claude` · `codex` 로그인과 PATH에 닿지 못한다). App Group · 공유 Keychain 접근 그룹은 그대로다. 근거 · 1회 이전 · 되돌리기: [mac-dmg.md](go-live/mac-dmg.md) "샌드박스 끔".
-- [ ] Sign in with Apple 설정: Supabase → Authentication → Sign In / Providers → Apple을 켜고 **Client IDs**에 `dev.taskforcelabs.taskforce`를 넣는다.
-  앱 안 로그인만 쓰면 Services ID · `.p8` 키는 필요 없다 (웹에 Apple 로그인을 붙일 때 추가).
+- [ ] Sign in with Apple 설정: Supabase → Authentication → Sign In / Providers → Apple을 켜고 **Client IDs**에 `dev.taskforcelabs.taskforce`(iPhone 앱 안 로그인)를 넣는다.
+  **Mac 브라우저 창 로그인(OA 로그인)용으로 추가:** (1) Apple Developer → Identifiers → App ID `dev.taskforcelabs.taskforce`가 Sign in with Apple **primary**인지 본다(프로필 · 권한 파일 변경이 아니다, Mac 권한 파일에는 넣지 않는다). (2) Identifiers → Services IDs → `dev.taskforcelabs.taskforce.signin` → Sign in with Apple → Configure: Primary App ID `dev.taskforcelabs.taskforce`, Domains `api.taskforcelabs.dev`, Return URLs `https://api.taskforcelabs.dev/api/v1/apple/return`. (3) Supabase Apple **Client IDs**에 그 Services ID를 쉼표로 더한다(Secret Key는 비워 둔다: ID 토큰 로그인은 키가 필요 없다). (4) 이어 붙이기를 쓰려면 Supabase에서 manual linking을 켠다. (5) Vercel 운영 env `APPLE_SERVICES_ID` = 그 Services ID(삭제 재확인의 폐기용, 기존 `APPLE_TEAM_ID` · `APPLE_KEY_ID` · `APPLE_PRIVATE_KEY`는 그대로, 같은 `.p8` 키). 서버 PR 병합 전에 한다. `.p8` 키는 Services ID로도 쓰는 것이 아직 확인되지 않았다([런북](go-live/runbook.md) "Apple 웹 로그인").
 - [x] Sign in with Google 설정 (2026-09-30): Google Cloud 프로젝트 A에 iOS 클라이언트, Supabase → Google 제공자 켬(Client IDs = 그 iOS 클라이언트 ID, Skip nonce checks 끔). 순서는 [런북](go-live/runbook.md) 5장.
 - [ ] 푸시 알림용 APNs 키 발급 (Phase 3)
 - [x] 최소 지원 OS: iOS 18 · macOS 15 (직전 메이저 버전까지)
