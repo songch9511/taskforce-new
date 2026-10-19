@@ -4,6 +4,25 @@ import Foundation
 import Observation
 import TaskforceKit
 
+/// 지금 계정 런타임의 상태 · 살아 있는 실행 (OA Settings › Your agents SA-02): Settings 화면이 관찰하는 값이다.
+/// 호스트가 런타임의 알림(`onChange`)을 이어 주고, 계정이 떠나거나 런타임이 바뀌는 사이에는 비운다 (모르는 값을 주장하지 않는다)
+@MainActor
+@Observable
+final class BridgeStatusBoard {
+    private(set) var status: BridgeStatus?
+    private(set) var hasLiveProcess = false
+
+    func apply(_ snapshot: BridgeRuntimeSnapshot) {
+        status = snapshot.status
+        hasLiveProcess = snapshot.hasLiveProcess
+    }
+
+    func clear() {
+        status = nil
+        hasLiveProcess = false
+    }
+}
+
 /// 앱 수명에 하나 (OA D2b 계약 2.9 · 2.13 · 2.14). 핵심 로직은 Kit의 `BridgeRuntime`이고 이 호스트는 **연결만** 한다:
 /// 계정이 바뀌면 런타임 교체 · 절전/깨어남 알림 전달 · 종료 확인 · 업데이트 재시작 막기 · 계정 삭제 정리 · `BRIDGE_ENABLED`와 마무리 모드.
 /// 원장에 직접 접근하지 않는다 (판단은 서버, 기록은 런타임).
@@ -42,6 +61,13 @@ final class BridgeHost {
     /// `Open in Terminal`의 `.command` 파일을 두는 폴더: 계정 삭제가 안의 파일을 지운다 (보안 F4). 없으면 지우지 않는다
     private let terminalDirectory: URL?
 
+    /// 지금 계정 런타임의 상태 (Settings가 관찰한다)
+    let statusBoard = BridgeStatusBoard()
+    /// Settings의 Disconnect가 끝났는데 끝내지 못한 프로세스가 남아 바로 바꾸지 못한 런타임: 그 프로세스가 끝나면 `runtimeChanged`가 이어서 바꾼다
+    private var retiring: Set<UUID> = []
+    /// 런타임을 바꾸는 중이다: 그 새 런타임은 Debug 연결 인자로 다시 연결하지 않는다 (사용자가 끊었다)
+    private var renewing = false
+
     /// 파티션 id → 런타임. 계정이 떠난 뒤에도 살아 있는 턴이 있으면 남겨 둔다 (계속 감독하고 그 파티션 원장에만 기록, 네트워크 0 — Q5)
     private var entries: [String: Entry] = [:]
     private var activePartitionID: String?
@@ -66,10 +92,27 @@ final class BridgeHost {
     /// 지금 계정의 런타임 (계정이 없거나 꺼져 있으면 nil)
     var activeRuntime: BridgeRuntime? { activePartitionID.flatMap { entries[$0]?.runtime } }
 
+    /// Settings가 연결 · 끊기를 맡기는 지금 계정의 런타임: 정상 모드일 때만 (마무리 모드는 새 등록 · Connect 0이다)
+    var activeAgentRuntime: BridgeRuntime? {
+        guard let id = activePartitionID, let entry = entries[id], entry.mode == .normal else { return nil }
+        return entry.runtime
+    }
+
     /// D4b-m이 비밀값 답을 넣는 곳 (메모리에만): `BridgeLocalSecretSubmitter` → `BridgeRuntime.submitLocalSecret`
     var activeSecrets: LocalSecretAnswers? { activePartitionID.flatMap { entries[$0]?.secrets } }
 
     var activePartition: BridgePartition? { activePartitionID.flatMap { entries[$0]?.partition } }
+
+    /// 지금 로그인한 사용자 (앱 세션): 사용자 데이터(RLS)를 읽는 이름이다. 활성 파티션의 사용자와 같을 때만 이 Mac의 등록부를 그 읽기로 판단한다
+    var sessionUserID: UUID? { currentUser() }
+
+    /// 활성 계정의 표식: 파티션(계정) + 계정 세대. 오래 기다리기 전에 잡아 두고 기다린 뒤 같을 때만 서버에 쓴다 (Settings의 Reconnect, ch.21 2)
+    struct AccountStamp: Equatable {
+        let partitionID: String
+        let epoch: Int
+    }
+
+    var accountStamp: AccountStamp? { activePartitionID.map { AccountStamp(partitionID: $0, epoch: epoch()) } }
 
     /// 지금 계정의 작업 폴더 등록부 (계정이 없거나 이 빌드에 등록부가 없으면 nil)
     var activeWorkspaceRegistry: WorkspaceRegistry? { activePartition.flatMap { partition in workspaces?.registry(for: partition) } }
@@ -159,6 +202,7 @@ final class BridgeHost {
         if let existing = entries[partition.id] {
             // 떠났다가 돌아온 같은 계정: 남아 있는 런타임을 이어 쓴다 (같은 원장에 연결을 둘 만들지 않는다)
             activePartitionID = partition.id
+            statusBoard.clear()
             await existing.runtime.resume()
             return
         }
@@ -189,9 +233,11 @@ final class BridgeHost {
         let entry = Entry(id: entryID, partition: partition, mode: mode, runtime: runtime, secrets: secrets)
         entries[partition.id] = entry
         activePartitionID = partition.id
+        statusBoard.clear()
         await runtime.start()
-        // Debug 전용 연결 인자 (D4a2-10): 런타임을 시작한 뒤 한 번. 연결 화면(Settings)이 들어온 뒤에도 시험 · R2 자동화용으로 남는다
-        if let adapter = connectAtStart, mode == .normal {
+        // Debug 전용 연결 인자 (D4a2-10): 런타임을 시작한 뒤 한 번. 연결 화면(Settings)이 들어온 뒤에도 시험 · R2 자동화용으로 남는다.
+        // Settings의 Disconnect 뒤 새 런타임에서는 다시 연결하지 않는다 (사용자가 끊었다)
+        if let adapter = connectAtStart, mode == .normal, !renewing {
             Task {
                 // 처음 등록이 끝난 뒤에 부른다: 등록과 겹치면 `connect` 요청이 진행 중인 등록에 합쳐져 사라진다 (등록 응답이 `pendingConnect`를 비운다). 20초 안에 등록되지 않으면 부르지 않는다
                 var registered = await runtime.localBridgeID() != nil
@@ -211,8 +257,55 @@ final class BridgeHost {
             return
         }
         activePartitionID = nil
+        statusBoard.clear()
         await entry.runtime.stop()
         await release(entry)
+    }
+
+    // MARK: Settings의 Disconnect 뒤 (OA Settings › Your agents 6.3)
+
+    /// Disconnect가 끝난 런타임을 놓고 같은 파티션의 새 런타임을 만든다. `interruptLiveTurns`가 `stopSpawning`을 켰으므로 그 런타임은 다시 쓰지 않는다 (계정 전환과 같은 길: 멈추고 → 원장을 닫고 → 새로 만든다).
+    /// 새 런타임의 첫 자동 등록은 장치 secret이 없어 403 `revoked`로 끝난다: 화면은 "Not connected · Reconnect"다.
+    /// 끝내지 못한 프로세스가 아직 남아 있으면 바꾸지 않는다 (그 원장이 감독 밖 writer를 아는 유일한 자리다): 끝나면 `runtimeChanged`가 이어서 바꾼다
+    func renewRuntime(replacing old: BridgeRuntime) async {
+        let previous = syncTail
+        let task = Task { @MainActor [self] in
+            await previous?.value
+            await performRenew(old)
+        }
+        syncTail = task
+        await task.value
+    }
+
+    /// 보류한 런타임이 있으면 남은 프로세스를 다시 끝내 보고(멱등: 새 실행은 이미 막혔다) 바꾸려 해 본다 (Reconnect 앞에서 부른다).
+    /// 바꿀지는 `performRenew`가 정한다: 아직 끝나지 않았으면 그대로 둔다 — 그 런타임은 다시 쓰지 않는다 (Reconnect는 실패 줄로 끝난다)
+    func renewRetiredRuntimeIfIdle() async {
+        guard let id = activePartitionID, let entry = entries[id], retiring.contains(entry.id) else { return }
+        _ = await entry.runtime.interruptLiveTurns(reason: "disconnect")
+        await renewRuntime(replacing: entry.runtime)
+    }
+
+    private func performRenew(_ old: BridgeRuntime) async {
+        guard let id = activePartitionID, let entry = entries[id], entry.runtime === old else { return }
+        guard await !old.isBusy(), await !old.hasLiveProcess() else {
+            retiring.insert(entry.id)
+            return
+        }
+        retiring.remove(entry.id)
+        activePartitionID = nil
+        statusBoard.clear()
+        await old.stop()
+        await release(entry)
+        guard entries[id] == nil else {
+            // 놓지 못했다 (그 사이 바빠졌다): 이 런타임을 다시 지금 계정의 것으로 두고 나중에 다시 바꾼다
+            activePartitionID = id
+            retiring.insert(entry.id)
+            return
+        }
+        hasSynced = false
+        renewing = true
+        defer { renewing = false }
+        await performSync()
     }
 
     #if DEBUG
@@ -252,7 +345,12 @@ final class BridgeHost {
         guard let entry = entries.values.first(where: { $0.id == id }) else { return }
         busyByEntry[id] = snapshot.isBusy
         liveByEntry[id] = snapshot.hasLiveProcess
+        if entry.partition.id == activePartitionID { statusBoard.apply(snapshot) }
         notifyBusyIfChanged()
+        // Disconnect 뒤 끝내지 못했던 프로세스가 모두 끝났다: 보류했던 런타임 바꾸기를 잇는다
+        if retiring.contains(entry.id), !snapshot.isBusy, !snapshot.hasLiveProcess {
+            Task { await renewRuntime(replacing: entry.runtime) }
+        }
         // 떠난 계정의 마지막 턴이 끝났거나 · 마무리 모드가 할 일을 모두 끝내 멈췄다: 원장을 닫고 놓는다
         if !snapshot.isBusy, snapshot.status == .stopped, entry.partition.id != activePartitionID || entry.mode == .drain {
             Task { await release(entry) }
@@ -357,6 +455,17 @@ final class BridgeHost {
         return .none
     }
 
+    /// 런타임 구성 (OA F1m): Mac 이름은 보내도 되는 빌드 · 서버일 때만 싣는다 — Debug는 loopback 서버일 때만, Release는 bridge가 켜진 빌드(런타임이 있을 때)에서만이다.
+    /// 처리방침 갱신 전에 개발 빌드가 운영 서버로 이름을 보내지 않게 한다 (F1s notes 8장 위험 2). 마무리 모드는 런타임이 이름을 보내지 않는다
+    static func runtimeConfiguration(
+        partition: BridgePartition, appVersion: String, mode: BridgeRuntimeConfiguration.Mode, isDebugBuild: Bool, apiBaseURL: URL
+    ) -> BridgeRuntimeConfiguration {
+        BridgeRuntimeConfiguration(
+            partition: partition, appVersion: appVersion, mode: mode, heartbeatJitterSeconds: 2,
+            deviceName: DeviceNamePolicy.provider(isDebugBuild: isDebugBuild, apiBaseURL: apiBaseURL)
+        )
+    }
+
     /// Claude Code adapter에 넣는 작업 폴더 resolver (OA D4a2): Release와 Debug 모두 등록부 resolver다. Debug만 `-TF_BRIDGE_WORKSPACE`(R2 확인용 일회용 폴더, Q14)가 있으면
     /// 그 폴더만 쓴다 — 조건을 못 채우면 resolver가 없다(등록부로 넘어가지 않는다). `disposable`은 Release에서는 늘 nil이다 (`agentChoice`)
     static func claudeCodeWorkspaces(disposable: String?, apiBaseURL: URL, home: String, registered: () -> (any WorkspaceResolver)?) -> (any WorkspaceResolver)? {
@@ -453,7 +562,9 @@ final class BridgeHost {
                     #endif
                 }
                 return BridgeRuntime(
-                    configuration: BridgeRuntimeConfiguration(partition: partition, appVersion: appVersion, mode: mode, heartbeatJitterSeconds: 2), client: client, ledger: ledger,
+                    configuration: BridgeHost.runtimeConfiguration(
+                        partition: partition, appVersion: appVersion, mode: mode, isDebugBuild: AppRuntime.isDebugBuild, apiBaseURL: services.api.baseURL
+                    ), client: client, ledger: ledger,
                     credentials: credentials, adapters: adapters, wake: SupabaseBridgeWake(supabase: services.supabase), secrets: secrets, workspaces: workspaces,
                     sessionStillValid: BridgeAppSupport.sessionStillValid(services.supabase), log: BridgeOSLog(), onChange: onChange
                 )

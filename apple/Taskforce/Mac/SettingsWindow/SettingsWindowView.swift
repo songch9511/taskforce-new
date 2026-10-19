@@ -120,7 +120,7 @@ struct SettingsWindowView: View {
                     SettingsBackLink(title: detail.backTitle(tab: tab)) { model.back() }
                     SettingsDetailView(detail: detail)
                 } else {
-                    ForEach(tab.sections(access)) { section in
+                    ForEach(tab.sections(access, macsNotice: model.agents.showsMacsNotice)) { section in
                         SettingsSectionView(section: section)
                     }
                 }
@@ -255,6 +255,8 @@ private struct SettingsSectionView: View {
         case .aiProcessing: SettingsAIProcessingSection()
         case .sources: SettingsSourcesSection()
         case .moreServices: SettingsMoreServicesSection()
+        case .yourAgents: SettingsYourAgentsSection()
+        case .macsNotice: SettingsMacsNotice()
         case .runWithAI: SettingsRunWithAISection()
         case .notifications: SettingsNotificationsSection()
         case .launcher: SettingsLauncherShortcutsSection()
@@ -274,6 +276,8 @@ private struct SettingsDetailView: View {
         case .connection(let provider): SettingsConnectionDetail(provider: provider)
         case .remembered: SettingsRememberedList()
         case .memory(let id): SettingsMemoryDetail(id: id)
+        case .agent: SettingsAgentDetail()
+        case .macs: SettingsMacsDetail()
         }
     }
 }

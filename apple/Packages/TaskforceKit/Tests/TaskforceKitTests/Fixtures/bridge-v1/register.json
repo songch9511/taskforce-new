@@ -9,6 +9,16 @@
     "connect": ["agent:claude-code"],
     "reactivate": false
   },
+  "request_with_device": {
+    "device_id": "Zm9vYmFyYmF6cXV4Zm9vYmFyYmF6cXV4Zm9vYmFyYmE",
+    "app_version": "0.2.0",
+    "adapters": [
+      { "adapter": "agent:claude-code", "installed": true, "version": "2.1.241", "signed_in": "yes", "managed_settings": false }
+    ],
+    "connect": ["agent:claude-code"],
+    "reactivate": false,
+    "device_name": "Daniel's MacBook Pro"
+  },
   "request_reactivate": {
     "device_id": "Zm9vYmFyYmF6cXV4Zm9vYmFyYmF6cXV4Zm9vYmFyYmE",
     "app_version": "0.2.0",

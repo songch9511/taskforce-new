@@ -207,7 +207,7 @@ public struct BridgeTaskRecord: Equatable, Sendable {
     /// 비밀값 질문 여부만 (값은 어디에도 쓰지 않는다)
     public var openRequestSecret: Bool
     public var closedRequestIDs: [String]
-    /// nil · `requested`(중단 의도를 적음) · `signalled`
+    /// nil · `requested`(중단 의도를 적음) · `signalled` · `unproven`(신호를 보냈다고 증명하지 못함, OA D4a2-09)
     public var cancelState: String?
     public var serverUnknownAt: Date?
     public var reconcileCount: Int

@@ -62,7 +62,7 @@ extension BridgeRuntime {
         let tasks = await buildHeartbeatTasks()
         let reports = await reportsForHeartbeat()
         let request = BridgeV1HeartbeatRequest(
-            bridgeID: bridgeID, sentAt: sentAt, appVersion: appVersionSent ? nil : config.appVersion, tasks: tasks, adapters: reports
+            bridgeID: bridgeID, sentAt: sentAt, appVersion: appVersionSent ? nil : config.appVersion, tasks: tasks, adapters: reports, deviceName: sendableDeviceName()
         )
         let response: BridgeV1HeartbeatResponse
         do {

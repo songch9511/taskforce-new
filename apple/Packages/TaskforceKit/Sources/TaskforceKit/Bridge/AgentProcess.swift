@@ -342,6 +342,8 @@ public protocol AgentProcess: Sendable {
     func attach(_ services: AgentRuntimeServices)
     /// 설치 · 버전 · 로그인 · managed settings 보고. 자격 값은 읽지 않는다 (I16)
     func probe() async -> BridgeV1AdapterReport
+    /// 다음 `probe()`가 낡은 캐시를 쓰지 않게 비운다 (OA Settings › Your agents 8장: Terminal에서 로그인하고 돌아온 때). 기본: 할 일 없음
+    func refreshProbe() async
     /// 이 버전을 이 adapter가 다룰 수 있나 (시작 직전 확인). 기본은 모두 허용
     func supportsVersion(_ version: String?) -> Bool
     func startTurn(_ turn: AgentTurnStart, events: AgentEventSink) async throws -> AgentProcessIdentity
@@ -396,6 +398,7 @@ public struct AgentSessionRun: Sendable, Equatable {
 }
 
 extension AgentProcess {
+    public func refreshProbe() async {}
     public func attach(_ services: AgentRuntimeServices) {}
     public func supportsVersion(_ version: String?) -> Bool { true }
     public func readback(marker: String, session: AgentSessionRef) async -> AgentReadback { .unsupported }

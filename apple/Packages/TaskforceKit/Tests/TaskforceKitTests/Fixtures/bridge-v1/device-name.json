@@ -1,0 +1,194 @@
+{
+ "cases": [
+  {
+   "name": "plain",
+   "raw": "Studio",
+   "expected": "Studio"
+  },
+  {
+   "name": "with digits and parens",
+   "raw": "Test Mac mini (2)",
+   "expected": "Test Mac mini (2)"
+  },
+  {
+   "name": "korean",
+   "raw": "스튜디오 맥",
+   "expected": "스튜디오 맥"
+  },
+  {
+   "name": "straight apostrophe",
+   "raw": "Daniel's MacBook Pro",
+   "expected": "Daniel's MacBook Pro"
+  },
+  {
+   "name": "curly apostrophe",
+   "raw": "Daniel’s MacBook Pro",
+   "expected": "Daniel’s MacBook Pro"
+  },
+  {
+   "name": "nfc composes latin",
+   "raw": "Café",
+   "expected": "Café"
+  },
+  {
+   "name": "nfc composes hangul jamo",
+   "raw": "한",
+   "expected": "한"
+  },
+  {
+   "name": "control bell",
+   "raw": "Test\u0007Mac",
+   "expected": "TestMac"
+  },
+  {
+   "name": "control nul and delete",
+   "raw": "Test\u0000Mac",
+   "expected": "TestMac"
+  },
+  {
+   "name": "control c1",
+   "raw": "TestMac",
+   "expected": "TestMac"
+  },
+  {
+   "name": "bidi override",
+   "raw": "‮Mac‬",
+   "expected": "Mac"
+  },
+  {
+   "name": "zero width space",
+   "raw": "Test​Mac",
+   "expected": "TestMac"
+  },
+  {
+   "name": "word joiner",
+   "raw": "Test⁠Mac",
+   "expected": "TestMac"
+  },
+  {
+   "name": "soft hyphen",
+   "raw": "Test­Mac",
+   "expected": "TestMac"
+  },
+  {
+   "name": "byte order mark",
+   "raw": "﻿Mac",
+   "expected": "Mac"
+  },
+  {
+   "name": "zero width joiner splits emoji",
+   "raw": "👨‍👩‍👧",
+   "expected": "👨👩👧"
+  },
+  {
+   "name": "runs of spaces",
+   "raw": "  Test   Mac  ",
+   "expected": "Test Mac"
+  },
+  {
+   "name": "a run of spaces before a combining mark collapses by code point",
+   "raw": "Test  ́Mac",
+   "expected": "Test ́Mac"
+  },
+  {
+   "name": "a space before a combining mark at the edge is trimmed like the server does",
+   "raw": " ́Mac  ",
+   "expected": "́Mac"
+  },
+  {
+   "name": "tabs and newlines",
+   "raw": "Test \t \n\r Mac",
+   "expected": "Test Mac"
+  },
+  {
+   "name": "ideographic space",
+   "raw": "Test　 Mac",
+   "expected": "Test Mac"
+  },
+  {
+   "name": "no-break space",
+   "raw": "Test Mac",
+   "expected": "Test Mac"
+  },
+  {
+   "name": "line separator",
+   "raw": "Test Mac",
+   "expected": "Test Mac"
+  },
+  {
+   "name": "next line",
+   "raw": "TestMac",
+   "expected": "Test Mac"
+  },
+  {
+   "name": "vertical tab and form feed",
+   "raw": "Test\u000b\fMac",
+   "expected": "Test Mac"
+  },
+  {
+   "name": "empty",
+   "raw": "",
+   "expected": null
+  },
+  {
+   "name": "only a space",
+   "raw": " ",
+   "expected": null
+  },
+  {
+   "name": "only whitespace",
+   "raw": " \t\n ",
+   "expected": null
+  },
+  {
+   "name": "only a control",
+   "raw": "\u0007",
+   "expected": null
+  },
+  {
+   "name": "only bidi marks",
+   "raw": "‮‬",
+   "expected": null
+  },
+  {
+   "name": "only zero width",
+   "raw": "​​",
+   "expected": null
+  },
+  {
+   "name": "exactly 64 code points",
+   "raw": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "expected": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "name": "65 code points are cut to 64",
+   "raw": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "expected": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "name": "a grapheme is not split at the limit",
+   "raw": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa👍🏽",
+   "expected": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "name": "a grapheme that fits is kept",
+   "raw": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa👍🏽",
+   "expected": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa👍🏽"
+  },
+  {
+   "name": "a flag is one grapheme",
+   "raw": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa🇰🇷",
+   "expected": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "name": "trailing space after the cut is trimmed",
+   "raw": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa b",
+   "expected": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+   "name": "korean 70 chars",
+   "raw": "가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가",
+   "expected": "가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가"
+  }
+ ]
+}

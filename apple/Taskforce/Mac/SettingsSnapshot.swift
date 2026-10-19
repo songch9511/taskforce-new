@@ -23,7 +23,10 @@ enum SettingsSnapshot {
             guard let directory else { return }
             if MacSettingsRootKind.current == .window {
                 // 실제 계정의 이름 · 이메일을 PNG로 남기지 않는다
-                if SampleData.isEnabled { await captureWindow(to: directory) }
+                if SampleData.isEnabled {
+                    // `-TFSettingsSnapshotAgents`: Your agents의 모든 상태만 (OA Settings › Your agents 5.4)
+                    if SettingsAgentsSnapshot.isRequested { await captureAgents(to: directory) } else { await captureWindow(to: directory) }
+                }
                 NSApplication.shared.terminate(nil)
                 return
             }
@@ -95,6 +98,45 @@ enum SettingsSnapshot {
             model.close()
             await captureRemembered(model: model, shoot: { name, end in await shoot(name, end: end) }, settle: { await settle($0) })
         }
+    }
+
+    /// Connections › Your agents의 모든 상태 (OA Settings › Your agents 5.4, `-TFSettingsSnapshotAgents`): 상태마다 `<폴더>/light|dark/<상태>.png`.
+    /// 값은 모두 가짜 면(`SettingsAgentsSnapshot.SampleEnvironment`)이다: 실제 런타임 · 서버 · `claude` · 폴더 · Keychain에 닿지 않는다
+    private static func captureAgents(to directory: URL) async {
+        let model = SettingsWindowModel.shared
+        func settle(_ seconds: Double = 1.0) async { try? await Task.sleep(for: .seconds(seconds)) }
+        for (appearance, name) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
+            let contrast: NSAppearance.Name = name == "light" ? .accessibilityHighContrastAqua : .accessibilityHighContrastDarkAqua
+            let folder = directory.appending(path: name, directoryHint: .isDirectory)
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            for scenario in SettingsAgentsSnapshot.scenarios(now: Date()) {
+                // 대비 높이기 모습은 앱 모양을 접근성 고대비 모양으로 바꿔 찍는다 (SwiftUI의 `colorSchemeContrast`가 따라간다)
+                NSApplication.shared.appearance = NSAppearance(named: scenario.increasedContrast ? contrast : appearance)
+                // 창 밖에서 연다: 상세 · 확인 · 실패 줄이 닫히고 Connections 탭 첫 화면이다
+                await show(.connections)
+                model.agents.replaceEnvironment(SettingsAgentsSnapshot.SampleEnvironment(scenario))
+                await model.agents.refresh(.again)
+                switch scenario.screen {
+                case .list: break
+                case .detail: model.open(.agent)
+                case .macs:
+                    model.open(.macs)
+                    await model.agents.loadMacs()
+                }
+                if let confirming = scenario.confirming?(model.agents) { model.confirming = confirming }
+                let busy = scenario.busy ?? (scenario.busyRemovingFirstMac ? model.agents.macs.first.map { .removeMac($0.id) } : nil)
+                model.agents.debugForce(busy: busy, failure: scenario.failure)
+                await settle()
+                guard let window = settingsWindow else { continue }
+                // 앞 장면의 스크롤 자리가 남지 않게: 끝 장면은 끝으로, 나머지는 맨 위로
+                if scenario.scrollEnd { _ = scrollToEnd(window) } else { scrollToStart(window) }
+                await settle(0.5)
+                capture(window, to: folder.appending(path: "\(scenario.name).png"))
+            }
+        }
+        NSApplication.shared.appearance = nil
+        model.close()
+        model.agents.replaceEnvironment(nil)
     }
 
     /// Account › Remembered (B3): 입구 · 목록 · 상세(explicit, 추정) · Forget 제자리 확인. 가짜 서버(`SampleChatGateway`)의 렌더 fixture
@@ -188,6 +230,24 @@ enum SettingsSnapshot {
         best.view.contentView.scroll(to: NSPoint(x: 0, y: y))
         best.view.reflectScrolledClipView(best.view.contentView)
         return true
+    }
+
+    /// 창 안에서 가장 긴 스크롤 칸을 맨 위로 올린다
+    private static func scrollToStart(_ window: NSWindow) {
+        guard let root = window.contentView else { return }
+        var stack: [NSView] = [root]
+        var best: (view: NSScrollView, overflow: CGFloat)?
+        while let view = stack.popLast() {
+            if let scroll = view as? NSScrollView, let document = scroll.documentView {
+                let overflow = document.frame.height - scroll.contentView.bounds.height
+                if overflow > (best?.overflow ?? 1) { best = (scroll, overflow) }
+            }
+            stack.append(contentsOf: view.subviews)
+        }
+        guard let best, let document = best.view.documentView else { return }
+        let y = document.isFlipped ? 0 : best.overflow
+        best.view.contentView.scroll(to: NSPoint(x: 0, y: y))
+        best.view.reflectScrolledClipView(best.view.contentView)
     }
 
     private static var settingsWindow: NSWindow? {

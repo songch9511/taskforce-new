@@ -16,6 +16,12 @@
     "sent_at": "2026-10-14T05:00:30.000Z",
     "tasks": []
   },
+  "request_with_device": {
+    "bridge_id": "b1111111-1111-4111-8111-111111111111",
+    "sent_at": "2026-10-14T05:01:00.000Z",
+    "tasks": [],
+    "device_name": "Daniel's MacBook Pro"
+  },
   "response": {
     "heartbeat_interval_seconds": 30,
     "server_time": "2026-10-14T05:00:00.250Z",

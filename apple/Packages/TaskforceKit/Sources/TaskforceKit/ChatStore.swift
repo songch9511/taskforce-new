@@ -1025,6 +1025,7 @@ public final class ChatStore {
         guard let turn = threads[conversationID]?.pending.first(where: { $0.id == turnID }) else { return }
         // 보내기 직전 (다시 보내기 포함): 이 글을 만든 계정 · 세션이 지금도 그대로인가
         guard scope.isCurrent(turn.owner) else { return }
+        let started = tombstoneClock
         do {
             if let local = locals.first(where: { $0.id == conversationID }) {
                 let first = threads[conversationID]?.pending.map(\.text).first ?? turn.text
@@ -1060,7 +1061,8 @@ public final class ChatStore {
                 let posted = try await assistant.postAgentMessage(
                     conversationID: conversationID, clientMessageID: turnID, text: turn.text, attachments: turn.attachments
                 )
-                guard scope.isCurrent(turn.owner) else { return }
+                // 삭제 · 보관 확인 전의 성공 응답은 복구된 대화에도 반영하지 않는다.
+                guard scope.isCurrent(turn.owner), !isStale(conversationID, since: started) else { return }
                 isUnavailable = false
                 applyAgent(posted, to: conversationID)
             } else {
@@ -1070,7 +1072,8 @@ public final class ChatStore {
                 } else {
                     posted = try await gateway.postChatMessage(conversationID: conversationID, clientMessageID: turnID, text: turn.text)
                 }
-                guard scope.isCurrent(turn.owner) else { return }
+                // 삭제 · 보관 확인 전의 성공 응답은 복구된 대화에도 반영하지 않는다.
+                guard scope.isCurrent(turn.owner), !isStale(conversationID, since: started) else { return }
                 isUnavailable = false
                 apply(posted, to: conversationID)
                 if let memory { await memory.loadReferenced(ids: posted.reply.rememberedIDs) }

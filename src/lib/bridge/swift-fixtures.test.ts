@@ -9,9 +9,9 @@ import {
   bridgeV1EventSchema,
   bridgeV1EventsRequestSchema,
   bridgeV1EventsResponseSchema,
-  bridgeV1HeartbeatRequestSchema,
+  bridgeV1HeartbeatRequestWithDeviceSchema,
   bridgeV1HeartbeatResponseSchema,
-  bridgeV1RegisterRequestSchema,
+  bridgeV1RegisterRequestWithDeviceSchema,
   bridgeV1RegisterResponseSchema,
   bridgeV1RevokeRequestSchema,
   bridgeV1RevokeResponseSchema,
@@ -19,10 +19,12 @@ import {
   bridgeV1ToolDecisionResponseSchema,
 } from "@/lib/api/contract";
 import { COMMAND_FLAGS } from "@/lib/agents/command-flags";
+import { normalizeDeviceName } from "@/lib/bridge/device-name";
 import { AGENT_REGISTRY } from "@/lib/agents/registry";
 import { decideToolCall } from "@/lib/agents/tool-decision";
 
 // OA D2b Q13: Swift 시험(TaskforceKitTests/BridgeV1ContractsTests)이 읽는 같은 JSON 파일을 서버 zod 스키마로 parse한다.
+// OA F1m: register · heartbeat 요청은 서버 route가 쓰는 `…WithDeviceSchema`로 읽는다 (`device_name`은 선택 키).
 // Swift는 요청 파일과 같은 키 집합을 내보내야 하고(strictObject), 응답 파일은 서버가 실제로 줄 수 있는 모양이어야 한다.
 const dir = path.resolve(import.meta.dirname, "../../../apple/Packages/TaskforceKit/Tests/TaskforceKitTests/Fixtures/bridge-v1");
 const load = (name: string): Record<string, unknown> => JSON.parse(readFileSync(path.join(dir, `${name}.json`), "utf8"));
@@ -38,7 +40,14 @@ const parseEach = (schema: z.ZodType, group: unknown, label: string) => {
 describe("Swift fixtures parse with the D2a server schemas", () => {
   it("register", () => {
     const file = load("register");
-    parseEach(bridgeV1RegisterRequestSchema, { request: file.request, request_reactivate: file.request_reactivate }, "register request");
+    parseEach(
+      bridgeV1RegisterRequestWithDeviceSchema,
+      { request: file.request, request_reactivate: file.request_reactivate, request_with_device: file.request_with_device },
+      "register request",
+    );
+    // Swift는 Mac 이름을 정규화한 값으로만 보낸다: 파일의 이름은 서버 정규화를 지나도 그대로여야 한다 (서버가 다시 고치지 않는 값)
+    const named = bridgeV1RegisterRequestWithDeviceSchema.parse(file.request_with_device);
+    expect(normalizeDeviceName(named.device_name)).toBe(named.device_name);
     parseEach(bridgeV1RegisterResponseSchema, { response: file.response }, "register response");
   });
 
@@ -69,8 +78,22 @@ describe("Swift fixtures parse with the D2a server schemas", () => {
 
   it("heartbeat", () => {
     const file = load("heartbeat");
-    parseEach(bridgeV1HeartbeatRequestSchema, { request: file.request, request_minimal: file.request_minimal }, "heartbeat request");
+    parseEach(
+      bridgeV1HeartbeatRequestWithDeviceSchema,
+      { request: file.request, request_minimal: file.request_minimal, request_with_device: file.request_with_device },
+      "heartbeat request",
+    );
+    const named = bridgeV1HeartbeatRequestWithDeviceSchema.parse(file.request_with_device);
+    expect(normalizeDeviceName(named.device_name)).toBe(named.device_name);
     parseEach(bridgeV1HeartbeatResponseSchema, { response: file.response, response_throttled: file.response_throttled }, "heartbeat response");
+  });
+
+  // OA F1m: Swift `DeviceName.normalized`는 서버 `normalizeDeviceName`과 같은 규칙이다. 같은 표(`device-name.json`)를 두 쪽이 읽는다:
+  // 기대값은 어느 구현에서도 뽑지 않고 규칙(공백 → 공백 하나, 제어 · 서식 제거, NFC, 64 코드 포인트, 글자소 보존)으로 적었다
+  it("device-name cases normalize the same way as the server", () => {
+    const file = load("device-name") as { cases: { name: string; raw: string; expected: string | null }[] };
+    expect(file.cases.length).toBeGreaterThan(20);
+    for (const { name, raw, expected } of file.cases) expect(normalizeDeviceName(raw), name).toBe(expected);
   });
 
   // OA D2b 검토 반영 B8: Swift 정리기(OutgoingValues)의 한도는 서버 zod의 한도 그대로여야 한다. 한도는 sanitizer-limits.json 한 파일에 있고,
@@ -119,8 +142,8 @@ describe("Swift fixtures parse with the D2a server schemas", () => {
     expect(accepts(artifact({ path: longPath, hash: "h", summary: summaryFor(summaryRoom + 1) }))).toBe(false);
     // adapter version 50자
     const register = (version: string) => ({ device_id: "d".repeat(43), app_version: "0.2.0", adapters: [{ adapter: "agent:claude-code", installed: true, version, signed_in: "yes", managed_settings: false }], connect: [], reactivate: false });
-    expect(bridgeV1RegisterRequestSchema.safeParse(register("9".repeat(limits.adapter_version_max_chars))).success).toBe(true);
-    expect(bridgeV1RegisterRequestSchema.safeParse(register("9".repeat(limits.adapter_version_max_chars + 1))).success).toBe(false);
+    expect(bridgeV1RegisterRequestWithDeviceSchema.safeParse(register("9".repeat(limits.adapter_version_max_chars))).success).toBe(true);
+    expect(bridgeV1RegisterRequestWithDeviceSchema.safeParse(register("9".repeat(limits.adapter_version_max_chars + 1))).success).toBe(false);
     // 글 32KB (UTF-8 바이트)
     const message = (text: string) => ({ ...base, seq: 1, type: "message", text });
     expect(accepts(message("a".repeat(limits.text_max_bytes)))).toBe(true);
@@ -129,7 +152,7 @@ describe("Swift fixtures parse with the D2a server schemas", () => {
 
   it("covers every fixture file", () => {
     expect(readdirSync(dir).sort()).toEqual([
-      "ack.json", "claude-code-adapter.json", "claude-code-events.json", "commands.json", "events.json", "heartbeat.json", "register.json", "revoke.json",
+      "ack.json", "claude-code-adapter.json", "claude-code-events.json", "commands.json", "device-name.json", "events.json", "heartbeat.json", "register.json", "revoke.json",
       "sanitizer-limits.json", "tool-decision-request.json", "tool-decision-response.json",
     ]);
   });

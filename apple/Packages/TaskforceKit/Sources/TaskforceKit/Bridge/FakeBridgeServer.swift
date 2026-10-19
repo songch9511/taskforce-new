@@ -206,6 +206,8 @@ public final class FakeBridgeServer: @unchecked Sendable {
     public func setToolDecisionResponse(_ body: [String: Any]?) { lock.withLock { _toolDecisionResponse = body } }
 
     public func bridgeID(userID: UUID) -> String? { lock.withLock { bridges.values.first { $0.userID == userID }?.id } }
+    /// 이 사용자의 active bridge id 전부 (정렬): `fillBridges`로 만든 다른 Mac을 지우는 시험이 읽는다
+    public func activeBridgeIDs(userID: UUID) -> [String] { lock.withLock { bridges.values.filter { $0.userID == userID && $0.active }.map(\.id).sorted() } }
     public func secret(bridgeID: String) -> String? { lock.withLock { bridges[bridgeID]?.secret } }
     public func bridgeIsActive(_ id: String) -> Bool { lock.withLock { bridges[id]?.active ?? false } }
     public func lastHeartbeat(bridgeID: String) -> Date? { lock.withLock { bridges[bridgeID]?.lastHeartbeatAt } }

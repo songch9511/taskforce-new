@@ -133,6 +133,13 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Taskforce Agent
         INFOPLIST_KEY_LSUIElement: YES
+        # 작업 폴더가 문서 · 데스크톱 · 다운로드 · 외장 · 네트워크 볼륨에 있으면 macOS 접근 창이 이 이름으로 뜬다 (OA Settings › Your agents 10장, 사용자 승인 2026-10-18).
+        # 다섯 키가 같은 한 문장이다: 승인된 글 그대로 (`AgentSettingsCopy.agentPurpose`와 시험이 한 글자까지 맞춰 본다)
+        INFOPLIST_KEY_NSDocumentsFolderUsageDescription: "Taskforce Agent runs Claude Code in the folders you choose for your projects."
+        INFOPLIST_KEY_NSDesktopFolderUsageDescription: "Taskforce Agent runs Claude Code in the folders you choose for your projects."
+        INFOPLIST_KEY_NSDownloadsFolderUsageDescription: "Taskforce Agent runs Claude Code in the folders you choose for your projects."
+        INFOPLIST_KEY_NSRemovableVolumesUsageDescription: "Taskforce Agent runs Claude Code in the folders you choose for your projects."
+        INFOPLIST_KEY_NSNetworkVolumesUsageDescription: "Taskforce Agent runs Claude Code in the folders you choose for your projects."
         ENABLE_HARDENED_RUNTIME: YES
         SKIP_INSTALL: YES
   # 시험 전용 가짜 `claude` (OA D3a 계약 4.4 M3). 시험 대상의 빌드 의존일 뿐 앱 번들에 넣지 않는다

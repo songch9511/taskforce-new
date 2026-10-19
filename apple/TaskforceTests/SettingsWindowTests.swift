@@ -521,7 +521,7 @@ struct SettingsWindowSectionTests {
     }
 
     @Test func connectionsOpensWithAIProcessingThenSources() {
-        #expect(SettingsWindowTab.connections.sections(.signedIn) == [.aiProcessing, .sources, .moreServices])
+        #expect(SettingsWindowTab.connections.sections(.signedIn) == [.aiProcessing, .sources, .moreServices, .yourAgents])
         #expect(SettingsWindowTab.connections.sections(.signedOut) == [.signInRequired])
         #expect(SettingsWindowTab.execution.sections(.signedIn) == [.runWithAI])
         #expect(SettingsWindowTab.execution.sections(.loading) == [.signInRequired])
@@ -538,7 +538,7 @@ struct SettingsWindowSectionTests {
     @Test func gatedTopicsStayHidden() {
         let hidden = Set(SettingsWindowHidden.allCases.map(\.rawValue))
         #expect(hidden.isSuperset(of: [
-            "Plan & usage", "Usage & Credits", "Subscription", "Your agents", "Default for new work",
+            "Plan & usage", "Usage & Credits", "Subscription", "Default for new work",
             "Spending outside Taskforce", "Delivery", "Task List",
         ]))
         for tab in SettingsWindowTab.allCases {
@@ -547,7 +547,6 @@ struct SettingsWindowSectionTests {
                 #expect(titles.isDisjoint(with: hidden), "\(tab) \(access)")
             }
         }
-        #expect(SettingsWindowHidden.yourAgents.tab == .connections)
         #expect(SettingsWindowHidden.planAndUsage.tab == .account)
         #expect(SettingsWindowHidden.externalCosts.tab == .execution)
         #expect(SettingsWindowHidden.reportsDelivery.tab == .reports)

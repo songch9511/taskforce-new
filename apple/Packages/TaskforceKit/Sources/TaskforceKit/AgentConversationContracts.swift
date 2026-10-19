@@ -757,13 +757,22 @@ public enum AssistantTarget: Decodable, Sendable, Hashable {
         public let connectionID: UUID?
         public let state: AgentTargetState
         public let access: AgentAccessLevel?
+        /// 이 연결을 돌리는 Mac의 bridge id (OA F1s: 서버가 연결의 `bridge_id`를 준다). 연결 없음 · bridge가 지워짐 · 옛 서버면 nil
+        public let bridgeID: UUID?
+        /// 그 Mac의 표시 이름 (OA F1s, 1–64 코드 포인트). 모르면(옛 Mac · 연결 없음 · 폐기 · 옛 서버) nil — 이름을 짐작하지 않는다
+        public let deviceName: String?
 
-        public init(adapter: String, displayName: String, connectionID: UUID?, state: AgentTargetState, access: AgentAccessLevel?) {
+        public init(
+            adapter: String, displayName: String, connectionID: UUID?, state: AgentTargetState, access: AgentAccessLevel?,
+            bridgeID: UUID? = nil, deviceName: String? = nil
+        ) {
             self.adapter = adapter
             self.displayName = displayName
             self.connectionID = connectionID
             self.state = state
             self.access = access
+            self.bridgeID = bridgeID
+            self.deviceName = deviceName
         }
     }
 
@@ -771,6 +780,8 @@ public enum AssistantTarget: Decodable, Sendable, Hashable {
         case kind, adapter, state, access
         case displayName = "display_name"
         case connectionID = "connection_id"
+        case bridgeID = "bridge_id"
+        case deviceName = "device_name"
     }
 
     public init(from decoder: Decoder) throws {
@@ -785,7 +796,10 @@ public enum AssistantTarget: Decodable, Sendable, Hashable {
                 displayName: try c.decode(String.self, forKey: .displayName),
                 connectionID: try c.decodeIfPresent(UUID.self, forKey: .connectionID),
                 state: try c.decode(AgentTargetState.self, forKey: .state),
-                access: try c.decodeIfPresent(AgentAccessLevel.self, forKey: .access)
+                access: try c.decodeIfPresent(AgentAccessLevel.self, forKey: .access),
+                // 옛 서버는 두 키를 주지 않는다 (decodeIfPresent). 새 서버도 모르면 null이다
+                bridgeID: try c.decodeIfPresent(UUID.self, forKey: .bridgeID),
+                deviceName: try c.decodeIfPresent(String.self, forKey: .deviceName)
             ))
         default:
             self = .other(kind)

@@ -35,6 +35,15 @@ public protocol BridgeCredentialStore: Sendable {
     func save(secret: String, partition: String) throws
     /// 계정 삭제 · 폐기 때 그 파티션의 두 항목을 지운다
     func deleteAll(partition: String) throws
+    /// Settings의 Disconnect (OA Settings › Your agents 6.3): 서버가 폐기를 받은 뒤 **장치 secret만** 지운다. `device_id`는 둔다 — 다시 연결(Reconnect)이 같은 Mac(같은 bridge 행)을 되살린다
+    func deleteSecret(partition: String) throws
+}
+
+public struct BridgeCredentialStoreUnsupported: Error, Equatable, Sendable {}
+
+extension BridgeCredentialStore {
+    /// 기본은 지우지 못한다 (모든 실제 저장소는 구현한다). 잘못된 기본값으로 `device_id`까지 지우지 않는다
+    public func deleteSecret(partition: String) throws { throw BridgeCredentialStoreUnsupported() }
 }
 
 /// 시험 · 메모리 저장소. 실제 Keychain을 건드리지 않는다
@@ -73,6 +82,12 @@ public final class InMemoryBridgeCredentialStore: BridgeCredentialStore, @unchec
         lock.lock()
         defer { lock.unlock() }
         devices[partition] = nil
+        secrets[partition] = nil
+    }
+
+    public func deleteSecret(partition: String) throws {
+        lock.lock()
+        defer { lock.unlock() }
         secrets[partition] = nil
     }
 }
@@ -137,6 +152,11 @@ public struct KeychainBridgeCredentialStore: BridgeCredentialStore {
             let status = SecItemDelete(BridgeKeychainQuery.match(partition: partition, kind: kind, accessGroup: accessGroup) as CFDictionary)
             if status != errSecSuccess, status != errSecItemNotFound { throw KeychainError(status: status) }
         }
+    }
+
+    public func deleteSecret(partition: String) throws {
+        let status = SecItemDelete(BridgeKeychainQuery.match(partition: partition, kind: .secret, accessGroup: accessGroup) as CFDictionary)
+        if status != errSecSuccess, status != errSecItemNotFound { throw KeychainError(status: status) }
     }
 
     private func read(_ partition: String, _ kind: BridgeKeychainQuery.Kind) throws -> String? {
