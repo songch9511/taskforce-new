@@ -60,6 +60,7 @@
 | `APPLE_KEY_ID` · `APPLE_PRIVATE_KEY` | Apple Developer → Keys → Sign in with Apple 키(.p8). 줄바꿈은 `\n` | APNs 키와 같은 키여도 되지만(`.env.example`) 따로 두기를 권장. 비우면 폐기를 건너뛰고 삭제는 계속 |
 | `APPLE_CLIENT_ID` | 비움 → `dev.taskforcelabs.taskforce` | |
 | `APPLE_SERVICES_ID` | Apple Developer → Identifiers → Services IDs의 Mac 웹 로그인용 ID `dev.taskforcelabs.taskforce.signin` | 계정 삭제의 Mac 브라우저 창 재확인 code를 이 client로 폐기한다(`DELETE /api/v1/account`의 `apple_client: web`). 비우면 그 폐기만 건너뛰고(로그만) 삭제는 계속. 아래 5장 "Apple 웹 로그인" |
+| `APPLE_WEB_RETURN_URL` | `https://api.taskforcelabs.dev/api/v1/apple/return` (그 Services ID의 Return URL과 글자까지 같게) | Apple code 교환(`/auth/token`)에 보내는 `redirect_uri`. 웹 authorize가 보낸 값과 같아야 Apple이 받는다. 비어 있거나 `https` · 도메인 · `/api/v1/apple/return` 모양이 아니면 web 폐기를 건너뛴다(삭제는 계속). 응답 `apple_revoked: false`로 앱이 안내한다 |
 | `APNS_KEY_ID` · `APNS_PRIVATE_KEY` | Apple Developer → Keys → Apple Push Notifications service 키(.p8) | 없으면 알림이 꺼진 채 동작 |
 | `APNS_TEAM_ID` | `U9DWQKQFMW` | |
 | `APNS_BUNDLE_ID` | 비움 → `dev.taskforcelabs.taskforce` | TestFlight 빌드의 기기 토큰은 `production` 환경이다 |
@@ -155,8 +156,8 @@ Supabase → Organization → Billing에서 프로젝트가 **Free**이고 백�
   2. Identifiers → + → **Services IDs** → Description "Taskforce Mac sign-in", Identifier `dev.taskforcelabs.taskforce.signin` → Register.
   3. 그 Services ID → Sign in with Apple ✓ → Configure: Primary App ID `dev.taskforcelabs.taskforce`, Domains `api.taskforcelabs.dev`, Return URLs `https://api.taskforcelabs.dev/api/v1/apple/return` → Done → Continue → Save.
   4. Keys: 기존 "Taskforce SIWA" 키(I8)의 Primary App ID가 `dev.taskforcelabs.taskforce`인지 본다. 새 키는 필요 없다(같은 `.p8`로 Services ID client 폐기가 되는지는 첫 실제 삭제의 `revoked` 로그로 확인한다).
-  5. Supabase Apple Client IDs에 Services ID를 더하고(4장 Auth 설정), manual linking을 켠다. Vercel에 `APPLE_SERVICES_ID`를 넣는다(2장).
-  6. 서버 PR 병합 = 운영 배포 뒤, 가짜 form으로 중계 route를 확인한다(토큰이 아닌 값): `curl -si -X POST https://api.taskforcelabs.dev/api/v1/apple/return -d 'state=Abcdefghijklmnop_-0123456789&code=x'` → `303`, `Location: taskforce://auth/apple?state=…&code=x`, `Cache-Control: no-store`, `Referrer-Policy: no-referrer`. Vercel 요청 로그에 응답 `Location`이 남지 않는지 한 번 본다(확인 필요).
+  5. Supabase Apple Client IDs에 Services ID를 더하고(4장 Auth 설정), manual linking을 켠다. Vercel에 `APPLE_SERVICES_ID` · `APPLE_WEB_RETURN_URL`을 넣는다(2장).
+  6. 서버 PR 병합 = 운영 배포 뒤, 가짜 form으로 중계 route를 확인한다(토큰이 아닌 값): `curl -si -X POST https://api.taskforcelabs.dev/api/v1/apple/return -d 'state=Abcdefghijklmnop_-0123456789&code=x'` → `303`, `Location: taskforce://auth/apple?state=…&code=x`, `Cache-Control: no-store`, `Referrer-Policy: no-referrer`. **Vercel 요청 로그 · Drain에 응답 `Location`(`destination`)이 남는지 가짜 표식으로 확인한다**(`state=` 값에 구별되는 가짜 문자열을 넣고 로그를 찾아 본다). L2 통과 조건이다: 남으면 fragment 방식 강화를 앞당긴다.
   7. (지금은 안 함) Taskforce가 사용자에게 메일을 보내게 되면(이메일 코드 · 메일 보고서) Apple "Configure private email relay service"에 보내는 도메인을 등록한다. 안 하면 "이메일 가리기" 주소로 가는 메일이 버려진다.
   - 실기기 확인(서명 · 공증한 DMG): 새 Apple 계정(이메일 공유)으로 로그인 → `auth.identities`에 apple 하나 / "이메일 가리기" → 새 계정 / iPhone 시절 같은 Apple 계정 → 같은 계정인지(`sub` 같음) / Google 계정 → Settings Add Apple → 로그아웃 → Apple로 다시 → 같은 계정 / 이미 다른 계정 것인 Apple로 Add → 한 줄 오류 / Apple이 붙은 계정 삭제 → 브라우저 재확인 → account.apple.com에서 Taskforce가 사라짐 / 재확인 취소 → 삭제 + 안내 / 기본 브라우저를 Chrome으로 바꿔 반복 / `codesign -d --entitlements :-`에 `applesignin` 0.
   - 측정(읽기 전용, 사용자가 운영 DB에서 돌린다. 결과는 숫자만 본다. 새 이벤트는 없다: 로그인 방법은 Supabase `auth.identities`가 이미 남긴다):
