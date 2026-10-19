@@ -1,4 +1,90 @@
-# 에이전트 핸드오프 (2026-10-02, 방향 변경·U0)
+# 에이전트 핸드오프 (2026-10-19, 0.2.0 · One 적용)
+
+다른 에이전트가 이 저장소를 이어받을 때 먼저 읽는 문서다. 규칙은 [CLAUDE.md](../CLAUDE.md), 기능 위치는 [FEATURE_MAP.md](FEATURE_MAP.md)가 기준이다.
+
+- 맨 위 "현재 상태"만 2026-10-19 기준이다.
+- 그 아래 "이전 인계"는 2026-10-06까지의 기록이다. 당시 상태라서 "현재"라고 적힌 문장도 그때 기준이다. 고치지 않고 그대로 두었다.
+
+## 현재 상태 (2026-10-19 KST)
+
+기준은 `origin/main` `8861368`(PR #165 병합, 2026-10-19 10:44 KST)다. 사실은 코디네이터 기록(아래 "일하는 방식"), `git log`, 저장소 문서에서 옮겼다. 이 글을 쓰면서 운영 DB는 조회하지 않았고 GitHub는 `git fetch`로 main만 읽었다. 확인하지 못한 것은 "확인 필요"로 적었다.
+
+### 0.2.0이 main에 들어온 것
+
+0.2.0은 서버(맥락 · 대화 · 코디네이터 · Review), Mac의 새 셸(Edge 셸), 에이전트 게이트웨이(Mac의 bridge가 사용자의 Claude Code를 부린다)로 이뤄진다. 2026-10-13부터 10-19까지 PR #114–#165가 병합됐다(#118은 아직 열려 있다). main 병합은 Vercel 운영 배포라 서버 코드는 이미 운영에 나가 있다. 새 기능은 대부분 닫혀 있다(다음 절).
+
+One 적용(OA)은 이 중 2026-10-13에 시작한 에이전트 쪽 작업 묶음이다(#133부터). 이름은 계획 문서 `taskforce-one-adoption-implementation-plan-2026-10-13`에서 왔다.
+
+| 영역 | PR | 코드 위치 |
+|---|---|---|
+| 서버 route · 저장 (0.2.0 바탕) | #116 표 · 계약 · 기능 플래그 뼈대(A2), #120 맥락층(B1), #122 대화 v2(B2), #123 기억 쓰기(B3), #125 범위 멤버십 쓰기(S3b), #129 실행 계약 확장(C1), #130 코디네이터(C2), #131 Review · 복귀 요약(C3). 프로젝트 · 이슈: #136 프로젝트 이름 · 아이콘 · 보관, #138 이슈 번호, #150 이슈 정리(이동 · 삭제 · 병합) | `src/app/api/v2/`, `src/lib/{context,conversation,coordinator,review}/`, 기능 플래그 `src/lib/flags.ts`. 결정 기록: [context-layer.md](context-layer.md), [coordinator.md](coordinator.md), [review-summary.md](review-summary.md) |
+| 에이전트 게이트웨이 · bridge | #133 설계 계약 문서, #134 저장 계약, #137 대화 대상, #139 턴 시작, #141 에이전트 사건 반영, #142 질문 답 · Stop · Done, #143 명령 파서, #144 bridge 서버 API, #145 대화 API 확장, #146 승인 정책 · 경로 lease, #149 Review 입력 연결, #151 비밀값 로컬 답, #152 기기 이름. Mac: #135 App Sandbox 끔, #140 자동 업데이트(Sparkle), #148 Mac bridge 런타임 | 서버 `src/lib/agents/`, `src/lib/bridge/`, `src/app/api/v1/bridge/`, `src/app/api/v2/{conversations,agent-sessions,agent-tasks,assistant,path-conflicts}/`. Mac `apple/Packages/TaskforceKit/Sources/TaskforceKit/Bridge/`, `apple/Taskforce/Mac/Bridge/`. 결정 기록: [agent-gateway.md](agent-gateway.md). 구현 기준 설계: [design/README.md](design/README.md) |
+| Mac 0.2.0 셸 | 2026-10-13: #114 UI 바탕, #115 아이콘, #117 Edge 셸, #119 설정 창, #121 All work, #124 Chats · 기억, #126 Mac 테스트 격리, #127 프로젝트 묶음, #128 Review, #132 복귀 요약. OA: #147 Assistant 창, #153 Issues · 세션 화면, #154 레일 Projects 칸 | `apple/Taskforce/Mac/Edge/`, `apple/Taskforce/Mac/Assistant/`, `apple/Taskforce/Mac/SettingsWindow/`. 화면 목록: FEATURE_MAP 3-5, [apple/README.md](../apple/README.md) |
+| 에이전트 기능 (#155–#165) | #155 에이전트 대화 화면(전달 줄 · Send again · Stop), #156 전달 정리(서버), #157 질문 카드, #158 Review 결정만 읽기(서버), #159 에이전트 지표(서버, `/admin/metrics`), #160 Taskforce 대화 · 캡슐 레일, #161 Claude Code adapter, #162 Mac이 Review 결정을 읽는 경로, #163 프로젝트별 작업 폴더 · Open in Terminal, #164 비밀값 실제 전달 · Write 승인 글, #165 Settings › Your agents(Mac 설정 창 Connections 탭의 에이전트 연결 · 작업 폴더 화면) | Mac `apple/Packages/TaskforceKit/Sources/TaskforceKit/Bridge/ClaudeCode/`, `apple/Taskforce/Mac/Bridge/`, `apple/Taskforce/Mac/Edge/`, `apple/Taskforce/Mac/SettingsWindow/SettingsAgents*.swift`. 서버 `src/lib/{review,metrics}/`, `src/app/api/v2/review/decisions/`, `src/app/admin/metrics/`. 기능별 파일 · 테스트: FEATURE_MAP 3-5 · 3-7 |
+
+### 게이트: 아직 닫혀 있는 것
+
+| 항목 | 지금 | 켜려면 |
+|---|---|---|
+| Mac Release 빌드의 화면 | 켜진 것은 Edge 셸 · All work · Review(기존 v1 Confirm · Dismiss) · 복귀 요약뿐이다(`EdgeSurfaces.release`). Chats · 프로젝트 묶음 · 기억 · Issues · 세션 화면 · Taskforce 대화 · 에이전트 대화 · 질문 카드 · 0.2.0 설정 창은 Release에서 늘 꺼져 있고, 설정은 구 창(Plan & usage · billing)이다. 이 빌드를 서명 DMG로 낸 적이 있는지는 확인 필요(마지막으로 적힌 서명 DMG는 아래 이전 인계의 0.1.0 build 3) | 코드 변경이다. `apple/Taskforce/Mac/Edge/EdgeSurfaces.swift`가 Release 값을 고정하고, 출시 때 켜는 것은 L5 결정이라고 주석에 적혀 있다 |
+| Mac bridge | 꺼짐. `apple/Config/Base.xcconfig` · `Release.xcconfig`의 `TF_BRIDGE_ENABLED = NO`. 꺼진 빌드는 네트워크 · 프로세스가 없다. Debug도 실행 인자 `-TF_BRIDGE YES`가 있어야 켜진다 | xcconfig 한 줄을 `YES`로 바꾼다(켜는 단계, 내부 이름 L5). 기록에 적힌 조건은 둘이다: 마이그레이션 `20261127000000` 적용(원장에서 충족), 작업 폴더 절대 경로를 서버에 보내지 않는 변경(#163에 넣기로 하고 병합됨, 충족을 확인한 기록은 없다). 이 목록이 완전한지는 확인 필요 |
+| 0.2.0 셸의 나머지 화면과 새 설정 창(5탭) | Debug 전용(Settings › Your agents도 이 설정 창 안에 있다). 격리 Debug 실행에서 `-TF_EDGE_SHELL YES`(화면에 따라 `-TF_S3B` · `-TF_U2` · `-TF_S4` · `-TF_C3`도)를 줘야 보인다. 저장된 설정으로는 켜지지 않는다 | 위 Release 화면 줄과 같다 |
+| 서버 기능 플래그 | `src/lib/flags.ts`의 열 개(`CONVERSATIONS_V2_ENABLED` · `MEMORY_ENABLED` · `COORDINATOR_ENABLED` · `AGENT_ADAPTER_CLAUDE_CODE_ENABLED` · `REVIEW_V2_ENABLED` 등)는 env 값이 정확히 `"true"`일 때만 켜진다. 에이전트 대화 route는 대화 v2와 adapter 플래그가 둘 다 켜져야 열린다. 첫 두 병합 묶음(#133–#143)은 플래그 · env 변경 0으로 기록돼 있다. 그 뒤 병합과 운영의 현재 값은 확인 필요 | 서버는 플래그와 DB 차단 스위치(`execution_controls`)가 따로 있다 |
+
+출시 전에 문서가 따로 적어 둔 일(완전한 목록이 아니다, 확인 필요): Sparkle 피드 주소 · 공개 키 채우기(`Release.xcconfig`가 비어 있다), 서명 빌드에서만 확인되는 것([mac-dmg.md](go-live/mac-dmg.md) "샌드박스 끔"), 비밀값 답에 대한 처리방침 한 줄(코디네이터 기록).
+
+### 운영 마이그레이션
+
+- 원장이 적는 OA 파일은 `20261113000000`부터 `20261128000000`까지 열다섯 개이고 모두 병합 · 운영 적용이다. 그중 `20261124000000`–`20261128000000` 다섯 개는 적용 exit 0과 사후 검사 전부 통과 기록까지 있다. 마지막 `20261128000000`은 2026-10-17 13:57 KST에 적용했고 사후 검사 30/30이었다.
+- `20261119000000`은 일부러 비웠다(`20261121000000`보다 앞서 적용되면 지표 제약이 덮인다). `20261122000000`은 파일이 없다(필요할 때만 쓰기로 예약했다). 빠진 파일이 아니다.
+- 원장은 `20261113000000`부터만 적는다. 그 앞 번호(`20261020000000`–`20261112000000`)의 운영 적용은 이 근거에서 확인하지 못했다. 10-05 인계(아래)에는 `20261027000000` · `20261028000000`이 운영 미적용으로 적혀 있다. 확인 필요. 운영 DB는 마이그레이션 기록이 비어 있어(런북 4장) 스키마를 읽어서 확인해야 한다.
+- 규칙(그대로 유효하다):
+  - 새 파일만, 한 번에 하나씩 `npx supabase db query --linked -f <파일>`로 적용한다. `db push`는 쓰지 않는다. 기존 마이그레이션 파일은 고치지 않는다.
+  - `--linked`는 운영 프로젝트다. 적용은 사용자가 승인한 뒤에 한다. 읽기는 집계 `SELECT`만 하고 원문 본문 · 이메일은 읽지 않는다.
+  - 마이그레이션이 있는 PR은 운영 적용을 merge보다 먼저 한다.
+  - 새 번호는 코디네이터 원장에서 예약한다. 쓰기 직전에 모든 origin 브랜치의 최고 번호를 `git ls-tree`로 다시 확인한다.
+
+### 진행 중
+
+- 계약 초안을 쓰는 중이다(계획 단계, 구현 전). 하나는 main의 $9.99 결제 경로를 2026-10-09 가격으로 바꾸는 일이고, 하나는 iPhone과 Mac 모두에서 Sign in with Apple + Google을 쓰는 일이다. 세부는 계약이 확정되면 적는다.
+- 다음 Mac PR에 한 줄로 같이 고친다: `AgentQuestionCopy.swift` 5번째 줄 주석의 "PR #157에서 승인했다(2026-10-18)"는 2026-10-17이 맞다(승인 커밋 `f835e26`, 10-17 10:40 KST).
+- Mac CI의 `ChatStoreInterleavingTests`가 간헐적으로 실패했다. seed 220의 원인은 #165에 들어간 `663fa9a`(사용자의 Codex 앱이 병합하면서 넣은 커밋)가 고쳤다. 지운 대화에 늦게 성공한 전송이 메시지를 넣던 경합을 `isStale` 확인으로 막았다. 10-17의 seed 30 실패("쥔 행의 서버 버전이 줄었다")도 같은 원인으로 본다: 늦은 POST 응답이 다시 읽어 복구한 행을 옛 값으로 덮던 경로를 같은 확인이 막는다. `663fa9a` 위에서 전체 Kit을 부하 90–180에서 10번 돌렸을 때 이 시험의 실패는 0이었다(고치기 전에는 더 가벼운 부하에서도 6번 중 2번 실패). 그 10번에서 따로 드러난 것: 실제 시간을 기다리는 시험 몇 개(`AgentSettingsRuntimeTests`의 Reconnect · 합쳐진 등록, `BridgeReviewATests` reactivate, `AuthSessionRaceTests`, `AgentTerminalFlowTests`, `AgentSessionStoreTests`)가 아주 무거운 부하에서 시간 초과로 실패한다. 부하 20–26과 CI에서는 통과한다.
+
+### 사용자 답을 기다리는 질문
+
+| # | 질문 |
+|---|---|
+| 1 | 에이전트에게 보낸 일을 지표의 "착수"로 셀까(#159 에이전트 지표) |
+| 2 | 오래된 열린 PR 9개를 어떻게 할까: #92 · #93 · #94 · #96 · #99 · #101 · #104 · #111 · #118 |
+| 3 | 홍보 영상 v9가 10-16 이전 디자인이다(Review 카드, 노란 링). 다시 만들까 |
+
+2026-10-19에 닫힌 것:
+
+- #165는 병합됐다(main `8861368`).
+- 가격은 2026-10-09 결정을 따른다(Pro $12.99/월, 첫 달 $6.99, 연 $119.88, Lifetime $229). main의 $9.99 결제 경로가 바꿀 대상이다.
+- 로그인은 iPhone과 Mac 모두 Apple + Google으로 한다. 지금 main의 Mac 안내는 Google 전용이라 CLAUDE.md와 어긋나 있다.
+- 루트 체크아웃은 정리돼 main `8861368`에 맞춰졌다. 루트에 있던 수정 · untracked 파일 92개는 로컬 백업 브랜치 `backup/root-dirty-2026-10-19`(push 안 함)에 있고 지운 것은 없다. 그 안의 `20261018000000_ai_spend_budget.sql`은 적용 금지다.
+
+### 일하는 방식
+
+- 코디네이터 한 명(Opus 5.5)이 계획 · 계약 · 검토 · 병합 준비를 맡는다. 작업 에이전트가 작업 단위(보통 PR 하나)마다 구현한다. 작성자는 Sonnet 5.5(xhigh)와 Codex(GPT-6 Astra · Luna)다. 구현 전에 계약을 확정한다.
+- 검토는 작성자와 다른 모델 계열이 따로 한다. 예를 들어 Sonnet이 쓴 것은 Codex Astra가, 보안은 Opus가 본다. 높은 등급 지적(P1)과 확정된 결함이 0이 될 때까지 반복하고, 남는 P2 · P3는 알려진 한계로 PR에 적는다.
+- 에이전트는 Draft PR까지만 연다. 병합과 운영 SQL 적용은 사용자가 한다. 지금은 사용자가 위임한 Codex 앱이 한다. 순서는 PR head의 CI(`check` · `apple`) 초록 확인, (SQL이 있으면) 승인된 파일을 하나씩 적용하고 읽기로 사후 검사, 병합, 그 병합 SHA의 Vercel 운영 배포 확인이다.
+- 작업은 작업마다 `origin/main`에서 딴 전용 worktree에서 한다. 루트 체크아웃에서 직접 작업하지 않는다.
+- 안전장치 훅이나 권한 확인에 막히면 우회하지 않고 사용자에게 알린다(선례: 2026-10-13 밤 Codex 병합 지시서가 권한 확인에 거부되자 우회하지 않고 사용자에게 길을 물었다).
+- 기록은 저장소 밖, 사용자의 로컬 Mac에만 있다(`design/README.md`도 같은 설명을 한다). 저장소에서는 열리지 않는다.
+
+| 무엇 | 위치 |
+|---|---|
+| 진행 기록(OA의 유일한 기록) | `~/.claude/worktrees/taskforce-020/handoffs/oa-progress.md` |
+| 마이그레이션 번호 원장 | `~/.claude/worktrees/taskforce-020/handoffs/migration-ledger.md` |
+| 작업 단위별 계약 | 같은 폴더의 `oa-<작업 이름>-contract.md` |
+| 구현 계획 · 오케스트레이션 계획 | 루트 체크아웃 `.omx/plans/taskforce-one-adoption-*-2026-10-13.md` |
+| 병합 · SQL 적용 증거 | 루트 체크아웃 `handoffs/oa-merge-2026-10-13/` |
+
+## 이전 인계 (2026-10-06 이전, 기록)
+
+아래는 모두 당시 기록이다. 현재 상태로 읽지 않는다. 안의 "1장 · 2장 · 3장"은 이 아래 글 안의 번호다.
 
 ## 통합 QA 인계 (2026-10-06 KST)
 
