@@ -63,6 +63,80 @@ struct ChatStoreTombstoneTests {
         Chats.message(n, in: id, seq: n, role: .assistant, text: text, at: Double(n))
     }
 
+    /// POST가 성공한 뒤 응답만 지연되는 동안 삭제 · 보관을 확인하면, 늦은 성공이 본문이나 전달 표시를 되살리지 않는다.
+    @Test(arguments: [false, true], [false, true])
+    func latePostCannotRestoreAConfirmedGoneThread(agent: Bool, archived: Bool) async {
+        for recover in [false, true] {
+            await latePostAfterConfirmation(agent: agent, archived: archived, recover: recover)
+        }
+    }
+
+    private func latePostAfterConfirmation(agent: Bool, archived: Bool, recover: Bool) async {
+        let row = agentRow(2)
+        let original = agent ? row : row.with(target: .taskforce)
+        let listed = agentRow(1, last: 100)
+        let id = original.id
+        let chat = store()
+        chat.panelConversations = { [id] }
+        gateway.conversationHandler = { _ in original }
+        gateway.messagesHandler = { _ in [] }
+        gateway.lastMessagesHandler = { _ in [:] }
+        await chat.readConversation(id)
+        await chat.settle()
+        #expect(chat.isTargetKnown(id) && chat.screen(for: id) == .ready(problem: nil))
+
+        let post = Latch()
+        let lateID = Chats.message(10, in: id, seq: 1, role: .user, text: "late", at: 1).id
+        gateway.postHandler = { requested, cmid, text in
+            let response = Chats.pair(10, in: requested, seq: 1, cmid: cmid, text: text)
+            await post.wait()
+            return response
+        }
+        assistant.postAgentHandler = { requested, cmid, text in
+            let response = AgentPostedMessage(
+                message: Chats.message(10, in: requested, seq: 1, role: .user, text: text, cmid: cmid, at: 1),
+                delivery: AgentDelivery(state: .sent)
+            )
+            await post.wait()
+            return response
+        }
+        var agentTurnNotifications = 0
+        chat.onAgentTurnMayStart = { agentTurnNotifications += 1 }
+        let sending = Task { await chat.send("late", in: id) }
+        let arrived = await post.waitForArrivals(1, timeout: .seconds(5))
+        #expect(arrived, "POST가 서버에 도착하고 성공 응답만 붙잡혀 있다")
+        guard arrived else { await post.open(); await sending.value; return }
+
+        gateway.conversationsHandler = { [listed] }
+        let gone: ChatConversation? = archived ? agentRow(2, archived: true).with(target: original.target) : nil
+        gateway.conversationHandler = { _ in gone }
+        await chat.refresh()
+        #expect(!chat.isTargetKnown(id) && chat.screen(for: id) == .failed)
+        #expect(chat.turns(for: id).isEmpty)
+
+        if recover {
+            gateway.conversationHandler = { _ in original }
+            let recovered = message(20, in: id, "recovered")
+            gateway.messagesHandler = { requested in requested == id ? [recovered] : [] }
+            await chat.readConversation(id)
+            await chat.settle()
+            #expect(chat.isTargetKnown(id) && chat.screen(for: id) == .ready(problem: nil))
+        }
+        let before = chat.turns(for: id)
+        let rowsBefore = chat.conversations
+        await post.open()
+        await sending.value
+        await chat.settle()
+
+        #expect(chat.turns(for: id) == before, "삭제 확인 전 POST가 지워진 본문이나 복구한 새 본문을 바꾸지 않는다")
+        #expect(chat.isTargetKnown(id) == recover)
+        #expect(chat.screen(for: id) == (recover ? .ready(problem: nil) : .failed))
+        #expect(chat.delivery(forMessage: lateID) == nil && agentTurnNotifications == 0, "늦은 에이전트 응답의 부수 효과도 없다")
+        #expect(!chat.isSending(in: id))
+        #expect(chat.conversations == rowsBefore, "늦은 응답이 복구한 행의 시각도 바꾸지 않는다")
+        chat.reset()
+    }
+
     // MARK: 표
 
     @Test(arguments: TombstoneCase.all)
