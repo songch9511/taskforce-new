@@ -596,6 +596,10 @@ final class SecretFieldHandle {
 /// 비밀값 입력 칸 (AppKit `NSSecureTextField`): 값은 칸에서 **한 번** 읽고 곧바로 칸을 비운다. 실행 취소 기록 · 접근성 값(마스크) · UserDefaults에 남기지 않는다
 struct SecretField: NSViewRepresentable {
     let label: String
+    /// 칸이 비었을 때의 자리 글 (`SecureFieldSm`이 쓴다: 질문 카드는 없다)
+    var placeholder: String?
+    /// 글자 크기: 질문 카드 15, 설정 행의 작은 칸(`SecureFieldSm`) 13
+    var fontSize: CGFloat = 15
     let focusRequest: Int
     /// 바뀔 때마다 칸을 비운다 (Undo · 실패로 카드가 돌아왔을 때)
     let clearToken: Int
@@ -611,7 +615,8 @@ struct SecretField: NSViewRepresentable {
         field.isBordered = false
         field.drawsBackground = false
         field.focusRingType = .none
-        field.font = .systemFont(ofSize: 15)
+        field.font = .systemFont(ofSize: fontSize)
+        field.placeholderString = placeholder
         field.cell?.usesSingleLineMode = true
         field.cell?.isScrollable = true
         field.delegate = context.coordinator

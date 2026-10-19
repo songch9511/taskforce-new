@@ -122,7 +122,8 @@ public struct RunLaneText: Equatable, Sendable {
         case .aiProviderBoundViolation: "AI is paused because a provider exceeded its reserved cost."
         case .aiDailyBudgetExhausted: "Daily AI allowance reached. Try again after the next UTC day."
         case .aiGlobalBudgetExhausted: "AI has reached the shared beta allowance and is paused."
-        case .aiBudgetExhausted: "Your beta AI allowance cannot cover this request. Check Usage & Credits."
+        // 공정 사용 상한 (Q2): 승인된 N11 문장을 Pro · 체험 · 베타 어느 계정에도 맞게 "Pro's monthly"를 뺐다. 숫자 · 날짜는 Plan & usage의 Notice가 말한다
+        case .aiBudgetExhausted: PlanCopy.fairUseLimit
         case .retriesExhausted: "Stopped after too many retries."
         case .actionMissing: "The task was deleted."
         case .other: nil
