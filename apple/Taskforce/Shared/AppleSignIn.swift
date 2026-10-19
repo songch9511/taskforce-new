@@ -22,13 +22,33 @@ enum WebAuthenticationResult: Equatable {
     case failed
 }
 
+/// 브라우저 창 세션 하나 (`ASWebAuthenticationSession`). 시험은 가짜로 바꿔 `cancel()` 뒤 완료 콜백이 오지 않는 경우도 본다
+@MainActor
+protocol WebAuthenticationSessioning: AnyObject {
+    var presentationContextProvider: (any ASWebAuthenticationPresentationContextProviding)? { get set }
+    var prefersEphemeralWebBrowserSession: Bool { get set }
+    func start() -> Bool
+    func cancel()
+}
+
+extension ASWebAuthenticationSession: WebAuthenticationSessioning {}
+
 /// 시스템 브라우저 창 (`prefersEphemeralWebBrowserSession = false`: 브라우저에 이미 로그인돼 있으면 다시 입력하지 않는다).
 /// 같은 scheme을 다른 앱이 등록해도 부른 앱의 세션만 콜백을 받는다.
 @MainActor
 final class SystemWebAuthenticationRunner: NSObject, WebAuthenticationRunning, ASWebAuthenticationPresentationContextProviding {
-    private var session: ASWebAuthenticationSession?
+    private var session: (any WebAuthenticationSessioning)?
     private var anchor: ASPresentationAnchor?
     private var continuation: CheckedContinuation<WebAuthenticationResult, Never>?
+    /// 세션을 만든다 (주소 · 완료 핸들러 → 세션). 시험이 바꾼다
+    private let makeSession: (URL, @escaping @Sendable (URL?, Error?) -> Void) -> any WebAuthenticationSessioning
+
+    init(makeSession: @escaping (URL, @escaping @Sendable (URL?, Error?) -> Void) -> any WebAuthenticationSessioning = { url, completion in
+        ASWebAuthenticationSession(url: url, callback: .customScheme(AppleWebAuthorization.callbackScheme), completionHandler: completion)
+    }) {
+        self.makeSession = makeSession
+        super.init()
+    }
 
     func run(url: URL, anchor: ASPresentationAnchor) async -> WebAuthenticationResult {
         // 이미 떠 있으면 새로 열지 않는다 (`AppleSignInFlow`가 한 번에 하나만 부른다)
@@ -36,7 +56,7 @@ final class SystemWebAuthenticationRunner: NSObject, WebAuthenticationRunning, A
         self.anchor = anchor
         return await withCheckedContinuation { continuation in
             self.continuation = continuation
-            let session = ASWebAuthenticationSession(url: url, callback: .customScheme(AppleWebAuthorization.callbackScheme)) { [weak self] callback, error in
+            let session = makeSession(url) { [weak self] callback, error in
                 // 완료 핸들러는 메인 큐로 온다. 토큰이 든 주소는 여기서 한 번만 넘기고 어디에도 남기지 않는다
                 let result: WebAuthenticationResult
                 if let callback {
@@ -55,8 +75,12 @@ final class SystemWebAuthenticationRunner: NSObject, WebAuthenticationRunning, A
         }
     }
 
+    /// 프로그램이 창을 닫는다: 진행 중인 `run`을 명시적으로 **한 번만** `.canceled`로 끝낸다. 시스템의 완료 콜백이 오지 않아도 멈추지 않고,
+    /// 오더라도 이미 끝났으니 다시 끝내지 않는다 (`finish`는 첫 호출만 이어 간다)
     func cancel() {
-        session?.cancel()
+        let open = session
+        finish(.canceled)
+        open?.cancel()
     }
 
     private func finish(_ result: WebAuthenticationResult) {

@@ -148,6 +148,8 @@ struct AccountDeletionTests {
         var reauthorizations = 0
         var deletedWith: [String?] = []
         var clients: [AppleAuthorizationClient] = []
+        /// 서버가 돌려줄 `apple_revoked`
+        var appleRevoked: Bool? = nil
         var removed: [UUID] = []
         var googleDisconnects = 0
         var signedOutNotes: [String?] = []
@@ -176,6 +178,7 @@ struct AccountDeletionTests {
                 if serverFails { throw URLError(.cannotConnectToHost) }
                 trace.deletedWith.append(sent)
                 trace.clients.append(client)
+                return trace.appleRevoked
             },
             removeSavedData: { trace.removed.append($0) },
             disconnectGoogle: { trace.googleDisconnects += 1 },
@@ -208,6 +211,34 @@ struct AccountDeletionTests {
     /// 삭제 뒤 안내는 승인된 문장 그대로다 (account.apple.com 메뉴 이름은 L2에서 확인)
     @Test func theApprovedNoteIsTheOneLeftOnTheSignInScreen() {
         #expect(AccountDeletion.revokeSkippedNote == "Account deleted. To remove Sign in with Apple too, go to account.apple.com › Sign-In and Security › Sign in with Apple.")
+    }
+
+    /// 검토 1 P3-4: 재확인 code를 보냈어도 서버가 폐기를 건너뛰었다고(apple_revoked false) 하면 안내 한 줄을 남긴다
+    @Test func aServerThatSkippedTheRevocationLeavesTheNoteEvenWithACode() async throws {
+        let trace = Trace()
+        trace.appleRevoked = false
+        let ran = try await run(providers: ["apple"], trace: trace)
+        #expect(ran.result == nil)
+        #expect(ran.trace.deletedWith == ["apple-code"])
+        #expect(ran.trace.signedOutNotes == [AccountDeletion.revokeSkippedNote])
+    }
+
+    /// 폐기했다고(true) 하거나 말이 없으면(옛 서버 · Apple과 상관없음) 안내가 없다
+    @Test func aRevokedOrSilentServerLeavesNoNote() async throws {
+        let revokedTrace = Trace()
+        revokedTrace.appleRevoked = true
+        #expect(try await run(providers: ["apple"], trace: revokedTrace).trace.signedOutNotes == [nil])
+        #expect(try await run(providers: ["apple"]).trace.signedOutNotes == [nil])
+    }
+
+    /// Apple과 상관없는 계정은 서버가 false라고 해도 안내하지 않는다 (재확인 대상이 아니다)
+    @Test func theNoteOnlyAppliesToAppleAccounts() async throws {
+        let trace = Trace()
+        trace.appleRevoked = false
+        #expect(try await run(providers: ["google"], trace: trace).trace.signedOutNotes == [nil])
+        let emailTrace = Trace()
+        emailTrace.appleRevoked = false
+        #expect(try await run(providers: ["email"], trace: emailTrace).trace.signedOutNotes == [nil])
     }
 
     @Test func aGoogleOnlyAccountNeedsNoReconfirmation() async throws {
@@ -248,7 +279,7 @@ struct AccountDeletionTests {
         let trace = Trace()
         let signedOut = SessionStore(auth: AuthClient(url: URL(string: "https://delete-race.invalid/auth/v1")!, localStorage: CopyTestStorage(data: Data()), autoRefreshToken: false))
         let result = await AccountDeletion.delete(session: signedOut, fetchUser: { throw URLError(.badURL) },
-            reauthorize: { trace.reauthorizations += 1; return "code" }, deleteOnServer: { code, _ in trace.deletedWith.append(code) },
+            reauthorize: { trace.reauthorizations += 1; return "code" }, deleteOnServer: { code, _ in trace.deletedWith.append(code); return nil },
             removeSavedData: { trace.removed.append($0) }, disconnectGoogle: {}, accountDeleted: { _ in })
         // 로그인 전에는 승인된 한 줄로 막고 아무것도 쓰지 않는다
         #expect(result == "Sign in before deleting your account.")
@@ -257,7 +288,7 @@ struct AccountDeletionTests {
         let current = makeSession(id: UUID(), providers: ["apple"])
         let store = try sessionStore(signedInAs: current)
         let unreadable = await AccountDeletion.delete(session: store, fetchUser: { throw URLError(.notConnectedToInternet) },
-            reauthorize: { trace.reauthorizations += 1; return "code" }, deleteOnServer: { code, _ in trace.deletedWith.append(code) },
+            reauthorize: { trace.reauthorizations += 1; return "code" }, deleteOnServer: { code, _ in trace.deletedWith.append(code); return nil },
             removeSavedData: { trace.removed.append($0) }, disconnectGoogle: {}, accountDeleted: { _ in })
         #expect(unreadable == AccountDeletion.couldNotVerifyMessage)
         #expect(trace.reauthorizations == 0 && trace.deletedWith.isEmpty && trace.removed.isEmpty)
@@ -309,7 +340,7 @@ struct AccountDeletionTests {
         var localSignOuts = 0
         let deletion = Task {
             await AccountDeletion.delete(session: session, fetchUser: { a.user }, reauthorize: { nil },
-                deleteOnServer: { _, _ in await pending.waitForResponse() },
+                deleteOnServer: { _, _ in await pending.waitForResponse(); return nil },
                 removeSavedData: { removed.append($0) },
                 disconnectGoogle: { googleConnected = false },
                 accountDeleted: { _ in localSignOuts += 1; session.apply(event: .signedOut, session: nil) })
@@ -342,7 +373,7 @@ struct AccountDeletionTests {
                 session.apply(event: .signedIn, session: b)
                 return "code-of-a"
             },
-            deleteOnServer: { code, _ in trace.deletedWith.append(code) },
+            deleteOnServer: { code, _ in trace.deletedWith.append(code); return nil },
             removeSavedData: { trace.removed.append($0) }, disconnectGoogle: { trace.googleDisconnects += 1 },
             accountDeleted: { _ in trace.signedOutCalls += 1 })
         #expect(result == AccountDeletion.accountChangedMessage)
@@ -360,7 +391,7 @@ struct AccountDeletionTests {
         session.apply(event: .signedIn, session: a)
         var removed: [UUID] = []
         var disconnected = false
-        let result = await AccountDeletion.delete(session: session, fetchUser: { a.user }, reauthorize: { nil }, deleteOnServer: { _, _ in },
+        let result = await AccountDeletion.delete(session: session, fetchUser: { a.user }, reauthorize: { nil }, deleteOnServer: { _, _ in nil },
             removeSavedData: { removed.append($0) }, disconnectGoogle: { disconnected = true },
             accountDeleted: { _ in session.apply(event: .signedOut, session: nil) })
         #expect(result == nil)

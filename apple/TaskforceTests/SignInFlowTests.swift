@@ -311,7 +311,12 @@ private final class FakeSupabase: @unchecked Sendable {
     @MainActor
     func makeStore() -> SessionStore {
         SessionStore(auth: AuthClient(url: URL(string: "https://signin-flow.invalid/auth/v1")!, localStorage: MemoryAuthStorage(),
-            fetch: { [self] in try handle($0) }, autoRefreshToken: false))
+            fetch: { [self] in try handle($0) }, autoRefreshToken: false), link: transport)
+    }
+
+    /// 이어 붙이기를 같은 가짜 서버로 보낸다 (공유 세션 저장소에 쓰지 않는 길)
+    var transport: LinkTransport {
+        LinkTransport(authURL: URL(string: "https://signin-flow.invalid/auth/v1")!, headers: ["apikey": "public-key"]) { [self] in try handle($0) }
     }
 
     func handle(_ request: URLRequest) throws -> (Data, HTTPURLResponse) {
@@ -424,7 +429,7 @@ struct SignInAddModelTests {
         let current = fixtureSession(for: fixtureUser(id: me, providers: ["google"]))
         try storage.store(key: "supabase.auth.token", value: AuthClient.Configuration.jsonEncoder.encode(current))
         let store = SessionStore(auth: AuthClient(url: URL(string: "https://signin-flow.invalid/auth/v1")!, localStorage: storage,
-            fetch: { try server.handle($0) }, autoRefreshToken: false))
+            fetch: { try server.handle($0) }, autoRefreshToken: false), link: server.transport)
         store.apply(event: .signedIn, session: current)
         return (store, storage)
     }
@@ -567,6 +572,115 @@ struct SignInAddModelTests {
         #expect(add.busy == nil)
     }
 
+    /// 검토 1 P2: A에서 Add → 로그아웃 → (브라우저 취소 · 완료) → 같은 A로 다시 로그인해도 Add가 잠겨 있지 않다. 낡은 흐름은 이어 붙이지 않는다
+    @Test func signingOutClearsTheBusyAddAndAFreshSignInOfTheSameAccountCanAddAgain() async throws {
+        let server = FakeSupabase(userID: me)
+        server.linkedProviders = ["google", "apple"]
+        let (store, storage) = try signedIn(server)
+        let hold = Hold()
+        let add = SignInAddModel()
+        add.attach(to: store)
+        let calls = Counter()
+        add.authorizeApple = { calls.appleCalls += 1; if calls.appleCalls == 1 { await hold.wait() }; return .value(self.token) }
+        let first = Task { await add.add(.apple, session: store) }
+        await waitUntil { add.busy == .apple }
+        #expect(add.busy == .apple)
+
+        // 로그아웃 (이 절이 사라져도 모델은 듣고 있다): busy가 바로 풀린다
+        store.apply(event: .signedOut, session: nil)
+        #expect(add.busy == nil && add.messages.isEmpty)
+        // 같은 A로 다시 로그인
+        let again = fixtureSession(for: fixtureUser(id: me, providers: ["google"]), token: "access-again")
+        try storage.store(key: "supabase.auth.token", value: AuthClient.Configuration.jsonEncoder.encode(again))
+        store.apply(event: .signedIn, session: again)
+        #expect(add.busy == nil)
+
+        // 낡은 브라우저 흐름이 이제 끝나도 이어 붙이지 않고 새 상태를 건드리지 않는다
+        hold.release()
+        await first.value
+        #expect(server.tokenBodies.isEmpty, "낡은 흐름은 서버에 쓰지 않는다")
+        #expect(add.busy == nil && add.messages.isEmpty)
+        // 새 Add는 그대로 된다
+        await add.add(.apple, session: store)
+        #expect(server.tokenBodies.filter { $0["link_identity"] as? Bool == true }.count == 1, "이어 붙이는 요청은 새 Add 한 번뿐이다")
+        #expect(store.signInMethods.providers == ["google", "apple"])
+    }
+
+    /// 다른 계정으로 바뀌어도(로그아웃 없이 전환) 같다
+    @Test func anAccountSwitchAlsoClearsTheBusyAdd() async throws {
+        let server = FakeSupabase(userID: me)
+        let (store, storage) = try signedIn(server)
+        let hold = Hold()
+        let add = SignInAddModel()
+        add.attach(to: store)
+        add.authorizeApple = { await hold.wait(); return .canceled }
+        let first = Task { await add.add(.apple, session: store) }
+        await waitUntil { add.busy == .apple }
+        let other = fixtureSession(for: fixtureUser(id: UUID(), providers: ["apple"]), token: "other")
+        try storage.store(key: "supabase.auth.token", value: AuthClient.Configuration.jsonEncoder.encode(other))
+        store.apply(event: .signedIn, session: other)
+        #expect(add.busy == nil)
+        hold.release()
+        await first.value
+        #expect(add.busy == nil)
+    }
+
+    /// 같은 세션에 `attach`를 여러 번 불러도 한 번만 듣는다
+    @Test func attachingTwiceListensOnce() async throws {
+        let server = FakeSupabase(userID: me)
+        let (store, _) = try signedIn(server)
+        let add = SignInAddModel()
+        add.attach(to: store)
+        add.attach(to: store)
+        add.debugForce(busy: .apple, messages: [.apple: "x"])
+        let before = add.generation
+        store.apply(event: .signedOut, session: nil)
+        #expect(add.busy == nil && add.messages.isEmpty)
+        #expect(add.generation == before + 1, "계정이 한 번 떠나면 한 번만 비운다")
+    }
+
+    /// 낡은 흐름이 실패 · 취소로 끝나도(이어 붙이기 단계에 가지 않아도) 다른 계정의 줄 · 오류에 섞이지 않는다
+    @Test func aFailedFlowThatEndsAfterAnAccountSwitchLeavesNoMessage() async throws {
+        let server = FakeSupabase(userID: me)
+        let (store, storage) = try signedIn(server)
+        let hold = Hold()
+        let add = SignInAddModel()
+        add.authorizeApple = { await hold.wait(); return .failed("x") }
+        let started = Task { await add.add(.apple, session: store) }
+        await waitUntil { add.busy == .apple }
+        let other = fixtureSession(for: fixtureUser(id: UUID(), providers: ["apple"], accountEmail: "other@example.com"), token: "other")
+        try storage.store(key: "supabase.auth.token", value: AuthClient.Configuration.jsonEncoder.encode(other))
+        store.apply(event: .signedIn, session: other)
+        hold.release()
+        await started.value
+        #expect(add.messages.isEmpty)
+        #expect(server.tokenBodies.isEmpty)
+    }
+
+    /// Google: 로그아웃 뒤 같은 계정으로 다시 로그인해도 낡은 Google 흐름은 이어 붙이지 않고, 그 Google 로그인은 이 기기에서 지운다
+    @Test func aGoogleFlowStartedBeforeASignOutDoesNotLinkAfterTheSameAccountSignsInAgain() async throws {
+        let server = FakeSupabase(userID: me)
+        server.linkedProviders = ["google", "apple"]
+        let (store, storage) = try signedIn(server)
+        let hold = Hold()
+        let add = SignInAddModel()
+        add.attach(to: store)
+        let calls = Counter()
+        add.authorizeGoogle = { await hold.wait(); return .tokens(idToken: "g-id", accessToken: "g-access", nonce: SignInNonce(raw: "g-nonce")) }
+        add.discardGoogle = { calls.googleDiscards += 1 }
+        let first = Task { await add.add(.google, session: store) }
+        await waitUntil { add.busy == .google }
+        store.apply(event: .signedOut, session: nil)
+        let again = fixtureSession(for: fixtureUser(id: me, providers: ["google"]), token: "access-again")
+        try storage.store(key: "supabase.auth.token", value: AuthClient.Configuration.jsonEncoder.encode(again))
+        store.apply(event: .signedIn, session: again)
+        hold.release()
+        await first.value
+        #expect(server.tokenBodies.isEmpty, "낡은 흐름은 서버에 쓰지 않는다")
+        #expect(calls.googleDiscards == 1)
+        #expect(add.busy == nil && add.messages.isEmpty)
+    }
+
     @Test func emailRowsAndSignedOutNeverStartAFlow() async throws {
         let server = FakeSupabase(userID: me)
         let (store, _) = try signedIn(server)
@@ -689,7 +803,7 @@ struct SignInLogTests {
             let current = fixtureSession(for: fixtureUser(id: me, providers: ["google"]))
             try storage.store(key: "supabase.auth.token", value: AuthClient.Configuration.jsonEncoder.encode(current))
             let store = SessionStore(auth: AuthClient(url: URL(string: "https://signin-flow.invalid/auth/v1")!, localStorage: storage,
-                fetch: { try server.handle($0) }, autoRefreshToken: false))
+                fetch: { try server.handle($0) }, autoRefreshToken: false), link: server.transport)
             store.apply(event: .signedIn, session: current)
             let add = SignInAddModel()
             add.authorizeApple = { .value(.init(idToken: "SECRET.ID.TOKEN", nonce: SignInNonce(raw: "NONCE-SECRET"))) }
@@ -735,5 +849,104 @@ struct SignInLogTests {
         }
         let signIn = try String(contentsOf: apple.appending(path: "Taskforce/Shared/SignIn.swift"), encoding: .utf8)
         #expect(signIn.components(separatedBy: "privacy: .public").count == 2, "공개 표시는 결과 코드 한 곳뿐")
+    }
+}
+
+// MARK: 프로그램의 창 닫기 (검토 1 P3)
+
+/// 가짜 브라우저 세션: `start()`가 true를 주고, 시스템이 하듯 완료 핸들러를 부를 수 있다 (`cancel()` 뒤에 부를지는 시험이 정한다)
+@MainActor
+final class FakeWebAuthenticationSession: WebAuthenticationSessioning {
+    var presentationContextProvider: (any ASWebAuthenticationPresentationContextProviding)?
+    var prefersEphemeralWebBrowserSession = true
+    var startResult = true
+    private(set) var cancelCalls = 0
+    private(set) var started = false
+    let complete: @Sendable (URL?, Error?) -> Void
+    /// `cancel()`이 시스템처럼 완료 핸들러(`canceledLogin`)를 부를지
+    var completesOnCancel = false
+
+    init(complete: @escaping @Sendable (URL?, Error?) -> Void) { self.complete = complete }
+
+    func start() -> Bool {
+        started = true
+        return startResult
+    }
+
+    func cancel() {
+        cancelCalls += 1
+        if completesOnCancel { complete(nil, ASWebAuthenticationSessionError(.canceledLogin)) }
+    }
+}
+
+@MainActor
+struct SystemWebAuthenticationRunnerTests {
+    final class Made {
+        var sessions: [FakeWebAuthenticationSession] = []
+        var configure: (FakeWebAuthenticationSession) -> Void = { _ in }
+    }
+
+    func runner(_ made: Made) -> SystemWebAuthenticationRunner {
+        SystemWebAuthenticationRunner { _, complete in
+            let session = FakeWebAuthenticationSession(complete: complete)
+            made.configure(session)
+            made.sessions.append(session)
+            return session
+        }
+    }
+
+    let url = URL(string: "https://appleid.apple.com/auth/authorize?x=1")!
+    let anchor = NSWindow()
+
+    /// `cancel()`은 완료 콜백이 오지 않아도 진행 중인 흐름을 한 번 끝낸다 (멈추지 않는다)
+    @Test func cancelEndsTheRunningFlowEvenIfTheSystemNeverCallsBack() async {
+        let made = Made()
+        let runner = runner(made)
+        let running = Task { await runner.run(url: url, anchor: anchor) }
+        await waitUntil { made.sessions.first?.started == true }
+        runner.cancel()
+        #expect(await running.value == .canceled)
+        #expect(made.sessions[0].cancelCalls == 1)
+        // 두 번 불러도 아무 일 없다
+        runner.cancel()
+        #expect(made.sessions[0].cancelCalls == 1)
+    }
+
+    /// 시스템이 `cancel()`에 응해 완료 핸들러를 불러도(canceledLogin) 이미 끝났으니 다시 끝내지 않는다
+    @Test func aCompletionAfterCancelDoesNotFinishTwice() async {
+        let made = Made()
+        made.configure = { $0.completesOnCancel = true }
+        let runner = runner(made)
+        let running = Task { await runner.run(url: url, anchor: anchor) }
+        await waitUntil { made.sessions.first?.started == true }
+        runner.cancel()
+        #expect(await running.value == .canceled)
+        // 늦은 완료가 한 번 더 와도 이어 갈 것이 없다
+        made.sessions[0].complete(URL(string: "taskforce://auth/apple?state=x&id_token=late")!, nil)
+        // 다음 흐름은 정상으로 열린다
+        let second = Task { await runner.run(url: url, anchor: anchor) }
+        await waitUntil { made.sessions.count == 2 && made.sessions[1].started }
+        made.sessions[1].complete(URL(string: "taskforce://auth/apple?state=y&id_token=t")!, nil)
+        #expect(await second.value == .callback(URL(string: "taskforce://auth/apple?state=y&id_token=t")!))
+    }
+
+    @Test func aSessionThatCannotStartIsReportedAsCouldNotOpen() async {
+        let made = Made()
+        made.configure = { $0.startResult = false }
+        #expect(await runner(made).run(url: url, anchor: anchor) == .couldNotOpen)
+    }
+
+    @Test func cancelWithoutAWindowDoesNothing() {
+        runner(Made()).cancel()
+    }
+
+    @Test func theWindowIsOpenedWithoutEphemeralBrowsing() async {
+        let made = Made()
+        let runner = runner(made)
+        let running = Task { await runner.run(url: url, anchor: anchor) }
+        await waitUntil { made.sessions.first?.started == true }
+        #expect(made.sessions[0].prefersEphemeralWebBrowserSession == false)
+        runner.cancel()
+        _ = await running.value
     }
 }

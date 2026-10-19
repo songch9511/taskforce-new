@@ -130,10 +130,12 @@ final class SignInAddModel {
 
     private(set) var busy: SignInMethodRow.Method?
     private(set) var messages: [SignInMethodRow.Method: String] = [:]
-    /// 줄 · 오류가 속한 계정. 다른 계정이 되면 모두 비운다 (`follow`)
+    /// 줄 · 오류가 속한 계정. 다른 계정이 되면 모두 비운다 (`follow` · `attach`)
     private var owner: UUID?
-    /// 계정이 바뀔 때마다 오른다: 돌고 있던 흐름이 끝나도 새 계정의 상태를 건드리지 않게
-    private var generation = 0
+    /// 계정이 바뀔 때마다(로그아웃 포함) 오른다: 돌고 있던 흐름이 끝나도 새 계정(같은 계정으로 다시 로그인했어도)의 상태를 건드리지 않게
+    private(set) var generation = 0
+    /// 이미 계정 이탈을 듣고 있는 세션 (겹쳐 붙이지 않는다)
+    @ObservationIgnored private var attached: Set<ObjectIdentifier> = []
 
     /// 토큰을 받는 입구 (시험은 가짜로 바꾼다: 실제 Apple · Google 창에 닿지 않는다)
     @ObservationIgnored var authorizeApple: @MainActor () async -> AppleSignInFlow.Authorization<AppleSignInFlow.SignInToken> = { await AppleSignInFlow.shared.authorizeSignIn(step: .link) }
@@ -143,13 +145,25 @@ final class SignInAddModel {
 
     init() {}
 
-    /// 화면이 보이는 계정이 바뀌면 비운다
-    func follow(userID: UUID?) {
-        guard owner != userID else { return }
-        owner = userID
+    /// 계정이 이 기기를 떠날 때마다(로그아웃 · 만료 · 삭제 · 다른 계정으로 전환) 모델을 비운다. 설정 창이 로그인 화면으로 바뀌어 이 절이 사라져도 듣는다
+    /// (그러지 않으면 로그아웃 때 `busy`가 남아, 같은 계정으로 다시 들어와도 Add가 잠긴다: 검토 1 P2)
+    func attach(to session: SessionStore) {
+        guard attached.insert(ObjectIdentifier(session)).inserted else { return }
+        session.onSignedOut { [weak self] _ in self?.reset() }
+    }
+
+    private func reset() {
+        owner = nil
         generation += 1
         busy = nil
         messages = [:]
+    }
+
+    /// 화면이 보이는 계정이 바뀌면 비운다
+    func follow(userID: UUID?) {
+        guard owner != userID else { return }
+        reset()
+        owner = userID
     }
 
     func add(_ method: SignInMethodRow.Method, session: SessionStore) async {
@@ -163,6 +177,8 @@ final class SignInAddModel {
         case .apple:
             switch await authorizeApple() {
             case .value(let token):
+                // 창이 떠 있는 사이 계정이 떠났다 돌아왔다면(같은 계정이어도) 이 흐름은 낡았다: 이어 붙이지 않는다
+                guard generation == started else { return }
                 result = await session.linkApple(idToken: token.idToken, nonce: token.nonce, expectedUserID: userID)
                 Self.record(.apple, result)
             case .canceled: result = nil
@@ -171,6 +187,7 @@ final class SignInAddModel {
         case .google:
             switch await authorizeGoogle() {
             case .tokens(let idToken, let accessToken, let nonce):
+                guard generation == started else { discardGoogle(); return }
                 result = await session.linkGoogle(idToken: idToken, accessToken: accessToken, nonce: nonce, expectedUserID: userID)
                 Self.record(.google, result)
                 if result != .linked { discardGoogle() }
@@ -268,6 +285,7 @@ struct SettingsSignInSection: View {
                 }
             }
         }
+        .onAppear { add.attach(to: session) }
         .task(id: SettingsWindowSession.signedInUserID(session)) { add.follow(userID: SettingsWindowSession.signedInUserID(session)) }
     }
 }

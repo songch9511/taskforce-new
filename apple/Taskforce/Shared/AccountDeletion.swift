@@ -25,7 +25,7 @@ enum AccountDeletion {
             session: session,
             fetchUser: { try await services.supabase.auth.user() },
             reauthorize: { await AppleSignInFlow.shared.reauthorizationCode() },
-            deleteOnServer: { code, client in try await services.api.deleteAccount(authorizationCode: code, client: client) },
+            deleteOnServer: { code, client in try await services.api.deleteAccount(authorizationCode: code, client: client).appleRevoked },
             removeSavedData: { try? AppRuntime.savedNow?.remove(account: $0); BridgeHost.removeSavedBridgeData(for: $0) },
             disconnectGoogle: { GoogleSignInFlow.disconnect() },
             accountDeleted: { note in await session.accountDeleted(note: note) }
@@ -38,7 +38,7 @@ enum AccountDeletion {
         session: SessionStore,
         fetchUser: () async throws -> User,
         reauthorize: () async -> String?,
-        deleteOnServer: (String?, AppleAuthorizationClient) async throws -> Void,
+        deleteOnServer: (String?, AppleAuthorizationClient) async throws -> Bool?,
         removeSavedData: (UUID) -> Void,
         disconnectGoogle: () -> Void,
         accountDeleted: (String?) async -> Void
@@ -55,13 +55,16 @@ enum AccountDeletion {
         let code = plan.reauthorizeWithApple ? await reauthorize() : nil
         // 창이 떠 있는 사이 계정이 바뀌었으면 서버에 쓰지 않는다
         if let blocker = deletionBlocker(fresh: fresh, expectedID: userID, currentID: currentUserID(session)) { return blocker }
-        // Mac의 재확인 code는 브라우저 창(Services ID) 것이다: 서버가 그 client로 토큰을 받아 폐기한다 (`apple_client: web`)
-        do { try await deleteOnServer(code, .web) }
+        // Mac의 재확인 code는 브라우저 창(Services ID) 것이다: 서버가 그 client로 토큰을 받아 폐기한다 (`apple_client: web`).
+        // 돌려받는 값: 서버가 Apple 토큰을 폐기했는지 (`apple_revoked`, 없으면 nil)
+        let appleRevoked: Bool?
+        do { appleRevoked = try await deleteOnServer(code, .web) }
         catch { return "Couldn't delete your account. \(error.userMessage)" }
         removeSavedData(userID)
         guard case .signedIn(let remainingUserID, _) = session.state, remainingUserID == userID else { return nil }
         if plan.disconnectGoogle { disconnectGoogle() }
-        await accountDeleted(plan.reauthorizeWithApple && code == nil ? revokeSkippedNote : nil)
+        // Apple을 폐기하지 못했으면(재확인을 취소했거나 · 서버가 건너뛰었거나 · Apple이 거절) 직접 지우는 방법을 한 줄로 알린다
+        await accountDeleted(plan.reauthorizeWithApple && (code == nil || appleRevoked == false) ? revokeSkippedNote : nil)
         return nil
     }
 
