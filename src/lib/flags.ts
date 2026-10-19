@@ -1,7 +1,7 @@
 // 0.2.0 서버 기능 gate (구현 계획 7장). 모두 기본 꺼짐이고 개발 서버도 같다: env 값이 정확히 "true"일 때만 켠다
 // (대소문자 · 앞뒤 공백 · "1"은 꺼짐. billing/state.ts billingEnabled와 같은 비교, 인자는 env.ts executionEnabled처럼 env를 받는다).
 // 기존 EXECUTION_ENABLED(env.ts) · BILLING_ENABLED(billing/state.ts)는 여기로 옮기지 않는다.
-// 아직 이 gate를 읽는 코드는 없다 (A2는 계약 · 표 뼈대). 켜는 순서 · 경계는 구현 계획 7장 "플래그 켜기 경계".
+// 읽는 코드는 gate마다 다르다 (A2는 계약 · 표 뼈대). BYOK_ENABLED는 결제 서버(billing/state.ts)가 읽는다. 켜는 순서 · 경계는 구현 계획 7장 "플래그 켜기 경계".
 
 /**
  * CONVERSATIONS_V2_ENABLED: 대화 v2 · 저장 (끄면 v1 Ask만)
@@ -11,7 +11,7 @@
  * AGENT_ADAPTER_CLAUDE_CODE_ENABLED: Claude Code dispatch · Your agents 행 (끄면 dispatch 0. DB의 execution_controls도 따로 막는다)
  * AGENT_ADAPTER_CODEX_ENABLED: Codex 대화 (D1d, OD-2). 끄면 Codex는 대상 목록에서 빠지고 대화 만들기 · 보내기 · 세션 route가 404, 전달 시작 0.
  *   에이전트 대화 route는 CONVERSATIONS_V2_ENABLED와 이 adapter gate가 모두 켜져야 열린다
- * BYOK_ENABLED: 사용자 OpenRouter 키 입력 · 사용 (끄면 모든 계정 관리형 키)
+ * BYOK_ENABLED: Lifetime 판매 · 사용자 OpenRouter 키 입력 · 사용. 끄면 Lifetime 판매 · 키 route가 닫히고, Lifetime 계정의 AI는 닫힌 쪽으로 멈춘다 (관리형 키로 새지 않는다 — DB가 byok_required로 거절). 결제(billing/state.ts planState)가 can_buy_lifetime을 정할 때 읽는다
  * REPORTS_V2_ENABLED: 일일 보고 · 조용한 시간 (끄면 기존 알림)
  * REVIEW_V2_ENABLED: Review · 복귀 요약 · 제안 · 결정만 읽기 경로 (끄면 /api/v2/review · /api/v2/review/decisions(결정만, Taskforce 행 쓰기 0) · return-summary · suggestions는 404, 새 쓰기 0. 제안 생산은 이 gate AND 코디네이터 결과를 쓰는 종류는 COORDINATOR_ENABLED)
  * RETURN_SUMMARY_ENABLED: 복귀 요약만 (GET /api/v2/return-summary · POST …/clear · POST …/baseline 세 경로). Review GET · 제안 생산 · 노출 · snooze · dismiss는 열지 않는다.

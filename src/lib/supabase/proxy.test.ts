@@ -27,11 +27,12 @@ afterEach(() => {
 });
 
 describe("isPublicPath", () => {
-  it.each(["/login", "/auth/confirm", "/auth/signout", "/auth/billing", "/billing", "/billing/sign-in"])("%s는 로그인 없이 열린다", (path) => {
+  it.each(["/login", "/auth/confirm", "/auth/signout"])("%s는 로그인 없이 열린다", (path) => {
     expect(isPublicPath(path)).toBe(true);
   });
 
-  it.each(["/", "/actions/1", "/loginx", "/authx", "/billingx"])("%s는 로그인이 필요하다", (path) => {
+  // 웹 결제 페이지(/billing)를 지웠다: 사용자용 화면은 앱뿐이므로 /billing 아래는 공개 경로가 아니다
+  it.each(["/", "/actions/1", "/loginx", "/authx", "/billing", "/billing/sign-in", "/billing/sign-out", "/billingx"])("%s는 로그인이 필요하다", (path) => {
     expect(isPublicPath(path)).toBe(false);
   });
 });

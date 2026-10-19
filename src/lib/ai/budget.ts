@@ -1,4 +1,3 @@
-import { inBillingSync } from '@/lib/billing/sync-context';
 import { billingEnabled, billingBudgets } from '@/lib/billing/state';
 import { requireBillingAccess } from '@/lib/billing/service';
 import "server-only";
@@ -20,9 +19,10 @@ const MAX_BODY_BYTES = 1_000_000;
 const cost = z.number().finite().nonnegative();
 // Budget starts only at the coordinated guarded-code rollout; schema alone cannot intercept old processes.
 // Accounts retain this ledger for the beta period without reset; pre-beta spend is intentionally excluded.
+const tokens = z.number().int().nonnegative().optional().catch(undefined);
 const metadata = z.object({
   id: z.string().regex(/^gen-[0-9A-Za-z-]{1,124}$/).optional().catch(undefined),
-  usage: z.object({ cost }).optional().catch(undefined),
+  usage: z.object({ cost, prompt_tokens: tokens, completion_tokens: tokens }).optional().catch(undefined),
 });
 const modelMetadata = z.object({
   id: z.string(), context_length: z.number().int().positive(),
@@ -123,7 +123,7 @@ export function budgetFetch(admin: SupabaseClient, userId: string, send: typeof 
     // Round UP plus one micro-dollar for floating conversion error (< $10 admission); DB uses exact numeric.
     const reserved = (Math.ceil(model.context_length * items * (price.prompt + price.completion + cacheReadPrice)) + 1) / 1_000_000;
     const id = crypto.randomUUID();
-    const reservation = await admin.rpc(billingEnabled() ? "reserve_billing_ai_spend" : "reserve_ai_spend", { p_user_id: userId, p_id: id, p_endpoint: endpoint, p_model: body.model, p_reserved_usd: reserved, ...(billingEnabled() ? { ...billingBudgets(), p_initial_sync: inBillingSync(userId) } : {}) });
+    const reservation = await admin.rpc(billingEnabled() ? "reserve_billing_ai_spend_v2" : "reserve_ai_spend", { p_user_id: userId, p_id: id, p_endpoint: endpoint, p_model: body.model, p_reserved_usd: reserved, ...(billingEnabled() ? billingBudgets() : {}) });
     if (reservation.error) throw new AiBudgetError(reservation.error.message);
     // No finally/release: any abort, network/read failure or process death keeps the hold.
     const result = await send(url, { ...init, body: JSON.stringify({ ...body, provider: { ...body.provider, max_price: price } }) });
@@ -131,6 +131,10 @@ export function budgetFetch(admin: SupabaseClient, userId: string, send: typeof 
     try { meta = metadata.safeParse(await result.clone().json()).data; } catch { /* The paid request may have completed. Keep its hold. */ }
     const settlement = await admin.rpc("settle_ai_spend", { p_user_id: userId, p_id: id, p_cost_usd: meta?.usage?.cost ?? null, p_generation_id: meta?.id ?? null });
     if (settlement.error) throw new AiBudgetError(settlement.error.message);
+    // Token counts only feed the plan screen's reference usage. Never a limit, so a failure here changes nothing.
+    if (billingEnabled() && meta?.usage?.prompt_tokens !== undefined) {
+      await admin.rpc("record_ai_spend_tokens", { p_user_id: userId, p_id: id, p_prompt_tokens: meta.usage.prompt_tokens, p_completion_tokens: meta.usage.completion_tokens ?? 0 }).then(() => undefined, () => undefined);
+    }
     if (meta?.usage && meta.usage.cost > reserved) throw new AiBudgetError("ai_provider_cost_exceeded_reservation");
     return result;
   };

@@ -1,8 +1,9 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { completeJson } from "./llm";
 import { budgetFetch } from "./budget";
+import { accountRow, fakeAdmin, stubBillingEnv } from "@/lib/billing/testing";
 vi.mock("server-only", () => ({}));
 const chat = "https://openrouter.ai/api/v1/chat/completions";
 const request = { method: "POST", body: JSON.stringify({ model: "m", max_tokens: 100, messages: [{ role: "user", content: "hi" }], provider: { only: ["p"], order: ["p"], zdr: true, data_collection: "deny", allow_fallbacks: false } }) };
@@ -202,5 +203,91 @@ describe("bounded cache-read pricing", () => {
     f.send.mockResolvedValueOnce(new Response(JSON.stringify({ usage: { cost: 0.7 } })));
     await expect(f.fetch(chat, request)).rejects.toThrow("ai_provider_cost_exceeded_reservation");
     expect(f.rpc.mock.calls[1][1]).toMatchObject({ p_cost_usd: 0.7 });
+  });
+});
+
+
+// ── paid mode (BILLING_ENABLED=true): the v2 reservation, the entitlement gate and token usage ──
+describe("paid-plan admission", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  const DAY = 86_400_000;
+  const proAccount = () => accountRow({ subscription_id: "s", status: "active", current_period_ends_at: new Date(Date.now() + DAY).toISOString() });
+  function paid(account: Record<string, unknown>, body: unknown = { id: "gen-1", usage: { cost: 0.01, prompt_tokens: 120, completion_tokens: 30 } }, rpcs: Parameters<typeof fakeAdmin>[1] = {}) {
+    stubBillingEnv();
+    const f = fakeAdmin({ billing_accounts: [account] }, rpcs);
+    const send = vi.fn(async (url: string | URL | Request) => String(url).endsWith("/endpoints") ? endpointReply() : new Response(JSON.stringify(String(url).endsWith("/models") ? { data: [{ id: "m", context_length: 200000, pricing: { prompt: "0.000001", completion: "0.000002" } }] } : body)));
+    return { ...f, send, fetch: budgetFetch(f.admin, account.user_id as string, send as typeof fetch) };
+  }
+  const names = (f: { rpcCalls: [string, unknown][] }) => f.rpcCalls.map(([name]) => name);
+
+  it("reserves through the v2 window with the hidden caps, settles, then records the reference token usage", async () => {
+    const f = paid(proAccount());
+    await f.fetch(chat, request);
+    expect(names(f)).toEqual(["reserve_billing_ai_spend_v2", "settle_ai_spend", "record_ai_spend_tokens"]);
+    const reserve = f.rpcNamed("reserve_billing_ai_spend_v2")[0];
+    expect(reserve).toMatchObject({ p_user_id: proAccount().user_id, p_endpoint: "chat", p_monthly_cap: 25, p_trial_cap: 4 });
+    expect(Object.keys(reserve)).not.toContain("p_initial_sync");
+    expect(f.rpcNamed("record_ai_spend_tokens")).toEqual([{ p_user_id: proAccount().user_id, p_id: reserve.p_id, p_prompt_tokens: 120, p_completion_tokens: 30 }]);
+  });
+  it("takes the operator caps from the environment", async () => {
+    const f = paid(proAccount());
+    vi.stubEnv("BILLING_MONTHLY_AI_BUDGET_USD", "40");
+    vi.stubEnv("BILLING_TRIAL_AI_BUDGET_USD", "5");
+    await f.fetch(chat, request);
+    expect(f.rpcNamed("reserve_billing_ai_spend_v2")[0]).toMatchObject({ p_monthly_cap: 40, p_trial_cap: 5 });
+  });
+  it("embeddings report prompt tokens only: the missing completion count is recorded as zero", async () => {
+    const f = paid(proAccount(), { usage: { cost: 0.0001, prompt_tokens: 64, total_tokens: 64 } });
+    await f.fetch(chat, request);
+    expect(f.rpcNamed("record_ai_spend_tokens")[0]).toMatchObject({ p_prompt_tokens: 64, p_completion_tokens: 0 });
+  });
+  it.each([[{ usage: { cost: 0.01 } }], [{ usage: { cost: 0.01, prompt_tokens: -1, completion_tokens: 5 } }], [{ usage: { cost: 0.01, prompt_tokens: 1.5 } }], [{ usage: { cost: 0.01, prompt_tokens: "9" } }], [{}]])("records no tokens for unusable usage %j and still settles", async (body) => {
+    const f = paid(proAccount(), body);
+    await f.fetch(chat, request);
+    expect(names(f)).toEqual(["reserve_billing_ai_spend_v2", "settle_ai_spend"]);
+  });
+  it("a failing token write never fails the paid request or hides its settlement", async () => {
+    const f = paid(proAccount(), undefined, { record_ai_spend_tokens: () => ({ error: { message: "down" } }) });
+    expect((await f.fetch(chat, request)).status).toBe(200);
+    expect(names(f)).toContain("settle_ai_spend");
+  });
+  it("no token is recorded when settlement itself failed", async () => {
+    const f = paid(proAccount(), undefined, { settle_ai_spend: () => ({ error: { message: "db failure" } }) });
+    await expect(f.fetch(chat, request)).rejects.toThrow("db failure");
+    expect(names(f)).not.toContain("record_ai_spend_tokens");
+  });
+  it("a supplier cost above the reservation is still a violation after the tokens were recorded", async () => {
+    const f = paid(proAccount(), { usage: { cost: 5, prompt_tokens: 1, completion_tokens: 1 } });
+    await expect(f.fetch(chat, request)).rejects.toThrow("ai_provider_cost_exceeded_reservation");
+  });
+  it.each([
+    ["a new account", accountRow()],
+    ["an ended plan", accountRow({ subscription_id: "s", status: "expired" })],
+    ["a lapsed period", accountRow({ subscription_id: "s", status: "active", current_period_ends_at: new Date(Date.now() - 1000).toISOString() })],
+    ["a past_due plan beyond the grace", accountRow({ subscription_id: "s", status: "past_due", current_period_ends_at: new Date(Date.now() - 17 * DAY).toISOString() })],
+  ])("closes %s before any price lookup, reservation or paid call", async (_label, account) => {
+    const f = paid(account);
+    await expect(f.fetch(chat, request)).rejects.toMatchObject({ code: "billing_required" });
+    expect(f.send).not.toHaveBeenCalled();
+    expect(f.rpcCalls).toEqual([]);
+  });
+  it("a Lifetime account passes the plan gate but the database refuses a managed reservation: closed, nothing paid, v1 code unchanged", async () => {
+    const f = paid(accountRow({ lifetime_status: "active", lifetime_order_id: "o" }), undefined, { reserve_billing_ai_spend_v2: () => ({ error: { message: "byok_required" } }) });
+    await expect(f.fetch(chat, request)).rejects.toMatchObject({ code: "billing_required" });
+    expect(f.send).toHaveBeenCalledTimes(2); // catalog reads only
+    expect(names(f)).toEqual(["reserve_billing_ai_spend_v2"]);
+  });
+  it("a fair-use pause is the existing exhausted code, paid call never sent", async () => {
+    const f = paid(proAccount(), undefined, { reserve_billing_ai_spend_v2: () => ({ error: { message: "ai_budget_exhausted" } }) });
+    await expect(f.fetch(chat, request)).rejects.toMatchObject({ code: "ai_budget_exhausted" });
+    expect(f.send).toHaveBeenCalledTimes(2);
+  });
+  it("billing off keeps today's exact path: legacy reservation, no plan lookup, no token write", async () => {
+    stubBillingEnv({ BILLING_ENABLED: "false" });
+    const f = fakeAdmin();
+    const send = vi.fn(async (url: string | URL | Request) => String(url).endsWith("/endpoints") ? endpointReply() : new Response(JSON.stringify(String(url).endsWith("/models") ? { data: [{ id: "m", context_length: 200000, pricing: { prompt: "0.000001", completion: "0.000002" } }] } : { id: "gen-1", usage: { cost: 0.01, prompt_tokens: 3, completion_tokens: 4 } })));
+    await budgetFetch(f.admin, "alice", send as typeof fetch)(chat, request);
+    expect(f.rpcCalls.map(([name]) => name)).toEqual(["reserve_ai_spend", "settle_ai_spend"]);
+    expect(f.tables.size).toBe(0);
   });
 });

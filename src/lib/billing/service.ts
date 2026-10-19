@@ -1,60 +1,170 @@
-import { inBillingSync } from './sync-context';
 import { AiBudgetError } from '@/lib/ai/budget-error';
-import { aiSpendSummarySchema } from '@/lib/api/contract';
+import { aiSpendSummarySchema, billingStatusV2Schema, type BillingStatusV2 } from '@/lib/api/contract';
 import 'server-only';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { z } from 'zod';
-import { billingEnabled, billingState, billingBudgets, type BillingAccount } from './state';
-import { billingConfig, provider, safeProviderUrl, subscription } from './provider';
+import { BILLING_TERMS_VERSION, REFUND_WINDOW_HOURS, billingPrices } from './prices';
+import { billingEnabled, billingFlags, billingBudgets, billingV1View, planState, type BillingAccount, type PlanInfo } from './state';
+import { billingConfig, cancelSubscription, invoiceOf, order, provider, refundInvoice, refundOrder, resumeSubscription, safeProviderUrl, subscription } from './provider';
+import { enqueueReconcile } from './webhook';
 export async function accountFor(admin: SupabaseClient, userId: string): Promise<BillingAccount> {
     await admin.from('billing_accounts').upsert({ user_id: userId }, { onConflict: 'user_id', ignoreDuplicates: true }).throwOnError();
     const { data } = await admin.from('billing_accounts').select('*').eq('user_id', userId).single().throwOnError();
     return data as BillingAccount;
 }
-export async function requireBillingAccess(admin: SupabaseClient, userId: string) {
+/** With billing off nothing is read or sold: every account is the free beta of today. */
+const blankAccount = (userId: string): BillingAccount => ({
+    user_id: userId, legacy_beta: false, notice_ends_at: null, trial_ends_at: null, subscription_id: null, customer_id: null, order_id: null, plan: null, status: 'none',
+    current_period_ends_at: null, deleting: false, first_subscription_at: null, lifetime_order_id: null, lifetime_status: null, lifetime_paid_at: null,
+    last_payment_at: null, last_invoice_id: null, refund_requested_at: null, self_refund_used_at: null,
+});
+/** Throws billing_required when the account may not start AI or execution. Returns the state for callers that route on it. */
+export async function requireBillingAccess(admin: SupabaseClient, userId: string): Promise<PlanInfo | null> {
     if (!billingEnabled())
-        return;
-    await accountFor(admin, userId);
-    await admin.from('billing_accounts').update({onboarding_started_at:new Date().toISOString()}).eq('user_id',userId).is('onboarding_started_at',null).throwOnError();
-    const account=await accountFor(admin,userId);
-    const initialSync=inBillingSync(userId)&&!account.deleting&&!account.trial_ends_at&&!account.subscription_id;
-    if (!billingState(account).can_use_ai && !initialSync)
+        return null;
+    const info = planState(await accountFor(admin, userId), Date.now(), billingFlags());
+    if (!info.ai)
         throw new AiBudgetError('billing_required');
+    return info;
 }
-export async function startTrial(admin: SupabaseClient, userId: string) {
-    if (!billingEnabled())
-        return;
-    const { error } = await admin.rpc('billing_start_trial', { p_user_id: userId });
-    if (error)
-        throw new Error('billing_unavailable');
-}
-export async function checkout(admin: SupabaseClient, userId: string, plan: 'monthly' | 'annual', termsVersion: '2026-10-08') {
+/**
+ * Pro (one subscription with a monthly and a yearly variant) or Lifetime. The server alone decides plan, price, variants,
+ * trial, first-month code, terms version and return page: the client sends only which plan and which terms it showed.
+ */
+export async function checkout(admin: SupabaseClient, userId: string, plan: 'pro' | 'lifetime', termsVersion: string) {
     if (!billingEnabled())
         throw new Error('billing_disabled');
+    if (termsVersion !== BILLING_TERMS_VERSION)
+        throw new Error('billing_terms_required');
+    const flags = billingFlags();
+    if (plan === 'lifetime' && !flags.byok)
+        throw new Error('billing_disabled');
     const config = billingConfig();
-    const account = await accountFor(admin, userId);
-    if (!billingState(account).can_checkout)
+    const info = planState(await accountFor(admin, userId), Date.now(), flags);
+    if (!(plan === 'pro' ? info.can_checkout : info.can_buy_lifetime))
         throw new Error('billing_subscription_exists');
+    if ((plan === 'lifetime' && !config.variants.lifetime) || (plan === 'pro' && info.with_trial && !config.discountCode))
+        throw new Error('billing_not_configured');
     // Account row lock serializes creation with deletion and webhook reconciliation.
-    const claim = await admin.rpc('billing_claim_checkout', { p_user_id: userId, p_plan: plan, p_terms_version: termsVersion });
+    const claim = await admin.rpc('billing_claim_checkout_v2', { p_user_id: userId, p_plan: plan, p_terms_version: termsVersion });
     if (claim.error)
-        throw new Error('billing_checkout_pending');
-    const intent = z.object({ id: z.string().uuid(), url: z.string().nullable(), expires_at: z.string() }).parse(claim.data);
+        throw new Error(claim.error.message.includes('billing_terms_required') ? 'billing_terms_required' : 'billing_checkout_pending');
+    const intent = z.object({ id: z.string().uuid(), url: z.string().nullable(), expires_at: z.string(), with_trial: z.boolean(), with_discount: z.boolean() }).parse(claim.data);
     if (intent.url)
         return safeProviderUrl(intent.url);
-    const expires = intent.expires_at;
-    const variant = config.variants[plan];
-    // Never accept prices, identity, return URLs, or variants from the client.
-    const result = z.object({ data: z.object({ attributes: z.object({ url: z.string().url() }) }) }).parse(await provider('checkouts', 'POST', { data: { type: 'checkouts', attributes: { product_options: { enabled_variants: [Number(variant)], redirect_url: 'https://api.taskforcelabs.dev/billing?checkout=complete' }, checkout_options: { skip_trial: true, subscription_preview: true }, checkout_data: { custom: { checkout_ref: intent.id } }, expires_at: expires, test_mode: config.test }, relationships: { store: { data: { type: 'stores', id: config.store } }, variant: { data: { type: 'variants', id: variant } } } } }));
-    const url = safeProviderUrl(result.data.attributes.url);
-    await admin.from('billing_checkout_intents').update({ url }).eq('id', intent.id).eq('user_id', userId).throwOnError();
+    const variants = plan === 'pro' ? [config.variants.monthly, config.variants.annual] : [config.variants.lifetime as string];
+    // Never accept prices, identity, variants, codes or return URLs from the client. No redirect_url: the provider's own completion page is shown.
+    const attributes = {
+        product_options: { enabled_variants: variants.map(Number) },
+        checkout_options: plan === 'pro' ? { skip_trial: !intent.with_trial, subscription_preview: true, discount: false } : { discount: false },
+        checkout_data: { custom: { checkout_ref: intent.id }, ...(intent.with_discount ? { discount_code: config.discountCode } : {}) },
+        expires_at: intent.expires_at, test_mode: config.test,
+    };
+    let url: string;
+    try {
+        const result = z.object({ data: z.object({ attributes: z.object({ url: z.string().url() }) }) }).parse(await provider('checkouts', 'POST', { data: { type: 'checkouts', attributes, relationships: { store: { data: { type: 'stores', id: config.store } }, variant: { data: { type: 'variants', id: variants[0] } } } } }));
+        url = safeProviderUrl(result.data.attributes.url);
+    }
+    catch (error) {
+        // Free the pending claim so a transient provider failure does not lock the buyer out for the whole hour.
+        await admin.from('billing_checkout_intents').update({ consumed_at: new Date().toISOString() }).eq('id', intent.id).eq('user_id', userId).is('url', null).then(() => undefined, () => undefined);
+        throw error;
+    }
+    const stored = await admin.rpc('billing_checkout_url_v2', { p_user_id: userId, p_intent_id: intent.id, p_url: url });
+    if (stored.error)
+        throw new Error('billing_unavailable');
     return url;
 }
+/** v1 portal: opens the customer portal of whatever subscription the account has (old app builds). */
 export async function portal(admin: SupabaseClient, userId: string) {
     const account = await accountFor(admin, userId);
     if (!account.subscription_id)
         throw new Error('billing_subscription_missing');
     return safeProviderUrl((await subscription(account.subscription_id)).attributes.urls.customer_portal);
+}
+/** v2 portal: manage = customer portal, payment = update payment method. Both are 24-hour signed provider links. */
+export async function portalV2(admin: SupabaseClient, userId: string, target: 'manage' | 'payment') {
+    if (!billingEnabled())
+        throw new Error('billing_disabled');
+    const account = await accountFor(admin, userId);
+    if (!account.subscription_id)
+        throw new Error('billing_subscription_missing');
+    const urls = (await subscription(account.subscription_id)).attributes.urls;
+    const raw = target === 'manage' ? urls.customer_portal : urls.update_payment_method;
+    if (!raw)
+        throw new Error('billing_portal_unavailable');
+    const url = safeProviderUrl(raw);
+    await admin.rpc('billing_record_event', { p_user_id: userId, p_type: 'billing_portal_opened', p_props: { target } }).throwOnError();
+    return url;
+}
+/** Undo a cancellation while the paid period lasts. The entitlement changes when the provider confirms, never on this call. */
+export async function resume(admin: SupabaseClient, userId: string) {
+    if (!billingEnabled())
+        throw new Error('billing_disabled');
+    const account = await accountFor(admin, userId);
+    if (planState(account, Date.now(), billingFlags()).state !== 'cancelled' || !account.subscription_id)
+        throw new Error('billing_resume_unavailable');
+    await resumeSubscription(account.subscription_id);
+    await enqueueReconcile(admin, 'subscriptions', account.subscription_id);
+    return { requested: true as const };
+}
+const bestEffort = (step: Promise<unknown>) => step.then(() => undefined, () => { console.error('billing follow-up failed'); });
+const withinRefundWindow = (createdAt: string) => Date.now() - Date.parse(createdAt) <= REFUND_WINDOW_HOURS * 3_600_000;
+/**
+ * Self-service refund of the latest payment, once per account. The window is checked again against the provider's own
+ * timestamps. Asking changes nothing: the plan ends only when the provider reports the refund (webhook or the queued re-read).
+ *
+ * Only a refusal BEFORE the refund call gives the claim and the use back. Once the call is sent its outcome may be unknown
+ * (error answer, lost connection, timeout while the money moved): the claim and the use then stay, and a re-read of the
+ * provider's own object settles it (confirmed refund -> the sweep closes the claim; no refund -> the sweep releases the claim
+ * and keeps the use).
+ */
+export async function requestRefund(admin: SupabaseClient, userId: string) {
+    if (!billingEnabled())
+        throw new Error('billing_disabled');
+    const claim = await admin.rpc('billing_claim_refund', { p_user_id: userId });
+    if (claim.error)
+        throw new Error(['billing_refund_used', 'billing_refund_pending', 'billing_refund_window_closed', 'billing_refund_unavailable'].find(code => claim.error.message.includes(code)) ?? 'billing_unavailable');
+    const target = z.discriminatedUnion('kind', [
+        z.object({ kind: z.literal('subscription'), subscription_id: z.string(), invoice_id: z.string(), plan: z.enum(['monthly', 'annual']), claim_key: z.string().min(1) }),
+        z.object({ kind: z.literal('lifetime'), order_id: z.string(), claim_key: z.string().min(1) }),
+    ]).parse(claim.data);
+    const reread = target.kind === 'subscription' ? () => enqueueReconcile(admin, 'subscriptions', target.subscription_id) : () => enqueueReconcile(admin, 'orders', target.order_id);
+    let posted = false;
+    try {
+        // Reads first: nothing has been sent yet, so any failure in here is a clean refusal.
+        const current = target.kind === 'subscription' ? (await invoiceOf(target.subscription_id, target.invoice_id)).attributes : (await order(target.order_id)).attributes;
+        if (current.refunded || current.status === 'refunded') {
+            // Money already moved (an earlier unknown attempt, or the dashboard): keep the claim, let the re-read confirm it.
+            await bestEffort(reread());
+            throw new Error('billing_refund_pending');
+        }
+        if (current.status !== 'paid' || !withinRefundWindow(current.created_at))
+            throw new Error('billing_refund_window_closed');
+        posted = true;
+        if (target.kind === 'subscription')
+            await refundInvoice(target.invoice_id);
+        else
+            await refundOrder(target.order_id);
+    }
+    catch (error) {
+        if (!posted) {
+            // Nothing was sent. Pending (already refunded) keeps the claim; every other refusal gives the claim and the use back.
+            if (!(error instanceof Error && error.message === 'billing_refund_pending'))
+                await bestEffort(Promise.resolve(admin.rpc('billing_release_refund', { p_user_id: userId, p_clear_used: true }).throwOnError()));
+        }
+        else {
+            // Unknown outcome: keep the claim and the use, ask the provider again.
+            await bestEffort(reread());
+        }
+        throw error;
+    }
+    // Stop the next renewal. A failure here is repaired by the re-read (a refunded plan is cancelled there too).
+    if (target.kind === 'subscription')
+        await bestEffort(cancelSubscription(target.subscription_id));
+    await bestEffort(reread());
+    await bestEffort(Promise.resolve(admin.rpc('billing_record_event', { p_user_id: userId, p_type: 'billing_refund_requested', p_props: { plan: target.kind === 'lifetime' ? 'lifetime' : target.plan }, p_dedupe_id: target.claim_key }).throwOnError()));
+    return { requested: true as const };
 }
 export async function rollbackDeletion(admin: SupabaseClient, userId: string, token: string) {
     await admin.from('billing_accounts').update({deleting:false,deleting_token:null}).eq('user_id',userId).eq('deleting_token',token).throwOnError();
@@ -84,27 +194,84 @@ export async function cancelBeforeDeletion(admin: SupabaseClient, userId: string
         throw error;
     }
 }
-
-export async function mayRetryInitialSync(admin:SupabaseClient,userId:string) {
-    if(!billingEnabled())return false;
-    const account=await accountFor(admin,userId);
-    return !account.deleting && !account.legacy_beta && !account.subscription_id && !account.trial_ends_at && !billingState(account).can_use_ai;
-}
-export async function requireSyncBillingAccess(admin:SupabaseClient,userId:string) {
-    if(await mayRetryInitialSync(admin,userId))return;
-    await requireBillingAccess(admin,userId);
-}
+const utcMonthStart = (now: number, monthsAhead = 0) => new Date(Date.UTC(new Date(now).getUTCFullYear(), new Date(now).getUTCMonth() + monthsAhead, 1)).toISOString();
+/** v1 status (frozen shape): same keys as before, new states mapped into the old vocabulary, never sells. */
 export async function billingSummary(admin: SupabaseClient, userId: string) {
-    const account = await accountFor(admin, userId);
-    const state = billingState(account);
+    const flags = billingFlags();
+    const account = flags.billing ? await accountFor(admin, userId) : blankAccount(userId);
+    const info = planState(account, Date.now(), flags);
+    // Only the grandfathered beta still has a visible allowance; paid and trial accounts have a hidden fair-use window.
     let allowance = null;
-    if (state.can_use_ai) {
-        const { data, error } = await admin.rpc(billingEnabled() ? 'billing_spend_summary' : 'ai_spend_summary', { p_user_id: userId, ...(billingEnabled() ? billingBudgets() : {}) });
+    if (info.state === 'beta' && info.ai) {
+        const { data, error } = await admin.rpc('ai_spend_summary', { p_user_id: userId });
         if (error)
             throw new Error('billing_unavailable');
         allowance = aiSpendSummarySchema.parse(data);
     }
-    const paid = ['active', 'cancelled'].includes(state.status);
-    const now = new Date();
-    return { ...state, can_use_ai: billingEnabled() ? state.can_use_ai : true, can_checkout: billingEnabled() && state.can_checkout, ai_allowance: allowance, allowance_resets_at: paid ? new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString() : null };
+    return { ...billingV1View(account, info), ai_allowance: allowance, allowance_resets_at: null };
+}
+const windowSummarySchema = z.object({
+    cap_usd: z.number().finite().positive(), confirmed_usd: z.number().finite().nonnegative(), reserved_usd: z.number().finite().nonnegative(),
+    pending_count: z.number().int().nonnegative(), remaining_usd: z.number().finite().nonnegative(), status: z.enum(['available', 'exhausted', 'provider_bound_violation']),
+});
+/**
+ * GET /api/v1/ai-budget for app builds that still draw the old "AI allowance" line. The v1 shape stays (cap 10, nothing above 10)
+ * and no state that can still use AI is an error. A paid or trial window is shown on that legacy 10-unit scale, so the operator's
+ * hidden cap never leaves the server; Lifetime has no managed spend at all; a plan that ended is billing_required (403), not an outage.
+ */
+export async function aiAllowanceV1(admin: SupabaseClient, userId: string) {
+    const read = async (name: string, args: Record<string, unknown>) => {
+        const { data, error } = await admin.rpc(name, args);
+        if (error)
+            throw new Error('billing_unavailable');
+        return data;
+    };
+    const legacy = async () => aiSpendSummarySchema.parse(await read('ai_spend_summary', { p_user_id: userId }));
+    if (!billingEnabled())
+        return legacy();
+    const info = planState(await accountFor(admin, userId), Date.now(), billingFlags());
+    if (info.state === 'beta')
+        return legacy();
+    if (info.state === 'lifetime')
+        return aiSpendSummarySchema.parse({ cap_usd: 10, confirmed_usd: 0, reserved_usd: 0, pending_count: 0, remaining_usd: 10, status: 'available' });
+    if (!['trial', 'pro', 'cancelled', 'past_due'].includes(info.state))
+        throw new AiBudgetError('billing_required');
+    const window = windowSummarySchema.parse(await read('billing_spend_summary_v2', { p_user_id: userId, ...billingBudgets() }));
+    // Whole units on the legacy 10-unit scale: what was used rounds up, what is left rounds down, so no fraction can be used to work
+    // back to the hidden cap (the first rounding only removes floating-point noise before the whole-unit step).
+    const units = (usd: number) => Math.round(Math.min(10, usd * (10 / window.cap_usd)) * 1e6) / 1e6;
+    return aiSpendSummarySchema.parse({
+        cap_usd: 10, confirmed_usd: Math.ceil(units(window.confirmed_usd)), reserved_usd: Math.ceil(units(window.reserved_usd)), pending_count: window.pending_count,
+        remaining_usd: Math.floor(units(window.remaining_usd)), status: window.status,
+    });
+}
+/** v2 status. `fair_use_paused_until` is the only trace of the hidden cap; the cap itself never leaves the server. */
+export async function billingStatusV2(admin: SupabaseClient, userId: string): Promise<BillingStatusV2> {
+    const flags = billingFlags();
+    const now = Date.now();
+    const account = flags.billing ? await accountFor(admin, userId) : blankAccount(userId);
+    const info = planState(account, now, flags);
+    let usage: BillingStatusV2['ai_usage_this_month'] = null;
+    let pausedUntil: string | null = null;
+    if (flags.billing && ['trial', 'pro', 'cancelled', 'past_due'].includes(info.state)) {
+        const since = utcMonthStart(now);
+        const tokens = await admin.rpc('billing_usage_tokens', { p_user_id: userId, p_since: since });
+        if (tokens.error)
+            throw new Error('billing_unavailable');
+        const counted = z.object({ prompt_tokens: z.number().int().nonnegative(), completion_tokens: z.number().int().nonnegative() }).parse(tokens.data);
+        usage = { since, ...counted, total_tokens: counted.prompt_tokens + counted.completion_tokens };
+        // Display only: a failure here must not hide the plan.
+        const summary = await admin.rpc('billing_spend_summary_v2', { p_user_id: userId, ...billingBudgets() });
+        if (!summary.error && z.object({ status: z.string() }).safeParse(summary.data).data?.status === 'exhausted')
+            // The window is the trial's while no payment has happened (also for a plan cancelled inside its trial); a paid account's is the UTC month.
+            pausedUntil = info.state === 'trial' || !account.last_payment_at ? (account.trial_ends_at ?? info.current_period_ends_at) : utcMonthStart(now, 1);
+    }
+    return billingStatusV2Schema.parse({
+        state: info.state, plan: info.plan, trial_ends_at: info.trial_ends_at, current_period_ends_at: info.current_period_ends_at, cancel_at: info.cancel_at,
+        notice_ends_at: info.notice_ends_at, refund_until: info.refund_until, refund_state: info.refund_state, can_use_ai: info.ai, can_checkout: info.can_checkout,
+        can_buy_lifetime: info.can_buy_lifetime, with_trial: info.with_trial, terms_version: BILLING_TERMS_VERSION, prices: billingPrices(),
+        ai_usage_this_month: usage, fair_use_paused_until: pausedUntil,
+        // The key table arrives with the BYOK change: until then a Lifetime account has no key to report.
+        ai_key: info.state === 'lifetime' ? 'missing' : null, ai_key_spend_error_at: null,
+    });
 }

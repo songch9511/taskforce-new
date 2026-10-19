@@ -200,15 +200,15 @@ describe("맥락 칩 (attachments)", () => {
 });
 
 describe("전달 표시", () => {
-  it("상태 아홉, 이유는 계약 아홉 + SQL이 쓰는 여덟의 합 열일곱", () => {
+  it("상태 아홉, 이유는 계약 아홉 + SQL이 쓰는 여덟 + 읽을 때 계산하는 하나(billing_required: 만료된 계정이 멈춘 것)의 합 열여덟", () => {
     expect(agentDeliveryStateSchema.options).toEqual(["answered", "queued", "needs_referent", "not_sent", "expired", "cancelled", "sent", "accepted", "unknown"]);
     expect([...agentDeliveryReasonSchema.options].sort()).toEqual(
       [
         "not_connected", "sign_in_needed", "unsupported", "write_gate_closed", "session_external", "version_unsupported", "usage_limited", "spawn_failed", "not_received",
-        "session_busy", "live_limit", "queue_order", "session_closed", "invalid_referent", "not_found", "already_dispatched", "question_open",
+        "session_busy", "live_limit", "queue_order", "session_closed", "invalid_referent", "not_found", "already_dispatched", "question_open", "billing_required",
       ].sort(),
     );
-    expect(agentDeliveryReasonSchema.options).toHaveLength(17);
+    expect(agentDeliveryReasonSchema.options).toHaveLength(18);
   });
 
   it("delivery: state + reason? + candidates?(≤ 3), strict", () => {

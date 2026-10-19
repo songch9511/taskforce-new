@@ -1,12 +1,13 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { MAX_LIVE_EXTERNAL_TASKS } from "@/lib/execution/limits";
 
 import { fakeAdmin } from "./fake-admin";
-import { autoStartable, GATE_REASONS, startNextAgentMessage } from "./next-turn";
+import { AGENT_REGISTRY } from "./registry";
+import { autoStartable, GATE_REASONS, startNextAgentMessage, startPinnedAgentMessage } from "./next-turn";
 
 // 다음 대기 메시지 자동 시작 (OD-10) + D2a 보안 검토 P1 방어 + D1d 검토 반영 7-1 · 8-1 · 8-2.
 // 규칙: 자동 시작은 머리가 `queued`일 때만. `not_sent` 머리는 이유가 gate 계열(write_gate_closed · not_connected · adapter_disabled)이고 지금 플래그가 켜져 있을 때만,
@@ -250,5 +251,114 @@ describe("startNextAgentMessage", () => {
     const noSession = fakeAdmin({ tables: { conversation_messages: [{ id: MSG, user_id: USER, refs: {}, selected: null, delivery_state: "queued", delivery_reason: null }] }, rpc: { next_queued_agent_message: () => MSG } });
     expect(await startNextAgentMessage(noSession.admin, { userId: USER, sessionId: SESSION }, ON)).toBeNull();
     expect(noSession.rpcCalls("start_agent_turn_auto")).toEqual([]);
+  });
+});
+
+// ─── 결제 계약 22장: 만료된 계정은 에이전트 실행을 시작하지 못한다 (공통 경계 한 곳, 막힌 일은 이어 갈 수 있다) ───
+describe("만료된 계정의 시작 (결제가 켜진 경우)", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  const DAY = 86_400_000;
+  const account = (over: Record<string, unknown>) => ({
+    user_id: USER, legacy_beta: false, notice_ends_at: null, trial_ends_at: null, subscription_id: null, customer_id: null, order_id: null, plan: null, status: "none",
+    current_period_ends_at: null, deleting: false, first_subscription_at: null, lifetime_order_id: null, lifetime_status: null, lifetime_paid_at: null,
+    last_payment_at: null, last_invoice_id: null, refund_requested_at: null, self_refund_used_at: null, ...over,
+  });
+  const EXPIRED = account({ subscription_id: "s", status: "expired" });
+  const PAID = account({ subscription_id: "s", status: "active", current_period_ends_at: new Date(Date.now() + 5 * DAY).toISOString() });
+  const billed = (row: Record<string, unknown> | null, head: Head = { state: "queued" }, rpc: Record<string, (args: Record<string, unknown>) => unknown> = {}) => {
+    vi.stubEnv("BILLING_ENABLED", "true");
+    const fake = world(head, { rpc: { billing_mark_agent_block: () => true, ...rpc } });
+    fake.tables.billing_accounts = row ? [row] : [];
+    return fake;
+  };
+
+  it("자동 시작: 만료된 계정의 queued 머리는 시작하지 않고 not_sent/write_gate_closed로 표시한다 (이어 갈 수 있는 이유, 래퍼 0)", async () => {
+    const fake = billed(EXPIRED);
+    expect(await run(fake, ON)).toEqual({ status: "not_sent", reason: "write_gate_closed" });
+    expect(fake.rpcCalls("start_agent_turn_auto")).toEqual([]);
+    expect(fake.rpcCalls("mark_agent_message_not_sent_auto")[0].args).toEqual({ p_user_id: USER, p_message_id: MSG, p_reason: "write_gate_closed", p_from_gate: false });
+  });
+
+  it("막은 이유가 결제임을 메시지에 남긴다 (읽는 쪽이 킬 스위치와 구분한다): 표시가 실제로 바꾼 때만, 한 번", async () => {
+    const fake = billed(EXPIRED);
+    expect(await run(fake, ON)).toEqual({ status: "not_sent", reason: "write_gate_closed" });
+    expect(fake.rpcCalls("billing_mark_agent_block").map((call) => call.args)).toEqual([{ p_user_id: USER, p_message_id: MSG, p_blocked: true }]);
+    // SQL이 표시하지 않았으면(그 사이 상태가 바뀜) 이유도 남기지 않는다
+    const skipped = billed(EXPIRED, { state: "queued" }, { mark_agent_message_not_sent_auto: () => ({ status: "skipped" }) });
+    expect(await run(skipped, ON)).toBeNull();
+    expect(skipped.rpcCalls("billing_mark_agent_block")).toEqual([]);
+    // 이미 멈춰 있던 머리는 건드리지 않는다
+    const already = billed(EXPIRED, { state: "not_sent", reason: "write_gate_closed" });
+    await run(already, ON);
+    expect(already.rpcCalls("billing_mark_agent_block")).toEqual([]);
+  });
+
+  it("이유를 남기지 못해도 막은 일은 그대로다: 던지지 않고 메시지는 멈춘 채 이어 갈 수 있다", async () => {
+    const fake = billed(EXPIRED, { state: "queued" }, { billing_mark_agent_block: () => { throw new Error("down"); } });
+    expect(await run(fake, ON)).toEqual({ status: "not_sent", reason: "write_gate_closed" });
+    expect(fake.rpcCalls("start_agent_turn_auto")).toEqual([]);
+  });
+
+  it("kill switch로 멈출 때는 남아 있던 결제 표시를 지운다 (결제가 켜진 때만): 이 멈춤을 결제 탓으로 읽지 않게", async () => {
+    const stoppedByKillSwitch = billed(PAID, { state: "queued", refs: { blocked_by: "billing" } });
+    expect(await run(stoppedByKillSwitch, NO_EXECUTION)).toEqual({ status: "not_sent", reason: "write_gate_closed" });
+    expect(stoppedByKillSwitch.rpcCalls("billing_mark_agent_block").map((call) => call.args)).toEqual([{ p_user_id: USER, p_message_id: MSG, p_blocked: false }]);
+    // 결제가 꺼져 있으면 부르지 않는다 (동작 그대로)
+    vi.unstubAllEnvs();
+    const off = world({ state: "queued" });
+    expect(await run(off, NO_EXECUTION)).toEqual({ status: "not_sent", reason: "write_gate_closed" });
+    expect(off.rpcCalls("billing_mark_agent_block")).toEqual([]);
+  });
+
+  it("공통 경계(startPinnedAgentMessage): 수동 시작 · 다시 전달 · bridge 계기가 모두 지나는 곳에서 막는다", async () => {
+    const fake = billed(EXPIRED);
+    const target = { capability: AGENT_REGISTRY["agent:codex"], mode: "manual" as const, connectionStatus: "active" as const };
+    const result = await startPinnedAgentMessage(fake.admin, { userId: USER, messageId: MSG, state: "queued", reason: null, chips: { action_ids: [], context_ids: [] }, target }, ON);
+    expect(result).toEqual({ status: "not_sent", reason: "write_gate_closed" });
+    expect(fake.rpcCalls("start_agent_turn_auto")).toEqual([]);
+  });
+
+  it("막힌 머리가 이미 not_sent/write_gate_closed면 다시 쓰지 않는다 (표시 0, 시작 0)", async () => {
+    const fake = billed(EXPIRED, { state: "not_sent", reason: "write_gate_closed" });
+    expect(await run(fake, ON)).toBeNull();
+    expect(fake.rpcCalls("mark_agent_message_not_sent_auto")).toEqual([]);
+    expect(fake.rpcCalls("start_agent_turn_auto")).toEqual([]);
+  });
+
+  it("다시 사면 같은 머리가 저절로 이어진다: not_sent/write_gate_closed는 자동 시작 대상이다", async () => {
+    const fake = billed(PAID, { state: "not_sent", reason: "write_gate_closed" });
+    expect(await run(fake, ON)).toEqual(started);
+    expect(fake.rpcCalls("start_agent_turn_auto")).toHaveLength(1);
+  });
+
+  it("기록 없는 새 계정도 시작하지 못한다", async () => {
+    const fake = billed(null);
+    expect(await run(fake, ON)).toEqual({ status: "not_sent", reason: "write_gate_closed" });
+    expect(fake.rpcCalls("start_agent_turn_auto")).toEqual([]);
+  });
+
+  it("권한 있는 계정은 평소처럼 시작한다", async () => {
+    const fake = billed(PAID);
+    expect(await run(fake, ON)).toEqual(started);
+  });
+
+  it("결제가 꺼져 있으면(모두 베타) 동작이 그대로다: billing_accounts를 읽지 않고, 호출 순서도 같다", async () => {
+    const fake = world();
+    expect(await run(fake, ON)).toEqual(started);
+    expect(targets(fake)).toEqual(["next_queued_agent_message", "start_agent_turn_auto"]);
+    expect(fake.calls.some((call) => call.target === "billing_accounts")).toBe(false);
+  });
+
+  it("계정 상태를 읽지 못하면 던진다: 시작하지 않고, 머리를 표시하지도 않는다 (다음 계기가 다시 시도)", async () => {
+    vi.stubEnv("BILLING_ENABLED", "true");
+    const fake = fakeAdmin({
+      tables: { agent_sessions: [{ id: SESSION, user_id: USER, connection_id: CONN }], agent_connections: [{ id: CONN, user_id: USER, adapter: "agent:codex", status: "active" }], execution_policies: [], actions: [], billing_accounts: [],
+        conversation_messages: [{ id: MSG, user_id: USER, refs: {}, selected: null, delivery_state: "queued", delivery_reason: null }] },
+      rpc: { next_queued_agent_message: () => MSG, start_agent_turn_auto: () => started, mark_agent_message_not_sent_auto: () => ({ status: "not_sent", reason: "write_gate_closed" }) },
+      fail: { "billing_accounts.select": { code: "XX000", message: "db" } },
+    });
+    await expect(run(fake as never, ON)).rejects.toThrow();
+    expect(fake.rpcCalls("start_agent_turn_auto")).toEqual([]);
+    expect(fake.rpcCalls("mark_agent_message_not_sent_auto")).toEqual([]);
   });
 });

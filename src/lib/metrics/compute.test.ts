@@ -20,7 +20,7 @@ import {
   type MetricEventRow,
   type WeeklyCheckRow,
 } from "./compute";
-import { AGENT_EVENTS } from "./agents";
+import { AGENT_EVENTS, BILLING_EVENTS } from "./agents";
 
 const period = { from: new Date("2026-09-21T00:00:00Z"), to: new Date("2026-09-28T00:00:00Z") };
 
@@ -721,6 +721,22 @@ describe("metricActivity: 에이전트 이벤트 (OA I-oa U6)", () => {
 
   it("등록부의 activity 표시가 metricActivity와 17개 모두 같다", () => {
     for (const spec of AGENT_EVENTS) expect(metricActivity([row(spec.type)]).length, spec.type).toBe(spec.activity ? 1 : 0);
+  });
+
+  it("결제 · 키 이벤트 20개는 하나도 활동이 아니다 (갱신 webhook이 재방문으로 세지 않는다)", () => {
+    for (const spec of BILLING_EVENTS) expect(metricActivity([row(spec.type)]), spec.type).toEqual([]);
+  });
+
+  it("리텐션: 결제 이벤트만 있는 주는 활동 주가 되지 않는다 (fixture)", () => {
+    const events: MetricEventRow[] = [
+      row("app_opened", "A", "2026-09-15T01:00:00Z"),
+      row("billing_payment_succeeded", "A", "2026-09-22T01:00:00Z"),
+      row("billing_subscription_activated", "A", "2026-09-29T01:00:00Z"),
+      row("ai_key_saved", "A", "2026-10-06T01:00:00Z"),
+    ];
+    const metric = retention(metricActivity(events), new Date("2026-11-01T00:00:00Z"));
+    expect(metric.weeklyActive).toEqual([{ week: "2026-09-14", users: 1 }]);
+    expect(metric.retention[1]).toBe(0);
   });
 
   it("리텐션 전후 숫자 (fixture): 기계 이벤트로 이어 붙던 주가 사라진다", () => {

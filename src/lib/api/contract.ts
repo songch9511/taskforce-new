@@ -1287,9 +1287,9 @@ export const bridgeHeartbeatRequestSchema = z
   .strict();
 export type BridgeHeartbeatRequest = z.infer<typeof bridgeHeartbeatRequestSchema>;
 
-// ─── 결제 v2 (아키텍처 10.1 · 디자인 준비도 5.1: 새 표 없이 billing_accounts 확장, G1) ───
+// ─── 결제 v2 (아키텍처 10.1 · 결제 계약 oa-billing: Pro 월간 · 연간 + Lifetime, 3일 환불) ───
 // v1(billingStatusSchema · billingCheckoutRequestSchema)은 그대로다: lifetime 계정은 v1에서 plan null · status active ·
-// can_use_ai true · can_checkout false로 매핑한다 (구현 계획 8장). 가격은 출시 전 확정이라 여기 두지 않는다.
+// can_use_ai true · can_checkout false로 매핑하고, v1 checkout은 늘 409다 (구현 계획 8장). 가격 숫자는 서버(src/lib/billing/prices.ts)가 표시 글자로 내려 준다.
 
 export const billingPlanV2Schema = z.enum(["monthly", "annual", "lifetime"]);
 export type BillingPlanV2 = z.infer<typeof billingPlanV2Schema>;
@@ -1307,6 +1307,13 @@ export const aiUsageTokensSchema = z.object({
 });
 export type AiUsageTokens = z.infer<typeof aiUsageTokensSchema>;
 
+/** 서버가 정한 표시 가격. 앱은 이 글자를 문장 틀에 끼울 뿐 숫자 상수를 두지 않는다 (예: "$12.99") */
+export const billingPricesV2Schema = z.object({ pro_monthly: z.string(), pro_first_month: z.string(), pro_yearly: z.string(), lifetime: z.string() });
+export type BillingPricesV2 = z.infer<typeof billingPricesV2Schema>;
+
+/** 사용자의 OpenRouter 키 상태 (Lifetime만). 값은 BYOK 서버(PR-B)가 채운다 — 그 전에는 lifetime이면 missing */
+export const aiKeyStatusV2Schema = z.enum(["connected", "missing", "revoked"]);
+
 /** GET /api/v2/billing. 자격은 결제 제공자 webhook으로만 바뀐다 (I15, 클라이언트 신고 없음) */
 export const billingStatusV2Schema = z.object({
   state: planStateSchema,
@@ -1315,22 +1322,51 @@ export const billingStatusV2Schema = z.object({
   current_period_ends_at: z.string().nullable(),
   /** 해지했지만 이 시각까지 쓸 수 있다 (state cancelled) */
   cancel_at: z.string().nullable(),
+  /** 기존 베타 계정의 유료 전환 고지 끝 (state beta이고 고지가 잡힌 뒤). 없으면 null */
+  notice_ends_at: z.string().nullable(),
   /** 환불 요청을 받는 마지막 시각 (결제 3일 안). 지났거나 해당 없으면 null */
   refund_until: z.string().nullable(),
+  /** requested = 환불을 요청했고 제공자 확정을 기다린다 (자격은 확정 뒤에만 바뀐다) */
+  refund_state: z.enum(["idle", "requested"]),
   can_use_ai: z.boolean(),
   can_checkout: z.boolean(),
+  can_buy_lifetime: z.boolean(),
+  /** 지금 Pro를 시작하면 3일 무료 체험과 첫 달 할인이 붙는가 (계정당 처음 한 번) */
+  with_trial: z.boolean(),
+  /** checkout 요청에 그대로 되돌려 보낼 현재 약관 판 */
+  terms_version: z.string(),
+  prices: billingPricesV2Schema,
   ai_usage_this_month: aiUsageTokensSchema.nullable(),
+  /** 공정 사용 안전장치에 닿아 AI가 쉬는 동안, 다시 시작하는 시각. 아니면 null. 숫자 한도는 내리지 않는다 */
+  fair_use_paused_until: z.string().nullable(),
+  ai_key: aiKeyStatusV2Schema.nullable(),
+  ai_key_spend_error_at: z.string().nullable(),
 });
 export type BillingStatusV2 = z.infer<typeof billingStatusV2Schema>;
 
-/** POST /api/v2/billing/checkout. terms_version 값은 G1이 정한다 (여기서 새 literal을 만들지 않는다) */
-export const billingCheckoutRequestV2Schema = z.object({ plan: billingPlanV2Schema, terms_version: z.string().min(1).max(32) }).strict();
+/** POST /api/v2/billing/checkout. 가격 · 변형 · 코드 · 돌아올 주소는 서버가 정한다 (클라이언트 값 0) */
+export const billingCheckoutPlanV2Schema = z.enum(["pro", "lifetime"]);
+export const billingCheckoutRequestV2Schema = z.object({ plan: billingCheckoutPlanV2Schema, terms_version: z.string().min(1).max(32) }).strict();
 export type BillingCheckoutRequestV2 = z.infer<typeof billingCheckoutRequestV2Schema>;
+/** checkout · portal 응답. https *.lemonsqueezy.com 주소만 */
+export const billingUrlResponseV2Schema = z.object({ url: z.string().url() });
+
+/** POST /api/v2/billing/portal. manage = 구독 관리, payment = 결제 수단 바꾸기 */
+export const billingPortalRequestV2Schema = z.object({ target: z.enum(["manage", "payment"]) }).strict();
+
+/** POST /api/v2/billing/resume — 본문 없음. 해지했고 기간이 남았을 때 다시 시작을 요청한다. 확정은 webhook이 오면 */
+export const billingResumeRequestV2Schema = z.object({}).strict();
+export const billingResumeResponseV2Schema = z.object({ requested: z.literal(true) });
 
 /** POST /api/v2/billing/refund — 본문 없음. 서버가 3일 창을 확인하고 환불을 요청한다. 확정은 webhook이 오면 (자격은 그때 바뀐다) */
 export const billingRefundRequestV2Schema = z.object({}).strict();
 export const billingRefundResponseV2Schema = z.object({ requested: z.literal(true) });
 export type BillingRefundResponseV2 = z.infer<typeof billingRefundResponseV2Schema>;
+
+/** v2 결제 route의 오류 코드. 켜져 있지 않거나 지금 할 수 없는 요청은 409, 제공자 · DB 장애는 503 (같은 billing_unavailable) */
+export const billingErrorCodeV2Schema = z.enum(["unauthorized", "invalid_request", "billing_unavailable", "billing_terms_required", "billing_refund_window_closed", "billing_refund_used", "billing_refund_pending"]);
+export const billingErrorV2Schema = z.object({ error: z.object({ code: billingErrorCodeV2Schema, message: z.string() }) });
+export type BillingErrorCodeV2 = z.infer<typeof billingErrorCodeV2Schema>;
 
 // ─── Review · 복귀 요약 · 제안 (0.2.0 C3, 런타임 계약 6 · 8장, 디자인 D-12) ───────────────────
 // 새 경로는 모두 /api/v2/ 아래이고 gate가 꺼져 있으면 404다 (복귀 요약 세 경로는 RETURN_SUMMARY_ENABLED 또는 REVIEW_V2_ENABLED, 나머지는 REVIEW_V2_ENABLED; v1 동결 지문은 그대로).
@@ -1707,10 +1743,13 @@ export type PostConversationMessageV2Request = z.infer<typeof postConversationMe
 /** answered ~ cancelled는 메시지 열(또는 답 글), sent · accepted · unknown은 dispatched 뒤 전달 단계에서 계산한다 */
 export const agentDeliveryStateSchema = z.enum(["answered", "queued", "needs_referent", "not_sent", "expired", "cancelled", "sent", "accepted", "unknown"]);
 export type AgentDeliveryState = z.infer<typeof agentDeliveryStateSchema>;
-/** 계약 2.4의 아홉 + SQL이 실제로 쓰는 여덟 (OD-12). 앱은 모르는 값을 만나도 깨지지 않는다 (open string) */
+/**
+ * 계약 2.4의 아홉 + SQL이 실제로 쓰는 여덟 (OD-12) + 읽을 때 서버가 계산하는 하나. 앱은 모르는 값을 만나도 깨지지 않는다 (open string).
+ * billing_required: 구독이 끝난 계정 때문에 멈춘 메시지(저장된 이유는 write_gate_closed)를 읽을 때만 보인다 — SQL은 이 값을 쓰지 않는다 (결제 계약 22장)
+ */
 export const agentDeliveryReasonSchema = z.enum([
   "not_connected", "sign_in_needed", "unsupported", "write_gate_closed", "session_external", "version_unsupported", "usage_limited", "spawn_failed", "not_received",
-  "session_busy", "live_limit", "queue_order", "session_closed", "invalid_referent", "not_found", "already_dispatched", "question_open",
+  "session_busy", "live_limit", "queue_order", "session_closed", "invalid_referent", "not_found", "already_dispatched", "question_open", "billing_required",
 ]);
 export type AgentDeliveryReason = z.infer<typeof agentDeliveryReasonSchema>;
 export const agentDeliverySchema = z.strictObject({

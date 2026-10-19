@@ -1,19 +1,10 @@
-import { billingCheckoutRequestSchema } from '@/lib/api/contract';
 import { authenticateRequest } from '@/lib/api/auth';
-import { unauthorized, parseBody } from '@/lib/api/respond';
-import { checkout } from '@/lib/billing/service';
-import { createAdminClient } from '@/lib/supabase/admin';
+import { unauthorized } from '@/lib/api/respond';
+// v1 sold the retired $9.99 plan. The new plans are sold only through /api/v2/billing/checkout, so this route is closed
+// for good: no body is read, no state is touched and no checkout is created. Old app builds show this message.
 export async function POST(request: Request) {
     const context = await authenticateRequest(request);
     if (!context)
         return unauthorized();
-    const body = await parseBody(request, billingCheckoutRequestSchema);
-    if ('error' in body)
-        return body.error;
-    try {
-        return Response.json({ url: await checkout(createAdminClient(), context.user.id, body.data.plan, body.data.terms_version) }, { headers: { 'Cache-Control': 'no-store' } });
-    }
-    catch {
-        return Response.json({ error: { code: 'billing_unavailable', message: 'Checkout unavailable. An existing checkout or subscription may already be open.' } }, { status: 409 });
-    }
+    return Response.json({ error: { code: 'billing_unavailable', message: 'This version of Taskforce can no longer start checkout. Update the app to subscribe.' } }, { status: 409, headers: { 'Cache-Control': 'no-store' } });
 }
