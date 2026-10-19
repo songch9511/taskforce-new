@@ -18,8 +18,8 @@ private func user(id: UUID, providers: [String], emails: [String: String] = [:],
         identities: withIdentities ? providers.map { identity($0, email: emails[$0], userID: id) } : nil)
 }
 
-private func session(for user: User, token: String = "access") -> Session {
-    Session(accessToken: token, tokenType: "bearer", expiresIn: 3600, expiresAt: Date().addingTimeInterval(3600).timeIntervalSince1970,
+private func session(for user: User, token: String = "access", validFor seconds: TimeInterval = 3600) -> Session {
+    Session(accessToken: token, tokenType: "bearer", expiresIn: seconds, expiresAt: Date().addingTimeInterval(seconds).timeIntervalSince1970,
         refreshToken: "refresh-\(token)", user: user)
 }
 
@@ -79,11 +79,17 @@ private final class FakeAuthServer: @unchecked Sendable {
     let link: Reply?           // nil이면 오프라인
     let userRead: Reply?       // nil이면 오프라인
     let linkGate: Gate?
+    /// 이어 붙이기가 아닌 `/token`(로그인 · 갱신)의 답. 없으면 `link`와 같다
+    let signIn: Reply?
+    /// 이어 붙이기가 아닌 `/token`의 답을 붙들어 두는 문
+    let signInGate: Gate?
 
-    init(link: Reply?, userRead: Reply?, linkGate: Gate? = nil) {
+    init(link: Reply?, userRead: Reply?, linkGate: Gate? = nil, signIn: Reply? = nil, signInGate: Gate? = nil) {
         self.link = link
         self.userRead = userRead
         self.linkGate = linkGate
+        self.signIn = signIn
+        self.signInGate = signInGate
     }
 
     var requests: [URLRequest] { lock.withLock { recorded } }
@@ -95,9 +101,16 @@ private final class FakeAuthServer: @unchecked Sendable {
         let reply: Reply
         switch url.path {
         case "/auth/v1/token":
-            await linkGate?.pass()
-            guard let link else { throw URLError(.notConnectedToInternet) }
-            reply = link
+            let body = (try? JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: Any]) ?? [:]
+            if body["link_identity"] as? Bool == true {
+                await linkGate?.pass()
+                guard let link else { throw URLError(.notConnectedToInternet) }
+                reply = link
+            } else {
+                await signInGate?.pass()
+                guard let answer = signIn ?? link else { throw URLError(.notConnectedToInternet) }
+                reply = answer
+            }
         case "/auth/v1/user":
             guard let userRead else { throw URLError(.notConnectedToInternet) }
             reply = userRead
@@ -121,7 +134,12 @@ struct SignInLinkingTests {
 
     fileprivate func makeStore(server: FakeAuthServer, storage: MemoryStorage) -> SessionStore {
         SessionStore(auth: AuthClient(url: URL(string: "https://example.supabase.co/auth/v1")!, storageKey: MemoryStorage.key, localStorage: storage,
-            fetch: { try await server.handle($0) }, autoRefreshToken: false))
+            fetch: { try await server.handle($0) }, autoRefreshToken: false), link: transport(server))
+    }
+
+    /// 이어 붙이기를 같은 가짜 서버로 보낸다 (공유 세션 저장소에 쓰지 않는 길)
+    fileprivate func transport(_ server: FakeAuthServer) -> LinkTransport {
+        LinkTransport(authURL: URL(string: "https://example.supabase.co/auth/v1")!, headers: ["apikey": "public-key"]) { try await server.handle($0) }
     }
 
     /// Google 계정으로 로그인해 있는 상태 (Apple은 아직 이어지지 않음)
@@ -165,6 +183,12 @@ struct SignInLinkingTests {
         #expect(server.requests(path: "user").count == 1)
         #expect(store.signInMethods.providers == ["google", "apple"])
         #expect(store.signInMethods.emails["apple"] == "relay@privaterelay.appleid.com")
+        // 계정이 그대로라서 저장된 세션도 새로 읽는다 (identities가 새로): 두 번째 /token은 이어 붙이기가 아니라 갱신이다
+        let tokenRequests = server.requests(path: "token")
+        #expect(tokenRequests.count == 2)
+        let refresh = try #require(tokenRequests.last)
+        #expect(URLComponents(url: try #require(refresh.url), resolvingAgainstBaseURL: false)?.queryItems == [URLQueryItem(name: "grant_type", value: "refresh_token")])
+        #expect(try jsonBody(refresh)["link_identity"] == nil)
         #expect(store.state == .signedIn(userID: me, email: "me@example.com"))
     }
 
@@ -186,6 +210,65 @@ struct SignInLinkingTests {
         #expect(body["nonce"] as? String == "raw-n")
         #expect(body["link_identity"] as? Bool == true)
         #expect(store.signInMethods.providers == ["apple", "google"])
+    }
+
+    /// 요청은 시작 계정의 access token과 공개 키로, `link_identity: true`와 함께 직접 보낸다 (SDK의 저장하는 길이 아니다)
+    @Test func theLinkRequestIsSentDirectlyWithTheStartAccountsToken() async throws {
+        let linked = user(id: me, providers: ["google", "apple"])
+        let (store, server, _) = try signedInWithGoogle(link: FakeAuthServer.ok(session(for: linked, token: "linked")), userRead: FakeAuthServer.ok(linked))
+        #expect(await store.linkApple(idToken: "t", nonce: SignInNonce(raw: "n"), expectedUserID: me) == .linked)
+        let request = try #require(server.requests(path: "token").first)
+        #expect(request.value(forHTTPHeaderField: "apikey") == "public-key")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer access")
+        #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
+        #expect(try jsonBody(request)["link_identity"] as? Bool == true)
+    }
+
+    /// 길(LinkTransport)이 없으면 이어 붙이지 않는다 (서버를 부르지 않는다)
+    @Test func withoutALinkTransportNothingIsSent() async throws {
+        let current = session(for: user(id: me, providers: ["google"]))
+        let storage = try MemoryStorage(current)
+        let server = FakeAuthServer(link: nil, userRead: nil)
+        let store = SessionStore(auth: AuthClient(url: URL(string: "https://example.supabase.co/auth/v1")!, storageKey: MemoryStorage.key, localStorage: storage,
+            fetch: { try await server.handle($0) }, autoRefreshToken: false))
+        store.apply(event: .signedIn, session: current)
+        #expect(await store.linkApple(idToken: "t", nonce: SignInNonce(raw: "n"), expectedUserID: me) == .failed)
+        #expect(server.requests.isEmpty)
+    }
+
+    /// 오류 코드는 `code`(문자열) 판과 `error_code` 판 둘 다 읽는다
+    @Test func bothErrorBodyShapesAreRead() {
+        #expect(LinkTransport.failure(from: Data(#"{"code":"identity_already_exists","msg":"x"}"#.utf8)) == .identityAlreadyExists)
+        #expect(LinkTransport.failure(from: Data(#"{"code":422,"error_code":"identity_already_exists","msg":"x"}"#.utf8)) == .identityAlreadyExists)
+        #expect(LinkTransport.failure(from: Data(#"{"code":"manual_linking_disabled"}"#.utf8)) == .failed)
+        #expect(LinkTransport.failure(from: Data("not json".utf8)) == .failed)
+    }
+
+    /// 검토 1 P3-5: 로그인 응답을 기다리는 사이 다른 계정이 들어왔으면 늦은 오류를 화면에 쓰지 않는다
+    @Test func aLateSignInErrorAfterAnAccountChangeIsNotShown() async throws {
+        let gate = Gate()
+        let storage = try MemoryStorage(session(for: user(id: me, providers: ["google"])))
+        let server = FakeAuthServer(link: nil, userRead: nil, signIn: FakeAuthServer.error(status: 500, code: "unexpected_failure"), signInGate: gate)
+        let store = makeStore(server: server, storage: storage)
+        let pending = Task { await store.signInWithApple(idToken: "t", nonce: SignInNonce(raw: "n")) }
+        #expect(await gate.waitUntilEntered())
+        // 기다리는 사이 다른 계정이 로그인한다
+        let other = session(for: user(id: UUID(), providers: ["apple"], accountEmail: "other@example.com"), token: "other")
+        try storage.save(other)
+        store.apply(event: .signedIn, session: other)
+        await gate.release()
+        await pending.value
+        #expect(store.errorMessage == nil)
+        #expect(store.state == .signedIn(userID: other.user.id, email: "other@example.com"))
+    }
+
+    /// 계정이 그대로면 로그인 오류는 그대로 보인다
+    @Test func aSignInErrorWithoutAnAccountChangeIsShown() async throws {
+        let storage = try MemoryStorage(session(for: user(id: me, providers: ["google"])))
+        let server = FakeAuthServer(link: nil, userRead: nil, signIn: FakeAuthServer.error(status: 500, code: "unexpected_failure"))
+        let store = makeStore(server: server, storage: storage)
+        await store.signInWithApple(idToken: "t", nonce: SignInNonce(raw: "n"))
+        #expect(store.errorMessage?.hasPrefix("Couldn't sign in.") == true)
     }
 
     /// 이어 붙인 응답에 identities가 빠져 있고 다시 읽지 못해도, 응답의 사용자로 목록을 갱신한다
@@ -252,32 +335,49 @@ struct SignInLinkingTests {
         #expect(server.requests.isEmpty)
     }
 
-    /// 서버 응답을 기다리는 사이 계정이 바뀌면 그 결과를 쓰지 않는다: 지금 계정의 방법 목록은 그대로고,
-    /// supabase-swift가 방금 저장한 떠난 계정의 세션은 이 기기에서 지운다 (떠난 계정이 되살아나지 않게)
-    @Test func aLateResponseAfterAnAccountSwitchIsDiscarded() async throws {
+    /// 검토 1 P1: 실제 listener를 켠 채로 A에서 Add → 로그아웃 → B 로그인 → A의 늦은 응답이 도착해도 B의 세션 · bearer는 그대로다.
+    /// (SDK의 `linkIdentityWithIdToken`은 응답을 먼저 공유 저장소에 쓰므로, 이어 붙이기는 저장하지 않는 길로 부른다)
+    @Test func aLateLinkResponseNeverReplacesTheNewAccountsSession() async throws {
         let gate = Gate()
-        let linked = user(id: me, providers: ["google", "apple"])
-        let (store, server, storage) = try signedInWithGoogle(link: FakeAuthServer.ok(session(for: linked, token: "late")), userRead: FakeAuthServer.ok(linked), gate: gate)
+        let accountB = UUID()
+        let sessionA = session(for: user(id: me, providers: ["google"], emails: ["google": "me@gmail.com"]), token: "access-A")
+        let sessionB = session(for: user(id: accountB, providers: ["apple"], accountEmail: "b@example.com"), token: "access-B")
+        let linkedA = user(id: me, providers: ["google", "apple"])
+        let storage = try MemoryStorage(sessionA)
+        let server = FakeAuthServer(link: try FakeAuthServer.ok(session(for: linkedA, token: "late-A")), userRead: try FakeAuthServer.ok(linkedA),
+            linkGate: gate, signIn: try FakeAuthServer.ok(sessionB))
+        let auth = AuthClient(url: URL(string: "https://example.supabase.co/auth/v1")!, storageKey: MemoryStorage.key, localStorage: storage,
+            fetch: { try await server.handle($0) }, autoRefreshToken: false)
+        let store = SessionStore(auth: auth, link: transport(server))
+        store.start()
+        func waitFor(_ state: SessionStore.State) async {
+            for _ in 0..<12_000 where store.state != state { try? await Task.sleep(for: .milliseconds(5)) }
+        }
+        await waitFor(.signedIn(userID: me, email: "me@example.com"))
+        #expect(store.state == .signedIn(userID: me, email: "me@example.com"))
+
         let pending = Task { await store.linkApple(idToken: "t", nonce: SignInNonce(raw: "n"), expectedUserID: me) }
         #expect(await gate.waitUntilEntered())
+        await store.signOut()
+        await waitFor(.signedOut)
+        await store.signInWithApple(idToken: "b-token", nonce: SignInNonce(raw: "b-nonce"))
+        await waitFor(.signedIn(userID: accountB, email: "b@example.com"))
+        #expect(store.state == .signedIn(userID: accountB, email: "b@example.com"))
 
-        // 응답을 기다리는 사이 로그아웃하고 다른 계정으로 로그인한다
-        let other = UUID()
-        let otherSession = session(for: user(id: other, providers: ["apple"], accountEmail: "other@example.com"), token: "other")
-        store.apply(event: .signedOut, session: nil)
-        try storage.save(otherSession)
-        store.apply(event: .signedIn, session: otherSession)
-        #expect(store.state == .signedIn(userID: other, email: "other@example.com"))
         await gate.release()
-        let result = await pending.value
+        #expect(await pending.value == .failed)
 
-        #expect(result == .failed)
-        // 지금(떠난 뒤 들어온) 계정의 방법 목록에 옛 계정의 결과가 섞이지 않는다
-        #expect(store.signInMethods.providers != ["google", "apple"])
+        // B의 세션 · bearer가 그대로다 (저장소가 비어도, A로 바뀌어도 안 된다)
+        #expect(auth.currentSession?.user.id == accountB)
+        #expect(auth.currentSession?.accessToken == "access-B")
+        #expect(store.state == .signedIn(userID: accountB, email: "b@example.com"))
+        #expect(!storage.isEmpty)
+        // 늦은 응답 때문에 로그아웃을 더 보내지 않았다 (A가 직접 한 로그아웃 하나뿐)
+        #expect(server.requests(path: "logout").count == 1)
+        // 새 계정의 세션을 새로 읽지도, 사용자를 다시 읽지도 않았다 (늦은 응답은 서버 호출 없이 버려진다)
+        let refreshes = server.requests(path: "token").filter { $0.url?.query?.contains("refresh_token") == true }
+        #expect(refreshes.isEmpty)
         #expect(server.requests(path: "user").isEmpty)
-        // 떠난 계정의 세션이 이 기기에 남지 않는다
-        #expect(server.requests(path: "logout").count >= 1)
-        #expect(storage.isEmpty)
     }
 
     /// 같은 계정이면 토큰 갱신이 겹쳐도 결과를 쓴다 (계정이 바뀐 것이 아니다)
@@ -291,6 +391,71 @@ struct SignInLinkingTests {
         await gate.release()
         #expect(await pending.value == .linked)
         #expect(store.signInMethods.providers == ["google", "apple"])
+    }
+
+    /// 시작 계정이 아니면 만료된 세션을 새로 읽으러 서버에도 가지 않는다 (남의 계정의 토큰을 건드리지 않는다)
+    @Test func aFlowStartedForAnotherAccountDoesNotEvenRefreshAnExpiredSession() async throws {
+        let expired = session(for: user(id: me, providers: ["google"]), validFor: -60)
+        let server = FakeAuthServer(link: nil, userRead: nil)
+        let store = makeStore(server: server, storage: try MemoryStorage(expired))
+        store.apply(event: .signedIn, session: expired)
+        #expect(await store.linkApple(idToken: "t", nonce: SignInNonce(raw: "n"), expectedUserID: UUID()) == .failed)
+        #expect(server.requests.isEmpty)
+    }
+
+    /// 이어 붙인 뒤 세션을 새로 읽는 사이 다른 계정이 들어오면, 떠난 계정의 방법 목록을 쓰지 않는다
+    @Test func aSwitchWhileTheSessionIsReReadDoesNotWriteTheOldAccountsMethods() async throws {
+        let gate = Gate()
+        let linked = user(id: me, providers: ["google", "apple"])
+        let current = session(for: user(id: me, providers: ["google"]))
+        let storage = try MemoryStorage(current)
+        let server = FakeAuthServer(link: try FakeAuthServer.ok(session(for: linked, token: "linked")), userRead: try FakeAuthServer.ok(linked),
+            signIn: try FakeAuthServer.ok(session(for: linked, token: "refreshed")), signInGate: gate)
+        let store = makeStore(server: server, storage: storage)
+        store.apply(event: .signedIn, session: current)
+
+        let pending = Task { await store.linkApple(idToken: "t", nonce: SignInNonce(raw: "n"), expectedUserID: me) }
+        // 이어 붙이기 응답은 도착했고, 세션을 새로 읽는 요청에 붙들려 있다
+        #expect(await gate.waitUntilEntered())
+        let other = session(for: user(id: UUID(), providers: ["apple"], accountEmail: "other@example.com"), token: "other")
+        try storage.save(other)
+        store.apply(event: .signedIn, session: other)
+        await gate.release()
+
+        #expect(await pending.value == .failed)
+        #expect(store.state == .signedIn(userID: other.user.id, email: "other@example.com"))
+        #expect(store.signInMethods.providers == ["apple"])
+    }
+
+    /// 이미 다른 계정 것이라는 늦은 답도, 그 사이 계정이 바뀌었으면 지금 계정의 화면에 알리지 않는다
+    @Test func aLateAnotherAccountAnswerAfterAnAccountSwitchIsJustAFailure() async throws {
+        let gate = Gate()
+        let (store, _, storage) = try signedInWithGoogle(link: FakeAuthServer.error(status: 422, code: "identity_already_exists"), gate: gate)
+        let pending = Task { await store.linkApple(idToken: "t", nonce: SignInNonce(raw: "n"), expectedUserID: me) }
+        #expect(await gate.waitUntilEntered())
+        let other = session(for: user(id: UUID(), providers: ["apple"], accountEmail: "other@example.com"), token: "other")
+        try storage.save(other)
+        store.apply(event: .signedIn, session: other)
+        await gate.release()
+        #expect(await pending.value == .failed)
+    }
+
+    /// 서버가 다른 사용자를 돌려주면 그 방법 목록을 쓰지 않는다 (이어 붙이기 응답의 사용자로 갱신한다)
+    @Test func aRereadOfAnotherUserIsNotUsed() async throws {
+        let linked = user(id: me, providers: ["google", "apple"])
+        let stranger = user(id: UUID(), providers: ["google", "apple", "email"])
+        let (store, _, _) = try signedInWithGoogle(link: FakeAuthServer.ok(session(for: linked, token: "linked")), userRead: FakeAuthServer.ok(stranger))
+        #expect(await store.linkApple(idToken: "t", nonce: SignInNonce(raw: "n"), expectedUserID: me) == .linked)
+        #expect(store.signInMethods.providers == ["google", "apple"])
+    }
+
+    /// 앱이 쓰는 길은 설정의 Supabase 주소와 공개 키를 쓴다
+    @Test func theAppTransportUsesTheConfiguredAuthServerAndPublicKey() {
+        let config = AppConfig(supabaseURL: URL(string: "https://abc.supabase.co")!, supabaseKey: "sb_publishable_x", appGroupID: "group.example",
+            apiBaseURL: URL(string: "https://api.example.com")!)
+        let transport = LinkTransport(config: config)
+        #expect(transport.authURL.absoluteString == "https://abc.supabase.co/auth/v1")
+        #expect(transport.headers == ["apikey": "sb_publishable_x"])
     }
 }
 

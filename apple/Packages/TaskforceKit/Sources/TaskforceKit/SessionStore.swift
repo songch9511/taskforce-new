@@ -23,14 +23,17 @@ public final class SessionStore {
     private var accountNameFill: AccountNameFill?
 
     private let auth: AuthClient
+    private let linkTransport: LinkTransport?
     /// 이 기기의 로그인 계정이 바뀔 때마다(로그아웃 · 다른 계정 · 처음 로그인) 오른다: 오래 걸린 이어 붙이기가 그사이 계정이 바뀌었는지 안다
     private var accountEpoch = 0
     private var listenTask: Task<Void, Never>?
     /// 계정이 이 기기를 떠날 때 부를 정리 (`onSignedOut`)
     @ObservationIgnored private var signedOutCleanups: [@MainActor (UUID) -> Void] = []
 
-    public init(auth: AuthClient) {
+    /// `link`: 로그인 방법 이어 붙이기를 보내는 길 (`LinkTransport`). 없으면 이어 붙이기는 늘 `.failed`다
+    public init(auth: AuthClient, link: LinkTransport? = nil) {
         self.auth = auth
+        self.linkTransport = link
     }
 
     /// 계정이 이 기기를 떠날 때마다 그 계정 ID로 한 번 부른다: 로그아웃 · 세션 만료 · 계정 삭제(이 기기 · 다른 기기에서 지운 뒤
@@ -105,14 +108,17 @@ public final class SessionStore {
     }
 
     /// Sign in with Apple이 돌려준 ID 토큰으로 Supabase에 로그인한다.
+    /// 응답을 기다리는 사이 다른 계정이 들어왔으면(`accountEpoch`) 늦은 오류를 화면에 쓰지 않는다 (지금 계정의 화면에 남의 오류가 뜨지 않게).
     public func signInWithApple(idToken: String, nonce: SignInNonce) async {
         errorMessage = nil
         notice = nil
+        let epoch = accountEpoch
         do {
             _ = try await auth.signInWithIdToken(
                 credentials: OpenIDConnectCredentials(provider: .apple, idToken: idToken, nonce: nonce.raw)
             )
         } catch {
+            guard epoch == accountEpoch else { return }
             errorMessage = "Couldn't sign in. \(error.localizedDescription)"
         }
     }
@@ -152,7 +158,7 @@ public final class SessionStore {
         case failed
     }
 
-    /// Apple ID 토큰을 지금 로그인한 계정에 이어 붙인다 (`linkIdentityWithIdToken`). 로그인과 같은 nonce 규칙: Apple에는 `nonce.hashed`, 여기에는 원본.
+    /// Apple ID 토큰을 지금 로그인한 계정에 이어 붙인다. 로그인과 같은 nonce 규칙: Apple에는 `nonce.hashed`, 여기에는 원본.
     /// `expectedUserID`: 이 흐름을 시작한 계정. 흐름이 도는 사이 계정이 바뀌었으면 서버에 쓰기 전에 버린다 (다른 계정에 이어 붙이지 않는다).
     public func linkApple(idToken: String, nonce: SignInNonce, expectedUserID: UUID) async -> LinkResult {
         await link(OpenIDConnectCredentials(provider: .apple, idToken: idToken, nonce: nonce.raw), expectedUserID: expectedUserID)
@@ -167,24 +173,28 @@ public final class SessionStore {
         Self.userID(in: state) == userID && auth.currentSession?.user.id == userID
     }
 
+    /// 이어 붙이기는 **공유 세션 저장소에 쓰지 않는 길**로 부른다: supabase-swift의 `linkIdentityWithIdToken`은 응답의 세션을 확인 없이 먼저 저장하고 이벤트를 내보내,
+    /// 계정이 바뀐 뒤 늦게 온 응답이 새 계정의 세션을 덮는다 (검토 1 P1). 시작 계정의 access token으로 직접 부르고(`LinkTransport`), 응답은 계정이 그대로일 때만 쓴다.
+    /// 그 뒤 같은 계정이면 세션을 새로 읽는다(`refreshSession`: 저장된 세션의 identities를 새로). 이것은 지금 저장된 세션 자신을 갱신하는 일이라 SDK가 늦은 갱신을 막는다.
     private func link(_ credentials: OpenIDConnectCredentials, expectedUserID: UUID) async -> LinkResult {
-        guard isSignedIn(as: expectedUserID) else { return .failed }
+        guard isSignedIn(as: expectedUserID), let linkTransport else { return .failed }
         let epoch = accountEpoch
+        func stillTheSameAccount() -> Bool { epoch == accountEpoch && isSignedIn(as: expectedUserID) }
         do {
-            let session = try await auth.linkIdentityWithIdToken(credentials: credentials)
-            // 응답을 기다리는 사이 계정이 바뀌었으면 이 결과를 쓰지 않는다 (지금 계정의 방법 목록을 건드리지 않는다).
-            // supabase-swift는 응답의 세션을 무조건 저장하므로, 떠난 계정의 세션이 이 기기에 되살아났으면 지운다
-            guard epoch == accountEpoch, isSignedIn(as: expectedUserID), session.user.id == expectedUserID else {
-                if epoch != accountEpoch, auth.currentSession?.user.id == session.user.id { try? await auth.signOut(scope: .local) }
-                return .failed
-            }
+            // 유효한 access token (만료가 가까우면 SDK가 갱신한다)
+            let current = try await auth.session
+            guard stillTheSameAccount(), current.user.id == expectedUserID else { return .failed }
+            let linked = try await linkTransport.link(credentials, accessToken: current.accessToken)
+            // 응답을 기다리는 사이 계정이 바뀌었으면 이 응답을 쓰지 않는다. 저장한 것이 없으니 지울 것도 없다
+            guard stillTheSameAccount(), linked.user.id == expectedUserID else { return .failed }
+            _ = try? await auth.refreshSession()
             // 이어 붙인 뒤 방법 목록을 서버에서 다시 읽는다 (응답의 사용자에 identities가 빠졌을 수 있다). 못 읽으면 응답의 사용자로 갱신한다
             let fresh = try? await auth.user()
-            guard epoch == accountEpoch, isSignedIn(as: expectedUserID) else { return .failed }
-            signInMethods = SignInMethods(user: fresh.flatMap { $0.id == expectedUserID ? $0 : nil } ?? session.user)
+            guard stillTheSameAccount() else { return .failed }
+            signInMethods = SignInMethods(user: fresh.flatMap { $0.id == expectedUserID ? $0 : nil } ?? linked.user)
             return .linked
-        } catch let error as AuthError where error.errorCode == .identityAlreadyExists {
-            return .belongsToAnotherAccount
+        } catch LinkTransport.Failure.identityAlreadyExists {
+            return epoch == accountEpoch ? .belongsToAnotherAccount : .failed
         } catch {
             return .failed
         }
@@ -242,6 +252,62 @@ public final class SessionStore {
     public func signOut() async {
         errorMessage = nil
         try? await auth.signOut(scope: .local)
+    }
+}
+
+/// 로그인 방법 이어 붙이기 요청을 보내는 길 (Supabase Auth REST `POST /token?grant_type=id_token`, `link_identity: true`).
+/// `AuthClient`를 거치지 않아 응답의 세션이 공유 저장소에 쓰이지 않는다 (`SessionStore.link`).
+public struct LinkTransport: Sendable {
+    public enum Failure: Error, Equatable {
+        /// 그 Apple · Google 계정은 이미 다른 Taskforce 계정에 이어져 있다 (`identity_already_exists`)
+        case identityAlreadyExists
+        case failed
+    }
+
+    let authURL: URL
+    let headers: [String: String]
+    let fetch: @Sendable (URLRequest) async throws -> (Data, URLResponse)
+
+    /// `authURL`: `https://<project ref>.supabase.co/auth/v1`, `headers`: 공개 키(`apikey`)
+    public init(authURL: URL, headers: [String: String], fetch: @escaping @Sendable (URLRequest) async throws -> (Data, URLResponse)) {
+        self.authURL = authURL
+        self.headers = headers
+        self.fetch = fetch
+    }
+
+    /// 앱: 설정의 Supabase 주소 · 공개 키, 디스크 캐시 없는 세션
+    public init(config: AppConfig, session: URLSession = TaskforceClient.urlSession) {
+        self.init(authURL: config.supabaseURL.appendingPathComponent("auth/v1"), headers: ["apikey": config.supabaseKey]) { request in
+            try await session.data(for: request)
+        }
+    }
+
+    func link(_ credentials: OpenIDConnectCredentials, accessToken: String) async throws -> Session {
+        var components = URLComponents(url: authURL.appendingPathComponent("token"), resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "grant_type", value: "id_token")]
+        guard let url = components?.url else { throw Failure.failed }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // 오류 코드가 `code` 문자열로 오는 판 (SDK 기본과 같다)
+        request.setValue("2024-01-01", forHTTPHeaderField: "X-Supabase-Api-Version")
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        var body = (try JSONSerialization.jsonObject(with: AuthClient.Configuration.jsonEncoder.encode(credentials)) as? [String: Any]) ?? [:]
+        body["link_identity"] = true
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await fetch(request)
+        guard let http = response as? HTTPURLResponse else { throw Failure.failed }
+        guard (200..<300).contains(http.statusCode) else { throw Self.failure(from: data) }
+        return try AuthClient.Configuration.jsonDecoder.decode(Session.self, from: data)
+    }
+
+    /// 오류 본문의 코드: `code`(문자열) 또는 `error_code`
+    static func failure(from data: Data) -> Failure {
+        let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        let code = (json?["error_code"] as? String) ?? (json?["code"] as? String)
+        return code == "identity_already_exists" ? .identityAlreadyExists : .failed
     }
 }
 

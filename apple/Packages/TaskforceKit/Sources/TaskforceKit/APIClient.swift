@@ -214,9 +214,12 @@ public struct APIClient: Sendable {
     /// `client`: 그 code를 받은 곳. `.app`(기본)은 앱 안 로그인(iPhone, 번들 id), `.web`은 Mac의 브라우저 창 재확인(Services ID):
     /// 서버가 토큰을 받아 폐기할 client를 고른다. `.web`일 때만 `apple_client`를 싣는다 (옛 서버와 같은 본문).
     /// 성공하면 `SessionStore.accountDeleted()`로 이 기기에 저장된 세션을 지운다.
-    public func deleteAccount(authorizationCode: String? = nil, client: AppleAuthorizationClient = .app) async throws {
+    /// 돌려주는 값: 서버가 Apple 토큰을 폐기했는지(`apple_revoked`). 폐기와 상관없는 계정이거나 옛 서버면 nil
+    @discardableResult
+    public func deleteAccount(authorizationCode: String? = nil, client: AppleAuthorizationClient = .app) async throws -> DeleteAccountResult {
         let body = authorizationCode.map { DeleteAccountRequest(appleAuthorizationCode: $0, appleClient: client == .web ? client : nil) }
-        try await sendNoContent(.delete, "account", body: body)
+        let response: DeleteAccountResponse = try await send(.delete, "account", body: body)
+        return DeleteAccountResult(appleRevoked: response.appleRevoked)
     }
 
     /// 앱이 앞으로 나올 때마다 한 번 (지표 2 · 3)
@@ -543,6 +546,27 @@ struct DeleteAccountRequest: Encodable {
     enum CodingKeys: String, CodingKey {
         case appleAuthorizationCode = "apple_authorization_code"
         case appleClient = "apple_client"
+    }
+}
+
+/// DELETE /api/v1/account 응답 (contract.ts `deleteAccountWithRevocationResponseSchema`): `apple_revoked`는 선택
+struct DeleteAccountResponse: Decodable {
+    let deleted: Bool
+    let appleRevoked: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case deleted
+        case appleRevoked = "apple_revoked"
+    }
+}
+
+/// 계정 삭제의 결과
+public struct DeleteAccountResult: Equatable, Sendable {
+    /// 서버가 Apple 토큰을 폐기했는가. false면 폐기를 건너뛰었다(code가 없거나 · 다른 계정의 code거나 · 설정이 없거나 · Apple이 거절): 앱이 로그인 화면에 안내 한 줄을 띄운다
+    public let appleRevoked: Bool?
+
+    public init(appleRevoked: Bool?) {
+        self.appleRevoked = appleRevoked
     }
 }
 

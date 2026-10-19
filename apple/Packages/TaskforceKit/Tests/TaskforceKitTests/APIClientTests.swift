@@ -199,6 +199,13 @@ struct APIClientTests {
         #expect(request.body == nil || request.body?.isEmpty == true)
     }
 
+    /// 검토 1 P3-4: 서버가 알려 준 `apple_revoked`를 그대로 돌려준다 (없으면 nil)
+    @Test func deleteAccountReturnsWhetherAppleWasRevoked() async throws {
+        #expect(try await client(body: #"{"deleted":true,"apple_revoked":true}"#).deleteAccount(authorizationCode: "c", client: .web) == DeleteAccountResult(appleRevoked: true))
+        #expect(try await client(body: #"{"deleted":true,"apple_revoked":false}"#).deleteAccount(authorizationCode: "c", client: .web) == DeleteAccountResult(appleRevoked: false))
+        #expect(try await client(body: #"{"deleted":true}"#).deleteAccount() == DeleteAccountResult(appleRevoked: nil), "옛 서버 · 폐기와 상관없는 계정")
+    }
+
     @Test func handoff() async throws {
         let response = try await client(body: Fixtures.handoff).handoff(id: Fixtures.actionID)
         #expect(response.title == "투자 자료 보내기")
