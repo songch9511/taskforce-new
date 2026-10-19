@@ -91,8 +91,7 @@ extension BridgeRuntime {
     public func reconnect(adapters ids: [String]) async -> Bool {
         guard config.mode == .normal, statusValue != .stopped, !shuttingDown else { return false }
         let connectable = Set(ids).filter { adapters[$0] != nil }
-        guard !connectable.isEmpty else { return false }
-        networkEnabled = true
+        guard !connectable.isEmpty, await prepareReactivation() else { return false }
         pendingConnect = connectable.sorted()
         var (result, joined) = await registerReportingJoin(reactivate: true, reason: "reactivate")
         // 진행 중이던 등록에 합쳐졌으면(그 요청에는 connect · reactivate가 없다) 그 결과가 성공이든 실패든 한 번 더 보낸다: 합쳐진 등록의 403은 내 요청의 실패가 아니다

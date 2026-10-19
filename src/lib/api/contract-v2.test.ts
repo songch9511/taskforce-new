@@ -26,9 +26,15 @@ import {
   agentSessionStatusSchema,
   agentTaskStateSchema,
   billingCheckoutRequestV2Schema,
+  billingErrorCodeV2Schema,
+  billingErrorV2Schema,
+  billingPortalRequestV2Schema,
   billingRefundRequestV2Schema,
   billingRefundResponseV2Schema,
+  billingResumeRequestV2Schema,
+  billingResumeResponseV2Schema,
   billingStatusV2Schema,
+  billingUrlResponseV2Schema,
   bridgeCommandsResponseSchema,
   bridgeEventsRequestSchema,
   bridgeHeartbeatRequestSchema,
@@ -629,28 +635,75 @@ describe("결제 v2", () => {
     trial_ends_at: null,
     current_period_ends_at: null,
     cancel_at: null,
+    notice_ends_at: null,
     refund_until: "2026-10-12T05:00:00Z",
+    refund_state: "idle",
     can_use_ai: true,
     can_checkout: false,
+    can_buy_lifetime: false,
+    with_trial: false,
+    terms_version: "2026-10-19",
+    prices: { pro_monthly: "$12.99", pro_first_month: "$6.99", pro_yearly: "$119.88", lifetime: "$229" },
     ai_usage_this_month: { since: "2026-10-01T00:00:00Z", prompt_tokens: 1200, completion_tokens: 300, total_tokens: 1500 },
+    fair_use_paused_until: null,
+    ai_key: "missing",
+    ai_key_spend_error_at: null,
   };
 
-  it("PlanSummary 8 상태 · plan lifetime · 이번 달 토큰 사용량", () => {
+  it("PlanSummary 8 상태 · plan lifetime · 이번 달 토큰 사용량 · 표시 가격 · 키 상태", () => {
     expect(planStateSchema.options).toEqual(["none", "trial", "pro", "cancelled", "past_due", "lapsed", "lifetime", "beta"]);
     expect(billingStatusV2Schema.parse(status)).toEqual(status);
     for (const state of planStateSchema.options) expect(billingStatusV2Schema.safeParse({ ...status, state }).success, state).toBe(true);
     expect(billingStatusV2Schema.safeParse({ ...status, state: "legacy_beta" }).success).toBe(false);
-    expect(billingStatusV2Schema.safeParse({ ...status, ai_usage_this_month: null, plan: null, state: "none" }).success).toBe(true);
+    expect(billingStatusV2Schema.safeParse({ ...status, ai_usage_this_month: null, plan: null, state: "none", ai_key: null }).success).toBe(true);
     expect(billingStatusV2Schema.safeParse({ ...status, ai_usage_this_month: { ...status.ai_usage_this_month, total_tokens: -1 } }).success).toBe(false);
+    for (const key of ["connected", "missing", "revoked", null]) expect(billingStatusV2Schema.safeParse({ ...status, ai_key: key }).success, String(key)).toBe(true);
+    expect(billingStatusV2Schema.safeParse({ ...status, ai_key: "expired" }).success).toBe(false);
+    for (const refund_state of ["idle", "requested"]) expect(billingStatusV2Schema.safeParse({ ...status, refund_state }).success).toBe(true);
+    expect(billingStatusV2Schema.safeParse({ ...status, refund_state: "done" }).success).toBe(false);
   });
 
-  it("checkout v2는 lifetime을 받고 약관 판은 문자열이다 (새 literal 없음). 환불 요청 본문은 비어 있다", () => {
+  it("빠진 필수 키는 실패하고 남는 키는 읽는 쪽이 무시한다 (Swift 디코딩 짝)", () => {
+    for (const key of Object.keys(status)) {
+      const rest = Object.fromEntries(Object.entries(status).filter(([name]) => name !== key));
+      expect(billingStatusV2Schema.safeParse(rest).success, key).toBe(false);
+    }
+    expect(billingStatusV2Schema.parse({ ...status, future_field: 1 })).toEqual(status);
+    expect(billingStatusV2Schema.safeParse({ ...status, prices: { pro_monthly: "$12.99" } }).success).toBe(false);
+  });
+
+  it("한도 숫자는 응답 모양에 없다 (공정 사용 안전장치는 멈춘 시각만 내린다)", () => {
+    expect(Object.keys(billingStatusV2Schema.shape).filter((key) => /cap|limit|budget|allowance/.test(key))).toEqual([]);
+    expect(Object.keys(billingStatusV2Schema.shape)).toContain("fair_use_paused_until");
+  });
+
+  it("checkout v2는 pro · lifetime만 받고 약관 판은 문자열이다. 클라이언트가 정하는 값은 없다", () => {
     expect(billingCheckoutRequestV2Schema.parse({ plan: "lifetime", terms_version: "2026-10-09" })).toEqual({ plan: "lifetime", terms_version: "2026-10-09" });
+    expect(billingCheckoutRequestV2Schema.parse({ plan: "pro", terms_version: "2026-10-19" })).toEqual({ plan: "pro", terms_version: "2026-10-19" });
     expect(billingCheckoutRequestV2Schema.safeParse({ plan: "lifetime", terms_version: "" }).success).toBe(false);
-    expect(billingCheckoutRequestV2Schema.safeParse({ plan: "weekly", terms_version: "x" }).success).toBe(false);
-    expect(billingRefundRequestV2Schema.parse({})).toEqual({});
-    expect(billingRefundRequestV2Schema.safeParse({ order_id: "1" }).success).toBe(false);
+    for (const plan of ["weekly", "monthly", "annual", undefined]) expect(billingCheckoutRequestV2Schema.safeParse({ plan, terms_version: "x" }).success, String(plan)).toBe(false);
+    for (const extra of [{ price: 1 }, { user_id: "u" }, { redirect_url: "https://x" }, { variant_id: 1 }, { discount_code: "X" }])
+      expect(billingCheckoutRequestV2Schema.safeParse({ plan: "pro", terms_version: "x", ...extra }).success, JSON.stringify(extra)).toBe(false);
+    expect(billingUrlResponseV2Schema.parse({ url: "https://taskforce.lemonsqueezy.com/checkout/x" })).toEqual({ url: "https://taskforce.lemonsqueezy.com/checkout/x" });
+    expect(billingUrlResponseV2Schema.safeParse({ url: "not a url" }).success).toBe(false);
+  });
+
+  it("portal은 manage · payment만, resume · 환불 요청 본문은 비어 있다", () => {
+    expect(billingPortalRequestV2Schema.parse({ target: "payment" })).toEqual({ target: "payment" });
+    for (const body of [{}, { target: "cancel" }, { target: "manage", url: "x" }]) expect(billingPortalRequestV2Schema.safeParse(body).success).toBe(false);
+    for (const schema of [billingResumeRequestV2Schema, billingRefundRequestV2Schema]) {
+      expect(schema.parse({})).toEqual({});
+      expect(schema.safeParse({ order_id: "1" }).success).toBe(false);
+    }
     expect(billingRefundResponseV2Schema.parse({ requested: true })).toEqual({ requested: true });
+    expect(billingResumeResponseV2Schema.parse({ requested: true })).toEqual({ requested: true });
+    expect(billingResumeResponseV2Schema.safeParse({ requested: false }).success).toBe(false);
+  });
+
+  it("오류 코드는 닫힌 목록이다", () => {
+    expect(billingErrorCodeV2Schema.options).toEqual(["unauthorized", "invalid_request", "billing_unavailable", "billing_terms_required", "billing_refund_window_closed", "billing_refund_used", "billing_refund_pending"]);
+    expect(billingErrorV2Schema.parse({ error: { code: "billing_refund_used", message: "m" } })).toEqual({ error: { code: "billing_refund_used", message: "m" } });
+    expect(billingErrorV2Schema.safeParse({ error: { code: "ai_key_missing", message: "m" } }).success).toBe(false);
   });
 });
 

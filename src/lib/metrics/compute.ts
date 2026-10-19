@@ -1,5 +1,7 @@
 import type { MissStage } from "@/lib/pipeline/missing";
 
+import { BILLING_EVENTS } from "./agents";
+
 // PRD 6장 성공 지표를 이벤트에서 계산한다 (순수 함수). 불러오기는 load.ts, 화면은 /admin/metrics.
 //
 // 1 AI 오판율   (사용자가 수정 · 삭제한 AI 생성 Action) / (AI 생성 Action). 필드별 · 단계별(추출 / 매칭 · 갱신)로 나눈다.
@@ -254,9 +256,12 @@ export type Activity = { userId: string; at: string };
 /** 서버가 남기는 이벤트: 사용자의 활동이 아니다 (연결 완료 · 연결 만료 · 재연결 알림 · 원문 처리 실패로 닫음 · 에이전트: 전달 시작(대기열 · 재전달 · Mac 복귀 때도) · bridge의 도구 결정 · 산출물이 일으킨 충돌) */
 const SERVER_EVENTS = new Set(["connection_created", "connection_reauth", "reconnect_notified", "source_failed", "agent_message_sent", "tool_call_decided", "path_conflict_found"]);
 
-/** 지표 이벤트 중 사용자의 활동(앱 열기 · 착수 · 넘기기 등). 서버 이벤트는 넣지 않는다: 리텐션 정의를 바꾸지 않게 */
+/** 결제 · 키 이벤트(webhook · 쓸기 · 결제 창이 남긴다)는 제품 사용이 아니다: 갱신 한 번이 재방문이 되지 않게 리텐션 활동에서 뺀다 (계약 12장 "PRD 지표와 섞지 않는다") */
+const BILLING_TYPES = new Set(BILLING_EVENTS.map((e) => e.type));
+
+/** 지표 이벤트 중 사용자의 활동(앱 열기 · 착수 · 넘기기 등). 서버 이벤트와 결제 · 키 이벤트는 넣지 않는다: 리텐션 정의를 바꾸지 않게 */
 export function metricActivity(events: MetricEventRow[]): Activity[] {
-  return events.filter((e) => !SERVER_EVENTS.has(e.type)).map((e) => ({ userId: e.userId, at: e.at }));
+  return events.filter((e) => !SERVER_EVENTS.has(e.type) && !BILLING_TYPES.has(e.type)).map((e) => ({ userId: e.userId, at: e.at }));
 }
 
 /**

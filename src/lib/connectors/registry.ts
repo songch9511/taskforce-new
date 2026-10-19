@@ -1,6 +1,5 @@
-import { withBillingSync } from '@/lib/billing/sync-context';
 import { AiBudgetError } from '@/lib/ai/budget-error';
-import { requireSyncBillingAccess, startTrial } from '@/lib/billing/service';
+import { requireBillingAccess } from '@/lib/billing/service';
 import "server-only";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -75,12 +74,8 @@ export function syncConnections(
       connections: () => activeConnections(admin, providers, options.userId),
       consented: (userId) => hasConsentFor(admin, userId),
       sync: async (connection) => {
-        try { await requireSyncBillingAccess(admin, connection.userId); } catch (error) { return { connectionId: connection.id, ok: false, error: error instanceof AiBudgetError ? error.userMessage : "Billing is temporarily unavailable. Please try again.", revoked: false }; }
-        return withBillingSync(connection.userId, async () => {
-          const outcome = await CONNECTORS[connection.provider as ConnectProvider]!.sync(admin, connection, { deadline: options.deadline });
-          if (outcome.ok) await startTrial(admin, connection.userId);
-          return outcome;
-        });
+        try { await requireBillingAccess(admin, connection.userId); } catch (error) { return { connectionId: connection.id, ok: false, error: error instanceof AiBudgetError ? error.userMessage : "Billing is temporarily unavailable. Please try again.", revoked: false }; }
+        return CONNECTORS[connection.provider as ConnectProvider]!.sync(admin, connection, { deadline: options.deadline });
       },
     },
     options,

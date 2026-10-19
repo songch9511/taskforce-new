@@ -111,9 +111,9 @@ it("returns a stable exhaustion error without exposing backend details", async (
   expect(response.headers.get("Retry-After")).toBeNull();
 });
 
-it("returns billing_required with a subscription action when entitlement expires", async () => {
+it("returns billing_required with the approved restart sentence when entitlement expires", async () => {
   const { deps } = setup({ answer: async () => { throw new AiBudgetError("billing_required"); } });
   const response = await handleAsk(ask({ question: "test" }), deps);
   expect(response.status).toBe(403);
-  expect(apiErrorSchema.parse(await response.json()).error).toMatchObject({ code: "billing_required", message: expect.stringContaining("Account → Subscription") });
+  expect(apiErrorSchema.parse(await response.json()).error).toMatchObject({ code: "billing_required", message: "Your plan has ended. Restart Pro in Settings → Account → Plan & usage." });
 });

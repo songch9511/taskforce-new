@@ -3,7 +3,7 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { AGENT_EVENTS, PRE_OA_TYPES } from "@/lib/metrics/agents";
+import { AGENT_EVENTS, BILLING_EVENTS, PRE_OA_TYPES, agentUsage } from "@/lib/metrics/agents";
 
 // OA I-oa 7.4: 이벤트 발생 지점을 정적으로 대조한다. 최신 CHECK ↔ 등록부(src/lib/metrics/agents.ts) ↔ 원천 함수(최신 정의) ↔ 시험 파일.
 // 다음 WP가 metric_events type을 더하면(블록 v4) R1이 실패해 등록부 · 카드를 고치게 한다.
@@ -107,14 +107,19 @@ describe("R1 가드 자체: 최신 CHECK 해석", () => {
 });
 
 describe("R1 최신 CHECK ↔ 등록부", () => {
-  it("마지막 metric_events_type_check는 OA 전 7개 ∪ 등록부 17개와 정확히 같다", () => {
+  it("마지막 metric_events_type_check는 OA 전 7개 ∪ 에이전트 등록부 17개 ∪ 결제 · 키 등록부 20개와 정확히 같다", () => {
     const registry = AGENT_EVENTS.map((spec) => spec.type);
+    const billing = BILLING_EVENTS.map((spec) => spec.type);
     expect(new Set(registry).size).toBe(registry.length);
+    expect(new Set(billing).size).toBe(billing.length);
     expect(registry).toHaveLength(17);
+    expect(billing).toHaveLength(20);
     expect(PRE_OA_TYPES).toHaveLength(7);
+    // 세 묶음은 겹치지 않는다: 한 type의 집이 둘이면 카드 · 리텐션 규칙이 갈린다
+    expect(new Set([...PRE_OA_TYPES, ...registry, ...billing]).size).toBe(7 + 17 + 20);
     const check = latestTypeCheck();
     expect(new Set(check).size).toBe(check.length);
-    expect([...check].sort()).toEqual([...PRE_OA_TYPES, ...registry].sort());
+    expect([...check].sort()).toEqual([...PRE_OA_TYPES, ...registry, ...billing].sort());
   });
 });
 
@@ -184,5 +189,61 @@ describe("R5 자유 글 답은 지표 행이 없다 (Q4 A)", () => {
     expect(definition!.body).toMatch(/public\.answer_agent_question\s*\(/);
     expect(definition!.body).not.toMatch(/answer_agent_question_recorded/);
     expect(definition!.body).not.toMatch(/metric_events/);
+  });
+});
+
+// ─── 결제 · 키 이벤트 (OA 결제 PR-A, 20261129000000): 에이전트 등록부와 따로 두는 묶음 ───
+// 상태 전이 SQL 함수가 같은 트랜잭션에서 billing_emit(…)으로 남긴다(중복 막기와 한 몸 — 재전달에 두 번 세지 않는다). 읽는 카드는 후속이다(/admin/metrics 결제 카드).
+
+describe("R2b 결제 등록부의 원천 함수", () => {
+  const sqlSources = BILLING_EVENTS.flatMap((spec) => spec.sources.flatMap((source) => (source.kind === "sql" ? [{ type: spec.type, fn: source.fn }] : [])));
+
+  it.each(sqlSources)("$type ← $fn: 최신 정의가 billing_emit(또는 metric_events insert)으로 그 type을 남긴다", ({ type, fn }) => {
+    const definition = latestFunctionBody(fn);
+    expect(definition, `public.${fn} 정의`).not.toBeNull();
+    expect(definition!.body).toMatch(/billing_emit\s*\(|insert\s+into\s+(?:public\.)?metric_events/i);
+    expect(definition!.body).toContain(`'${type}'`);
+  });
+
+  it("billing_emit은 metric_events에 쓰는 유일한 길이고, 결제 원천 함수는 TS 쪽에서 type을 insert하지 않는다", () => {
+    const emit = latestFunctionBody("billing_emit");
+    expect(emit).not.toBeNull();
+    expect(emit!.body).toMatch(/insert\s+into\s+metric_events/i);
+    const billingCode = walk(path.join(ROOT, "src/lib/billing"), (file) => file.endsWith(".ts") && !file.endsWith(".test.ts") && !file.endsWith("testing.ts"));
+    const direct = billingCode.filter((file) => /from\(["']metric_events["']\)/.test(readFileSync(file, "utf8"))).map((file) => path.relative(ROOT, file));
+    expect(direct).toEqual([]);
+  });
+
+  it("원천이 없는 type은 이유를 적는다 (ai_key 셋은 BYOK 서버가 남긴다)", () => {
+    const without = BILLING_EVENTS.filter((spec) => spec.sources.length === 0);
+    expect(without.map((spec) => spec.type)).toEqual(["ai_key_saved", "ai_key_deleted", "ai_key_revoked"]);
+    for (const spec of without) expect(spec.gap, spec.type).toBeTruthy();
+    expect(BILLING_EVENTS.filter((spec) => spec.sources.length > 0).every((spec) => !spec.gap)).toBe(true);
+  });
+});
+
+describe("R3b 결제 type마다 그 발생 지점을 부르는 시험 파일이 있다", () => {
+  const testFiles = walk(
+    path.join(ROOT, "tests"),
+    (file) => file.endsWith(".ts"),
+    (dir) => dir === path.join(ROOT, "tests/metrics"),
+  ).concat(walk(path.join(ROOT, "src"), (file) => file.endsWith(".test.ts") && !file.includes("lib/metrics/")));
+  const contents = new Map(testFiles.map((file) => [file, readFileSync(file, "utf8")]));
+
+  it.each(BILLING_EVENTS.filter((spec) => spec.sources.length > 0).map((spec) => [spec.type] as const))("%s", (type) => {
+    const hits = [...contents].filter(([, text]) => quoted(type).test(text) && text.includes("metric_events")).map(([file]) => path.relative(ROOT, file));
+    expect(hits.length, `${type}을 담고 metric_events를 읽는 시험 파일`).toBeGreaterThan(0);
+  });
+});
+
+describe("R6 결제 type은 에이전트 카드의 '모르는 type'이 아니다", () => {
+  const period = { from: new Date("2026-10-01T00:00:00Z"), to: new Date("2026-11-01T00:00:00Z") };
+  it("등록부에 있는 결제 · 키 type 20개는 따로 세지 않고 에이전트 행도 만들지 않는다", () => {
+    const rows = BILLING_EVENTS.map((spec, n) => ({ userId: `u${n}`, type: spec.type, at: "2026-10-10T00:00:00Z", props: {} }));
+    const card = agentUsage(rows, [], period);
+    expect(card.unknown).toEqual({ types: 0, events: 0 });
+    expect(card.types.map((t) => t.type)).toEqual(AGENT_EVENTS.map((e) => e.type));
+    expect(card.empty).toBe(true);
+    expect(agentUsage([{ userId: "u", type: "billing_made_up", at: "2026-10-10T00:00:00Z", props: {} }], [], period).unknown).toEqual({ types: 1, events: 1 });
   });
 });

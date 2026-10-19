@@ -184,6 +184,8 @@ public actor BridgeRuntime {
     var ackFlushing = false
     var heartbeatInFlight = false
     var registerTask: Task<Bool, Never>?
+    /// 사용자 재연결은 진행 중인 폐기 정리가 끝난 뒤에만 네트워크를 다시 켠다.
+    var revocationTask: Task<Void, Never>?
     var pendingConnect: [String] = []
     /// 마지막 등록 시도가 서버에서 받은 오류 (성공하면 nil): Settings가 "서버 문제"와 "오프라인"을 가른다 (OA Settings › Your agents 6.1)
     var lastRegisterError: BridgeClientError?
@@ -1004,8 +1006,7 @@ public actor BridgeRuntime {
 
     /// 사용자가 Reconnect this Mac을 눌렀다: 폐기된 Mac을 `reactivate: true`로 되살린다. 자동으로는 부르지 않는다 (Q21)
     public func reactivate() async -> Bool {
-        guard config.mode == .normal, statusValue != .stopped else { return false }
-        networkEnabled = true
+        guard await prepareReactivation() else { return false }
         let result = await register(reactivate: true, reason: "reactivate")
         if !result, statusValue == .revoked { networkEnabled = false }
         if result, wasStarted, !loopsRunning, statusValue != .stopped {
@@ -1014,6 +1015,20 @@ public actor BridgeRuntime {
             start()
         }
         return result
+    }
+
+    /// 폐기 정리의 늦은 완료가 새 연결을 지우지 않게 기다린다. 기다리는 동안 계정이 떠났으면 다시 켜지 않는다.
+    func prepareReactivation() async -> Bool {
+        let gen = generation
+        while let cleanup = revocationTask {
+            await cleanup.value
+            guard gen == generation, statusValue != .stopped, !shuttingDown else { return false }
+            // 기다리는 사이 새 폐기 정리가 시작됐으면 그것도 기다린다. 끝난 작업만 지워야 새 정리를 잃지 않는다.
+            if revocationTask == cleanup { revocationTask = nil }
+        }
+        guard gen == generation, config.mode == .normal, statusValue != .stopped, !shuttingDown else { return false }
+        networkEnabled = true
+        return true
     }
 
     // MARK: 요청 한도 · 오류 (계약 2.11)
@@ -1076,6 +1091,8 @@ public actor BridgeRuntime {
                     }
                     guard isCurrent(gen) else { throw RouteFailure.blocked }
                 case .forbidden:
+                    // 명시적 재연결이 secret을 바꾼 뒤 도착한 옛 403은 새 연결을 폐기하지 않는다.
+                    guard secret == current else { throw RouteFailure.blocked }
                     await handleRevoked()
                     throw RouteFailure.revoked
                 case .notFound:
@@ -1109,12 +1126,19 @@ public actor BridgeRuntime {
     /// 403: 이 Mac이 폐기됐다. 네트워크 멈춤 · 살아 있는 턴 중단 · 원장 보존 (자동 reactivate 금지, Q21)
     func handleRevoked() async {
         guard statusValue != .revoked else { return }
-        setStatus(.revoked)
-        await secrets.clear()
-        await interruptAll(reason: "revoked")
-        await forgetSessions()
         networkEnabled = false
-        await publish()
+        // 등록 중 네트워크를 다시 켜도 옛 루프가 폐기된 자격으로 요청하지 못하게 한다.
+        secret = nil
+        setStatus(.revoked)
+        let cleanup = Task {
+            await secrets.clear()
+            await interruptAll(reason: "revoked")
+            await forgetSessions()
+            await publish()
+        }
+        revocationTask = cleanup
+        await cleanup.value
+        if revocationTask == cleanup { revocationTask = nil }
     }
 
     /// 404: bridge 행이 없다 (다른 환경 · 지워짐). bridge id를 비우고(device_id는 유지) 다시 등록한다

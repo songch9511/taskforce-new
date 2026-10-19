@@ -144,7 +144,8 @@ describe("R12: SQL이 delivery_reason에 쓸 수 있는 모든 값은 agentDeliv
   });
 
   it("zod enum의 값은 계약 아홉 + SQL이 쓰는 값뿐이다 (not_received는 bridge readback이 쓸 계약 값)", () => {
-    const contractOnly = new Set(["not_received"]);
+    // billing_required는 SQL이 쓰지 않는다: 만료된 계정이 멈춘 not_sent/write_gate_closed를 읽을 때 서버가 바꿔 보인다 (결제 계약 22장)
+    const contractOnly = new Set(["not_received", "billing_required"]);
     const extra = agentDeliveryReasonSchema.options.filter((reason) => !written.has(reason) && !contractOnly.has(reason));
     expect(extra).toEqual([]);
   });

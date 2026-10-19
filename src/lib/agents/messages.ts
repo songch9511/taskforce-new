@@ -15,11 +15,13 @@ import {
   type PostAgentMessageResponse,
 } from "@/lib/api/contract";
 import { REPLY_LEASE_SECONDS } from "@/lib/conversation/conversation.config";
+import { billingEnabled } from "@/lib/billing/state";
 import { executionEnabled } from "@/lib/env";
 import type { StepState } from "@/lib/execution/types";
 
 import { readConversationTarget } from "./conversations";
 import { agentDeliveryView, type AgentMessageDeliveryState } from "./delivery";
+import { agentRunsAllowed } from "./entitlement";
 import { autoStartable, chipsSchema, markWriteGateClosed, startNextAgentMessage, startPinnedAgentMessage } from "./next-turn";
 import { retryOnConflict } from "./retry";
 import { resolveAgentTarget } from "./targets";
@@ -282,13 +284,25 @@ async function deliveryViews(admin: SupabaseClient, userId: string, rows: Messag
     for (const row of (data ?? []) as { id: string; title: string }[]) titles.set(row.id, row.title);
   }
 
+  // 구독이 끝난 계정 때문에 멈춘 메시지는 not_sent/write_gate_closed로 저장돼 있다(다시 사면 저절로 이어지는 이유). 읽을 때만 billing_required로 보여
+  // 사용자가 어디서 풀지 안다. 표시용이라 읽기에 실패해도 저장된 이유를 그대로 보인다. 결제가 꺼져 있거나 멈춘 메시지가 없으면 계정을 읽지 않는다 (결제 계약 22장)
+  // 막을 때 메시지에 남긴 결제 표시(refs.blocked_by)가 있는 것만: 같은 write_gate_closed는 실행 kill switch도 쓴다
+  const gateStopped = (row: MessageRecord) => row.delivery_state === "not_sent" && row.delivery_reason === "write_gate_closed" && row.refs?.blocked_by === "billing";
+  let billingStopped = false;
+  if (billingEnabled() && rows.some(gateStopped)) {
+    try {
+      billingStopped = !(await agentRunsAllowed(admin, userId));
+    } catch {
+      billingStopped = false;
+    }
+  }
   const views = new Map<string, AgentDelivery>();
   for (const row of rows) {
     const answer = answers.get(row.id);
     views.set(
       row.id,
       agentDeliveryView({
-        row: { state: row.delivery_state ?? "queued", reason: row.delivery_reason, refs: row.refs },
+        row: { state: row.delivery_state ?? "queued", reason: billingStopped && gateStopped(row) ? "billing_required" : row.delivery_reason, refs: row.refs },
         stepState: (steps.get(row.id) as StepState | undefined) ?? null,
         sessionStatus: sessions.get(tasks.get(row.id)?.agent_session_id ?? ""),
         answerStep: answer ? { state: answer.state as StepState, reason: answer.reason } : null,

@@ -5,7 +5,7 @@ import { publicEnv } from "@/lib/env";
 import { getVerifiedClaims } from "@/lib/supabase/claims";
 
 // 로그인 없이 열 수 있는 경로
-const PUBLIC_PATHS = ["/login", "/auth", "/billing"];
+const PUBLIC_PATHS = ["/login", "/auth"];
 
 export function isPublicPath(pathname: string): boolean {
   return PUBLIC_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`));

@@ -5,6 +5,8 @@ import { executionEnabled } from "@/lib/env";
 import { MAX_LIVE_EXTERNAL_TASKS } from "@/lib/execution/limits";
 
 import { agentAccess, directChat } from "./capability";
+import { billingEnabled } from "@/lib/billing/state";
+import { agentRunsAllowed } from "./entitlement";
 import { adapterEnabled } from "./registry";
 import { retryOnConflict } from "./retry";
 import { resolveAgentTarget, type ResolvedAgentTarget } from "./targets";
@@ -36,6 +38,11 @@ export async function existingActionIds(admin: SupabaseClient, userId: string, i
   return ids.filter((id) => found.has(id.toLowerCase()));
 }
 
+/** 메시지에 "결제 때문에 막혔다" 표시를 남기거나(blocked) 지운다 (SQL billing_mark_agent_block: 다른 refs는 그대로 두는 jsonb 합치기) */
+async function markBillingBlock(admin: SupabaseClient, input: { userId: string; messageId: string }, blocked: boolean): Promise<void> {
+  await admin.rpc("billing_mark_agent_block", { p_user_id: input.userId, p_message_id: input.messageId, p_blocked: blocked }).throwOnError();
+}
+
 export type PinnedStartResult = StartAgentTurnResult | { status: "skipped" };
 const pinnedResultSchema = z.union([z.object({ status: z.literal("skipped") }), startAgentTurnResultSchema]);
 
@@ -56,8 +63,11 @@ async function markNotSent(admin: SupabaseClient, input: { userId: string; messa
  * 꺼진 채 턴을 시작하면 task · 단계 · 명령 · agent_message_sent 지표가 만들어지지만 전달될 수 없고, bridge가 거둔 것을 자동 계기가 다시 시작하는 끝없는 반복이 된다.
  * 표시는 SQL이 잠금 안에서 현재 queued일 때만 한다(검토 반영 9-1). DB 쪽 gate(execution_controls · 실행 주체 · 도구)는 bridge lease의 몫이라 여기서 보지 않는다. turns.ts는 바꾸지 않는다
  */
-export function markWriteGateClosed(admin: SupabaseClient, input: { userId: string; messageId: string }): Promise<PinnedStartResult> {
-  return markNotSent(admin, input, "write_gate_closed", false);
+export async function markWriteGateClosed(admin: SupabaseClient, input: { userId: string; messageId: string }): Promise<PinnedStartResult> {
+  const result = await markNotSent(admin, input, "write_gate_closed", false);
+  // 이전에 결제 때문에 멈췄던 메시지가 다시 대기했다가 이번엔 kill switch로 멈췄다면, 남은 결제 표시가 이 멈춤을 결제 탓으로 보이게 하면 안 된다 (결제가 켜진 때만)
+  if (result.status === "not_sent" && billingEnabled()) await markBillingBlock(admin, input, false).catch(() => undefined);
+  return result;
 }
 
 /**
@@ -73,6 +83,16 @@ export async function startPinnedAgentMessage(
   input: { userId: string; messageId: string; state: string | null; reason: string | null; chips: StartChips; target: Pick<ResolvedAgentTarget, "capability" | "mode" | "connectionStatus"> },
   env: Env = process.env,
 ): Promise<PinnedStartResult> {
+  // 만료된 계정은 실행을 시작하지 못한다 (결제 계약 22장). 수동 시작 · 자동 시작 · 다시 전달 · bridge 계기가 모두 이 함수를 지나므로 검사는 여기 한 곳이다.
+  // 막힌 일은 이어 갈 수 있다: queued는 not_sent/write_gate_closed(gate 계열, 자동 시작 대상)로 표시하고, 다시 사면 다음 계기가 같은 메시지를 시작한다. 이미 not_sent인 이유는 덮지 않는다.
+  if (!(await agentRunsAllowed(admin, input.userId))) {
+    if (input.state !== "queued") return { status: "skipped" };
+    const blocked = await markNotSent(admin, input, "write_gate_closed", false);
+    // 같은 이유 write_gate_closed는 실행 kill switch도 쓴다: 막은 이유가 결제임을 메시지에 남겨, 읽는 쪽이 결제 때문에 멈춘 것만 billing_required로 보인다.
+    // SQL이 실제로 표시했을 때만 남긴다. 표시용이라 실패해도 막은 일은 그대로다(이어 갈 수 있다)
+    if (blocked.status === "not_sent") await markBillingBlock(admin, input, true).catch(() => undefined);
+    return blocked;
+  }
   const { capability, mode, connectionStatus } = input.target;
   const access = agentAccess(capability, mode);
   const refusal = connectionStatus !== "active" ? connectionStatus

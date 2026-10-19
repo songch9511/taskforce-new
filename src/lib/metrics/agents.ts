@@ -63,6 +63,42 @@ export const AGENT_EVENTS: readonly AgentEventSpec[] = [
   { type: "assistant_opened", sources: [], dims: [], activity: true, gap: "남기는 곳 없음 (Mac 후속: 앱이 Supabase로 직접 insert)" },
 ];
 
+// ─── 결제 · 키 이벤트 등록부 (OA 결제 PR-A, 20261129000000) ───
+
+/**
+ * 결제 · 키 지표 type 20개 (CHECK 블록 v4, 20261129000000_billing_pro_lifetime.sql). 에이전트 카드의 대상이 아니라 따로 둔 묶음이다.
+ * 상태 전이 SQL 함수가 같은 트랜잭션에서 billing_emit(…)으로 남긴다(재전달에 두 번 세지 않는다). 금액 · 이메일 · LS id · 키는 props에 없다.
+ * 읽는 카드(/admin/metrics 결제 카드)는 후속이고, 지금은 이 목록이 "모르는 type"으로 새지 않게 하고 CHECK ↔ 원천 함수 ↔ 시험을 대조하는 집이다
+ * (tests/metrics/agent-event-registry.test.ts R1 · R2b · R3b · R6).
+ */
+export type BillingEventSpec = { type: string; sources: EventSource[]; gap?: string };
+
+export const BILLING_EVENTS: readonly BillingEventSpec[] = [
+  { type: "billing_checkout_started", sources: [sql("billing_checkout_url_v2")] },
+  { type: "billing_trial_started", sources: [sql("billing_apply_subscription_v2")] },
+  { type: "billing_subscription_activated", sources: [sql("billing_apply_subscription_v2")] },
+  { type: "billing_payment_succeeded", sources: [sql("billing_apply_subscription_v2")] },
+  { type: "billing_payment_failed", sources: [sql("billing_apply_subscription_v2")] },
+  { type: "billing_plan_changed", sources: [sql("billing_apply_subscription_v2")] },
+  // 사용자가 해지하면 구독 반영 함수가, Lifetime에 밀려 서버가 취소하면 billing_record_event(by: system)가 남긴다
+  { type: "billing_subscription_cancelled", sources: [sql("billing_apply_subscription_v2"), sql("billing_record_event")] },
+  { type: "billing_subscription_resumed", sources: [sql("billing_apply_subscription_v2")] },
+  { type: "billing_subscription_ended", sources: [sql("billing_apply_subscription_v2")] },
+  { type: "billing_lifetime_purchased", sources: [sql("billing_apply_lifetime")] },
+  { type: "billing_refund_requested", sources: [sql("billing_record_event")] },
+  { type: "billing_refunded", sources: [sql("billing_apply_subscription_v2"), sql("billing_apply_lifetime")] },
+  { type: "billing_portal_opened", sources: [sql("billing_record_event")] },
+  { type: "billing_duplicate_purchase", sources: [sql("billing_apply_subscription_v2"), sql("billing_apply_lifetime"), sql("billing_record_event")] },
+  // 처음 묶을 때 확실한 조작이 아닌 어긋남(이미 다른 구독에 묶인 intent · 발급 안 된 intent · 되풀이 체험 · 허락 없는 할인): 자격은 결제 사실대로 두고 사람이 본다 (결제 계약 23장)
+  { type: "billing_review_needed", sources: [sql("billing_apply_subscription_v2"), sql("billing_apply_lifetime")] },
+  { type: "billing_legacy_marked", sources: [sql("billing_seed_legacy")] },
+  { type: "billing_notice_scheduled", sources: [sql("billing_schedule_legacy_notice")] },
+  // CHECK는 미리 열어 두었고 남기는 곳은 BYOK 서버(PR-B)가 더한다
+  { type: "ai_key_saved", sources: [], gap: "남기는 곳 없음 (BYOK 서버 PR-B: 키 저장)" },
+  { type: "ai_key_deleted", sources: [], gap: "남기는 곳 없음 (BYOK 서버 PR-B: 키 지우기)" },
+  { type: "ai_key_revoked", sources: [], gap: "남기는 곳 없음 (BYOK 서버 PR-B: 제공자 401로 폐기)" },
+];
+
 /** OA 전에 있던 type 7개 (compute.ts의 지표 1–5 · 연결 카드가 읽는다) */
 export const PRE_OA_TYPES: readonly string[] = [
   "app_opened",
@@ -137,13 +173,13 @@ export type UsageCard = {
   types: UsageType[];
   /** 에이전트에게 맡겨 이슈가 생김 (action_events user_created, rule assistant_agent) */
   agentIssues: { n: number; users: number };
-  /** 등록부 17개와 OA 전 7개 밖의 type: 버리지 않고 따로 센다 */
+  /** 에이전트 등록부 17개 · OA 전 7개 · 결제 · 키 등록부 20개 밖의 type: 버리지 않고 따로 센다 */
   unknown: { types: number; events: number };
   /** 에이전트 기록이 하나도 없다 */
   empty: boolean;
 };
 
-const KNOWN_TYPES = new Set<string>([...PRE_OA_TYPES, ...AGENT_EVENTS.map((e) => e.type)]);
+const KNOWN_TYPES = new Set<string>([...PRE_OA_TYPES, ...AGENT_EVENTS.map((e) => e.type), ...BILLING_EVENTS.map((e) => e.type)]);
 
 export function agentUsage(rows: AgentMetricRow[], issues: AgentIssueRow[], period: Period): UsageCard {
   const inside = rows.filter((row) => inRange(row.at, period));

@@ -65,6 +65,11 @@
 | `ADMIN_EMAILS` | 운영자 이메일 (쉼표로 구분) | `/admin/metrics` 접근 |
 | `WEEKLY_CHECK_ENABLED` | 비움 (켜짐) | 베타가 끝나면 `false` |
 | `EXECUTION_ENABLED` | 비움 (꺼짐) → 9-6 순서의 3번에서 `true` | 실행(U2: run · 내장 초안)을 연다. `true`만 켠다. 켜도 DB의 차단 스위치 · 실행 주체 허용 목록이 따로 막는다(9장). 끄면 실행 route 404, sweep은 바로 끝난다 |
+| `BILLING_ENABLED` | 비움 (꺼짐) → [billing-launch.md](billing-launch.md) 13장 순서의 마지막 단계에서 `true` | 결제 자격 검사 · 판매 · webhook 반영을 연다. 꺼져 있으면 모든 계정이 "Beta"(지금처럼 관리형, 옛 안전장치). 끄면 바로 되돌아가지만 Lemon Squeezy 구독은 계속 청구되므로 오래 끄지 않는다 |
+| `BYOK_ENABLED` | 비움 (꺼짐) | Lifetime 판매 · 사용자 OpenRouter 키. 끄면 Lifetime 판매가 닫히고 Lifetime 계정의 AI는 닫힌 쪽으로 멈춘다 |
+| `LEMONSQUEEZY_API_KEY` · `LEMONSQUEEZY_WEBHOOK_SECRET` · `LEMONSQUEEZY_STORE_ID` · `LEMONSQUEEZY_TEST_MODE` | Lemon Squeezy 대시보드 (테스트와 Live는 키 · 상품 · webhook을 따로) | **Sensitive**. 모드 값은 키 · 변형 · webhook과 같아야 한다 |
+| `LEMONSQUEEZY_PRO_MONTHLY_VARIANT_ID` · `LEMONSQUEEZY_PRO_YEARLY_VARIANT_ID` · `LEMONSQUEEZY_LIFETIME_VARIANT_ID` · `LEMONSQUEEZY_FIRST_MONTH_DISCOUNT_CODE` | billing-launch.md 13.4 | 옛 `LEMONSQUEEZY_MONTHLY_VARIANT_ID` · `…_ANNUAL_VARIANT_ID`는 읽지 않는다(지우고 새 이름으로 넣는다) |
+| `BILLING_MONTHLY_AI_BUDGET_USD` · `BILLING_TRIAL_AI_BUDGET_USD` | 비움 → 결제가 켜진 서버의 AI 경로가 멈춘다(기본값 없음) | 계정별 숨은 공정 사용 상한(모델 원가 USD, 사용자에게 숫자를 보이지 않는다). 값은 운영 env에서 정한다(공개 저장소에는 적지 않는다). 0 초과 100 이하. 운영 전체 상한 `ai_budget_policy`는 따로다(billing-launch.md 13.3) |
 
 키를 새로 만들면 로컬 `.env.local`에도 개발용 값을 따로 둔다. 운영 비밀값을 로컬에 복사해 두지 않는다(`CONNECTOR_TOKEN_KEY` 예외는 위 비고).
 
