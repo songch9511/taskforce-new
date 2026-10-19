@@ -211,9 +211,11 @@ public struct APIClient: Sendable {
     /// 계정 삭제 (서버가 원문 · 할 일 · 변경 이력을 모두 지운다. 되돌릴 수 없다).
     /// `authorizationCode`: 삭제 직전 Sign in with Apple로 새로 받은 authorization code. 있으면 서버가 Apple 토큰을 폐기한다
     /// (App Store 5.1.1(v)). 사용자가 Apple 확인을 취소했으면 nil로 보내고, 서버는 폐기 없이 지운다.
+    /// `client`: 그 code를 받은 곳. `.app`(기본)은 앱 안 로그인(iPhone, 번들 id), `.web`은 Mac의 브라우저 창 재확인(Services ID):
+    /// 서버가 토큰을 받아 폐기할 client를 고른다. `.web`일 때만 `apple_client`를 싣는다 (옛 서버와 같은 본문).
     /// 성공하면 `SessionStore.accountDeleted()`로 이 기기에 저장된 세션을 지운다.
-    public func deleteAccount(authorizationCode: String? = nil) async throws {
-        let body = authorizationCode.map(DeleteAccountRequest.init(appleAuthorizationCode:))
+    public func deleteAccount(authorizationCode: String? = nil, client: AppleAuthorizationClient = .app) async throws {
+        let body = authorizationCode.map { DeleteAccountRequest(appleAuthorizationCode: $0, appleClient: client == .web ? client : nil) }
         try await sendNoContent(.delete, "account", body: body)
     }
 
@@ -524,12 +526,23 @@ struct WeeklyCheckRequest: Encodable {
     }
 }
 
-/// DELETE /api/v1/account 본문 (contract.ts `deleteAccountRequestSchema`)
+/// Apple authorization code를 받은 client (contract.ts `appleClientSchema`)
+public enum AppleAuthorizationClient: String, Sendable, Encodable {
+    /// 앱 번들 id: 앱 안 Sign in with Apple (iPhone)
+    case app
+    /// Services ID: Mac의 브라우저 창 Apple 로그인 (`AppleWebAuthorization`)
+    case web
+}
+
+/// DELETE /api/v1/account 본문 (contract.ts `deleteAccountWithAppleClientRequestSchema`)
 struct DeleteAccountRequest: Encodable {
     let appleAuthorizationCode: String
+    /// 생략하면 서버가 `app`으로 본다: `.web`일 때만 싣는다
+    let appleClient: AppleAuthorizationClient?
 
     enum CodingKeys: String, CodingKey {
         case appleAuthorizationCode = "apple_authorization_code"
+        case appleClient = "apple_client"
     }
 }
 

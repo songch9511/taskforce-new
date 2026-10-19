@@ -64,6 +64,8 @@ public enum LauncherItem: Hashable, Sendable, Identifiable {
     case sendAsSource(String)
     /// 직접 추가: 찾는 말과 맞는 할 일이 없을 때 "Add “…”" (`LauncherAdd`)
     case addAction(String)
+    /// Sign in with Apple (Mac은 브라우저 창, 설정이 있을 때만). 로그아웃 목록에서 Google보다 먼저
+    case signInWithApple
     /// Sign in with Google (설정이 있을 때만)
     case signInWithGoogle
     /// 외부 AI 처리 동의 전이라 연동 원문을 읽지 못함 (목록은 그대로 보인다)
@@ -89,6 +91,7 @@ public enum LauncherItem: Hashable, Sendable, Identifiable {
         case .handoff(let action): "handoff-\(action.id)"
         case .sendAsSource: "send-as-source"
         case .addAction: "add-action"
+        case .signInWithApple: "sign-in-apple"
         case .signInWithGoogle: "sign-in-google"
         case .allowAI: "allow-ai"
         case .policyNotice: "policy-notice"
@@ -153,7 +156,7 @@ public enum LauncherContent {
     /// 찾는 중에는 네 구역을 모두 거르고, Done Today는 Ask · Add 아래에 둔다 (맞는 열린 할 일이 없으면 Add가 맨 위라 ↩ 한 번으로 시작).
     /// `needsConsent`: 동의 전이면 빈 입력창 맨 위에 "Allow AI processing" 한 줄 (목록을 막지 않는다)
     /// `policyNotice`: 처리방침 변경 안내가 있으면 빈 입력창 맨 위에 한 줄 (동의 줄 아래)
-    /// `googleSignIn`: 로그인 전 목록에 Google을 우선 두고 Apple 로그인은 유지할지 (Google 클라이언트 설정이 있을 때)
+    /// `appleSignIn` · `googleSignIn`: 로그인 전 목록에 둘 로그인 행. Apple이 먼저, Google이 그 아래 (각각 설정이 있을 때만)
     /// Mac 런처 셸(U1 PR4)의 목록 모양. 기본값(`nil`)이면 예전 모양 그대로다 (명령 구역 · 접지 않음 · 모든 범위).
     public struct Layout: Sendable, Hashable {
         /// 섹션 접기 (`Show N More` · Done Today 접힌 한 줄). 기준값은 `/now` `section_limits`
@@ -182,11 +185,11 @@ public enum LauncherContent {
     /// 범위는 네 구역을 좁히고, 접기는 빈 입력창 · All Tasks에서만 한다 (`SectionCaps.isUnfolded`).
     public static func sections(
         for mode: LauncherInput.Mode, now: NowResponse?, doneToday: [ActionSummary] = [], signedIn: Bool, needsConsent: Bool = false,
-        policyNotice: PolicyNotice? = nil, googleSignIn: Bool = false, layout: Layout? = nil
+        policyNotice: PolicyNotice? = nil, appleSignIn: Bool = false, googleSignIn: Bool = false, layout: Layout? = nil
     ) -> [LauncherSection] {
         guard signedIn else {
             return [
-                LauncherSection(title: nil, items: googleSignIn ? [.signInWithGoogle] : []),
+                LauncherSection(title: nil, items: (appleSignIn ? [.signInWithApple] : []) + (googleSignIn ? [.signInWithGoogle] : [])),
                 LauncherSection(title: "Commands", items: [.command(.quit)]),
             ].filter { !$0.items.isEmpty }
         }

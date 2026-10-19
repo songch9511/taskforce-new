@@ -22,17 +22,14 @@ public final class SessionStore {
     /// 방금 Google 로그인이 준 이름: 그 사용자의 프로필을 처음 읽을 때 한 번 꺼내 쓴다 (`takeAccountNameFill`)
     private var accountNameFill: AccountNameFill?
 
-    public static let googleOnlyNotice = "This Mac app supports Google sign-in only. Existing Apple accounts and their data are preserved, but Apple-only accounts cannot sign in or delete their account here. Signing in with Google may open a different account."
-    private let googleOnly: Bool
-    private var verifiedGoogleUserID: UUID?
-    private var googleSignInInProgress = false
     private let auth: AuthClient
+    /// 이 기기의 로그인 계정이 바뀔 때마다(로그아웃 · 다른 계정 · 처음 로그인) 오른다: 오래 걸린 이어 붙이기가 그사이 계정이 바뀌었는지 안다
+    private var accountEpoch = 0
     private var listenTask: Task<Void, Never>?
     /// 계정이 이 기기를 떠날 때 부를 정리 (`onSignedOut`)
     @ObservationIgnored private var signedOutCleanups: [@MainActor (UUID) -> Void] = []
 
-    public init(auth: AuthClient, googleOnly: Bool = false) {
-        self.googleOnly = googleOnly
+    public init(auth: AuthClient) {
         self.auth = auth
     }
 
@@ -68,7 +65,10 @@ public final class SessionStore {
     func apply(event: AuthChangeEvent, session: Session?) {
         // 계정이 떠났으면 아래에서 상태를 모두 바꾼 뒤 정리를 부른다 (`onSignedOut`)
         let previousUserID = Self.userID(in: state)
-        defer { runSignedOutCleanups(ifLeft: previousUserID) }
+        defer {
+            if previousUserID != Self.userID(in: state) { accountEpoch += 1 }
+            runSignedOutCleanups(ifLeft: previousUserID)
+        }
         let currentSession = auth.currentSession
         var appliedSession = session
         // supabase-swift는 Keychain 저장 오류를 삼키고 로그인 이벤트를 보낼 수 있다.
@@ -86,15 +86,6 @@ public final class SessionStore {
         if event != .signedOut, let session, currentSession?.user.id != session.user.id {
             appliedSession = currentSession
         }
-        if event == .signedOut { verifiedGoogleUserID = nil }
-        if googleOnly, event != .signedOut, let appliedSession,
-           !Self.allowsGoogleSession(appliedSession, verifiedGoogleUserID: verifiedGoogleUserID) {
-            state = googleSignInInProgress ? .loading : .signedOut
-            signInMethods = .unknown
-            accountNameFill = nil
-            notice = Self.googleOnlyNotice
-            return
-        }
         state = Self.state(for: event, session: appliedSession)
         if case .signedIn = state, let appliedSession {
             signInMethods = SignInMethods(user: appliedSession.user)
@@ -102,13 +93,6 @@ public final class SessionStore {
             signInMethods = .unknown
             accountNameFill = nil
         }
-    }
-
-    // Linked Apple/Google accounts must prove Google sign-in again in this process:
-    // provider membership alone does not identify how a persisted session authenticated.
-    nonisolated static func allowsGoogleSession(_ session: Session, verifiedGoogleUserID: UUID?) -> Bool {
-        let methods = SignInMethods(user: session.user)
-        return methods.hasGoogle && (methods.providers == ["google"] || verifiedGoogleUserID == session.user.id)
     }
 
     static let sessionNotSavedMessage = "Couldn't save your sign-in. Try again."
@@ -122,7 +106,6 @@ public final class SessionStore {
 
     /// Sign in with Apple이 돌려준 ID 토큰으로 Supabase에 로그인한다.
     public func signInWithApple(idToken: String, nonce: SignInNonce) async {
-        guard !googleOnly else { notice = Self.googleOnlyNotice; return }
         errorMessage = nil
         notice = nil
         do {
@@ -141,11 +124,6 @@ public final class SessionStore {
     public func signInWithGoogle(idToken: String, accessToken: String, nonce: SignInNonce) async -> Bool {
         errorMessage = nil
         notice = nil
-        googleSignInInProgress = true
-        defer {
-            googleSignInInProgress = false
-            if googleOnly { apply(event: .initialSession, session: auth.currentSession) }
-        }
         do {
             let session = try await auth.signInWithIdToken(
                 credentials: OpenIDConnectCredentials(provider: .google, idToken: idToken, accessToken: accessToken, nonce: nonce.raw)
@@ -155,14 +133,6 @@ public final class SessionStore {
                 errorMessage = Self.sessionNotSavedMessage
                 return false
             }
-            if googleOnly {
-                guard SignInMethods(user: session.user).hasGoogle else {
-                    notice = Self.googleOnlyNotice
-                    return false
-                }
-                verifiedGoogleUserID = session.user.id
-                apply(event: .signedIn, session: session)
-            }
             accountNameFill = AccountNameFill(user: session.user)
             return true
         } catch {
@@ -171,9 +141,57 @@ public final class SessionStore {
         }
     }
 
+    // MARK: 로그인 방법 이어 붙이기 (Settings › Account › Sign-in "Add")
+
+    /// 이어 붙이기 결과. 화면은 이것만 보고 문구를 고른다
+    public enum LinkResult: Equatable, Sendable {
+        case linked
+        /// 그 Apple · Google 계정은 이미 다른 Taskforce 계정에 이어져 있다 (`identity_already_exists`). 데이터를 합치지 않는다
+        case belongsToAnotherAccount
+        /// 그 밖의 모든 실패 (`manual_linking_disabled` 포함), 또는 흐름을 시작한 계정이 지금 로그인한 계정이 아님 (서버를 부르지 않았다)
+        case failed
+    }
+
+    /// Apple ID 토큰을 지금 로그인한 계정에 이어 붙인다 (`linkIdentityWithIdToken`). 로그인과 같은 nonce 규칙: Apple에는 `nonce.hashed`, 여기에는 원본.
+    /// `expectedUserID`: 이 흐름을 시작한 계정. 흐름이 도는 사이 계정이 바뀌었으면 서버에 쓰기 전에 버린다 (다른 계정에 이어 붙이지 않는다).
+    public func linkApple(idToken: String, nonce: SignInNonce, expectedUserID: UUID) async -> LinkResult {
+        await link(OpenIDConnectCredentials(provider: .apple, idToken: idToken, nonce: nonce.raw), expectedUserID: expectedUserID)
+    }
+
+    /// Google ID 토큰 · 액세스 토큰을 지금 로그인한 계정에 이어 붙인다 (`linkApple`과 같은 규칙, Google에는 `nonce.hashed`를 보냈다).
+    public func linkGoogle(idToken: String, accessToken: String, nonce: SignInNonce, expectedUserID: UUID) async -> LinkResult {
+        await link(OpenIDConnectCredentials(provider: .google, idToken: idToken, accessToken: accessToken, nonce: nonce.raw), expectedUserID: expectedUserID)
+    }
+
+    private func isSignedIn(as userID: UUID) -> Bool {
+        Self.userID(in: state) == userID && auth.currentSession?.user.id == userID
+    }
+
+    private func link(_ credentials: OpenIDConnectCredentials, expectedUserID: UUID) async -> LinkResult {
+        guard isSignedIn(as: expectedUserID) else { return .failed }
+        let epoch = accountEpoch
+        do {
+            let session = try await auth.linkIdentityWithIdToken(credentials: credentials)
+            // 응답을 기다리는 사이 계정이 바뀌었으면 이 결과를 쓰지 않는다 (지금 계정의 방법 목록을 건드리지 않는다).
+            // supabase-swift는 응답의 세션을 무조건 저장하므로, 떠난 계정의 세션이 이 기기에 되살아났으면 지운다
+            guard epoch == accountEpoch, isSignedIn(as: expectedUserID), session.user.id == expectedUserID else {
+                if epoch != accountEpoch, auth.currentSession?.user.id == session.user.id { try? await auth.signOut(scope: .local) }
+                return .failed
+            }
+            // 이어 붙인 뒤 방법 목록을 서버에서 다시 읽는다 (응답의 사용자에 identities가 빠졌을 수 있다). 못 읽으면 응답의 사용자로 갱신한다
+            let fresh = try? await auth.user()
+            guard epoch == accountEpoch, isSignedIn(as: expectedUserID) else { return .failed }
+            signInMethods = SignInMethods(user: fresh.flatMap { $0.id == expectedUserID ? $0 : nil } ?? session.user)
+            return .linked
+        } catch let error as AuthError where error.errorCode == .identityAlreadyExists {
+            return .belongsToAnotherAccount
+        } catch {
+            return .failed
+        }
+    }
+
     /// 이메일 · 비밀번호 로그인 (App Store 심사 계정용). 가입 화면은 없다: 서버가 허용한 계정만 로그인된다.
     public func signInWithEmail(email: String, password: String) async {
-        guard !googleOnly else { notice = Self.googleOnlyNotice; return }
         errorMessage = nil
         notice = nil
         let email = email.trimmingCharacters(in: .whitespacesAndNewlines)
