@@ -76,12 +76,12 @@ struct MacEntitlementsTests {
 
     // MARK: 배포 스크립트의 회귀 방지
 
-    /// `scripts/release-mac-dmg.sh`의 `reject_sandbox_entitlement`만 떼어 가짜 권한 출력(`codesign -d --entitlements :-`의 plist)에 돌린다.
+    /// `scripts/release-mac-dmg.sh`의 검사 함수 하나(`reject_sandbox_entitlement` · `reject_apple_signin_entitlement`)만 떼어 가짜 권한 출력(`codesign -d --entitlements :-`의 plist)에 돌린다.
     /// 서명 · 공증 · DMG는 돌리지 않는다. 종료 코드와 stderr를 돌려준다.
-    static func runSandboxCheck(onEntitlements plist: String) throws -> (status: Int32, stderr: String) {
+    static func runCheck(_ name: String, onEntitlements plist: String) throws -> (status: Int32, stderr: String) {
         let script = try String(contentsOf: apple.deletingLastPathComponent().appending(path: "scripts/release-mac-dmg.sh"), encoding: .utf8)
         let lines = script.components(separatedBy: "\n")
-        guard let start = lines.firstIndex(where: { $0.hasPrefix("reject_sandbox_entitlement() {") }),
+        guard let start = lines.firstIndex(where: { $0.hasPrefix("\(name)() {") }),
               let end = lines[start...].firstIndex(of: "}") else { throw CocoaError(.fileReadCorruptFile) }
         let directory = FileManager.default.temporaryDirectory.appending(path: "MacEntitlementsTests-\(UUID().uuidString)", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -93,7 +93,7 @@ struct MacEntitlementsTests {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = ["-c", "set -euo pipefail; fail() { printf '%s\\n' \"$*\" >&2; exit 1; }; source \"$1\"; reject_sandbox_entitlement \"$2\"", "bash", function.path, entitlements.path]
+        process.arguments = ["-c", "set -euo pipefail; fail() { printf '%s\\n' \"$*\" >&2; exit 1; }; source \"$1\"; \"$3\" \"$2\"", "bash", function.path, entitlements.path, name]
         let errors = Pipe()
         process.standardError = errors
         process.standardOutput = FileHandle.nullDevice
@@ -101,6 +101,14 @@ struct MacEntitlementsTests {
         let data = errors.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         return (process.terminationStatus, String(decoding: data, as: UTF8.self))
+    }
+
+    static func runSandboxCheck(onEntitlements plist: String) throws -> (status: Int32, stderr: String) {
+        try runCheck("reject_sandbox_entitlement", onEntitlements: plist)
+    }
+
+    static func runAppleSignInCheck(onEntitlements plist: String) throws -> (status: Int32, stderr: String) {
+        try runCheck("reject_apple_signin_entitlement", onEntitlements: plist)
     }
 
     static func plist(_ entries: String) -> String {
@@ -135,5 +143,59 @@ struct MacEntitlementsTests {
     @Test func theReleaseScriptStopsWhenTheEntitlementsCannotBeRead() throws {
         #expect(try Self.runSandboxCheck(onEntitlements: "").status == 1)
         #expect(try Self.runSandboxCheck(onEntitlements: "not a plist").status == 1)
+    }
+
+    // MARK: Sign in with Apple 권한 (OA 로그인 계약 5.8)
+
+    /// Developer ID Mac 앱은 `com.apple.developer.applesignin` 권한을 프로필로 받을 수 없다 (Apple "Supported capabilities (macOS)": Developer ID 열이 비었다).
+    /// 권한 파일에 이 키가 있으면 10-05처럼 Developer ID export가 실패한다. Mac의 Apple 로그인은 브라우저 창(Apple 웹 로그인)이라 이 권한이 필요 없다.
+    @Test func theEntitlementsFileHasNoSignInWithApple() throws {
+        let plist = try Self.entitlements()
+        #expect(plist["com.apple.developer.applesignin"] == nil)
+        #expect(!plist.keys.contains { $0.contains("applesignin") })
+        let raw = try String(contentsOf: Self.apple.appending(path: "Taskforce/Taskforce-macOS.entitlements"), encoding: .utf8)
+        #expect(!raw.contains("applesignin"))
+    }
+
+    /// 어느 `.entitlements`에도 없어야 한다 (Mac 앱 · helper 셋)
+    @Test func noEntitlementsFileAsksForSignInWithApple() throws {
+        let files = try FileManager.default.subpathsOfDirectory(atPath: Self.apple.path).filter { $0.hasSuffix(".entitlements") && !$0.contains("/.build/") && !$0.hasPrefix(".build") }
+        #expect(files.contains("Taskforce/Taskforce-macOS.entitlements"))
+        for file in files {
+            let text = try String(contentsOf: Self.apple.appending(path: file), encoding: .utf8)
+            #expect(!text.contains("applesignin"), "\(file)")
+        }
+    }
+
+    @Test func theReleaseScriptStopsWhenTheSignedAppAsksForSignInWithApple() throws {
+        let result = try Self.runAppleSignInCheck(onEntitlements: Self.plist(Self.keptEntries + "<key>com.apple.developer.applesignin</key><array><string>Default</string></array>"))
+        #expect(result.status == 1)
+        #expect(result.stderr.contains("com.apple.developer.applesignin"))
+        // 값이 비어도 키가 있으면 멈춘다
+        #expect(try Self.runAppleSignInCheck(onEntitlements: Self.plist(Self.keptEntries + "<key>com.apple.developer.applesignin</key><array/>")).status == 1)
+    }
+
+    @Test func theReleaseScriptPassesAnAppWithoutSignInWithApple() throws {
+        let result = try Self.runAppleSignInCheck(onEntitlements: Self.plist(Self.keptEntries))
+        #expect(result.status == 0)
+        #expect(result.stderr.isEmpty)
+    }
+
+    /// 읽지 못하는 권한 출력은 통과가 아니라 멈춤이다
+    @Test func theAppleSignInCheckStopsWhenTheEntitlementsCannotBeRead() throws {
+        #expect(try Self.runAppleSignInCheck(onEntitlements: "").status == 1)
+        #expect(try Self.runAppleSignInCheck(onEntitlements: "not a plist").status == 1)
+    }
+
+    /// 검사는 샌드박스 검사 바로 뒤, 프로필 검사 · 공증 전에 불린다 (공증까지 가기 전에 멈춘다)
+    @Test func theReleaseScriptRunsTheAppleSignInCheckRightAfterTheSandboxCheck() throws {
+        let script = try String(contentsOf: Self.apple.deletingLastPathComponent().appending(path: "scripts/release-mac-dmg.sh"), encoding: .utf8)
+        let lines = script.components(separatedBy: "\n")
+        let sandbox = try #require(lines.firstIndex { $0.hasPrefix("reject_sandbox_entitlement \"$ENTITLEMENTS\"") })
+        let appleSignIn = try #require(lines.firstIndex { $0.hasPrefix("reject_apple_signin_entitlement \"$ENTITLEMENTS\"") })
+        #expect(appleSignIn > sandbox)
+        #expect(appleSignIn - sandbox <= 4)
+        let notarize = try #require(lines.firstIndex { $0.hasPrefix("  notarize \"$APP_ZIP\" app") })
+        #expect(appleSignIn < notarize)
     }
 }

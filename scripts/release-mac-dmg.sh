@@ -101,6 +101,17 @@ reject_sandbox_entitlement() {
   fi
 }
 
+# Sign in with Apple 권한 없음 (OA 로그인 계약 5.8): Developer ID 프로필에는 이 권한이 들어갈 수 없다 (Apple "Supported capabilities (macOS)": Developer ID 열이 비었다).
+# 권한 파일에 `com.apple.developer.applesignin`이 있으면 Developer ID export가 실패한다 (10-05). Mac의 Apple 로그인은 브라우저 창(Apple 웹 로그인)이라 이 권한이 필요 없다.
+# 인자: codesign -d --entitlements 출력(plist) 파일
+reject_apple_signin_entitlement() {
+  local keys
+  keys="$(plutil -p "$1" 2>/dev/null)" || fail "서명된 앱의 권한(entitlement)을 읽을 수 없습니다: $1"
+  if grep -q '"com\.apple\.developer\.applesignin"' <<<"$keys"; then
+    fail "서명된 앱에 Sign in with Apple 권한(com.apple.developer.applesignin)이 있습니다. Developer ID는 이 권한을 받지 못합니다 (Mac은 브라우저 창 Apple 로그인을 씁니다). apple/Taskforce/Taskforce-macOS.entitlements에서 지우세요"
+  fi
+}
+
 # 선택 단계 (공증 뒤): Sparkle appcast를 **로컬 폴더에만** 만든다. 업로드 · 게시는 하지 않는다 (호스팅 위치는 사용자가 정한다, docs/go-live/mac-dmg.md "자동 업데이트").
 # EdDSA 개인 키는 이 스크립트가 읽거나 출력하지 않는다: generate_appcast가 사용자 Keychain에서 직접 읽는다.
 # 여기서는 그 항목이 있는지만 속성으로 확인한다 (-g · -w 없음, 출력 버림). 항목이 없을 때 도구를 부르면 서명하지 못해 실패하기 때문이다(Sparkle 2.10.0 확인).
@@ -219,12 +230,14 @@ echo "권한(entitlement) 키:"
 plutil -p "$ENTITLEMENTS" | sed -nE 's/^  "([^"]+)" =>.*/  \1/p'
 reject_sandbox_entitlement "$ENTITLEMENTS"
 echo "App Sandbox 권한: 없음"
+reject_apple_signin_entitlement "$ENTITLEMENTS"
+echo "Sign in with Apple 권한: 없음 (Mac은 브라우저 창 Apple 로그인)"
 APS_ENV="$(plutil -p "$ENTITLEMENTS" | sed -nE 's/^  "com\.apple\.developer\.aps-environment" => "([^"]*)".*/\1/p')"
 echo "aps-environment: ${APS_ENV:-(없음)}"
 [[ "$APS_ENV" == "production" ]] || fail "aps-environment가 production이 아닙니다 (배포 빌드는 운영 APNs여야 알림이 옵니다)"
 
 PROFILE_FILE="$APP/Contents/embedded.provisionprofile"
-[[ -f "$PROFILE_FILE" ]] || fail "$PROFILE_FILE 이 없습니다. 제한된 권한(App Group · Apple 로그인 · 알림)은 프로필이 없으면 앱이 실행되지 않습니다"
+[[ -f "$PROFILE_FILE" ]] || fail "$PROFILE_FILE 이 없습니다. 제한된 권한(App Group · 알림)은 프로필이 없으면 앱이 실행되지 않습니다"
 PROFILE_PLIST="$RUN_DIR/embedded-profile.plist"
 security cms -D -i "$PROFILE_FILE" >"$PROFILE_PLIST"
 echo "프로필: Name=$(plutil -extract Name raw -o - "$PROFILE_PLIST")" \
