@@ -10,13 +10,16 @@ import { z } from "zod";
 
 const APPLE_AUTH = "https://appleid.apple.com";
 
-/** clientId: 앱 번들 id(앱 안 로그인의 client). servicesId: Mac의 Apple 웹 로그인 Services ID (없으면 web 폐기를 건너뛴다) */
-export type AppleSignInConfig = { teamId: string; keyId: string; key: KeyObject; clientId: string; servicesId?: string };
+/**
+ * clientId: 앱 번들 id(앱 안 로그인의 client). servicesId: Mac의 Apple 웹 로그인 Services ID (없으면 web 폐기를 건너뛴다).
+ * webReturnUrl: 그 Services ID에 등록한 Return URL (`https://<서버>/api/v1/apple/return`). 웹 authorize가 보낸 `redirect_uri`와 같은 값을 code 교환에도 보내야 한다 (Apple 요구)
+ */
+export type AppleSignInConfig = { teamId: string; keyId: string; key: KeyObject; clientId: string; servicesId?: string; webReturnUrl?: string };
 /** 폐기할 code를 받은 client: app = 번들 id(iPhone 앱 안 로그인), web = Services ID(Mac 브라우저 창 로그인) */
 export type AppleClientKind = "app" | "web";
 export type AppleFetch = typeof fetch;
 
-/** APPLE_TEAM_ID · APPLE_KEY_ID · APPLE_PRIVATE_KEY(.p8, 줄바꿈은 \n) · APPLE_CLIENT_ID(비우면 번들 id) · APPLE_SERVICES_ID(선택). 없으면 null (폐기를 건너뛴다) */
+/** APPLE_TEAM_ID · APPLE_KEY_ID · APPLE_PRIVATE_KEY(.p8, 줄바꿈은 \n) · APPLE_CLIENT_ID(비우면 번들 id) · APPLE_SERVICES_ID · APPLE_WEB_RETURN_URL(선택, 둘 다 있어야 web 폐기). 없으면 null (폐기를 건너뛴다) */
 export function appleSignInConfigFromEnv(env: Record<string, string | undefined> = process.env): AppleSignInConfig | null {
   const { APPLE_TEAM_ID: teamId, APPLE_KEY_ID: keyId, APPLE_PRIVATE_KEY: pem } = env;
   if (!teamId || !keyId || !pem) return null;
@@ -26,7 +29,22 @@ export function appleSignInConfigFromEnv(env: Record<string, string | undefined>
     key: createPrivateKey(pem.replace(/\\n/g, "\n")),
     clientId: env.APPLE_CLIENT_ID || "dev.taskforcelabs.taskforce",
     servicesId: env.APPLE_SERVICES_ID || undefined,
+    webReturnUrl: env.APPLE_WEB_RETURN_URL || undefined,
   };
+}
+
+/** Services ID에 등록한 중계 주소 모양인지: https · 도메인(IP · localhost 아님) · 경로 `/api/v1/apple/return` · 쿼리 · 해시 · 사용자 정보 없음 */
+export function isAppleWebReturnUrl(value: string | undefined): value is string {
+  if (!value) return false;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  const host = url.hostname.toLowerCase();
+  const isDomain = host.includes(".") && /[a-z]/.test(host) && host !== "localhost" && !host.endsWith(".localhost") && !host.includes(":");
+  return url.protocol === "https:" && isDomain && url.pathname === "/api/v1/apple/return" && !url.search && !url.hash && !url.username && !url.password;
 }
 
 const base64url = (input: Buffer | string) => Buffer.from(input).toString("base64url");
@@ -88,6 +106,7 @@ export type AppleRevokeResult = "revoked" | "no_token" | "not_configured" | "no_
  * expectedSub: 지우는 계정에 연결된 Apple 사용자 id (Supabase identity의 sub). 없으면(Apple 가입이 아님) 부르지 않는다.
  * 바꿔 받은 id_token의 sub(와 aud)가 맞지 않으면 폐기하지 않고 mismatch.
  * options.client: code를 받은 client. app(기본)은 번들 id, web은 Services ID로 client secret(sub) · 교환 · 폐기 · aud 확인을 한다.
+ * web 교환에는 `redirect_uri`(서버 설정 `webReturnUrl`)를 함께 보낸다.
  * 설정이 없거나 code가 없으면 부르지 않고 이유만 돌려준다. Apple이 거절하면 AppleAuthError (부르는 쪽이 로그만 남기고 삭제를 계속한다).
  */
 export async function revokeAppleSignIn(
@@ -97,14 +116,18 @@ export async function revokeAppleSignIn(
   options: { fetch?: AppleFetch; now?: Date; client?: AppleClientKind } = {},
 ): Promise<AppleRevokeResult> {
   if (!config) return "not_configured";
-  const clientId = options.client === "web" ? config.servicesId : config.clientId;
+  const web = options.client === "web";
+  const clientId = web ? config.servicesId : config.clientId;
   if (!clientId) return "not_configured";
+  // web 교환에는 authorize가 보낸 것과 같은 redirect_uri가 필요하다: 서버 설정의 return URL만 쓰고, 없거나 중계 주소 모양이 아니면 Apple을 부르지 않는다
+  const redirectUri = web ? config.webReturnUrl : undefined;
+  if (web && !isAppleWebReturnUrl(redirectUri)) return "not_configured";
   if (!expectedSub) return "no_identity";
   if (!authorizationCode) return "no_token";
   const doFetch = options.fetch ?? fetch;
   const client = { client_id: clientId, client_secret: appleClientSecret(config, options.now, clientId) };
 
-  const exchanged = await post("/auth/token", { ...client, code: authorizationCode, grant_type: "authorization_code" }, doFetch);
+  const exchanged = await post("/auth/token", { ...client, code: authorizationCode, grant_type: "authorization_code", ...(redirectUri ? { redirect_uri: redirectUri } : {}) }, doFetch);
   if (!exchanged.ok) throw new AppleAuthError(`Apple 토큰 교환 실패 (${exchanged.status})`, exchanged.status);
   const tokens = tokenResponseSchema.safeParse(await exchanged.json());
   const claims = appleIdTokenClaims(tokens.data?.id_token);

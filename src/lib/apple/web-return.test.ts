@@ -10,9 +10,10 @@ const form = (entries: Record<string, string>) => new URLSearchParams(entries).t
 const query = (location: string) => new URL(location).searchParams;
 
 describe("appleReturnLocation", () => {
-  it("state · code · id_token을 앱 주소로 그대로 넘긴다", () => {
+  it("로그인(id_token이 있음)은 state · id_token만 넘기고 code는 싣지 않는다 (앱이 쓰지 않는 code를 주소에 남기지 않는다)", () => {
     const location = appleReturnLocation(form({ state: STATE, code: "c1.0.abc.def", id_token: "aaa.bbb.ccc" }));
-    expect(location).toBe(`${APPLE_APP_CALLBACK}?state=${STATE}&code=c1.0.abc.def&id_token=aaa.bbb.ccc`);
+    expect(location).toBe(`${APPLE_APP_CALLBACK}?state=${STATE}&id_token=aaa.bbb.ccc`);
+    expect(query(location).has("code")).toBe(false);
   });
 
   it("목적지 상수는 taskforce://auth/apple 하나다", () => {
@@ -26,7 +27,7 @@ describe("appleReturnLocation", () => {
   it("user(첫 로그인 때 오는 이름 · 이메일 JSON)는 버린다", () => {
     const user = JSON.stringify({ name: { firstName: "길동", lastName: "홍" }, email: "gildong@example.com" });
     const location = appleReturnLocation(form({ state: STATE, code: "c1", id_token: "a.b.c", user }));
-    expect(location).toBe(`${APPLE_APP_CALLBACK}?state=${STATE}&code=c1&id_token=a.b.c`);
+    expect(location).toBe(`${APPLE_APP_CALLBACK}?state=${STATE}&id_token=a.b.c`);
     expect(decodeURIComponent(location)).not.toContain("gildong");
     expect(decodeURIComponent(location)).not.toContain("길동");
     expect(query(location).has("user")).toBe(false);
@@ -73,11 +74,11 @@ describe("appleReturnLocation", () => {
 
   it("값은 퍼센트 인코딩해서 싣는다: 앱이 읽으면 원래 값이 나온다", () => {
     const code = "c+1 &=#%?/ü";
-    const location = appleReturnLocation(form({ state: STATE, code, id_token: "a.b-c_d" }));
-    expect(location.startsWith(`${APPLE_APP_CALLBACK}?`)).toBe(true);
-    expect(location).not.toContain(" ");
-    expect(query(location).get("code")).toBe(code);
-    expect(query(location).get("id_token")).toBe("a.b-c_d");
+    const reauthorize = appleReturnLocation(form({ state: STATE, code }));
+    expect(reauthorize.startsWith(`${APPLE_APP_CALLBACK}?`)).toBe(true);
+    expect(reauthorize).not.toContain(" ");
+    expect(query(reauthorize).get("code")).toBe(code);
+    expect(query(appleReturnLocation(form({ state: STATE, id_token: "a.b-c_d" }))).get("id_token")).toBe("a.b-c_d");
   });
 
   it("어떤 입력이어도 목적지는 taskforce://auth/apple 하나다 (error에 주소를 실어도 값일 뿐)", () => {

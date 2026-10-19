@@ -16,11 +16,16 @@ afterEach(() => spies.forEach((spy) => spy.mockClear()));
 const consoleCalls = () => spies.reduce((total, spy) => total + spy.mock.calls.length, 0);
 
 describe("POST /api/v1/apple/return", () => {
-  it("정상 응답은 303이고 Location이 taskforce://auth/apple? 에 state · code · id_token을 싣는다", async () => {
+  it("로그인 응답은 303이고 Location이 taskforce://auth/apple? 에 state · id_token을 싣는다 (code는 싣지 않는다)", async () => {
     const response = await post(form({ state: STATE, code: "c1.0.abc", id_token: "aaa.bbb.ccc" }));
     expect(response.status).toBe(303);
-    expect(response.headers.get("location")).toBe(`taskforce://auth/apple?state=${STATE}&code=c1.0.abc&id_token=aaa.bbb.ccc`);
+    expect(response.headers.get("location")).toBe(`taskforce://auth/apple?state=${STATE}&id_token=aaa.bbb.ccc`);
     expect(await response.text()).toBe("");
+  });
+
+  it("재확인(code만)은 state · code를 싣는다", async () => {
+    const response = await post(form({ state: STATE, code: "c1.0.abc" }));
+    expect(response.headers.get("location")).toBe(`taskforce://auth/apple?state=${STATE}&code=c1.0.abc`);
   });
 
   it("no-store · no-referrer 헤더를 붙인다", async () => {
@@ -33,7 +38,7 @@ describe("POST /api/v1/apple/return", () => {
     const user = JSON.stringify({ name: { firstName: "길동", lastName: "홍" }, email: "gildong@example.com" });
     const response = await post(form({ state: STATE, code: "c1", id_token: "a.b.c", user }));
     const location = response.headers.get("location")!;
-    expect(location).toBe(`taskforce://auth/apple?state=${STATE}&code=c1&id_token=a.b.c`);
+    expect(location).toBe(`taskforce://auth/apple?state=${STATE}&id_token=a.b.c`);
     expect(decodeURIComponent(location)).not.toContain("gildong");
     expect(decodeURIComponent(location)).not.toContain("길동");
   });

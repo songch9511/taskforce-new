@@ -493,6 +493,10 @@ export const deleteAccountWithAppleClientRequestSchema = deleteAccountRequestSch
 export type DeleteAccountWithAppleClientRequest = z.infer<typeof deleteAccountWithAppleClientRequestSchema>;
 export const deleteAccountResponseSchema = z.object({ deleted: z.literal(true) });
 export type DeleteAccountResponse = z.infer<typeof deleteAccountResponseSchema>;
+// 서버가 Apple 토큰을 폐기했는지 알리는 선택 필드 (동결된 deleteAccountResponseSchema는 그대로 두고 확장): true = 폐기함, false = 건너뜀(code 없음 · 다른 계정의 code · 설정 없음 · Apple 거절 · 시간 초과),
+// 없음 = Apple 가입과 상관없는 계정(이거나 옛 서버). 앱은 false일 때 로그인 화면에 "직접 지우는 방법" 한 줄을 띄운다.
+export const deleteAccountWithRevocationResponseSchema = deleteAccountResponseSchema.extend({ apple_revoked: z.boolean().optional() });
+export type DeleteAccountWithRevocationResponse = z.infer<typeof deleteAccountWithRevocationResponseSchema>;
 
 // POST /api/v1/apple/return — Mac의 Apple 웹 로그인(브라우저 창)이 form_post로 돌아오는 곳 (로그인 없음, 저장 · 기록 0).
 // Apple이 application/x-www-form-urlencoded로 보낸 결과를 taskforce://auth/apple?… 로 넘기기만 한다 (src/lib/apple/web-return.ts).

@@ -6,7 +6,8 @@ import { AppleAuthError, appleClientSecret, appleIdTokenClaims, appleSignInConfi
 
 const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
 const SERVICES_ID = "dev.taskforcelabs.taskforce.signin";
-const config: AppleSignInConfig = { teamId: "TEAM123456", keyId: "KEY1234567", key: privateKey, clientId: "dev.taskforcelabs.taskforce", servicesId: SERVICES_ID };
+const WEB_RETURN_URL = "https://api.taskforcelabs.dev/api/v1/apple/return";
+const config: AppleSignInConfig = { teamId: "TEAM123456", keyId: "KEY1234567", key: privateKey, clientId: "dev.taskforcelabs.taskforce", servicesId: SERVICES_ID, webReturnUrl: WEB_RETURN_URL };
 const NOW = new Date("2026-09-27T01:00:00Z");
 
 type Call = { url: string; form: Record<string, string> };
@@ -131,6 +132,46 @@ describe("revokeAppleSignIn — Mac 웹 재확인 (client = web)", () => {
     expect(calls).toEqual([]);
   });
 
+  // 검토 1 P2: 웹 authorize는 `redirect_uri`를 보냈으니 /auth/token 교환도 같은 값을 보내야 한다 (Apple 요구). 서버 설정의 return URL만 쓴다
+  it("web 교환(/auth/token)에 서버 설정의 redirect_uri를 넣고, 폐기(/auth/revoke)에는 넣지 않는다", async () => {
+    const { fetch, calls } = fakeFetch([{ body: { refresh_token: "rt", id_token: WEB_ID_TOKEN } }, { body: undefined }]);
+    expect(await revokeAppleSignIn(config, "auth-code", SUB, { fetch, now: NOW, client: "web" })).toBe("revoked");
+    expect(calls[0].form.redirect_uri).toBe(WEB_RETURN_URL);
+    expect(calls[1].form.redirect_uri).toBeUndefined();
+  });
+
+  it("app 교환은 redirect_uri를 넣지 않는다 (앱 안 로그인의 code는 그대로)", async () => {
+    const { fetch, calls } = fakeFetch([{ body: { refresh_token: "rt", id_token: ID_TOKEN } }, { body: undefined }]);
+    expect(await revokeAppleSignIn(config, "auth-code", SUB, { fetch, now: NOW })).toBe("revoked");
+    expect("redirect_uri" in calls[0].form).toBe(false);
+  });
+
+  it("web인데 return URL 설정이 없으면 not_configured: Apple을 부르지 않는다", async () => {
+    const { fetch, calls } = fakeFetch([{ body: {} }]);
+    expect(await revokeAppleSignIn({ ...config, webReturnUrl: undefined }, "auth-code", SUB, { fetch, client: "web" })).toBe("not_configured");
+    expect(await revokeAppleSignIn({ ...config, webReturnUrl: "" }, "auth-code", SUB, { fetch, client: "web" })).toBe("not_configured");
+    expect(calls).toEqual([]);
+  });
+
+  it("return URL이 등록한 중계 주소 모양이 아니면(https · /api/v1/apple/return · 도메인) 거절한다", async () => {
+    for (const bad of [
+      "http://api.taskforcelabs.dev/api/v1/apple/return",
+      "https://api.taskforcelabs.dev/api/v1/apple/other",
+      "https://api.taskforcelabs.dev/api/v1/apple/return/",
+      "https://api.taskforcelabs.dev/api/v1/apple/return?x=1",
+      "https://api.taskforcelabs.dev/api/v1/apple/return#f",
+      "https://user:pw@api.taskforcelabs.dev/api/v1/apple/return",
+      "https://127.0.0.1/api/v1/apple/return",
+      "https://localhost/api/v1/apple/return",
+      "taskforce://auth/apple",
+      "not a url",
+    ]) {
+      const { fetch, calls } = fakeFetch([{ body: {} }]);
+      expect(await revokeAppleSignIn({ ...config, webReturnUrl: bad }, "auth-code", SUB, { fetch, client: "web" }), bad).toBe("not_configured");
+      expect(calls, bad).toEqual([]);
+    }
+  });
+
   it("Services ID가 없어도 app 폐기는 그대로 된다", async () => {
     const { fetch } = fakeFetch([{ body: { refresh_token: "rt", id_token: ID_TOKEN } }, { body: undefined }]);
     expect(await revokeAppleSignIn({ ...config, servicesId: undefined }, "auth-code", SUB, { fetch, now: NOW })).toBe("revoked");
@@ -152,6 +193,14 @@ describe("appleSignInConfigFromEnv", () => {
     const parsed = appleSignInConfigFromEnv({ APPLE_TEAM_ID: "T", APPLE_KEY_ID: "K", APPLE_PRIVATE_KEY: pem });
     expect(parsed).toMatchObject({ teamId: "T", keyId: "K", clientId: "dev.taskforcelabs.taskforce" });
     expect(appleSignInConfigFromEnv({ APPLE_TEAM_ID: "T", APPLE_KEY_ID: "K" })).toBeNull();
+  });
+
+  it("APPLE_WEB_RETURN_URL도 선택: 있으면 읽고, 비우면 없음", () => {
+    const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString().replace(/\n/g, "\\n");
+    const base = { APPLE_TEAM_ID: "T", APPLE_KEY_ID: "K", APPLE_PRIVATE_KEY: pem };
+    expect(appleSignInConfigFromEnv({ ...base, APPLE_WEB_RETURN_URL: WEB_RETURN_URL })?.webReturnUrl).toBe(WEB_RETURN_URL);
+    expect(appleSignInConfigFromEnv({ ...base, APPLE_WEB_RETURN_URL: "" })?.webReturnUrl).toBeUndefined();
+    expect(appleSignInConfigFromEnv(base)?.webReturnUrl).toBeUndefined();
   });
 
   it("APPLE_SERVICES_ID는 선택: 있으면 읽고, 비우면 없음", () => {

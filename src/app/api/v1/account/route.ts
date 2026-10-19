@@ -25,7 +25,7 @@ export async function DELETE(request: Request) {
       // 이 계정에 연결된 Apple 사용자 id. code로 받은 토큰이 이 사용자 것일 때만 폐기한다 (다른 Apple 계정의 토큰을 폐기하지 않게).
       const apple = (data.user?.identities ?? []).find((identity) => identity.provider === "apple");
       const appleSub = apple ? (typeof apple.identity_data?.sub === "string" ? apple.identity_data.sub : apple.id) : null;
-      if (!appleSub && !authorizationCode) return;
+      if (!appleSub && !authorizationCode) return undefined;
       // appleClient: code를 받은 client. app = 번들 id(iPhone 앱 안 로그인), web = Services ID(Mac의 브라우저 창 재확인).
       const result = await revokeAppleSignIn(appleSignInConfigFromEnv(), authorizationCode, appleSub, { client: appleClient });
       // Apple 로그인 사용자인데 code가 없거나 · 다른 계정의 code거나 · 키가 설정되지 않았으면 폐기하지 않는다: 이유만 남긴다.
@@ -36,6 +36,9 @@ export async function DELETE(request: Request) {
         mismatch: "code의 Apple 사용자가 이 계정과 다름",
       };
       if (result !== "revoked") console.warn(`Sign in with Apple 토큰 폐기를 건너뜀 (${reasons[result]})`);
+      // 앱에 알린다 (응답 `apple_revoked`): Apple로 가입한 계정이 아니면 알릴 것이 없다
+      if (!appleSub) return undefined;
+      return result === "revoked";
     },
     deleteUser: async (userId) => {
       try {

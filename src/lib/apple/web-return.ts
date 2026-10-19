@@ -31,7 +31,7 @@ function readForm(body: string): { values: Record<string, string>; repeated: Set
  * - state가 없거나 모양이 틀리면 state 없이 `?error=invalid_response` (틀린 state를 되돌려 싣지 않는다)
  * - error가 있으면 `?state&error` (같이 온 code · id_token은 싣지 않는다)
  * - code · id_token이 하나도 없거나, 길이가 넘치거나, 같은 이름이 두 번 오면 `?state&error=invalid_response`
- * - 그 밖에는 `?state[&code][&id_token]`. user(첫 로그인 때 오는 이름 · 이메일 JSON)는 받아도 버린다.
+ * - 그 밖에는 로그인이면 `?state&id_token`(code는 싣지 않는다), 재확인(code만)이면 `?state&code`. user(첫 로그인 때 오는 이름 · 이메일 JSON)는 받아도 버린다.
  */
 export function appleReturnLocation(body: string): string {
   const { values, repeated } = readForm(body);
@@ -45,7 +45,8 @@ export function appleReturnLocation(body: string): string {
   if (!code && !idToken) return location([["state", state.data], ["error", INVALID_RESPONSE]]);
 
   const params: [string, string][] = [["state", state.data]];
-  if (code) params.push(["code", code]);
+  // 로그인(id_token이 있음)에서는 앱이 code를 쓰지 않는다: 쓰지 않는 code를 앱 주소에 남기지 않는다. 재확인(code만)은 code를 싣는다
   if (idToken) params.push(["id_token", idToken]);
+  else if (code) params.push(["code", code]);
   return location(params);
 }

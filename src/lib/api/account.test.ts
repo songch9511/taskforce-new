@@ -3,13 +3,13 @@ import { describe, expect, it, vi } from "vitest";
 import { DELETE } from "@/app/api/v1/account/route";
 
 import { handleDeleteAccount, type DeleteAccountDeps } from "./account";
-import { apiErrorSchema, deleteAccountResponseSchema } from "./contract";
+import { apiErrorSchema, deleteAccountResponseSchema, deleteAccountWithRevocationResponseSchema } from "./contract";
 
 // route 배선 시험(맨 아래)이 쓰는 가짜: 관리자 클라이언트 · 인증 · 결제 · 연동 폐기 · Apple 폐기. 실제 Supabase · Apple에 닿지 않는다.
 const wiring = vi.hoisted(() => ({
   getUserById: vi.fn(),
   deleteUser: vi.fn(async () => ({ error: null })),
-  revokeApple: vi.fn(async () => "revoked"),
+  revokeApple: vi.fn(async (): Promise<string> => "revoked"),
 }));
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: () => ({ auth: { admin: { getUserById: wiring.getUserById, deleteUser: wiring.deleteUser } } }) }));
@@ -17,7 +17,7 @@ vi.mock("@/lib/api/auth", () => ({ authenticateRequest: async () => ({ user: { i
 vi.mock("@/lib/billing/service", () => ({ cancelBeforeDeletion: async () => "deletion-token", rollbackDeletion: vi.fn() }));
 vi.mock("@/lib/connectors/registry", () => ({ revokeConnectorTokens: async () => ({ failed: 0 }) }));
 vi.mock("@/lib/apple/sign-in", () => ({
-  appleSignInConfigFromEnv: () => ({ teamId: "T", keyId: "K", key: null, clientId: "dev.taskforcelabs.taskforce", servicesId: "dev.taskforcelabs.taskforce.signin" }),
+  appleSignInConfigFromEnv: () => ({ teamId: "T", keyId: "K", key: null, clientId: "dev.taskforcelabs.taskforce", servicesId: "dev.taskforcelabs.taskforce.signin", webReturnUrl: "https://api.taskforcelabs.dev/api/v1/apple/return" }),
   revokeAppleSignIn: wiring.revokeApple,
 }));
 
@@ -71,7 +71,7 @@ describe("account API — 토큰 폐기", () => {
   const del = (body?: unknown) =>
     new Request("http://localhost/api/v1/account", { method: "DELETE", body: body === undefined ? undefined : JSON.stringify(body) });
 
-  function revokingDeps(options: { connectors?: () => Promise<void>; apple?: () => Promise<void> } = {}) {
+  function revokingDeps(options: { connectors?: () => Promise<void>; apple?: () => Promise<boolean | undefined | void> } = {}) {
     const steps: string[] = [];
     const codes: (string | undefined)[] = [];
     const clients: string[] = [];
@@ -85,7 +85,7 @@ describe("account API — 토큰 폐기", () => {
         steps.push(`apple:${user.id}`);
         codes.push(code);
         clients.push(client);
-        await options.apple?.();
+        return await options.apple?.();
       },
       deleteUser: async (userId) => {
         steps.push(`delete:${userId}`);
@@ -144,6 +144,33 @@ describe("account API — 토큰 폐기", () => {
       expect((await handleDeleteAccount(del({ apple_authorization_code: "c", apple_client }), d)).status).toBe(400);
     }
     expect(steps).toEqual([]);
+  });
+
+  // 검토 1 P3-4: 폐기를 건너뛰어도(code 없음 · 다른 계정의 code · 설정 없음 · Apple 거절) 앱이 알 수 있게 응답에 apple_revoked를 싣는다
+  it("응답에 apple_revoked를 싣는다: 폐기했으면 true, 건너뛰었으면 false, Apple과 상관없으면 필드가 없다", async () => {
+    const parse = async (response: Response) => deleteAccountWithRevocationResponseSchema.parse(await response.json());
+    expect(await parse(await handleDeleteAccount(del({ apple_authorization_code: "c" }), revokingDeps({ apple: async () => true }).d))).toEqual({ deleted: true, apple_revoked: true });
+    expect(await parse(await handleDeleteAccount(del({ apple_authorization_code: "c" }), revokingDeps({ apple: async () => false }).d))).toEqual({ deleted: true, apple_revoked: false });
+    const unrelated = await handleDeleteAccount(del(), revokingDeps({ apple: async () => undefined }).d);
+    expect(await unrelated.json()).toEqual({ deleted: true });
+    const noHook = await handleDeleteAccount(del(), { authenticate: async () => ({ id: "user-1" }), deleteUser: async () => {} });
+    expect(await noHook.json()).toEqual({ deleted: true });
+  });
+
+  it("Apple 폐기가 예외로 끝나도 삭제는 계속하고 apple_revoked는 false다", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const response = await handleDeleteAccount(del({ apple_authorization_code: "c" }), revokingDeps({ apple: async () => { throw new Error("Apple 토큰 교환 실패 (400)"); } }).d);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ deleted: true, apple_revoked: false });
+    log.mockRestore();
+  });
+
+  it("시간 한도를 넘기면 code를 보냈던 요청만 apple_revoked false로 알린다", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { d } = revokingDeps({ apple: () => new Promise<void>(() => {}) });
+    expect(await (await handleDeleteAccount(del({ apple_authorization_code: "c" }), { ...d, revocationTimeoutMs: 20 })).json()).toEqual({ deleted: true, apple_revoked: false });
+    expect(await (await handleDeleteAccount(del(), { ...d, revocationTimeoutMs: 20 })).json()).toEqual({ deleted: true });
+    log.mockRestore();
   });
 
   it("폐기가 실패해도 계정은 지우고, 로그에는 오류 메시지만 남긴다", async () => {
@@ -209,6 +236,20 @@ describe("DELETE /api/v1/account route 배선 — Apple 폐기의 client", () =>
     await call({ apple_authorization_code: "app-code" });
     const [, code, , options] = wiring.revokeApple.mock.calls[0] as unknown as [unknown, string, string, { client: string }];
     expect([code, options]).toEqual(["app-code", { client: "app" }]);
+  });
+
+  it("route가 폐기 결과를 apple_revoked로 알린다: revoked → true, 그 밖 → false, Apple 가입이 아니면 필드 없음", async () => {
+    appleUser();
+    wiring.revokeApple.mockResolvedValueOnce("revoked");
+    expect(await (await call({ apple_authorization_code: "c", apple_client: "web" })).json()).toEqual({ deleted: true, apple_revoked: true });
+    for (const result of ["mismatch", "no_token", "not_configured"]) {
+      wiring.revokeApple.mockResolvedValueOnce(result);
+      expect(await (await call({ apple_authorization_code: "c", apple_client: "web" })).json(), result).toEqual({ deleted: true, apple_revoked: false });
+    }
+    // Apple로 가입한 계정이 아니면 (code가 와도) 알릴 것이 없다
+    wiring.getUserById.mockResolvedValue({ data: { user: { identities: [{ provider: "google", id: "g", identity_data: {} }] } } });
+    wiring.revokeApple.mockResolvedValueOnce("no_identity");
+    expect(await (await call({ apple_authorization_code: "c" })).json()).toEqual({ deleted: true });
   });
 
   it("잘못된 apple_client는 400이고 폐기 · 삭제를 하지 않는다", async () => {
