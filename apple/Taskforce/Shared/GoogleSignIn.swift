@@ -13,6 +13,7 @@ typealias GoogleSignInAnchor = NSWindow
 #endif
 
 /// Sign in with Google (로그인만). Google Sign-In SDK → ID 토큰 · 액세스 토큰 → Supabase `signInWithIdToken` (Apple 로그인과 같은 방식).
+/// 이어 붙이기(Settings › Account › Sign-in)도 같은 입구(`authorize`)로 토큰을 받아 `SessionStore.linkGoogle`에 넘긴다.
 /// 범위는 SDK 기본값(openid · email · profile)만 받는다. Gmail · Calendar는 연결 화면의 서버 연동으로 따로 받는다.
 /// 설정(`GIDClientID` · URL scheme, `GoogleSignInConfig`)이 없으면 버튼 · 런처 행을 숨기고 SDK를 건드리지 않는다.
 @MainActor
@@ -25,58 +26,76 @@ enum GoogleSignInFlow {
     /// 끝을 받지 못한 채 로그인 화면이 사라지면 `forgetRunningFlow`가 푼다 (버튼이 계속 막히지 않게)
     private static var running: UUID?
 
-    /// 로그인을 시작한다. Google에는 nonce의 SHA-256을, Supabase에는 원래 값을 보낸다 (Supabase Google 제공자의 nonce 확인은 켜 둔다).
-    /// `anchor`가 없으면 지금 앞에 있는 화면 · 창. `onFinish`: 창을 닫았거나 Supabase 로그인까지 끝났을 때.
-    static func signIn(session: SessionStore, presenting anchor: GoogleSignInAnchor? = nil, onFinish: @escaping @MainActor () -> Void = {}) {
-        guard let config, running == nil else {
-            onFinish()
-            return
-        }
+    /// Google SDK가 준 것 (로그인과 이어 붙이기가 같은 입구를 쓴다: nonce 규칙이 하나다)
+    enum Authorization: Sendable {
+        /// 토큰과, Supabase에 원본으로 보낼 nonce (Google에는 해시를 보냈다)
+        case tokens(idToken: String, accessToken: String, nonce: SignInNonce)
+        case canceled
+        case noToken
+        case failed(String)
+        /// 설정이 없거나 흐름이 이미 떠 있다: 아무것도 하지 않는다
+        case unavailable
+        /// 로그인 창을 띄울 곳이 없다
+        case noAnchor
+    }
+
+    /// 토큰만 받는다 (Supabase 로그인 · 이어 붙이기는 부르는 쪽이 한다). Google에는 nonce의 SHA-256을, Supabase에는 원래 값을 보낸다
+    /// (Supabase Google 제공자의 nonce 확인은 켜 둔다). `anchor`가 없으면 지금 앞에 있는 화면 · 창.
+    static func authorize(presenting anchor: GoogleSignInAnchor? = nil, step: SignInLog.Step = .signIn) async -> Authorization {
+        guard let config, running == nil else { return .unavailable }
         guard let anchor = anchor ?? currentAnchor() else {
-            session.reportError("Couldn't open Google sign-in. Try again.")
-            onFinish()
-            return
+            SignInLog.record(.google, step, .failed("no_window"))
+            return .noAnchor
         }
         let flow = UUID()
         running = flow
         let google = GIDSignIn.sharedInstance
         google.configuration = GIDConfiguration(clientID: config.clientID)
         let nonce = SignInNonce.random()
-        google.signIn(withPresenting: anchor, hint: nil, additionalScopes: nil, nonce: nonce.hashed) { result, error in
-            // SDK는 결과를 메인 큐로 준다. 토큰 문자열만 꺼내 메인 액터로 넘긴다.
-            let outcome: Outcome
-            if let error {
-                outcome = (error as? GIDSignInError)?.code == .canceled ? .canceled : .failed(error.localizedDescription)
-            } else if let user = result?.user, let idToken = user.idToken?.tokenString {
-                outcome = .tokens(idToken: idToken, accessToken: user.accessToken.tokenString)
-            } else {
-                outcome = .noToken
+        let outcome: Authorization = await withCheckedContinuation { continuation in
+            google.signIn(withPresenting: anchor, hint: nil, additionalScopes: nil, nonce: nonce.hashed) { result, error in
+                // SDK는 결과를 메인 큐로 준다. 토큰 문자열만 꺼내 넘긴다.
+                if let error {
+                    continuation.resume(returning: (error as? GIDSignInError)?.code == .canceled ? .canceled : .failed(error.localizedDescription))
+                } else if let user = result?.user, let idToken = user.idToken?.tokenString {
+                    continuation.resume(returning: .tokens(idToken: idToken, accessToken: user.accessToken.tokenString, nonce: nonce))
+                } else {
+                    continuation.resume(returning: .noToken)
+                }
             }
-            Task { @MainActor in
-                await finish(outcome, nonce: nonce, session: session)
-                if running == flow { running = nil }
-                onFinish()
-            }
+        }
+        if running == flow { running = nil }
+        // 결과 코드만 (SDK의 오류 설명은 싣지 않는다)
+        switch outcome {
+        case .tokens: SignInLog.record(.google, step, .ok)
+        case .canceled: SignInLog.record(.google, step, .canceled)
+        case .noToken: SignInLog.record(.google, step, .failed("missing_token"))
+        case .failed: SignInLog.record(.google, step, .failed("sdk_error"))
+        case .unavailable, .noAnchor: break
+        }
+        return outcome
+    }
+
+    /// 로그인을 시작한다. `anchor`가 없으면 지금 앞에 있는 화면 · 창. `onFinish`: 창을 닫았거나 Supabase 로그인까지 끝났을 때.
+    static func signIn(session: SessionStore, presenting anchor: GoogleSignInAnchor? = nil, onFinish: @escaping @MainActor () -> Void = {}) {
+        Task { @MainActor in
+            await finish(await authorize(presenting: anchor), session: session)
+            onFinish()
         }
     }
 
-    private enum Outcome: Sendable {
-        case tokens(idToken: String, accessToken: String)
-        case canceled
-        case noToken
-        case failed(String)
-    }
-
-    private static func finish(_ outcome: Outcome, nonce: SignInNonce, session: SessionStore) async {
+    private static func finish(_ outcome: Authorization, session: SessionStore) async {
         switch outcome {
-        case .tokens(let idToken, let accessToken):
+        case .tokens(let idToken, let accessToken, let nonce):
             // Supabase가 받지 않으면 이 기기의 Google 로그인도 지운다 (다음 시도는 계정 고르기부터)
             if !(await session.signInWithGoogle(idToken: idToken, accessToken: accessToken, nonce: nonce)) {
                 GIDSignIn.sharedInstance.signOut()
             }
-        case .canceled:
+        case .canceled, .unavailable:
             // 사용자가 창을 닫은 경우는 오류로 보여주지 않는다.
             break
+        case .noAnchor:
+            session.reportError("Couldn't open Google sign-in. Try again.")
         case .noToken:
             session.reportError("Google didn't return a sign-in token. Try again.")
         case .failed(let description):

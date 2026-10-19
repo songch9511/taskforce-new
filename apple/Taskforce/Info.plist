@@ -12,6 +12,10 @@
 	<string>$(API_BASE_URL)</string>
 	<key>GIDClientID</key>
 	<string>$(GOOGLE_IOS_CLIENT_ID)</string>
+	<key>AppleServicesID</key>
+	<string>$(APPLE_SERVICES_ID)</string>
+	<key>AppleWebReturnURL</key>
+	<string>$(APPLE_WEB_RETURN_URL)</string>
 	<key>SUFeedURL</key>
 	<string>$(SPARKLE_FEED_URL)</string>
 	<key>SUPublicEDKey</key>

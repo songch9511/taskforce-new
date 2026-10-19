@@ -1,6 +1,6 @@
 # Mac beta DMG 준비와 설치 확인
 
-기록: 2026-10-05 KST. 이 절차는 기존 Mac 직접 배포 helper를 재사용해 DMG를 준비하고 설치 근거를 모으기 위한 것이다. 스크립트는 웹사이트에 파일이나 링크를 게시하지 않는다. Google-only 0.1.0 (3) DMG가 Developer ID 서명·공증 검증을 통과했다. 공개 download link와 실제 설치·로그인·연결 확인은 아직 완료되지 않았다.
+기록: 2026-10-05 KST. 이 절차는 기존 Mac 직접 배포 helper를 재사용해 DMG를 준비하고 설치 근거를 모으기 위한 것이다. 스크립트는 웹사이트에 파일이나 링크를 게시하지 않는다. Google-only 0.1.0 (3) DMG가 Developer ID 서명·공증 검증을 통과했다(2026-10-19부터 Mac도 Apple + Google: 아래 "Apple 로그인"). 공개 download link와 실제 설치·로그인·연결 확인은 아직 완료되지 않았다.
 
 ## 재사용한 파일과 안전장치
 
@@ -105,18 +105,18 @@ otool -L "$AGENT/Contents/MacOS/Taskforce Agent"                      # /usr/lib
 
 | 항목 | 현재 근거 |
 |---|---|
-| 로그인·배포 경로 | 사용자가 Mac beta는 Google 로그인만 사용하도록 결정. 이 앱에서 native Apple 진입점·entitlement 제거, 기존 서버 Apple 지원과 기존 계정 데이터는 보존 |
+| 로그인·배포 경로 | (기록: 10-05) 사용자가 Mac beta는 Google 로그인만 사용하도록 결정했었다. 이 앱에서 native Apple 진입점·entitlement 제거, 기존 서버 Apple 지원과 기존 계정 데이터는 보존. **2026-10-19 사용자 결정으로 Mac도 Apple + Google이다**(아래 "Apple 로그인": 권한 없이 브라우저 창) |
 | 서명된 DMG | `/Users/daniel/.codex/releases/taskforce/0.1.0-3/Taskforce-0.1.0-3/Taskforce-0.1.0-3.dmg`; 0.1.0 (3), 6,530,158 bytes, SHA-256 `849dc331fa8e46c6c56c2ccc3a7240b16a86eb9d0f785bebf98ab3aefa4d8cd8` |
 | DMG·앱 서명과 배포 승인 | 2026-10-05 재확인: `codesign --verify --deep --strict`, 두 `stapler validate`, 앱·DMG Gatekeeper 판정이 통과. 양쪽 모두 `Notarized Developer ID`; Developer ID Application: Cheonghyeok Song (`U9DWQKQFMW`) |
 | 앱 구성 | Info.plist 버전 0.1.0 (3), bundle id `dev.taskforcelabs.taskforce`; 서명 산출물에서 production API host·Supabase 설정·Google client 설정 확인. 비밀 설정 값은 기록하거나 출력하지 않음 |
 | 작업본 설정 | active worktree의 ignored `Secrets.xcconfig`는 mode `600`, Git 제외. required Supabase·Google 설정은 helper가 비노출 조건 검사로 확인 |
 | 웹사이트 DMG/다운로드 링크 | website PR [#29](https://github.com/songch9511/taskforce/pull/29)은 Draft. 숨은 경로와 metadata guard가 준비됐고 Preview 검사는 통과했지만 DMG를 업로드하거나 production에 공개하지 않음 |
 
-Developer ID export·공증 막힘은 Google-only 구성으로 해결됐다. 이 산출물의 로컬 서명·공증 검증은 실제 OAuth·설치 사용성 검증을 대신하지 않는다. Apple-only 사용자는 이 설치본으로 로그인할 수 없고, 기존 계정 데이터는 보존되므로 Apple 로그인 경로로 돌아가야 한다. 계정 병합이나 보호장치 우회는 하지 않는다.
+Developer ID export·공증 막힘은 Google-only 구성으로 해결됐다. 이 산출물의 로컬 서명·공증 검증은 실제 OAuth·설치 사용성 검증을 대신하지 않는다. (기록) 0.1.0 (3) 설치본은 Apple-only 사용자가 로그인할 수 없었다. 다음 DMG부터는 아래 "Apple 로그인"으로 Apple 계정도 이 앱에서 로그인한다. 계정 병합이나 보호장치 우회는 하지 않는다.
 
 ## 준비 완료 기준
 
-1. 현재 승인된 출시 경로는 Google-only 직접 Developer ID DMG다. 로그인 방식과 Apple-only 계정의 영향이 사용자에게 고지됐다. 계정 삭제의 재인증 보호는 유지한다.
+1. 승인된 출시 경로는 직접 Developer ID DMG다. (기록) 0.1.0 (3)은 Google-only였고 Apple-only 계정의 영향이 고지됐다. 이제 Mac도 Apple + Google이다(아래). 계정 삭제는 Apple이 붙은 계정이면 브라우저 창에서 다시 확인받는다.
 2. active worktree의 ignored `Secrets.xcconfig`는 mode `600`이며 Git에 포함되지 않는다. 값은 로그·문서·채팅에 복사하지 않는다. Release config는 API host와 Google 공개 client 설정을 고정한다.
 3. DMG 0.1.0 (3)은 export·notarization·stapling·Gatekeeper 검증을 통과했다. 재검증에는 해시, `hdiutil verify`, app/DMG `codesign`, `stapler validate`, `spctl`을 사용한다.
 4. 다음은 지정한 검증 계정으로 설치본을 열어 Google OAuth·세션 복원·취소/재시도와 `.local` 로그아웃을 확인하고, 실제 연결 → 원문 수집 → 할 일 표시까지 증거를 남기는 것이다. 실제 AI 요청은 운영 예산 migration과 guarded 코드 배포가 준비되기 전에는 보내지 않는다.
@@ -138,3 +138,13 @@ backend 구현 보고상 OpenRouter 호출에는 `data_collection=deny`와 `zdr=
 현재 작업본은 `codex/taskforce-mac-beta-active-20261005`의 `64bdb480b04cb538fd57b728dd0fdf7443004b7d` 기준이다. Xcode 설정은 `SUPPORTED_PLATFORMS=macosx`, `MACOSX_DEPLOYMENT_TARGET=15.0`, `ENABLE_HARDENED_RUNTIME=YES`; Developer ID signed artifact는 위 표에 있다.
 
 검증은 `TaskforceKit` 59 suites / 514 tests, macOS 앱 9 suites / 86 tests, auth 회귀 96 tests, unsigned Release build, backend 175 files / 2,253 tests, disposable PostgreSQL 3 files / 23 tests, lint, typecheck, build와 `npm run eval -- --labels`를 통과했다. 비용·오류 처리 변경은 운영 로직 테스트로 검증했다. 추출·판정·병합·프롬프트를 바꾸지 않아 실제 모델 채점은 다시 실행하지 않았다. 이 로컬 검사는 실제 제공자 OAuth·연결·기기 E2E를 대신하지 않는다.
+
+## Apple 로그인 (Mac, 2026-10-19)
+
+Mac도 Sign in with Apple + Sign in with Google이다. **Developer ID 프로필에는 `com.apple.developer.applesignin` 권한이 들어갈 수 없어**(Apple "Supported capabilities (macOS)": Sign in with Apple은 Developer ID 열이 비었다) 앱 안 로그인은 쓰지 않는다. 대신 브라우저 창(Apple 웹 로그인)으로 하고, Taskforce 서버(`POST /api/v1/apple/return`)가 결과를 `taskforce://auth/apple`로 넘긴다([PLATFORMS.md](../PLATFORMS.md) 4장). 그래서 서명 · 공증 · DMG · Sparkle · helper 셋은 그대로다(권한 파일을 바꾸지 않는다).
+
+- **회귀 막기:** 권한 파일에 `com.apple.developer.applesignin`이 들어가면 `MacEntitlementsTests`가 실패하고, `scripts/release-mac-dmg.sh`가 서명 뒤 공증 전에 멈춘다. Xcode에서 Sign in with Apple 기능을 켜면 10-05처럼 export가 다시 깨지기 때문이다. 서명한 앱 확인: `codesign -d --entitlements :- "$APP"`에 `applesignin`이 없어야 한다.
+- **설정:** Release 빌드는 커밋된 `apple/Config/Release.xcconfig`의 `APPLE_SERVICES_ID` · `APPLE_WEB_RETURN_URL`을 쓴다(공개 값). 아카이브한 앱 Info.plist의 `AppleServicesID` · `AppleWebReturnURL`이 그 값인지 확인한다. **서버 route가 먼저 배포돼야 한다**(Release는 늘 Apple 버튼이 보인다). Apple Developer · Supabase · Vercel 설정은 [런북](runbook.md) 5장 "Apple 웹 로그인".
+- **App ID의 Sign in with Apple을 켠 상태에서도 Developer ID export가 되는지**는 `--skip-notarize` 빌드로 한 번 확인한다(확인 필요).
+- **계정 삭제:** Apple이 붙은 계정은 삭제 직전에 브라우저 창에서 다시 확인받고 code를 `apple_client: web`로 보낸다. 취소하거나 받지 못하면 code 없이 지우고 로그인 화면에 안내 한 줄을 띄운다(처리방침 5장).
+- **법률 문서:** 약관 제4조 · 처리방침 1 · 5 · 17장의 바뀐 문장은 결제 변경과 한 판으로 게시한다(`docs/legal/README.md` "게시 대기"). **Apple 로그인이 든 DMG를 운영자 밖 사람에게 주기 전에** 게시를 마친다.

@@ -186,16 +186,11 @@ struct LauncherFlowView: View {
     @ViewBuilder
     private var signedOutRows: some View {
         VStack(alignment: .leading, spacing: TFSpace.md) {
-            Text(SessionStore.googleOnlyNotice)
-                .font(TFFont.footnote)
-                .foregroundStyle(TFColor.textSecondary)
-                .padding(.horizontal, TFSpace.md)
-            Link("Contact for account access or deletion help", destination: AccountDeletion.contactURL)
-                .font(TFFont.footnote)
-                .padding(.horizontal, TFSpace.md)
-            if !GoogleSignInFlow.isAvailable {
-                Text("Google sign-in is unavailable in this build.")
+            // 둘 다 설정이 없는 Debug 빌드에서만
+            if !AppleSignInFlow.isAvailable, !GoogleSignInFlow.isAvailable {
+                Text(SignInCopy.unavailable)
                     .font(TFFont.footnote)
+                    .foregroundStyle(TFColor.textSecondary)
                     .padding(.horizontal, TFSpace.md)
             }
             ForEach(Array(model.items.enumerated()), id: \.element.id) { index, item in
@@ -212,8 +207,10 @@ struct LauncherFlowView: View {
     @ViewBuilder
     private func signedOutRow(_ item: LauncherItem, selected: Bool) -> some View {
         switch item {
+        case .signInWithApple:
+            LauncherRow(title: SignInCopy.appleTitle, selected: selected, leading: .symbol("apple.logo"))
         case .signInWithGoogle:
-            LauncherRow(title: SignInWithGoogleButton.title, selected: selected, leading: .google)
+            LauncherRow(title: SignInCopy.googleTitle, selected: selected, leading: .google)
         case .command(let command):
             LauncherRow(title: command.title, selected: selected, leading: .symbol(command.symbolName))
         default:

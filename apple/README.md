@@ -28,7 +28,8 @@
    - 실제 기기 · 배포 서버: `API_BASE_URL = https:/$()/<서버 주소>`
    - **Release 빌드(직접 배포용 아카이브)는 커밋된 `Config/Release.xcconfig`가 `https://api.taskforcelabs.dev`로 고정**합니다(Base + Secrets를 불러온 뒤 `API_BASE_URL`만 바꿈). Supabase URL · 키는 두 설정 모두 Secrets에서 옵니다.
 2. `apple/Taskforce.xcodeproj`를 Xcode로 엽니다. 서명은 자동이고 Team은 `U9DWQKQFMW`로 잡혀 있습니다.
-3. Supabase → Authentication → Sign In / Providers → Apple을 켜고 Client IDs에 `dev.taskforcelabs.taskforce`를 넣어야 로그인이 됩니다.
+3. Supabase → Authentication → Sign In / Providers → Apple을 켜고 Client IDs에 `dev.taskforcelabs.taskforce`(iPhone 앱 안 로그인)와 Mac 웹 로그인 Services ID `dev.taskforcelabs.taskforce.signin`(쉼표)을 넣어야 로그인이 됩니다.
+   **Mac은 앱 안 Apple 로그인을 쓰지 않습니다**(Developer ID 프로필은 `com.apple.developer.applesignin` 권한을 받지 못합니다): 브라우저 창 Apple 웹 로그인을 하고 서버 `POST /api/v1/apple/return`이 결과를 앱에 넘깁니다. Debug 빌드에서 Apple 버튼을 보려면 `Secrets.xcconfig`에 `APPLE_SERVICES_ID` · `APPLE_WEB_RETURN_URL`을 넣습니다(값은 `Config/Release.xcconfig`와 같음, 비우면 버튼 · 런처 행이 숨음). 권한 파일에 `applesignin`을 넣지 마세요(시험 · 배포 스크립트가 막습니다).
    Sign in with Google은 Google 제공자(Client IDs = 프로젝트 A iOS 클라이언트 ID, Skip nonce checks 끔, 2026-09-30 켬)가 받습니다. Debug 빌드에서 Google 버튼을 보려면 `Secrets.xcconfig`에 `GOOGLE_IOS_CLIENT_ID` · `GOOGLE_IOS_URL_SCHEME`을 넣습니다(값은 `Config/Release.xcconfig`와 같음, 비우면 버튼이 숨음). [PLATFORMS.md](../docs/PLATFORMS.md) 4장.
 4. Apple Developer → Identifiers → `dev.taskforcelabs.taskforce`에 App Groups가 켜져 있고 `group.dev.taskforcelabs.taskforce`가 연결돼 있어야 합니다(2026-09-28에 켬).
    빠지면 Mac 프로필에 App Group이 없어 macOS가 앱 권한을 통째로 무시하고, 로그인 세션을 Keychain에 저장하지 못합니다(`-34018`, 앱에는 "Couldn't save your sign-in.").
@@ -105,7 +106,7 @@ Mac 앱 테스트는 앱 자신을 호스트로 띄운다. 호스트의 `UserDef
 
 ### iPhone — 이전 설계 기록, 현재 beta 타깃 아님 (Figma 156:6 P1 · P10 · P11, U1 셸)
 
-- 로그인: Sign in with Apple, 그 아래 같은 크기의 Sign in with Google(Google 클라이언트 설정이 있을 때, 로그인만: 기본 범위 openid · email · profile), 그 아래 눈에 덜 띄게 "Sign in with email"(App Store 심사 계정용, 가입 화면 없음). Mac 런처도 같은 순서의 행이고, "Sign in with email" 행은 설정 창의 같은 로그인 화면을 연다.
+- 로그인: Sign in with Apple(시스템 버튼), 그 아래 같은 크기의 Sign in with Google(Google 클라이언트 설정이 있을 때, 로그인만: 기본 범위 openid · email · profile). Mac 로그인 화면은 안내 글 · 연락 링크 없이 버튼 둘과 법률 줄이고, 옛 런처의 로그아웃 목록도 같은 순서의 행(Apple → Google → Quit)이다. 이메일 · 비밀번호(App Store 심사 계정)는 Kit `signInWithEmail`만 남아 있고 Mac 화면에는 두지 않는다. 화면 문구는 사용자 승인(2026-10-19, `SignInCopy`)이다. 견본: `--show-settings -TFSampleData -TF_EDGE_SHELL YES -TFSnapshot <폴더> -TFSettingsSnapshotSignIn`이 로그인 화면(기본 · 오류 · 삭제 뒤 안내)과 Account › Sign-in 절의 모든 상태를 `<폴더>/light|dark/<상태>.png`로 남긴다(Debug 전용).
   Google 버튼은 Google 브랜드 규칙의 Light 테마(흰 바탕 · 회색 테두리 · 표준 색 G)로 다크 모드에서도 같다(`SignInWithGoogleButton`). Google 로그인 직후 프로필 이름이 비어 있으면 그 이름으로 한 번 채운다. 로그인이 풀릴 때마다(로그아웃 · 만료 · 계정 삭제) Google SDK 로그인도 지운다.
 - 큰 제목 `Tasks` → 검색칸 `Search 23 tasks`(열린 할 일 수, `PhoneHome.searchPrompt`, 찾는 동안 네 구역 모두 거름 `TaskFilter`) → Review card 한 장(`1 of 4`, 위에 `Show All 4 ›` = 모든 카드 화면. Confirm = `POST confirm`, Dismiss = `DELETE`, 둘 다 버튼으로만) → In Progress · To Do · Done Today(머리에 개수, 빈 구역은 숨김)의 Task row 목록. 구역 안 순서는 서버가 정한 그대로(`TaskBoard`). 섹션 접기(`SectionCaps`)는 쓰지 않는다(Mac 런처만).
   Task row = 옅은 빈 원(열린 할 일, 누르면 Done) + 제목 2줄까지 + 오른쪽 기한(지났거나 오늘이면 빨강) + 바뀜 점. 접근성 크기에서는 제목 전부 · 기한은 제목 아래 · 원 44. 원 VoiceOver "Mark Done", 섹션 머리 `.isHeader`.

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// "Sign in with Google" 버튼. Google 브랜드 규칙(developers.google.com/identity/branding-guidelines)의 Light 테마:
+/// "Continue with Google" 버튼 (DS `SignIn`, 사용자 승인 2026-10-19: 예전 "Sign in with Google"). Google 브랜드 규칙(developers.google.com/identity/branding-guidelines)의 Light 테마:
 /// 바탕 #FFFFFF · 1pt 안쪽 테두리 #747775 · 글자 #1F1F1F Medium, 표준 색 G 로고, iOS 여백(로고 앞 16 · 로고 뒤 12 · 글자 뒤 16).
 /// 크기는 SignInWithAppleButton에 맞춘다 (Google: 다른 제3자 로그인만큼 눈에 띄게. App Store 4.8: Apple을 먼저, 적어도 같게):
 /// iOS는 높이 48 · 글자 19, macOS는 Apple 버튼이 높이 30 · 글자 13에 머물러 같은 크기로 줄인다 (`height`).
@@ -9,7 +9,7 @@ import SwiftUI
 /// Google Sign-In SDK의 SwiftUI 버튼(GoogleSignInSwift)은 높이 40 고정 · 예전 디자인이라 Apple 버튼과 크기를 맞출 수 없어 쓰지 않는다.
 /// 글꼴은 규칙의 Google Sans 대신 시스템 글꼴이다 (Apple 버튼과 같은 글꼴, 글꼴 파일을 앱에 넣지 않음).
 public struct SignInWithGoogleButton: View {
-    public static let title = "Sign in with Google"
+    public static let title = "Continue with Google"
 
     #if os(macOS)
     /// SignInWithAppleButton이 실제로 그려지는 높이 (프레임을 키워도 30)
@@ -72,7 +72,7 @@ private struct GoogleButtonStyle: ButtonStyle {
     }
 }
 
-#Preview("Sign in with Google") {
+#Preview("Continue with Google") {
     VStack(spacing: 12) {
         SignInWithGoogleButton {}
             .frame(maxWidth: 360, minHeight: SignInWithGoogleButton.height, maxHeight: SignInWithGoogleButton.height)

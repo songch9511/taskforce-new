@@ -187,7 +187,7 @@ final class LauncherModel {
     /// 패널 컨트롤러가 채운다
     var close: () -> Void = {}
     var presentationAnchor: () -> NSWindow? = { nil }
-    /// Google 로그인 창을 띄운 동안은 포커스를 잃어도 닫지 않는다
+    /// Apple · Google 로그인 창을 띄운 동안은 포커스를 잃어도 닫지 않는다
     private(set) var suspendsAutoClose = false
 
     /// 취소해도 되는 읽기 (물어보기 · 원문 읽기). 쓰기는 창을 닫아도 끝까지 보낸다.
@@ -305,7 +305,7 @@ final class LauncherModel {
         return LauncherContent.sections(
             for: inputMode, now: board?.now, doneToday: board?.doneToday ?? [], signedIn: isSignedIn,
             needsConsent: account?.shouldPromptConsent ?? false, policyNotice: account?.policyNotice,
-            googleSignIn: GoogleSignInFlow.isAvailable, layout: layout
+            appleSignIn: AppleSignInFlow.isAvailable, googleSignIn: GoogleSignInFlow.isAvailable, layout: layout
         )
     }
 
@@ -1385,6 +1385,8 @@ final class LauncherModel {
             send(text)
         case .addAction(let title):
             startAdd(title)
+        case .signInWithApple:
+            startAppleSignIn()
         case .signInWithGoogle:
             startGoogleSignIn()
         case .allowAI:
@@ -2054,6 +2056,18 @@ final class LauncherModel {
     }
 
     // MARK: 로그인
+
+    /// 런처의 "Sign in with Apple" 행: 로그인 화면의 버튼과 같은 흐름(브라우저 창)을 띄운다. 흐름 동안 패널은 닫히지 않는다
+    private func startAppleSignIn() {
+        guard let session, let anchor = presentationAnchor() else { return }
+        suspendsAutoClose = true
+        NSApplication.shared.activate()
+        AppleSignInFlow.shared.signIn(session: session, presenting: anchor) { [weak self] in
+            guard let self else { return }
+            self.suspendsAutoClose = false
+            self.focusRequest += 1
+        }
+    }
 
     /// 런처의 "Sign in with Google" 행: 로그인 화면의 버튼과 같은 흐름을 런처 창 위에 띄운다
     private func startGoogleSignIn() {

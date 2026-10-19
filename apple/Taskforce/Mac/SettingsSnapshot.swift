@@ -1,11 +1,15 @@
 #if os(macOS) && DEBUG
 import AppKit
+import SwiftUI
+import Auth
+import TaskforceKit
 
 /// 설정 창 확인용 (Debug 빌드): `--show-settings`로 실행하면 설정 창을 연다. `-TFSampleData -TFSnapshot <폴더>`를 더하면
 /// 사이드바의 보이는 항목마다 Light · Dark PNG(`mac-settings-<항목>-light.png` · `-dark.png`)를 남기고 끝낸다.
 /// Account도 설정 본문을 담는다. Usage & Credits(`-TFSampleCredits`일 때 보임) · Privacy & AI Data는 끝까지 스크롤한 모습(`-end`)도,
 /// 동의 화면(460×440 시트)은 처음 · 끝(`consent-prompt` · `consent-prompt-end`)을, Usage의 멈춘 카드 ›로 연 런처(`usage-working`)도 담는다.
 /// `LauncherSnapshot`처럼 화면 녹화 권한 없이 자기 창만 그린다 (신호등 · 창 그림자는 담기지 않는다).
+/// `-TFSettingsSnapshotSignIn`이면 로그인 화면과 Account › Sign-in 절의 모든 상태만 (OA 로그인 5.7, `SignInSnapshot`).
 /// `-TF_EDGE_SHELL YES`면 0.2.0 탭 창(`SettingsWindowView`)을 견본 데이터로만 담는다: 탭마다 `mac-settings-window-<탭>-light.png` · `-dark.png`
 /// (스크롤이 있으면 `-end`도), 상세 · 트레이 안 확인(`connections-privacy` · `connections-notion` · `connections-notion-disconnect` ·
 /// `connections-withdraw` · `account-delete`). 렌더된 견본일 뿐이다: 실제 포인터 · 키보드 · VoiceOver 확인이 아니다.
@@ -25,7 +29,13 @@ enum SettingsSnapshot {
                 // 실제 계정의 이름 · 이메일을 PNG로 남기지 않는다
                 if SampleData.isEnabled {
                     // `-TFSettingsSnapshotAgents`: Your agents의 모든 상태만 (OA Settings › Your agents 5.4)
-                    if SettingsAgentsSnapshot.isRequested { await captureAgents(to: directory) } else { await captureWindow(to: directory) }
+                    if SettingsAgentsSnapshot.isRequested {
+                        await captureAgents(to: directory)
+                    } else if SignInSnapshot.isRequested {
+                        await captureSignIn(to: directory)
+                    } else {
+                        await captureWindow(to: directory)
+                    }
                 }
                 NSApplication.shared.terminate(nil)
                 return
@@ -98,6 +108,78 @@ enum SettingsSnapshot {
             model.close()
             await captureRemembered(model: model, shoot: { name, end in await shoot(name, end: end) }, settle: { await settle($0) })
         }
+    }
+
+    /// 로그인 화면과 Account › Sign-in 절의 모든 상태 (OA 로그인 5.7, `-TFSettingsSnapshotSignIn`): 상태마다 `<폴더>/light|dark/<상태>.png`.
+    /// 문구는 승인된 앱 문구 그대로다 (DZ 그림 `handoffs/oa-signin-dz`와 대조한다).
+    /// 값은 모두 가짜다: 실제 Apple · Google 창 · 서버 · Keychain에 닿지 않는다. 렌더된 견본일 뿐이다: 실제 포인터 · 키보드 · VoiceOver 확인이 아니다
+    private static func captureSignIn(to directory: URL) async {
+        guard case .ready(let session, _) = AppRuntime.startup else { return }
+        let add = SignInAddModel.shared
+        func settle(_ seconds: Double = 1.0) async { try? await Task.sleep(for: .seconds(seconds)) }
+        let me = UUID()
+        func user(_ providers: [String], _ emails: [String: String]) -> SignInMethods {
+            let identities = providers.map {
+                UserIdentity(id: "sub-\($0)", identityId: UUID(), userId: me, identityData: emails[$0].map { ["email": .string($0)] } ?? [:],
+                    provider: $0, createdAt: nil, lastSignInAt: nil, updatedAt: nil)
+            }
+            return SignInMethods(user: User(id: me, appMetadata: ["provider": .string(providers.first ?? "email"), "providers": .array(providers.map { .string($0) })],
+                userMetadata: [:], aud: "authenticated", createdAt: Date(), updatedAt: Date(), identities: identities))
+        }
+        for (appearance, name) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
+            NSApplication.shared.appearance = NSAppearance(named: appearance)
+            let folder = directory.appending(path: name, directoryHint: .isDirectory)
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            // 로그인 화면 (로그아웃): 기본 · 오류 한 줄(회색) · 삭제 뒤 Apple 안내
+            await session.accountDeleted(note: nil)
+            await captureSignInScreen(session: session, to: folder.appending(path: "signin-screen.png"))
+            session.reportError(SignInCopy.appleFailed)
+            await captureSignInScreen(session: session, to: folder.appending(path: "signin-screen-error.png"))
+            await session.accountDeleted(note: SignInCopy.appleRevokeSkipped)
+            await captureSignInScreen(session: session, to: folder.appending(path: "signin-screen-note.png"))
+            await session.accountDeleted(note: nil)
+            // Account › Sign-in 절
+            let google = user(["google"], ["google": "daniel@gmail.com"])
+            let scenarios: [(String, SignInMethods, String?, SignInMethodRow.Method?, [SignInMethodRow.Method: String])] = [
+                ("account-google-add-apple", google, "daniel@gmail.com", nil, [:]),
+                ("account-apple-add-google", user(["apple"], ["apple": "relay-x1y2z3@privaterelay.appleid.com"]), "relay-x1y2z3@privaterelay.appleid.com", nil, [:]),
+                ("account-both", user(["apple", "google"], ["apple": "relay-x1y2z3@privaterelay.appleid.com", "google": "daniel@gmail.com"]), "daniel@gmail.com", nil, [:]),
+                ("account-review-email-only", user(["email"], [:]), "appreview@taskforcelabs.dev", nil, [:]),
+                ("account-add-busy", google, "daniel@gmail.com", .apple, [:]),
+                ("account-add-error-apple-other-account", google, "daniel@gmail.com", nil, [.apple: SignInCopy.appleBelongsToAnotherAccount]),
+                ("account-add-error-google-other-account", user(["apple"], ["apple": "dnl.s@icloud.com"]), "dnl.s@icloud.com", nil, [.google: SignInCopy.googleBelongsToAnotherAccount]),
+                ("account-add-error-generic", google, "daniel@gmail.com", nil, [.apple: SignInCopy.addFailed]),
+                ("account-unknown-methods-one-row", .unknown, "daniel@gmail.com", nil, [:]),
+            ]
+            for (shot, methods, email, busy, messages) in scenarios {
+                // 창을 먼저 연 뒤 값을 바꾼다: 보이는 화면이 다시 그려진다 (`sampleAccount` · `busy` · `messages`는 관찰된다)
+                await show(.account)
+                add.sampleAccount = (methods, email)
+                add.debugForce(busy: busy, messages: messages)
+                await settle(1.0)
+                guard let window = settingsWindow else { continue }
+                scrollToStart(window)
+                await settle(0.5)
+                capture(window, to: folder.appending(path: "\(shot).png"))
+            }
+        }
+        add.sampleAccount = nil
+        add.debugForce(busy: nil, messages: [:])
+        NSApplication.shared.appearance = nil
+    }
+
+    /// 로그아웃 상태의 로그인 화면 하나 (설정 창의 로그인 칸과 같은 크기)
+    private static func captureSignInScreen(session: SessionStore, to url: URL) async {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 440), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        // 프로그램으로 만든 창은 닫을 때 한 번 더 해제되지 않게 한다 (Swift가 이미 소유한다)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: SettingsSignInPanel().environment(session))
+        window.appearance = NSApplication.shared.appearance
+        window.setFrameOrigin(NSPoint(x: 80, y: 80))
+        window.orderFront(nil)
+        try? await Task.sleep(for: .seconds(1.0))
+        capture(window, to: url)
+        window.close()
     }
 
     /// Connections › Your agents의 모든 상태 (OA Settings › Your agents 5.4, `-TFSettingsSnapshotAgents`): 상태마다 `<폴더>/light|dark/<상태>.png`.
@@ -296,5 +378,12 @@ enum SettingsSnapshot {
         if String(describing: type(of: view)).hasPrefix("NSHostingView") { return view }
         return view.subviews.lazy.compactMap { hostingView(in: $0) }.first
     }
+}
+
+/// 로그인 견본 인자 (Debug 전용, Release 바이너리에 없다): `-TFSettingsSnapshotSignIn`
+enum SignInSnapshot {
+    static let argument = "-TFSettingsSnapshotSignIn"
+
+    static var isRequested: Bool { ProcessInfo.processInfo.arguments.contains(argument) }
 }
 #endif

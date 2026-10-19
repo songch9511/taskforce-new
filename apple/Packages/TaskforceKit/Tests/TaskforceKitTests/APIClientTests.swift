@@ -181,6 +181,31 @@ struct APIClientTests {
         #expect(try json(request.body) as NSDictionary == ["apple_authorization_code": "c0de.apple"] as NSDictionary)
     }
 
+    /// Mac의 브라우저 창 재확인 code는 Services ID 것이다: 서버가 폐기할 client를 `apple_client: web`으로 알린다
+    @Test func deleteAccountSendsTheWebClientForABrowserWindowCode() async throws {
+        try await client(body: #"{"deleted":true}"#).deleteAccount(authorizationCode: "c0de.web", client: .web)
+        let request = try #require(last)
+        #expect(request.method == "DELETE")
+        #expect(try json(request.body) as NSDictionary == ["apple_authorization_code": "c0de.web", "apple_client": "web"] as NSDictionary)
+    }
+
+    /// 앱 안 로그인(iPhone)의 code는 `apple_client`를 싣지 않는다: 옛 서버와 같은 본문 (서버가 생략을 app으로 본다)
+    @Test func deleteAccountOmitsTheClientForTheAppDefault() async throws {
+        try await client(body: #"{"deleted":true}"#).deleteAccount(authorizationCode: "c0de.app", client: .app)
+        #expect(try json(last?.body) as NSDictionary == ["apple_authorization_code": "c0de.app"] as NSDictionary)
+        // code가 없으면 client만으로는 본문이 없다
+        try await client(body: #"{"deleted":true}"#).deleteAccount(client: .web)
+        let request = try #require(last)
+        #expect(request.body == nil || request.body?.isEmpty == true)
+    }
+
+    /// 검토 1 P3-4: 서버가 알려 준 `apple_revoked`를 그대로 돌려준다 (없으면 nil)
+    @Test func deleteAccountReturnsWhetherAppleWasRevoked() async throws {
+        #expect(try await client(body: #"{"deleted":true,"apple_revoked":true}"#).deleteAccount(authorizationCode: "c", client: .web) == DeleteAccountResult(appleRevoked: true))
+        #expect(try await client(body: #"{"deleted":true,"apple_revoked":false}"#).deleteAccount(authorizationCode: "c", client: .web) == DeleteAccountResult(appleRevoked: false))
+        #expect(try await client(body: #"{"deleted":true}"#).deleteAccount() == DeleteAccountResult(appleRevoked: nil), "옛 서버 · 폐기와 상관없는 계정")
+    }
+
     @Test func handoff() async throws {
         let response = try await client(body: Fixtures.handoff).handoff(id: Fixtures.actionID)
         #expect(response.title == "투자 자료 보내기")

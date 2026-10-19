@@ -157,11 +157,23 @@ struct LauncherTests {
         #expect(sections.flatMap(\.items) == [.command(.quit)])
     }
 
-    /// Google 클라이언트 설정이 있으면 Google이 먼저, Apple 계정은 계속 쓸 수 있고 이메일은 맨 아래
-    @Test func signedOutShowsGoogleFirstWhenConfigured() {
-        let sections = LauncherContent.sections(for: .empty, now: nil, signedIn: false, googleSignIn: true)
-        #expect(sections.flatMap(\.items) == [.signInWithGoogle, .command(.quit)])
-        #expect(LauncherContent.sections(for: .empty, now: now, signedIn: true, googleSignIn: true).flatMap(\.items).contains(.signInWithGoogle) == false)
+    /// 설정이 있는 로그인 행만 보인다: Apple이 먼저, Google이 그 아래, 그 밖에 Quit
+    @Test func signedOutShowsAppleThenGoogleWhenConfigured() {
+        func items(apple: Bool, google: Bool) -> [LauncherItem] {
+            LauncherContent.sections(for: .empty, now: nil, signedIn: false, appleSignIn: apple, googleSignIn: google).flatMap(\.items)
+        }
+        #expect(items(apple: true, google: true) == [.signInWithApple, .signInWithGoogle, .command(.quit)])
+        #expect(items(apple: true, google: false) == [.signInWithApple, .command(.quit)])
+        #expect(items(apple: false, google: true) == [.signInWithGoogle, .command(.quit)])
+        #expect(items(apple: false, google: false) == [.command(.quit)])
+        for signedIn in [LauncherContent.sections(for: .empty, now: now, signedIn: true, appleSignIn: true, googleSignIn: true).flatMap(\.items)] {
+            #expect(!signedIn.contains(.signInWithApple) && !signedIn.contains(.signInWithGoogle))
+        }
+    }
+
+    @Test func signInRowsHaveTheirOwnStableIDs() {
+        #expect(LauncherItem.signInWithApple.id == "sign-in-apple")
+        #expect(LauncherItem.signInWithGoogle.id == "sign-in-google")
     }
 
     @Test func missingConsentAddsAllowRowOnTopWithoutHidingTheList() {

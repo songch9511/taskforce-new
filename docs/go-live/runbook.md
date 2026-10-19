@@ -59,6 +59,8 @@
 | `APPLE_TEAM_ID` | `U9DWQKQFMW` | Sign in with Apple 토큰 폐기 (`app-store.md` 6장) |
 | `APPLE_KEY_ID` · `APPLE_PRIVATE_KEY` | Apple Developer → Keys → Sign in with Apple 키(.p8). 줄바꿈은 `\n` | APNs 키와 같은 키여도 되지만(`.env.example`) 따로 두기를 권장. 비우면 폐기를 건너뛰고 삭제는 계속 |
 | `APPLE_CLIENT_ID` | 비움 → `dev.taskforcelabs.taskforce` | |
+| `APPLE_SERVICES_ID` | Apple Developer → Identifiers → Services IDs의 Mac 웹 로그인용 ID `dev.taskforcelabs.taskforce.signin` | 계정 삭제의 Mac 브라우저 창 재확인 code를 이 client로 폐기한다(`DELETE /api/v1/account`의 `apple_client: web`). 비우면 그 폐기만 건너뛰고(로그만) 삭제는 계속. 아래 5장 "Apple 웹 로그인" |
+| `APPLE_WEB_RETURN_URL` | `https://api.taskforcelabs.dev/api/v1/apple/return` (그 Services ID의 Return URL과 글자까지 같게) | Apple code 교환(`/auth/token`)에 보내는 `redirect_uri`. 웹 authorize가 보낸 값과 같아야 Apple이 받는다. 비어 있거나 `https` · 도메인 · `/api/v1/apple/return` 모양이 아니면 web 폐기를 건너뛴다(삭제는 계속). 응답 `apple_revoked: false`로 앱이 안내한다 |
 | `APNS_KEY_ID` · `APNS_PRIVATE_KEY` | Apple Developer → Keys → Apple Push Notifications service 키(.p8) | 없으면 알림이 꺼진 채 동작 |
 | `APNS_TEAM_ID` | `U9DWQKQFMW` | |
 | `APNS_BUNDLE_ID` | 비움 → `dev.taskforcelabs.taskforce` | TestFlight 빌드의 기기 토큰은 `production` 환경이다 |
@@ -134,7 +136,8 @@ Supabase → Authentication:
 |---|---|
 | URL Configuration → Site URL | `https://api.taskforcelabs.dev` |
 | Redirect URLs | `https://api.taskforcelabs.dev/auth/confirm`, `http://localhost:3000/auth/confirm` |
-| Sign In / Providers → Apple | 켬, Client IDs `dev.taskforcelabs.taskforce` (앱 안 로그인만이면 Services ID · Secret 불필요, PLATFORMS.md 6장) |
+| Sign In / Providers → Apple | 켬, Client IDs `dev.taskforcelabs.taskforce`(iPhone 앱 안 로그인) **+ Mac 웹 로그인 Services ID `dev.taskforcelabs.taskforce.signin`**(쉼표). ID 토큰 로그인이라 Secret Key는 비워 둔다(6개월 갱신 불필요, PLATFORMS.md 4·6장) |
+| Auth → 계정 이어 붙이기(manual linking) | 켬. 꺼져 있으면 Settings의 "Add"가 `manual_linking_disabled`로 실패한다(대시보드의 정확한 자리 이름은 처음 켤 때 확인) |
 | Sign In / Providers → Google | 켬 ✅ (2026-09-30). Client IDs = 프로젝트 A iOS 클라이언트 ID `923900348266-iopmhbf1foor213n1jc3a8tv6v4fti82.apps.googleusercontent.com`, Client Secret 비움(웹 OAuth용이라 앱 로그인에는 쓰지 않는다), **Skip nonce checks 끔**(앱이 nonce를 보낸다). 5장 "Sign in with Google" |
 | Providers → Email | 웹 관리 화면의 링크 로그인용 + App Store 심사용 비밀번호 로그인으로 켬. 새 가입은 막지 않는다 — 허용 목록은 아래 Hooks가 대신 막는다 |
 | Hooks → Before User Created | Postgres function `public.hook_before_user_created` → **Enable** (마이그레이션 `20261007000000_review_account_signup_hook.sql`). `provider = email`로 가입하는 주소가 `review_accounts`에 없으면 403으로 거절한다. Apple · Google 가입에는 영향 없다(`docs/go-live/app-store.md` 3장, `tests/db/review-accounts.test.ts`) |
@@ -153,6 +156,33 @@ Supabase → Organization → Billing에서 프로젝트가 **Free**이고 백�
 - **Push Notifications 기능:** App ID `dev.taskforcelabs.taskforce`에 Push Notifications를 켠다. 앱 권한 파일에 `aps-environment`가 있어서, 켜기 전에는 서명 빌드의 프로필 발급이 실패한다.
 - **APNs 키:** Apple Developer → Keys → + → Apple Push Notifications service → `.p8` → `APNS_KEY_ID` · `APNS_PRIVATE_KEY`.
 - **Sign in with Apple 키:** `app-store.md` 6장 1번 → `APPLE_*`.
+- **Apple 웹 로그인 (Mac 브라우저 창, [PLATFORMS.md](../PLATFORMS.md) 4장 "Sign in with Apple (Mac)"):** 사용자가 하는 순서. 서버 PR 병합 전에 한다.
+  1. Identifiers → App ID `dev.taskforcelabs.taskforce` → Sign in with Apple이 켜져 있고 "Enable as a primary App ID"인지 본다. 프로필 · 권한 파일 변경이 **아니다**(Mac 권한 파일에는 넣지 않는다). 켠 뒤에도 Developer ID export가 되는지는 `scripts/release-mac-dmg.sh --skip-notarize` 빌드로 본다(확인 필요).
+  2. Identifiers → + → **Services IDs** → Description "Taskforce Mac sign-in", Identifier `dev.taskforcelabs.taskforce.signin` → Register.
+  3. 그 Services ID → Sign in with Apple ✓ → Configure: Primary App ID `dev.taskforcelabs.taskforce`, Domains `api.taskforcelabs.dev`, Return URLs `https://api.taskforcelabs.dev/api/v1/apple/return` → Done → Continue → Save.
+  4. Keys: 기존 "Taskforce SIWA" 키(I8)의 Primary App ID가 `dev.taskforcelabs.taskforce`인지 본다. 새 키는 필요 없다(같은 `.p8`로 Services ID client 폐기가 되는지는 첫 실제 삭제의 `revoked` 로그로 확인한다).
+  5. Supabase Apple Client IDs에 Services ID를 더하고(4장 Auth 설정), manual linking을 켠다. Vercel에 `APPLE_SERVICES_ID` · `APPLE_WEB_RETURN_URL`을 넣는다(2장).
+  6. 서버 PR 병합 = 운영 배포 뒤, 가짜 form으로 중계 route를 확인한다(토큰이 아닌 값): `curl -si -X POST https://api.taskforcelabs.dev/api/v1/apple/return -d 'state=Abcdefghijklmnop_-0123456789&code=x'` → `303`, `Location: taskforce://auth/apple?state=…&code=x`, `Cache-Control: no-store`, `Referrer-Policy: no-referrer`. **Vercel 요청 로그 · Drain에 응답 `Location`(`destination`)이 남는지 가짜 표식으로 확인한다**(`state=` 값에 구별되는 가짜 문자열을 넣고 로그를 찾아 본다). L2 통과 조건이다: 남으면 fragment 방식 강화를 앞당긴다.
+  7. (지금은 안 함) Taskforce가 사용자에게 메일을 보내게 되면(이메일 코드 · 메일 보고서) Apple "Configure private email relay service"에 보내는 도메인을 등록한다. 안 하면 "이메일 가리기" 주소로 가는 메일이 버려진다.
+  - 실기기 확인(서명 · 공증한 DMG): 새 Apple 계정(이메일 공유)으로 로그인 → `auth.identities`에 apple 하나 / "이메일 가리기" → 새 계정 / iPhone 시절 같은 Apple 계정 → 같은 계정인지(`sub` 같음) / Google 계정 → Settings Add Apple → 로그아웃 → Apple로 다시 → 같은 계정 / 이미 다른 계정 것인 Apple로 Add → 한 줄 오류 / Apple이 붙은 계정 삭제 → 브라우저 재확인 → account.apple.com에서 Taskforce가 사라짐 / 재확인 취소 → 삭제 + 안내 / 기본 브라우저를 Chrome으로 바꿔 반복 / `codesign -d --entitlements :-`에 `applesignin` 0.
+  - 측정(읽기 전용, 사용자가 운영 DB에서 돌린다. 결과는 숫자만 본다. 새 이벤트는 없다: 로그인 방법은 Supabase `auth.identities`가 이미 남긴다):
+    ```sql
+    -- 제공자 조합별 계정 수 (apple · google · apple+google · email)
+    select providers, count(*) as accounts from (
+      select user_id, array_agg(provider order by provider) as providers from auth.identities group by user_id
+    ) t group by providers order by accounts desc;
+
+    -- "이메일 가리기" 계정 수와 그중 identity가 하나뿐인 수 (중복 의심)
+    select count(*) as relay_accounts,
+           count(*) filter (where (select count(*) from auth.identities i where i.user_id = u.id) = 1) as relay_single_identity
+    from auth.users u where u.email like '%@privaterelay.appleid.com';
+
+    -- 출시 뒤에 이어 붙인 계정 수 (identity가 둘 이상이고 둘째가 출시 뒤에 생김). 출시 시각을 넣는다
+    select count(*) from (
+      select user_id, (array_agg(created_at order by created_at))[2] as second_at
+      from auth.identities group by user_id having count(*) >= 2
+    ) t where second_at > '2026-MM-DD hh:mm+09';
+    ```
 - **Sign in with Google (로그인만, [PLATFORMS.md](../PLATFORMS.md) 4장):** 사용자가 콘솔에서 하는 순서.
   1. ✅ (2026-09-30) Google Cloud 프로젝트 A `taskforce-510108` → Google Auth Platform → Clients → Create client → 유형 **iOS**, 이름 "Taskforce app sign-in (iOS · Mac)", 번들 ID `dev.taskforcelabs.taskforce`, Team ID `U9DWQKQFMW`. Mac 앱도 같은 iOS 클라이언트를 쓴다(Google 문서: macOS 앱은 iOS 유형). 클라이언트 ID `923900348266-iopmhbf1foor213n1jc3a8tv6v4fti82.apps.googleusercontent.com`, iOS URL scheme `com.googleusercontent.apps.923900348266-iopmhbf1foor213n1jc3a8tv6v4fti82`. 비밀 값은 없다.
      범위는 SDK 기본값(`openid` · `email` · `profile`, 민감하지 않은 범위)만 쓴다. 프로젝트 A의 Data access 목록에 `userinfo.profile`이 없으면 넣어 둔다(재심사 없음. 로그인 동의 화면에 이름 · 프로필 사진 공유가 보인다).

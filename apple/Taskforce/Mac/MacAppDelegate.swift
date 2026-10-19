@@ -140,17 +140,34 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// `taskforce://connections/…` · Google 로그인 콜백 (ASWebAuthenticationSession이 주소를 바로 돌려주지만, 앱 밖에서 열린 경우를 위해).
-    /// 초안 링크 `taskforce://artifacts/<id>`는 런처를 열고 그 초안 (U2 Mac)
+    /// 초안 링크 `taskforce://artifacts/<id>`는 런처를 열고 그 초안 (U2 Mac).
+    /// Apple 웹 로그인 주소 `taskforce://auth/apple…`은 버린다 (`routeOpenedURLs`)
     func application(_ application: NSApplication, open urls: [URL]) {
         guard case .ready(_, let services) = AppRuntime.startup else { return }
         let account = AppRuntime.account(services: services)
-        for url in urls where !GoogleSignInFlow.handle(url) {
-            if let id = ArtifactLink.parse(url), let launcher {
+        Self.routeOpenedURLs(
+            urls,
+            google: GoogleSignInFlow.handle,
+            artifact: { id in
+                guard let launcher = self.launcher else { return false }
                 launcher.show()
                 launcher.model.openDraft(id: id)
-                continue
-            }
-            Task { await account.handleCallback(url) }
+                return true
+            },
+            connection: { url in Task { await account.handleCallback(url) } }
+        )
+    }
+
+    /// 앱 밖에서 열린 주소를 어디로 보낼지. Apple 웹 로그인 주소(`taskforce://auth/apple…`)는 아무 데도 보내지 않는다:
+    /// 그 주소는 앱이 띄운 ASWebAuthenticationSession만 받고(자기가 만든 state일 때만), 앱 밖에서 열린 것은 토큰을 쓰지 않으며 연결 콜백으로도 넘기지 않는다.
+    static func routeOpenedURLs(
+        _ urls: [URL], google: (URL) -> Bool, artifact: (UUID) -> Bool, connection: (URL) -> Void
+    ) {
+        for url in urls {
+            if AppleSignInFlow.isAppleCallback(url) { continue }
+            if google(url) { continue }
+            if let id = ArtifactLink.parse(url), artifact(id) { continue }
+            connection(url)
         }
     }
 

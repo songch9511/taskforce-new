@@ -138,55 +138,212 @@ private final class CopyTestStorage: AuthLocalStorage, @unchecked Sendable {
     func remove(key: String) throws {}
 }
 
+/// 계정 삭제 (OA 로그인 계약 5.6): Apple이 붙은 계정은 브라우저 창에서 한 번 더 확인받고 code + `web`로 지운다. 막지 않는다.
+/// 서버 · Apple 창 · Keychain은 모두 가짜다.
 @MainActor
-struct GoogleOnlyAccountDeletionTests {
-    @Test func appleLinkedAndUnknownIdentityBlockDeletion() {
+struct AccountDeletionTests {
+    /// 한 번 불린 일들의 기록
+    @MainActor
+    final class Trace {
+        var reauthorizations = 0
+        var deletedWith: [String?] = []
+        var clients: [AppleAuthorizationClient] = []
+        /// 서버가 돌려줄 `apple_revoked`
+        var appleRevoked: Bool? = nil
+        var removed: [UUID] = []
+        var googleDisconnects = 0
+        var signedOutNotes: [String?] = []
+        var signedOutCalls = 0
+    }
+
+    func sessionStore(signedInAs session: Session) throws -> SessionStore {
+        let storage = CopyTestStorage(data: try AuthClient.Configuration.jsonEncoder.encode(session))
+        let store = SessionStore(auth: AuthClient(url: URL(string: "https://delete-race.invalid/auth/v1")!, localStorage: storage,
+            fetch: { _ in Issue.record("Test must not contact an auth server"); throw URLError(.badURL) }, autoRefreshToken: false))
+        store.apply(event: .signedIn, session: session)
+        return store
+    }
+
+    /// 가짜 의존성으로 삭제를 돌린다. `code`: 브라우저 창이 돌려줄 code (nil이면 취소)
+    func run(
+        providers: Set<String>, code: String? = "apple-code", serverFails: Bool = false, trace: Trace = Trace()
+    ) async throws -> (result: String?, trace: Trace, session: SessionStore) {
         let id = UUID()
-        let google = SignInMethods(providers: ["google"], primary: "google")
-        for providers: Set<String> in [["apple"], ["apple", "google"], []] {
-            let fresh = user(id: id, providers: providers)
-            #expect(AccountDeletion.deletionBlocker(fresh: fresh, cached: google, expectedID: id, currentID: id) == AccountDeletion.unavailableMessage)
+        let current = makeSession(id: id, providers: providers)
+        let store = try sessionStore(signedInAs: current)
+        let result = await AccountDeletion.delete(session: store,
+            fetchUser: { current.user },
+            reauthorize: { trace.reauthorizations += 1; return code },
+            deleteOnServer: { sent, client in
+                if serverFails { throw URLError(.cannotConnectToHost) }
+                trace.deletedWith.append(sent)
+                trace.clients.append(client)
+                return trace.appleRevoked
+            },
+            removeSavedData: { trace.removed.append($0) },
+            disconnectGoogle: { trace.googleDisconnects += 1 },
+            accountDeleted: { note in trace.signedOutNotes.append(note); trace.signedOutCalls += 1; store.apply(event: .signedOut, session: nil) })
+        return (result, trace, store)
+    }
+
+    @Test func anAppleAccountIsReconfirmedAndDeletedWithTheCode() async throws {
+        let ran = try await run(providers: ["apple"])
+        #expect(ran.result == nil)
+        #expect(ran.trace.reauthorizations == 1)
+        #expect(ran.trace.deletedWith == ["apple-code"])
+        // 브라우저 창(Services ID)에서 받은 code라 서버에 web으로 알린다
+        #expect(ran.trace.clients == [.web])
+        #expect(ran.trace.googleDisconnects == 0)
+        #expect(ran.trace.signedOutNotes == [nil])
+        #expect(ran.trace.removed.count == 1)
+    }
+
+    /// 재확인을 취소하면 code 없이 지우고, 끝난 뒤 로그인 화면에 안내 한 줄
+    @Test func aCanceledReconfirmationStillDeletesWithoutACodeAndLeavesANote() async throws {
+        let ran = try await run(providers: ["apple"], code: nil)
+        #expect(ran.result == nil)
+        #expect(ran.trace.reauthorizations == 1)
+        #expect(ran.trace.deletedWith.count == 1 && ran.trace.deletedWith[0] == nil)
+        #expect(ran.trace.signedOutNotes == [AccountDeletion.revokeSkippedNote])
+        #expect(AccountDeletion.revokeSkippedNote.contains("Apple"))
+    }
+
+    /// 삭제 뒤 안내는 승인된 문장 그대로다 (account.apple.com 메뉴 이름은 L2에서 확인)
+    @Test func theApprovedNoteIsTheOneLeftOnTheSignInScreen() {
+        #expect(AccountDeletion.revokeSkippedNote == "Account deleted. To remove Sign in with Apple too, go to account.apple.com › Sign-In and Security › Sign in with Apple.")
+    }
+
+    /// 검토 1 P3-4: 재확인 code를 보냈어도 서버가 폐기를 건너뛰었다고(apple_revoked false) 하면 안내 한 줄을 남긴다
+    @Test func aServerThatSkippedTheRevocationLeavesTheNoteEvenWithACode() async throws {
+        let trace = Trace()
+        trace.appleRevoked = false
+        let ran = try await run(providers: ["apple"], trace: trace)
+        #expect(ran.result == nil)
+        #expect(ran.trace.deletedWith == ["apple-code"])
+        #expect(ran.trace.signedOutNotes == [AccountDeletion.revokeSkippedNote])
+    }
+
+    /// 폐기했다고(true) 하거나 말이 없으면(옛 서버 · Apple과 상관없음) 안내가 없다
+    @Test func aRevokedOrSilentServerLeavesNoNote() async throws {
+        let revokedTrace = Trace()
+        revokedTrace.appleRevoked = true
+        #expect(try await run(providers: ["apple"], trace: revokedTrace).trace.signedOutNotes == [nil])
+        #expect(try await run(providers: ["apple"]).trace.signedOutNotes == [nil])
+    }
+
+    /// Apple과 상관없는 계정은 서버가 false라고 해도 안내하지 않는다 (재확인 대상이 아니다)
+    @Test func theNoteOnlyAppliesToAppleAccounts() async throws {
+        let trace = Trace()
+        trace.appleRevoked = false
+        #expect(try await run(providers: ["google"], trace: trace).trace.signedOutNotes == [nil])
+        let emailTrace = Trace()
+        emailTrace.appleRevoked = false
+        #expect(try await run(providers: ["email"], trace: emailTrace).trace.signedOutNotes == [nil])
+    }
+
+    @Test func aGoogleOnlyAccountNeedsNoReconfirmation() async throws {
+        let ran = try await run(providers: ["google"])
+        #expect(ran.result == nil)
+        #expect(ran.trace.reauthorizations == 0)
+        #expect(ran.trace.deletedWith.count == 1 && ran.trace.deletedWith[0] == nil)
+        #expect(ran.trace.googleDisconnects == 1)
+        #expect(ran.trace.signedOutNotes == [nil])
+    }
+
+    /// Apple과 Google이 모두 붙은 계정: 재확인도 하고 Google 권한도 폐기한다
+    @Test func bothLinkedReconfirmsAndDisconnectsGoogle() async throws {
+        let ran = try await run(providers: ["apple", "google"])
+        #expect(ran.trace.reauthorizations == 1)
+        #expect(ran.trace.deletedWith == ["apple-code"])
+        #expect(ran.trace.googleDisconnects == 1)
+    }
+
+    /// 이메일(심사 계정): 폐기할 것이 없다
+    @Test func theReviewAccountNeedsNothing() async throws {
+        let ran = try await run(providers: ["email"])
+        #expect(ran.result == nil)
+        #expect(ran.trace.reauthorizations == 0)
+        #expect(ran.trace.googleDisconnects == 0)
+        #expect(ran.trace.deletedWith.count == 1)
+    }
+
+    @Test func aServerFailureKeepsTheAccountOnThisDevice() async throws {
+        let ran = try await run(providers: ["apple"], serverFails: true)
+        #expect(ran.result?.hasPrefix("Couldn't delete your account.") == true)
+        #expect(ran.trace.removed.isEmpty)
+        #expect(ran.trace.signedOutCalls == 0)
+        #expect(ran.session.state != .signedOut)
+    }
+
+    @Test func notSignedInOrUnreadableUsersAreRefusedWithoutAnyWrite() async throws {
+        let trace = Trace()
+        let signedOut = SessionStore(auth: AuthClient(url: URL(string: "https://delete-race.invalid/auth/v1")!, localStorage: CopyTestStorage(data: Data()), autoRefreshToken: false))
+        let result = await AccountDeletion.delete(session: signedOut, fetchUser: { throw URLError(.badURL) },
+            reauthorize: { trace.reauthorizations += 1; return "code" }, deleteOnServer: { code, _ in trace.deletedWith.append(code); return nil },
+            removeSavedData: { trace.removed.append($0) }, disconnectGoogle: {}, accountDeleted: { _ in })
+        // 로그인 전에는 승인된 한 줄로 막고 아무것도 쓰지 않는다
+        #expect(result == "Sign in before deleting your account.")
+        #expect(trace.reauthorizations == 0 && trace.deletedWith.isEmpty)
+
+        let current = makeSession(id: UUID(), providers: ["apple"])
+        let store = try sessionStore(signedInAs: current)
+        let unreadable = await AccountDeletion.delete(session: store, fetchUser: { throw URLError(.notConnectedToInternet) },
+            reauthorize: { trace.reauthorizations += 1; return "code" }, deleteOnServer: { code, _ in trace.deletedWith.append(code); return nil },
+            removeSavedData: { trace.removed.append($0) }, disconnectGoogle: {}, accountDeleted: { _ in })
+        #expect(unreadable == AccountDeletion.couldNotVerifyMessage)
+        #expect(trace.reauthorizations == 0 && trace.deletedWith.isEmpty && trace.removed.isEmpty)
+    }
+
+    /// 확인 문구: 막는 두 조각은 없고, 구독 문장은 그대로고, 폐기 문장은 Apple을 더한 승인된 새 문장이다
+    @Test func theConfirmationNoLongerSaysDeletionIsBlocked() {
+        let message = AccountDeletion.confirmationMessage
+        #expect(!message.contains("cannot be deleted here"))
+        #expect(!message.contains("For eligible accounts"))
+        #expect(!message.contains("verification"))
+        #expect(message.contains("Taskforce cancels future subscription renewals"))
+        #expect(message.contains("We try to remove Apple, Google, and connected-service access, but it may remain."))
+        #expect(!message.contains("We try to remove Google and connected-service access"))
+        #expect(message.hasSuffix("This can't be undone."))
+    }
+
+    @Test func theGoogleOnlyBlockWordsAreGone() {
+        let all = [AccountDeletion.confirmationMessage, AccountDeletion.revokeSkippedNote, AccountDeletion.accountChangedMessage, AccountDeletion.couldNotVerifyMessage]
+        for text in all {
+            #expect(!text.contains("Google-only"))
+            #expect(!text.contains("unavailable in this"))
+            #expect(!text.contains("Sign in with Google before deleting"))
         }
-        #expect(AccountDeletion.deletionBlocker(fresh: user(id: id, providers: ["google"]),
-            cached: SignInMethods(providers: ["apple"], primary: "apple"), expectedID: id, currentID: id) == AccountDeletion.unavailableMessage)
     }
 
-    @Test func freshGoogleIdentityPermitsDeletionOnlyForTheSameAccount() {
+    // MARK: 계정이 바뀌는 경합
+
+    @Test func deletionBlockerOnlyChecksTheAccount() {
         let id = UUID()
-        let fresh = user(id: id, providers: ["google"])
-        let cached = SignInMethods(providers: ["google"], primary: "google")
-        #expect(AccountDeletion.deletionBlocker(fresh: fresh, cached: cached, expectedID: id, currentID: id) == nil)
-        #expect(AccountDeletion.deletionBlocker(fresh: fresh, cached: cached, expectedID: UUID(), currentID: id) != nil)
-        #expect(AccountDeletion.deletionBlocker(fresh: fresh, cached: cached, expectedID: id, currentID: UUID()) != nil)
-        #expect(AccountDeletion.deletionBlocker(fresh: fresh, cached: cached, expectedID: id, currentID: nil) != nil)
-    }
-
-    @Test func contactAndConfirmationExplainTheBlockedPath() {
-        #expect(AccountDeletion.contactURL.absoluteString == "mailto:privacy@taskforcelabs.dev")
-        #expect(AccountDeletion.unavailableMessage.contains("have not been deleted"))
-        #expect(AccountDeletion.unavailableMessage.contains("privacy@taskforcelabs.dev"))
-        #expect(AccountDeletion.confirmationMessage.contains("cannot be deleted here"))
-        #expect(!AccountDeletion.confirmationMessage.contains("remove Apple"))
+        let fresh = user(id: id, providers: ["apple"])
+        #expect(AccountDeletion.deletionBlocker(fresh: fresh, expectedID: id, currentID: id) == nil)
+        #expect(AccountDeletion.deletionBlocker(fresh: fresh, expectedID: UUID(), currentID: id) == AccountDeletion.accountChangedMessage)
+        #expect(AccountDeletion.deletionBlocker(fresh: fresh, expectedID: id, currentID: UUID()) == AccountDeletion.accountChangedMessage)
+        #expect(AccountDeletion.deletionBlocker(fresh: fresh, expectedID: id, currentID: nil) == AccountDeletion.accountChangedMessage)
     }
 
     @Test func switchingAccountsWhileDeletionIsPendingPreservesTheNewAccount() async throws {
-        let a = makeSession(id: UUID())
-        let b = makeSession(id: UUID())
+        let a = makeSession(id: UUID(), providers: ["google"])
+        let b = makeSession(id: UUID(), providers: ["google"])
         let storage = CopyTestStorage(data: try AuthClient.Configuration.jsonEncoder.encode(a))
         let auth = AuthClient(url: URL(string: "https://delete-race.invalid/auth/v1")!, localStorage: storage,
             fetch: { _ in Issue.record("Test must not contact an auth server"); throw URLError(.badURL) }, autoRefreshToken: false)
-        let session = SessionStore(auth: auth, googleOnly: true)
+        let session = SessionStore(auth: auth)
         session.apply(event: .signedIn, session: a)
         let pending = PendingDeletion()
         var removed: [UUID] = []
         var googleConnected = true
         var localSignOuts = 0
         let deletion = Task {
-            await AccountDeletion.delete(session: session, fetchUser: { a.user },
-                deleteOnServer: { await pending.waitForResponse() },
+            await AccountDeletion.delete(session: session, fetchUser: { a.user }, reauthorize: { nil },
+                deleteOnServer: { _, _ in await pending.waitForResponse(); return nil },
                 removeSavedData: { removed.append($0) },
                 disconnectGoogle: { googleConnected = false },
-                accountDeleted: { localSignOuts += 1; session.apply(event: .signedOut, session: nil) })
+                accountDeleted: { _ in localSignOuts += 1; session.apply(event: .signedOut, session: nil) })
         }
         await pending.waitUntilRequested()
         try storage.store(key: "session", value: AuthClient.Configuration.jsonEncoder.encode(b))
@@ -200,27 +357,53 @@ struct GoogleOnlyAccountDeletionTests {
         #expect(localSignOuts == 0)
     }
 
+    /// 브라우저 창이 떠 있는 사이 계정이 바뀌면 서버에 쓰지 않는다 (새 계정을 지우지 않는다)
+    @Test func switchingAccountsWhileTheAppleWindowIsOpenWritesNothing() async throws {
+        let a = makeSession(id: UUID(), providers: ["apple"])
+        let b = makeSession(id: UUID(), providers: ["apple"])
+        let storage = CopyTestStorage(data: try AuthClient.Configuration.jsonEncoder.encode(a))
+        let session = SessionStore(auth: AuthClient(url: URL(string: "https://delete-race.invalid/auth/v1")!, localStorage: storage,
+            fetch: { _ in Issue.record("Test must not contact an auth server"); throw URLError(.badURL) }, autoRefreshToken: false))
+        session.apply(event: .signedIn, session: a)
+        let trace = Trace()
+        let result = await AccountDeletion.delete(session: session, fetchUser: { a.user },
+            reauthorize: {
+                // 창이 열려 있는 동안 다른 계정으로 바뀐다
+                try? storage.store(key: "session", value: AuthClient.Configuration.jsonEncoder.encode(b))
+                session.apply(event: .signedIn, session: b)
+                return "code-of-a"
+            },
+            deleteOnServer: { code, _ in trace.deletedWith.append(code); return nil },
+            removeSavedData: { trace.removed.append($0) }, disconnectGoogle: { trace.googleDisconnects += 1 },
+            accountDeleted: { _ in trace.signedOutCalls += 1 })
+        #expect(result == AccountDeletion.accountChangedMessage)
+        #expect(trace.deletedWith.isEmpty)
+        #expect(trace.removed.isEmpty)
+        #expect(trace.googleDisconnects == 0 && trace.signedOutCalls == 0)
+        #expect(session.state == .signedIn(userID: b.user.id, email: b.user.email))
+    }
+
     @Test func deletionOfTheCurrentAccountStillClearsLocalAuthentication() async throws {
-        let a = makeSession(id: UUID())
+        let a = makeSession(id: UUID(), providers: ["google"])
         let storage = CopyTestStorage(data: try AuthClient.Configuration.jsonEncoder.encode(a))
         let session = SessionStore(auth: AuthClient(url: URL(string: "https://delete-race.invalid/auth/v1")!,
-            localStorage: storage, autoRefreshToken: false), googleOnly: true)
+            localStorage: storage, autoRefreshToken: false))
         session.apply(event: .signedIn, session: a)
         var removed: [UUID] = []
         var disconnected = false
-        let result = await AccountDeletion.delete(session: session, fetchUser: { a.user }, deleteOnServer: {},
+        let result = await AccountDeletion.delete(session: session, fetchUser: { a.user }, reauthorize: { nil }, deleteOnServer: { _, _ in nil },
             removeSavedData: { removed.append($0) }, disconnectGoogle: { disconnected = true },
-            accountDeleted: { session.apply(event: .signedOut, session: nil) })
+            accountDeleted: { _ in session.apply(event: .signedOut, session: nil) })
         #expect(result == nil)
         #expect(removed == [a.user.id])
         #expect(disconnected)
         #expect(session.state == .signedOut)
     }
 
-    private func makeSession(id: UUID) -> Session {
+    private func makeSession(id: UUID, providers: Set<String>) -> Session {
         Session(accessToken: "access-\(id)", tokenType: "bearer", expiresIn: 3600,
             expiresAt: Date().addingTimeInterval(3600).timeIntervalSince1970, refreshToken: "refresh-\(id)",
-            user: user(id: id, providers: ["google"]))
+            user: user(id: id, providers: providers))
     }
 
     private func user(id: UUID, providers: Set<String>) -> User {

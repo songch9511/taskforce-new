@@ -11,6 +11,13 @@ API_BASE_URL = https:/$()/api.taskforcelabs.dev
 GOOGLE_IOS_CLIENT_ID = 923900348266-iopmhbf1foor213n1jc3a8tv6v4fti82.apps.googleusercontent.com
 GOOGLE_IOS_URL_SCHEME = com.googleusercontent.apps.923900348266-iopmhbf1foor213n1jc3a8tv6v4fti82
 
+// Sign in with Apple (Mac, 브라우저 창 로그인): Developer ID 앱은 앱 안 Apple 로그인을 쓸 수 없어(권한을 받지 못한다) Apple 웹 로그인을 한다.
+// Services ID는 Primary App ID(dev.taskforcelabs.taskforce)에 묶인 것이고, Return URL은 서버 중계 route다 (`/api/v1/apple/return`).
+// 둘 다 앱 Info.plist에 그대로 들어가는 공개 값(비밀 없음)이라 커밋한다. 운영 Supabase → Apple 제공자의 Client IDs에도 이 Services ID가 있어야 한다.
+// 서버 route가 먼저 배포돼 있어야 한다 (docs/go-live/mac-dmg.md "Apple 로그인").
+APPLE_SERVICES_ID = dev.taskforcelabs.taskforce.signin
+APPLE_WEB_RETURN_URL = https:/$()/api.taskforcelabs.dev/api/v1/apple/return
+
 // 자동 업데이트(Sparkle). *** 출시 전 채울 것 *** 둘 중 하나라도 비어 있으면 앱은 업데이터를 시작하지 않고 메뉴 "Check for Updates…"는 꺼져 있다.
 // 둘 다 공개 값이라 커밋한다 (EdDSA 개인 키는 사용자 Keychain에만 있다). 만드는 법 · 올리는 법: docs/go-live/mac-dmg.md "자동 업데이트".
 //   SPARKLE_FEED_URL      = appcast.xml의 HTTPS 주소. 위처럼 "//"는 "/$()/"로: https:/$()/<호스트>/<경로>/appcast.xml

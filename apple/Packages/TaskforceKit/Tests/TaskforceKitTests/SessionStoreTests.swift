@@ -1,5 +1,6 @@
 import Auth
 import Foundation
+import Synchronization
 import Testing
 @testable import TaskforceKit
 
@@ -173,7 +174,7 @@ struct SessionStoreSaveTests {
     // MARK: Google 로그인 (`signInWithGoogle`)
 
     /// Google ID 토큰 로그인(`/token?grant_type=id_token`)에 이 세션을 돌려주는 서버. 받은 요청이 `signInWithGoogle`의 값인지 본다
-    func store(storage: any AuthLocalStorage, signingIn session: Session, googleOnly: Bool = false) throws -> SessionStore {
+    func store(storage: any AuthLocalStorage, signingIn session: Session) throws -> SessionStore {
         let body = try AuthClient.Configuration.jsonEncoder.encode(session)
         return SessionStore(auth: AuthClient(
             url: URL(string: "https://example.supabase.co/auth/v1")!, localStorage: storage,
@@ -189,7 +190,7 @@ struct SessionStoreSaveTests {
                 return (body, HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!)
             },
             autoRefreshToken: false
-        ), googleOnly: googleOnly)
+        ))
     }
 
     /// Supabase가 Google ID 토큰으로 만든 사용자 (이름은 `user_metadata`에)
@@ -460,52 +461,103 @@ struct SessionStoreSignOutTests {
     }
 }
 
+/// 로그인 방법이 Apple · Google · 이메일 무엇이든 세션은 그대로 로그인 상태다 (Mac의 Google 전용 막기를 없앴다)
 @MainActor
-struct GoogleOnlySessionTests {
+struct AnySignInMethodSessionTests {
+    static let combinations: [Set<String>] = [["apple"], ["email"], [], ["google"], ["apple", "google"]]
+
+    func store(for session: Session) throws -> SessionStore {
+        SessionStore(auth: AuthClient(url: URL(string: "https://example.supabase.co/auth/v1")!,
+            localStorage: SavedSessionStorage(data: try JSONEncoder().encode(session)), autoRefreshToken: false))
+    }
+
+    func session(providers: Set<String>) -> Session {
+        var session = SessionStoreTests().session(expiresIn: 3600)
+        session.user.appMetadata = ["providers": .array(providers.map { .string($0) })]
+        return session
+    }
+
     @Test(arguments: [AuthChangeEvent.initialSession, .signedIn, .tokenRefreshed])
-    func legacySessionsStayOutsideTheApp(event: AuthChangeEvent) throws {
-        for providers: Set<String> in [["apple"], ["email"], [], ["apple", "google"]] {
-            var session = SessionStoreTests().session(expiresIn: 3600)
-            session.user.appMetadata = ["providers": .array(providers.map { .string($0) })]
-            let auth = AuthClient(url: URL(string: "https://example.supabase.co/auth/v1")!,
-                localStorage: SavedSessionStorage(data: try JSONEncoder().encode(session)), autoRefreshToken: false)
-            let store = SessionStore(auth: auth, googleOnly: true)
+    func everySignInMethodStaysSignedInWithoutANotice(event: AuthChangeEvent) throws {
+        for providers in Self.combinations {
+            let session = session(providers: providers)
+            let store = try store(for: session)
             store.apply(event: event, session: session)
-            #expect(store.state == .signedOut)
-            #expect(store.notice == SessionStore.googleOnlyNotice)
-            #expect(auth.currentSession?.user.id == session.user.id) // no account mutation
+            #expect(store.state == .signedIn(userID: session.user.id, email: session.user.email), "\(providers)")
+            #expect(store.notice == nil)
+            #expect(store.errorMessage == nil)
+            #expect(store.signInMethods.providers == providers)
         }
     }
 
-    @Test func googleOnlySavedSessionRemainsAvailable() throws {
-        let session = SessionStoreSaveTests().googleSession()
-        let auth = AuthClient(url: URL(string: "https://example.supabase.co/auth/v1")!,
-            localStorage: SavedSessionStorage(data: try JSONEncoder().encode(session)), autoRefreshToken: false)
-        let store = SessionStore(auth: auth, googleOnly: true)
-        store.apply(event: .initialSession, session: session)
-        #expect(store.state == .signedIn(userID: session.user.id, email: session.user.email))
+    /// 로그아웃하면 방법을 잊는다: 늦게 도착한 토큰 갱신이 로그아웃한 계정을 되살리지 않는다 (이 확인은 방법과 상관없다)
+    @Test func signingOutDropsTheAccountForEveryMethod() throws {
+        for providers in Self.combinations {
+            let session = session(providers: providers)
+            let store = try store(for: session)
+            store.apply(event: .signedIn, session: session)
+            store.apply(event: .signedOut, session: nil)
+            #expect(store.state == .signedOut)
+            #expect(store.signInMethods == .unknown)
+        }
     }
 
-    @Test func linkedAccountRequiresFreshGoogleAndLosesProofOnSignOut() async throws {
-        let fixtures = SessionStoreSaveTests()
-        var session = fixtures.googleSession()
-        session.user.appMetadata = ["provider": "apple", "providers": ["apple", "google"]]
-        let store = try fixtures.store(storage: SavedSessionStorage(data: try JSONEncoder().encode(session)), signingIn: session, googleOnly: true)
-        store.apply(event: .initialSession, session: session)
-        #expect(store.state == .signedOut)
-        #expect(await fixtures.signInWithGoogle(store))
-        #expect(store.state == .signedIn(userID: session.user.id, email: session.user.email))
-        store.apply(event: .signedOut, session: nil)
-        store.apply(event: .tokenRefreshed, session: session)
-        #expect(store.state == .signedOut)
+    /// 예전 Google 전용 문구 · 상태는 어디에도 남지 않았다
+    @Test func noSignInMethodMakesTheStoreSayGoogleOnly() async throws {
+        for providers in Self.combinations {
+            let session = session(providers: providers)
+            let store = try store(for: session)
+            store.apply(event: .initialSession, session: session)
+            #expect(store.notice == nil)
+        }
     }
 
-    @Test func removedSignInMethodsNeverContactAuth() async {
-        let auth = AuthClient(url: URL(string: "https://example.supabase.co/auth/v1")!, localStorage: EmptyStorage(),
-            fetch: { _ in Issue.record("Removed sign-in method made a request"); throw URLError(.badURL) }, autoRefreshToken: false)
-        let store = SessionStore(auth: auth, googleOnly: true)
-        await store.signInWithApple(idToken: "unused", nonce: SignInNonce(raw: "nonce"))
-        await store.signInWithEmail(email: "unused@example.com", password: "unused")
-        #expect(store.notice == SessionStore.googleOnlyNotice)
+    /// 앱 안(iPhone)·브라우저 창(Mac)이 준 Apple ID 토큰으로 로그인한다: Supabase에는 nonce 원본을, provider는 apple로 보낸다
+    @Test func signInWithAppleSendsTheAppleProviderTokenAndRawNonce() async throws {
+        let fixtures = SessionStoreTests()
+        var signedIn = fixtures.session(expiresIn: 3600)
+        signedIn.user.appMetadata = ["provider": "apple", "providers": ["apple"]]
+        let body = try AuthClient.Configuration.jsonEncoder.encode(signedIn)
+        let requests = Mutex<[[String: Any]]>([])
+        let store = SessionStore(auth: AuthClient(
+            url: URL(string: "https://example.supabase.co/auth/v1")!, localStorage: SavedSessionStorage(data: try JSONEncoder().encode(signedIn)),
+            fetch: { request in
+                let url = try #require(request.url)
+                #expect(url.path == "/auth/v1/token")
+                #expect(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems == [URLQueryItem(name: "grant_type", value: "id_token")])
+                requests.withLock { $0.append((try? JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: Any]) ?? [:]) }
+                return (body, HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!)
+            },
+            autoRefreshToken: false
+        ))
+        let nonce = SignInNonce.random()
+        await store.signInWithApple(idToken: "apple-id-token", nonce: nonce)
+        let sent = try #require(requests.withLock { $0.first })
+        #expect(sent["provider"] as? String == "apple")
+        #expect(sent["id_token"] as? String == "apple-id-token")
+        #expect(sent["nonce"] as? String == nonce.raw)
+        #expect(sent["nonce"] as? String != nonce.hashed)
+        #expect(sent["access_token"] == nil)
+        // 로그인이지 이어 붙이기가 아니다
+        #expect(sent["link_identity"] as? Bool != true)
+        #expect(store.errorMessage == nil)
+    }
+
+    @Test func signInWithAppleReportsFailure() async {
+        let store = SessionStore(auth: AuthClient(url: URL(string: "https://example.supabase.co/auth/v1")!, localStorage: EmptyStorage(),
+            fetch: { _ in throw URLError(.notConnectedToInternet) }, autoRefreshToken: false))
+        await store.signInWithApple(idToken: "apple-id-token", nonce: SignInNonce(raw: "nonce"))
+        #expect(store.errorMessage?.hasPrefix("Couldn't sign in.") == true)
+        #expect(store.state == .loading)
+    }
+
+    /// 이메일 로그인 함수(심사 계정)도 더는 안내만 띄우고 돌아가지 않는다: 인증 서버에 요청을 보낸다
+    @Test func emailSignInContactsTheAuthServer() async {
+        let contacted = Mutex(false)
+        let store = SessionStore(auth: AuthClient(url: URL(string: "https://example.supabase.co/auth/v1")!, localStorage: EmptyStorage(),
+            fetch: { _ in contacted.withLock { $0 = true }; throw URLError(.notConnectedToInternet) }, autoRefreshToken: false))
+        await store.signInWithEmail(email: "review@example.com", password: "pw")
+        #expect(contacted.withLock { $0 })
+        #expect(store.notice == nil)
     }
 }
