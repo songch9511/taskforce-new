@@ -4,9 +4,11 @@ import Foundation
 /// Edge 셸이 켜는 표면의 한 곳 (0.2.0). 어느 표면을 어느 빌드에서 켜는지를 이 값 하나가 정한다:
 /// - **Release**(`release`): Edge 셸 + All work + S4 Review(confirm 요청에 Confirm · Dismiss, 기존 v1 경로) + C3 복귀 요약만. Chats(B3) · 프로젝트 묶음(S3b) · 기억 · 0.2.0 설정 창은 꺼져 있다
 ///   (Release 설정은 지금의 구 `MacSettingsView`: Plan & usage · billing이 그대로 있다). 새 대체 단축키 동작은 없다 — Edge가 켜지면 ⌥ Space는 Edge 패널을 연다 (확정된 디자인).
+/// - **내부 배포**(`internalBuild`, OA 내부 DMG): Release 구성 위에 0.2.0 표면을 전부 켠 세트. Info.plist `TaskforceInternalBuild`(빌드 설정 `TF_INTERNAL_BUILD`, 기본 NO)가 YES인 비 Debug 빌드만 쓴다
+///   (`scripts/release-mac-dmg.sh --internal`이 `TF_INTERNAL_BUILD=YES TF_BRIDGE_ENABLED=YES`로 아카이브). 기본 Release는 위 `release` 그대로다. 값은 Debug의 다섯 인자(`-TF_EDGE_SHELL -TF_S4 -TF_C3 -TF_S3B -TF_U2`)가 켜는 것과 같다.
 /// - **DEBUG**(`debug`): 격리 실행의 launch argument만 (저장된 defaults로는 켜지지 않는다). 지금 동작 그대로 — `-TF_EDGE_SHELL YES`는 셸 + Chats + 0.2.0 설정 창을 함께 켜고, `-TF_S4` · `-TF_C3` · `-TF_S3B`는 각자의 축이다.
 ///   `-TF_RELEASE_SURFACES YES`는 다른 인자와 상관없이 `release`와 같은 표면을 만든다: Release 표면을 서명 앱 없이 격리 QA로 보려는 인자다 (서명된 앱이 아니다).
-/// 기존 플래그 enum(`EdgeShellFlag` · `S4Flag` · `C3Flag` · `S3bFlag`)은 시그니처 그대로 이 값을 읽는다. Release 쪽 분기(`#else`)는 이 한 줄뿐이라 Debug 시험 호스트에서는 `EdgeSurfaces.release` 값 시험 + Release 빌드로 확인한다.
+/// 기존 플래그 enum(`EdgeShellFlag` · `S4Flag` · `C3Flag` · `S3bFlag`)은 시그니처 그대로 이 값을 읽는다. Release 쪽 분기(`#else`)는 `shipped(info:)` 한 값만 읽어서, Debug 시험 호스트에서는 `EdgeSurfaces.release` · `internalBuild` · `shipped(info:)` 값 시험 + Release 빌드로 확인한다.
 struct EdgeSurfaces: Equatable {
     /// Edge 셸(레일 · 패널) 자체. 켜지면 ⌥ Space는 Edge 패널을 연다
     var shell: Bool
@@ -24,6 +26,18 @@ struct EdgeSurfaces: Equatable {
     /// Release에서 켜는 표면: 셸 + All work + S4 + C3만
     static let release = EdgeSurfaces(shell: true, review: true, summary: true, chats: false, projects: false, settingsWindow: false)
 
+    /// 내부 배포(OA 내부 DMG)에서 켜는 표면: 0.2.0 전부 — 셸 + Review + 복귀 요약 + Chats(Assistant 창 · 질문 카드) + 프로젝트(이슈 · 세션 패널 · Taskforce 대화) + 0.2.0 설정 창
+    static let internalBuild = EdgeSurfaces(shell: true, review: true, summary: true, chats: true, projects: true, settingsWindow: true)
+
+    /// 비 Debug 빌드의 표면: 기본은 `release`, Info.plist `TaskforceInternalBuild`가 켜진 내부 배포 빌드만 `internalBuild`.
+    /// 비 Debug 갈래(`#else`)는 `EdgeSurfaces.release`를 바로 읽지 않고 이 값만 읽는다 (시험이 소스를 검사한다)
+    static func shipped(info: [String: Any]?) -> EdgeSurfaces {
+        InternalBuildFlag.isEnabled(info: info) ? internalBuild : release
+    }
+
+    /// 이 앱 번들의 비 Debug 표면
+    static var shippedForThisBuild: EdgeSurfaces { shipped(info: Bundle.main.infoDictionary) }
+
     #if DEBUG
     static let releaseKey = "TF_RELEASE_SURFACES"
 
@@ -39,12 +53,12 @@ struct EdgeSurfaces: Equatable {
     }
     #endif
 
-    /// 이 빌드의 표면: Release는 `release`, Debug는 launch argument
+    /// 이 빌드의 표면: Release는 `release`(내부 배포 빌드는 `internalBuild`), Debug는 launch argument
     static var current: EdgeSurfaces {
         #if DEBUG
         return debug()
         #else
-        return release
+        return shippedForThisBuild
         #endif
     }
 
@@ -59,33 +73,33 @@ struct EdgeSurfaces: Equatable {
     #endif
 }
 
-/// 0.2.0 Chats(B3)를 켜는 플래그: 런타임(`ChatRuntime` · 서버 대화 v2 · 기억) · 레일 Chats 칸 · ⌘3 · ⌘N. **Release는 늘 꺼짐**(`EdgeSurfaces.release.chats`).
+/// 0.2.0 Chats(B3)를 켜는 플래그: 런타임(`ChatRuntime` · 서버 대화 v2 · 기억) · 레일 Chats 칸 · ⌘3 · ⌘N. **기본 Release는 늘 꺼짐**(`EdgeSurfaces.release.chats`), 내부 배포 빌드만 켜짐.
 /// DEBUG는 지금처럼 셸 플래그를 따른다 (`-TF_EDGE_SHELL YES`가 Chats를 함께 켠다).
 enum ChatsFlag {
     static func isEnabled(_ defaults: UserDefaults? = nil) -> Bool {
         #if DEBUG
         return EdgeSurfaces.debug(defaults).chats
         #else
-        return EdgeSurfaces.release.chats
+        return EdgeSurfaces.shippedForThisBuild.chats
         #endif
     }
 }
 
-/// 0.2.0 탭 설정 창을 켜는 플래그. **Release는 늘 꺼짐**(구 `MacSettingsView` 유지: Plan & usage · billing). DEBUG는 지금처럼 셸 플래그를 따른다.
+/// 0.2.0 탭 설정 창을 켜는 플래그. **기본 Release는 늘 꺼짐**(구 `MacSettingsView` 유지: Plan & usage · billing), 내부 배포 빌드만 켜짐. DEBUG는 지금처럼 셸 플래그를 따른다.
 enum SettingsWindowFlag {
     static func isEnabled(_ defaults: UserDefaults? = nil) -> Bool {
         #if DEBUG
         return EdgeSurfaces.debug(defaults).settingsWindow
         #else
-        return EdgeSurfaces.release.settingsWindow
+        return EdgeSurfaces.shippedForThisBuild.settingsWindow
         #endif
     }
 }
 
 // --- U1 ---
 extension EdgeSurfaces {
-    /// Assistant 창 (OA U1): 떠 있는 창 · 레일 Chats(⌘3) · ⌘N이 패널의 Chats 화면 대신 창을 연다. **Debug는 셸이 켜지면 켜지고 Release는 늘 꺼짐**이다
-    /// (`release.chats == false`라 Release에는 Chats도 창도 없다). 별도 저장 값이 아니라 셸 · Chats에서 나오므로 두 표면과 어긋나지 않는다
+    /// Assistant 창 (OA U1): 떠 있는 창 · 레일 Chats(⌘3) · ⌘N이 패널의 Chats 화면 대신 창을 연다. **Debug는 셸이 켜지면 켜지고 기본 Release는 늘 꺼짐**이다
+    /// (`release.chats == false`라 기본 Release에는 Chats도 창도 없다. 내부 배포 빌드는 `internalBuild`라 켜진다). 별도 저장 값이 아니라 셸 · Chats에서 나오므로 두 표면과 어긋나지 않는다
     var assistantWindows: Bool { shell && chats }
 
     /// 이 실행에서 Assistant 창을 쓰는가 (`EdgeShellController`의 기본값): 표면 값 그대로다.
@@ -103,7 +117,7 @@ extension EdgeSurfaces {
 extension EdgeSurfaces {
     /// 새 Issues 화면 (OA U2): 레일 첫 칸 Projects(⌘2) → Projects → 이슈 목록 → 이슈 상세, 세션 패널 · Ask 알약 · New session `+` · 링 = 이슈(세션 반영).
     /// 셋(셸 · Chats · 프로젝트 묶음)이 모두 켜져 있고 `issueScreens` 값이 켜졌을 때만 켜진다: 멤버십 런타임과 `+`의 Assistant 창이 Chats 런타임에 산다.
-    /// **꺼지면 지금 동작 전부 그대로다** (All work · 검색 · 필터 · 핀 · 레일 높이 · 세션 읽기 0). `EdgeSurfaces.release`는 이 값을 켜지 못한다 (`allowsIssueScreens`가 false)
+    /// **꺼지면 지금 동작 전부 그대로다** (All work · 검색 · 필터 · 핀 · 레일 높이 · 세션 읽기 0). `EdgeSurfaces.release`는 이 값을 켜지 못한다 (`allowsIssueScreens`가 false). `internalBuild`는 켠다
     func allowsIssueScreens(flag: Bool) -> Bool {
         flag && shell && chats && projects
     }
@@ -111,8 +125,10 @@ extension EdgeSurfaces {
     static let issueScreensKey = "TF_U2"
 
     /// 이 실행의 게이트. Debug = `-TF_U2 YES`(인자 영역만, 저장된 defaults로는 켜지지 않는다) + `shell && chats && projects`.
-    /// `-TF_RELEASE_SURFACES YES`면 Release 표면(`projects == false`)이라 꺼진다. Release 빌드는 늘 false다 (출시 때 켜는 것은 L5 결정)
-    static func issueScreens(_ defaults: UserDefaults? = nil) -> Bool {
+    /// `-TF_RELEASE_SURFACES YES`면 Release 표면(`projects == false`)이라 꺼진다. 비 Debug 빌드는 표면 값이 정한다: 기본 Release는 늘 false(`projects == false`),
+    /// 내부 배포 빌드(`internalBuild`)는 true. Release 갈래를 시험이 부를 수 있게 `debugBuild` · `info`를 값으로 받는다 (`taskforceConversation`과 같은 방식)
+    static func issueScreens(_ defaults: UserDefaults? = nil, debugBuild: Bool = isDebugBuild, info: [String: Any]? = Bundle.main.infoDictionary) -> Bool {
+        guard debugBuild else { return shipped(info: info).allowsIssueScreens(flag: true) }
         #if DEBUG
         return debug(defaults).allowsIssueScreens(flag: bool(issueScreensKey, defaults))
         #else
@@ -135,15 +151,19 @@ extension EdgeSurfaces {
 extension EdgeSurfaces {
     /// Taskforce 대화 (OA U3): 레일 첫 캡슐의 bell · Review 패널을 대신하는 Taskforce 대화 · v2 Review 읽기 · 충돌 해소 · 대화 끝의 복귀 요약 · ⌘1 / ⌥Space가 가장 오래된 요청.
     /// 새 Issues 화면(U2) + Review(S4) + 복귀 요약(C3)이 **모두** 켜졌을 때만 켜진다. 하나라도 꺼지면 꺼진다.
-    /// 새 플래그는 없다 (U3-05). **Release는 늘 false다** — `issueScreens`가 Release에서 늘 꺼져 있다 (`allowsIssueScreens`). 출시 때 켜는 것은 L5 결정이다
+    /// 새 플래그는 없다 (U3-05). **기본 Release는 늘 false다** — `issueScreens`가 기본 Release에서 늘 꺼져 있다 (`allowsIssueScreens`). 출시 때 켜는 것은 L5 결정이고, 내부 배포 빌드(`internalBuild`)만 켠다
     func allowsTaskforceConversation(issueScreens: Bool) -> Bool {
         issueScreens && review && summary
     }
 
-    /// 이 실행의 게이트. Debug = `-TF_EDGE_SHELL YES -TF_S3B YES -TF_U2 YES -TF_S4 YES -TF_C3 YES` (인자 영역만, 저장된 defaults로는 켜지지 않는다). Release 빌드는 늘 false
-    static func taskforceConversation(_ defaults: UserDefaults? = nil, debugBuild: Bool = isDebugBuild) -> Bool {
+    /// 이 실행의 게이트. Debug = `-TF_EDGE_SHELL YES -TF_S3B YES -TF_U2 YES -TF_S4 YES -TF_C3 YES` (인자 영역만, 저장된 defaults로는 켜지지 않는다).
+    /// 기본 Release 빌드는 늘 false, 내부 배포 빌드(`internalBuild`)는 true
+    static func taskforceConversation(_ defaults: UserDefaults? = nil, debugBuild: Bool = isDebugBuild, info: [String: Any]? = Bundle.main.infoDictionary) -> Bool {
         // Release 갈래를 시험이 부를 수 있게 값으로 받는다 (OA U3 검토 1: 진짜 셸이 만들어지는 길에서 Release 새어 나감을 막는 한 줄)
-        guard debugBuild else { return false }
+        guard debugBuild else {
+            let surfaces = shipped(info: info)
+            return surfaces.allowsTaskforceConversation(issueScreens: surfaces.allowsIssueScreens(flag: true))
+        }
         #if DEBUG
         return debug(defaults).allowsTaskforceConversation(issueScreens: issueScreens(defaults))
         #else
@@ -162,6 +182,20 @@ extension EdgeSurfaces {
 
     /// 앱이 실제로 쓰는 값
     static var taskforceConversationForThisRun: Bool { taskforceConversation() }
+}
+
+/// 내부 배포 빌드 표식 (OA 내부 DMG): Info.plist `TaskforceInternalBuild`(빌드 설정 `TF_INTERNAL_BUILD`, 모든 구성에서 기본 NO).
+/// `YES` · `true` · `1`만 켜진 것으로 본다. 없음 · 빈 값 · 풀리지 않은 `$(…)` · 모르는 글자는 꺼짐 (`BridgeFlag`와 같은 규칙).
+/// Debug 빌드는 이 값을 보지 않는다 (`EdgeSurfaces.current`가 Debug에서는 launch argument만 따른다). 실행 인자로는 켜지지 않는다 — Info.plist만 읽는다
+enum InternalBuildFlag {
+    static let infoKey = "TaskforceInternalBuild"
+
+    static func isEnabled(info: [String: Any]?) -> Bool {
+        let value = info?[infoKey]
+        if let flag = value as? Bool { return flag }
+        guard let text = (value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else { return false }
+        return ["yes", "true", "1"].contains(text)
+    }
 }
 #endif
 

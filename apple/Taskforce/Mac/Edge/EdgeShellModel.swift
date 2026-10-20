@@ -9,7 +9,7 @@ import TaskforceUI
 /// 이 PR은 셸의 뼈대라 켜는 길은 격리된 Debug 실행뿐이다 (구현 계획 7장 플래그 경계):
 /// - 앱: launch argument `-TF_EDGE_SHELL YES`만 (인자 영역. 저장된 defaults로는 켜지지 않는다)
 /// - 테스트: 전용 UserDefaults suite를 넘긴다
-/// Release 빌드는 `EdgeSurfaces.release`를 따른다: Edge 셸은 켜진다 (⌥ Space는 Edge 패널을 연다). DEBUG는 위 인자 그대로.
+/// Release 빌드는 `EdgeSurfaces.shippedForThisBuild`(기본 `release`, 내부 배포 빌드는 `internalBuild`)를 따른다: Edge 셸은 켜진다 (⌥ Space는 Edge 패널을 연다). DEBUG는 위 인자 그대로.
 enum EdgeShellFlag {
     static let key = "TF_EDGE_SHELL"
 
@@ -17,7 +17,7 @@ enum EdgeShellFlag {
         #if DEBUG
         return EdgeSurfaces.debug(defaults).shell
         #else
-        return EdgeSurfaces.release.shell
+        return EdgeSurfaces.shippedForThisBuild.shell
         #endif
     }
 }
@@ -28,7 +28,7 @@ enum EdgeShellFlag {
 /// (`TF_EDGE_SHELL`을 끄면 구 런처로 돌아가는 것이지 S3로 돌아가는 것이 아니다: 두 플래그는 다른 축이다. 서버 `MEMORY_ENABLED`도 POST만 막는 또 다른 축이다.)
 /// - 앱: launch argument `-TF_S3B YES`만 (인자 영역. 저장된 defaults로는 켜지지 않는다). `TF_EDGE_SHELL`이 켜진 격리 Debug 실행에서만 뜻이 있다
 /// - 테스트: 전용 UserDefaults suite를 넘긴다
-/// Release 빌드는 늘 꺼짐이다 (`EdgeSurfaces.release.projects`, Chats 런타임이 없어 범위 멤버십도 없다).
+/// 기본 Release 빌드는 늘 꺼짐이다 (`EdgeSurfaces.release.projects`, Chats 런타임이 없어 범위 멤버십도 없다). 내부 배포 빌드(`internalBuild`)만 켜진다.
 enum S3bFlag {
     static let key = "TF_S3B"
 
@@ -36,7 +36,7 @@ enum S3bFlag {
         #if DEBUG
         return EdgeSurfaces.debug(defaults).projects
         #else
-        return EdgeSurfaces.release.projects
+        return EdgeSurfaces.shippedForThisBuild.projects
         #endif
     }
 }
@@ -55,7 +55,7 @@ enum S4Flag {
         #if DEBUG
         return EdgeSurfaces.debug(defaults).review
         #else
-        return EdgeSurfaces.release.review
+        return EdgeSurfaces.shippedForThisBuild.review
         #endif
     }
 }
@@ -74,7 +74,7 @@ enum C3Flag {
         #if DEBUG
         return EdgeSurfaces.debug(defaults).summary
         #else
-        return EdgeSurfaces.release.summary
+        return EdgeSurfaces.shippedForThisBuild.summary
         #endif
     }
 }
