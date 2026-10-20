@@ -84,7 +84,7 @@ Feedback: privacy@taskforcelabs.dev or the TestFlight screenshot feedback.
 
 ### 결정: 데모 계정으로 어떻게 로그인하나 — 해결됨 (2026-09-27)
 
-결정할 때(2026-09-27) 앱은 Sign in with Apple만 있었다. 심사원이 자기 Apple ID로 로그인하면 빈 계정이 되어 기능을 볼 수 없고, 이메일 6자리 코드는 심사원이 받을 수 없다.
+결정할 때(2026-09-27) 앱은 Sign in with Apple만 있었다. 심사원이 자기 Apple ID로 로그인하면 빈 계정이 되어 기능을 볼 수 없고, 이메일 8자리 코드는 심사원이 받을 수 없다.
 
 검토했던 안:
 

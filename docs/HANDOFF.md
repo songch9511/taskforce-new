@@ -50,7 +50,7 @@ One 적용(OA)은 이 중 2026-10-13에 시작한 에이전트 쪽 작업 묶음
 - 다음 Mac PR에 한 줄로 같이 고친다: `AgentQuestionCopy.swift` 5번째 줄 주석의 "PR #157에서 승인했다(2026-10-18)"는 2026-10-17이 맞다(승인 커밋 `f835e26`, 10-17 10:40 KST).
 - Mac CI의 `ChatStoreInterleavingTests`가 간헐적으로 실패했다. seed 220의 원인은 #165에 들어간 `663fa9a`(사용자의 Codex 앱이 병합하면서 넣은 커밋)가 고쳤다. 지운 대화에 늦게 성공한 전송이 메시지를 넣던 경합을 `isStale` 확인으로 막았다. 10-17의 seed 30 실패("쥔 행의 서버 버전이 줄었다")도 같은 원인으로 본다: 늦은 POST 응답이 다시 읽어 복구한 행을 옛 값으로 덮던 경로를 같은 확인이 막는다. `663fa9a` 위에서 전체 Kit을 부하 90–180에서 10번 돌렸을 때 이 시험의 실패는 0이었다(고치기 전에는 더 가벼운 부하에서도 6번 중 2번 실패). 그 10번에서 따로 드러난 것: 실제 시간을 기다리는 시험 몇 개(`AgentSettingsRuntimeTests`의 Reconnect · 합쳐진 등록, `BridgeReviewATests` reactivate, `AuthSessionRaceTests`, `AgentTerminalFlowTests`, `AgentSessionStoreTests`)가 아주 무거운 부하에서 시간 초과로 실패한다. 부하 20–26과 CI에서는 통과한다.
 
-- 이메일 6자리 코드 로그인(Mac, 누구나)을 `claude/020-oa-email-signin`에서 만드는 중이다(로컬 커밋, 마이그레이션 `20261201000000`은 여는 날 적용). Release는 `EmailSignInEnabled = NO`로 낸다. 메일은 Resend, 무료 하루 100통 · Supabase 시간당 30통이고 하루 상한에 닿으면 Pro로 올린다. 세부는 `docs/PLATFORMS.md` 4장 "이메일 6자리 코드".
+- 이메일 8자리 코드 로그인(Mac, 누구나)을 `claude/020-oa-email-signin`에서 만드는 중이다(로컬 커밋, 마이그레이션 `20261201000000`은 여는 날 적용). Release는 `EmailSignInEnabled = NO`로 낸다. 메일은 Resend, 무료 하루 100통 · Supabase 시간당 30통이고 하루 상한에 닿으면 Pro로 올린다. Supabase에 Resend SMTP를 켜는 일은 코드 병합 · 배포와 마이그레이션 적용 뒤다. 세부는 `docs/PLATFORMS.md` 4장 "이메일 8자리 코드".
 
 ### 사용자 답을 기다리는 질문
 
