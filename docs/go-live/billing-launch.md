@@ -1,6 +1,6 @@
 # 결제 켜기 — Pro · Lifetime (2026-10-09 가격)
 
-계약: `handoffs/oa-billing-contract.md`(확정 장이 본문보다 이긴다). 이 문서는 서버(PR-A)가 끝난 상태의 운영 절차다. BYOK 키 보관(PR-B), Mac 화면(PR-C), 약관 · 처리방침(PR-D)이 나오면 해당 줄을 채운다.
+계약: `handoffs/oa-billing-contract.md`(확정 장이 본문보다 이긴다). 이 문서는 서버(PR-A)와 BYOK 키 보관(PR-B)이 끝난 상태의 운영 절차다. Mac 화면(PR-C), 약관 · 처리방침(PR-D)이 나오면 해당 줄을 채운다.
 2026-10-08 판(월 $9.99 · 연 $101.90 · 카드 없는 7일 체험 · 월 $3 한도)은 한 번도 켜지지 않았고 이 문서가 대신한다. 옛 Lemon Squeezy(LS) 테스트 상품 `1420342` · Live 초안 `1420403`과 그 변형은 다시 쓰지 않는다. 옆에 살려 두지 않는다.
 
 **지금 상태:** 코드는 `BILLING_ENABLED`가 꺼진 채 병합되도록 만들었다. 꺼져 있으면 모든 계정이 "Beta"이고 지금과 똑같이 돈다(관리형 키, 옛 원가 안전장치). 켜는 것은 모두 사용자 몫이다(13.3의 각 단계는 승인 한 번씩).
@@ -12,7 +12,7 @@
 | Pro 월간 | $12.99/월, **첫 달 $6.99** (첫 Pro 구독만) |
 | Pro 연간 | $119.88/년 ($9.99/월) |
 | 체험 | 카드가 필요한 3일 무료 체험, 계정당 처음 한 번. 체험이 끝나면 첫 결제가 자동으로 된다 |
-| Lifetime | $229 일시불(정가 $299, 한정 사다리). 사용자의 OpenRouter 키로 돈다(PR-B). `BYOK_ENABLED`가 켜져야 판다 |
+| Lifetime | $229 일시불(정가 $299, 한정 사다리). 사용자의 OpenRouter 키로 돈다(10장). `BYOK_ENABLED`가 켜져야 판다 |
 | 환불 | 각 결제의 LS 시각부터 72시간 안 전액, 계정당 셀프 1회. 그 밖은 약관의 문의 메일 |
 | 무료 플랜 · 크레딧 판매 | 없음. 끝나면 AI · 실행만 멈추고 목록 · 결과 · 근거 읽기는 남는다 |
 | 세금 | 별도(LS 스토어 설정 그대로). 가격 · 세금 분류는 사용자가 LS에서 다시 확인한다 |
@@ -23,6 +23,7 @@
 ## 2. 표면
 
 - API(앱 → 서버, `Authorization: Bearer` 또는 쿠키 + CSRF): `GET /api/v2/billing` · `POST /api/v2/billing/checkout` · `…/portal` · `…/resume` · `…/refund`. 꺼져 있을 때 checkout · portal · resume · refund는 409 `billing_unavailable`.
+- 키(BYOK): `PUT /api/v2/billing/openrouter-key {key}` · `DELETE /api/v2/billing/openrouter-key`(204). `BYOK_ENABLED`가 꺼져 있으면 PUT은 인증도 보기 전에 404이고, DELETE는 플래그와 상관없이 열려 있다(남은 키는 언제나 지울 수 있다 — 로그인과 쿠키의 CSRF 확인은 그대로). 응답에 키는 없다(상태 `{ai_key: connected}`뿐). 자세한 것은 10장.
 - v1은 모양 고정: `GET /api/v1/billing`(새 상태를 옛 말로 옮겨 내림, `can_checkout` 늘 false), `POST /api/v1/billing/checkout`은 **늘 409**(옛 Mac 베타 0.1.0-beta.25–32는 "업데이트" 안내만), `portal`은 그대로.
 - webhook: `POST /api/webhooks/lemonsqueezy` — 서명 · 크기 · 모드를 확인하고, 정제한 inbox에 저장한 뒤 **LS 객체를 서버가 다시 읽어** 자격을 정한다(성공 페이지 · 클라이언트 신고는 믿지 않는다). 다루는 사건 13개: `order_created` · `order_refunded` · `subscription_created` · `_updated` · `_cancelled` · `_resumed` · `_unpaused` · `_expired` · `_paused` · `subscription_payment_success` · `_failed` · `_recovered` · `_refunded`. 그 밖(`customer_updated` · `license_key_*` · `affiliate_activated`)은 200으로 받고 버린다.
 - cron `/api/cron/billing`(10분마다): 만료 intent 정리 → inbox 재처리(7일) → **쓸기**(체험 · 해지 · past_due · 곧 끝나는 active · 환불 창 안 Lifetime · 풀리지 않은 환불 요청을 하루에 한 번 LS에서 다시 읽는다. 한 번에 20계정).
@@ -36,7 +37,7 @@
 |---|---|---|---|
 | 0 | `BILLING_ENABLED` 꺼짐 | `beta`(모두) | 됨(관리형, 옛 안전장치) |
 | 1 | 계정 삭제 중 | `lapsed` | 멈춤 |
-| 2 | Lifetime 활성 | `lifetime` | 됨 — 사용자 키가 있어야 호출이 성공한다. 키 없이는 DB가 `byok_required`로 닫는다(관리형 키로 새지 않음) |
+| 2 | Lifetime 활성 | `lifetime` | 됨 — 사용자 키가 있어야 호출이 성공한다. 키가 없거나 폐기됐거나 열리지 않으면 `budgetFetch`가 네트워크 호출 0으로 닫고, 그래도 관리형 예약으로 가면 DB가 `byok_required`로 한 번 더 닫는다(관리형 키로 새지 않음) |
 | 3 | 구독 `on_trial` ∧ 체험 끝 > 지금 | `trial` | 됨(체험 상한) |
 | 4 | `active` ∧ 기간 끝 > 지금 | `pro` | 됨 |
 | 5 | `cancelled` ∧ 끝 > 지금 | `cancelled` | 됨(끝까지) |
@@ -79,7 +80,7 @@
 | `LEMONSQUEEZY_LIFETIME_VARIANT_ID` | Lifetime 변형. 비우면 Lifetime은 팔지 않는다 |
 | `LEMONSQUEEZY_FIRST_MONTH_DISCOUNT_CODE` | 첫 달 할인 코드. 비우면 **첫 Pro checkout을 열지 않는다** |
 | `BILLING_MONTHLY_AI_BUDGET_USD` · `BILLING_TRIAL_AI_BUDGET_USD` | 숨은 공정 사용 상한(3장). **필수, 값은 운영 env에서 정한다** |
-| `USER_AI_KEY_ENCRYPTION_KEY` | BYOK(PR-B)가 더한다 |
+| `USER_AI_KEY_ENCRYPTION_KEY` | Lifetime 사용자의 OpenRouter 키를 봉인하는 키(AES-256-GCM). 32바이트 base64(`openssl rand -base64 32`), **`CONNECTOR_TOKEN_KEY`와 다른 값**(바이트가 같으면 패딩 · 공백 · base64url처럼 글자 모양이 달라도 서버가 거절한다). `BYOK_ENABLED`를 켜기 전에 Vercel에 넣는다(Sensitive). 바꾸면 저장된 키가 열리지 않아 사용자가 다시 넣어야 한다(10장) |
 
 ## 6. 켜는 순서 (각 단계는 사용자 승인)
 
@@ -92,7 +93,16 @@
    - `billing_accounts` 새 열 14개(`first_subscription_at` · `lifetime_order_id` · `lifetime_status` · `lifetime_paid_at` · `lifetime_updated_at` · `last_payment_at` · `last_invoice_id` · `refund_requested_at` · `self_refund_used_at` · `last_swept_at` · `sweep_claimed_at` · `bound_intent_id` · `bound_with_trial` · `bound_with_discount`), `billing_checkout_intents.with_trial` · `with_discount` · `bound_subscription_id` · `bound_order_id`, `ai_spend_attempts.prompt_tokens` · `completion_tokens`.
    - `billing_claim_checkout_v2` · `billing_checkout_url_v2` · `billing_apply_subscription_v2` · `billing_apply_lifetime` · `billing_record_event` · `billing_claim_refund` · `billing_release_refund` · `billing_spend_window_v2` · `reserve_billing_ai_spend_v2` · `billing_spend_summary_v2` · `record_ai_spend_tokens` · `billing_usage_tokens` · `billing_sweep_claim` · `billing_sweep_done` · `billing_mark_agent_block` · `billing_seed_legacy` · `billing_schedule_legacy_notice`가 있고 `anon` · `authenticated`에게 실행 권한이 없다(`has_function_privilege`). 새 SECURITY DEFINER 함수는 모두 `search_path = public, pg_temp`로 고정돼 있다(`pg_proc.proconfig`). `authenticated`는 `ai_spend_attempts`의 `cost_usd` · `reserved_usd` · 토큰 열을 읽지 못한다(`has_column_privilege`).
    - `metric_events_type_check`에 `billing_checkout_started` · `ai_key_saved`가 들어 있고 옛 타입도 그대로다.
-3. **BYOK(PR-B)** 마이그레이션 `20261130000000` 적용 → 병합. 꺼진 채.
+3. **BYOK(PR-B)** 마이그레이션 `20261130000000` 적용 → 병합. 꺼진 채. 순서가 바뀌면 새 서버가 없는 표 · 함수를 부른다.
+   ```bash
+   npx supabase db query --linked --project-ref tirtdojsahotjfgdsryi -f supabase/migrations/20261130000000_user_ai_keys.sql
+   ```
+   `db push` 금지. 더하기뿐이다: 새 표 `user_ai_keys` · 새 함수 5개 · `rate_limit_events`의 종류 하나(`ai_key`)와 그에 맞춘 `take_rate_limit` 교체(본문은 `20261123000000` 그대로 + 종류 하나). 사후 검사(읽기 전용, 개수만):
+   - `user_ai_keys`가 있고 행 수준 보안이 켜져 있으며 정책 `owner_all` 하나, `anon` · `authenticated`에게 표 권한이 없다(`has_table_privilege`가 false).
+   - `ai_key_put` · `ai_key_delete` · `ai_key_mark_revoked` · `ai_key_note_spend_error` · `ai_key_note_ok`가 있고 `anon` · `authenticated`에게 실행 권한이 없다(`has_function_privilege`), 모두 `search_path = public, pg_temp`로 고정돼 있다(`pg_proc.proconfig`).
+   - `rate_limit_events_kind_check`에 `ai_key`가 들어 있고 옛 종류도 그대로다.
+   - 적용만으로는 동작이 바뀌지 않는다: Lifetime 계정이 아직 없고 `BYOK_ENABLED`가 꺼져 있다.
+   병합 전에 `USER_AI_KEY_ENCRYPTION_KEY`를 Vercel에 넣고(5장), `BYOK_ENABLED`는 7장 V09가 끝난 뒤에만 켠다.
 4. **Mac(PR-C)** 병합 → 서명 · 공증 DMG · Sparkle 게시. 서버가 꺼져 있으면 모두 "Beta"라 먼저 내도 된다.
 5. **LS 테스트 모드 실측(ARCH-V08) · BYOK 실측(ARCH-V09)** — 7장 체크리스트. 결과 없이 켜지 않는다.
 6. **LS Live 준비 · env 값** — 8장.
@@ -106,6 +116,7 @@
 9. 웹사이트 가격 페이지(별도 저장소).
 
 **되돌리기:** `BILLING_ENABLED=false`로 두면 모두 관리형 "Beta"로 돌아간다(새 표 · 열은 둔다). LS 구독은 계속 청구되므로 오래 끄면 안 된다. 끌 때 사용자에게 알린다.
+- **Lifetime 계정도 같다:** `BILLING_ENABLED`가 꺼져 있는 동안 Lifetime 계정은 관리형 키로 베타 상한(옛 사용자별 한도 · 운영 전체 상한 `ai_budget_policy`) 안에서 돈다. 사용자 키는 쓰이지 않고 지워지지도 않으며, 다시 켜면 곧바로 사용자 키로 돌아간다(`src/lib/ai/budget-byok.test.ts` "결제가 꺼져 있으면 …"가 고정한다).
 
 ## 7. 실측 체크리스트 (테스트 모드, 코디네이터 + 사용자 계정)
 
@@ -127,7 +138,14 @@
 | V08-12 | 고객 포털에서 월 ↔ 연 바꾸기 → `subscription_updated`의 변형으로 plan이 바뀐다 | `billing_plan_changed` 이벤트 |
 | V08-13 | **공유 구매 링크**(LS 상품 페이지의 일반 링크)가 `checkout[custom][checkout_ref]`를 받는가, 그리고 checkout 화면에 `checkout_ref`가 사용자에게 보이는가 | 받으면 구매자가 참조를 바꿔 남의 intent에 묶을 수 있다. 서버는 처음 묶을 때만 intent의 `user_id` · `with_trial` · `with_discount`를 확인해 확실한 조작이면 구독을 취소하고(`billing_duplicate_purchase`), 그 밖은 `billing_review_needed`로 사람이 본다. 보이지 않으면 사용자가 참조를 알아내기 어렵다 |
 | V08-14 | 첫 달 할인 코드를 쓴 첫 인보이스에 `discount_total`이 0보다 크게 오는가 | 서버는 이 값으로 "할인이 있었는데 intent에 `with_discount`가 없었다"를 가린다: 처음 묶는 결제면 취소 + 검토, 이미 묶인 체험의 첫 결제면 `billing_review_needed`만. 필드가 없으면 할인 확인은 비어 있다(안전하지 않은 쪽이 아니라 놓치는 쪽) |
-| V09 | BYOK(PR-B) | PR-B 문서 |
+| V09-1 | 저장: 실제 OpenRouter 키 1개(사용자 소유)를 `PUT`하면 `GET /api/v1/key`로 확인한 뒤 저장되고 `{ai_key: connected}`만 돌아온다. 관리 키는 `ai_key_management`, 잘못된 키는 `ai_key_invalid` | 확인은 비용 0. `is_management_key`가 응답에 온다 |
+| V09-2 | 추출 · 대화 · 임베딩 · Jev가 사용자 키로 간다(OpenRouter 활동 로그와 대조). 관리형 원가 장부(`ai_spend_attempts`)에는 그 사용자 행이 0 | `budgetFetch`가 헤더를 교체하고 예약 · 정산을 건너뛴다 |
+| V09-3 | generation의 공급자 이름이 우리 목록(ZDR) 안에 있다. 키 주인 계정의 허용 공급자가 우리 목록과 겹치지 않으면 404 · 503으로 **실패**하고 조건을 약하게 바꿔 다시 보내지 않는다 | 요청마다 `zdr: true` · `data_collection: "deny"` · `only` · `allow_fallbacks: false`가 간다 |
+| V09-4 | 키 한도를 $0.01로 줄이면 402가 와서 `ai_key_spend_error_at`이 찍히고 상태는 `connected` 그대로. 한도를 올리면 다음 호출이 성공하고 표시가 거두어진다 | 402 · 403은 폐기하지 않는다 |
+| V09-5 | OpenRouter에서 키를 끄면 401 → `revoked`, 그 뒤 호출은 네트워크 0. 새 키를 `PUT`하면 `connected`로 돌아온다 | |
+| V09-6 | `DELETE`하면 204, 이후 AI는 "Missing"으로 닫힌다. Lifetime 환불을 확인하면 저장된 키가 지워진다 | BL-20 |
+| V09-7 | Vercel 함수 로그 · 오류에 키(또는 `sk-or-`)가 0. 요청 본문이 로그에 남지 않는다 | 6.4. 서버 코드는 키를 로그하지 않지만 호스팅 쪽 기록은 여기서만 볼 수 있다 |
+| V09-8 | `ARCH-V09` 때 같이 본다: 임베딩 문서가 `zdr` 인자를 보이지 않는다 · 고정한 Jev `typesafe/jev-1.13`이 공개 ZDR 목록에 있는지 | 이미 있던 확인 항목(BYOK와 별개) |
 
 옛 $9 실측 행렬(성공 · 실패 · 중복 · 역순 · 만료 · 해지 · 환불 · 재구독 · 복구 · 타 계정 거절)도 새 상품으로 한 번씩 다시 돌린다.
 
@@ -150,7 +168,37 @@
 - 웹 결제 페이지와 로그인 없는 `/billing` 경로 허용을 지웠다(`/billing`은 로그인이 필요한 경로다).
 - **잔여 위험(받아들인다):** 남의 결제를 내 계정에 묶는 피싱 — 공격자가 자기 구매 링크로 피해자의 intent(`checkout_ref`)를 달아 결제하게 만들면 피해자 계정에 공격자 아닌 결제자의 구독이 붙는다. 서버는 처음 묶을 때 intent가 그 계정의 것인지 · 체험 · 할인이 맞는지 · 다른 구독에 이미 묶였는지만 확인할 수 있고, 결제자가 계정 주인인지는 알 수 없다. 영향은 계정 주인이 공짜로 구독을 얻는 쪽이라 주인에게 해가 없고, 결제자의 환불 · 분쟁은 LS에서 처리된다. V08-13의 결과로 위험이 커 보이면 다시 정한다. PR 본문에도 같은 문장을 적는다.
 - 이 PR이 늘린 `metric_events` type 20개(결제 · 키)는 리텐션 활동에 들어가지 않는다: `src/lib/metrics/compute.ts` `metricActivity`가 등록부(`BILLING_EVENTS`)로 빼고 시험이 고정한다(갱신 webhook이 재방문으로 세지 않는다). 읽는 결제 카드(`/admin/metrics`)는 후속이다.
-- 확인 필요: Vercel 함수 로그가 요청 본문을 남기지 않는지(운영에서 한 번), LS가 주문 · 구독 사건을 순서대로 보내는지(보장하지 않는다고 보고 `updated_at`으로 순서를 맞춘다).
+- 확인 필요: Vercel 함수 로그가 요청 본문을 남기지 않는지(운영에서 한 번, V09-7), LS가 주문 · 구독 사건을 순서대로 보내는지(보장하지 않는다고 보고 `updated_at`으로 순서를 맞춘다).
+- BYOK 한계는 10장 끝에 따로 적었다.
+
+## 10. BYOK — Lifetime 사용자의 OpenRouter 키 (PR-B)
+
+**무엇:** Lifetime 사용자가 붙여 넣은 OpenRouter 키를 서버가 암호화해 두고, 그 사용자의 AI 호출(추출 · 대화 · 임베딩 · Jev · 초안)만 그 키로 보낸다. 모델 비용은 사용자의 OpenRouter 계정에 청구되고 Taskforce의 원가 장부 · 운영 전체 상한에는 세지 않는다. 키 보관은 서버 표(Mac 키체인 아님)다 — 동기화 cron · 재시도 · 코디네이터는 Mac이 꺼져 있어도 그 키가 필요하다.
+
+| 무엇 | 어떻게 |
+|---|---|
+| 보관 | 표 `user_ai_keys`(사용자당 한 행). 앱이 AES-256-GCM으로 봉인한 글자 `k1.<iv>.<tag>.<ct>`만 들어간다. AAD = `openrouter:<user_id>`라서 다른 사용자의 암호문을 이 사용자의 행에 옮겨도 열리지 않는다. 키는 env `USER_AI_KEY_ENCRYPTION_KEY` 하나(`key_version` 열은 회전 때를 위해 둔다) |
+| 클라이언트 | 표에 `anon` · `authenticated` 권한이 없다(RLS `owner_all` 정책은 있으나 권한이 0). 읽기도 쓰기도 서버(service role)만. 상태는 `GET /api/v2/billing`의 `ai_key`(connected · missing · revoked)와 `ai_key_spend_error_at`뿐이고 키 · 암호문 · 일부(끝 4자 같은 힌트)는 어디에도 내리지 않는다 |
+| 저장 | `PUT`: 로그인 → Lifetime인지 확인 → 모양(접두 `sk-or-`, 길이 20–256, 보이는 글자만, 앞뒤 공백 지움) → **사용자별 시간당 10회 속도 제한(`ai_key`)** → `GET https://openrouter.ai/api/v1/key`(비용 0, 10초)로 확인 → 봉인해 `ai_key_put`. 401은 422 `ai_key_invalid`, 관리 키는 422 `ai_key_management`, 5xx · 시간 초과 · 모양이 다른 답 · **관리 키 표시(`is_management_key` · 옛 `is_provisioning_key`)가 없는 답**은 확인하지 못한 것이라 저장 없이 503, 한도 초과는 429 + `Retry-After`. 확인하지 못한 키는 저장하지 않는다. DB가 권한 행을 공유 잠금으로 쥐고 다시 확인하므로, 확인하는 동안 환불이 들어오면 저장이 거절된다 |
+| 사용 | 사용자 호출은 모두 `budgetFetch`(`src/lib/ai/budget.ts`) 한 곳을 지난다. Lifetime이면 호출마다 DB에서 키를 읽어(캐시 없음) `Authorization`을 그 키로 **교체**하고(들어온 관리형 헤더는 버린다) 관리형 예약 · 정산 · 토큰 기록을 건너뛴다. `max_price`와 공급자 정책(ZDR · 고정 목록)은 그대로 붙는다. 키가 없음 · 폐기 · 열리지 않음 · `BYOK_ENABLED` 꺼짐이면 네트워크 호출 0으로 닫는다(v1 코드 `billing_required`, 문구 N13) |
+| 제공자 응답 | 401 → 그 암호문을 `revoked`로 표시하고(이벤트 `ai_key_revoked`) 사용자가 새 키를 넣을 때까지 호출하지 않는다. 402 · 403(잔액 · 키 한도 · 가드레일 · 검열) → 응답을 그대로 돌려주고 `last_spend_error_at`만 남긴다. 상태는 `connected` 그대로라 충전하면 바로 된다. 성공하면 표시가 거두어진다. 표시는 그 호출이 쓴 바로 그 암호문에만 적용된다 |
+| 지우기 | `DELETE`(이벤트 `ai_key_deleted`) · Lifetime 환불 확인(BL-20) · 계정 삭제(FK cascade). `BYOK_ENABLED`를 끄는 것은 지우지 않는다(호출만 멈춘다). 끈 동안에도 사용자는 `DELETE`로 지울 수 있다 |
+| 로그 | 키는 `PUT` 본문으로만 들어오고 응답 · 오류 · 이벤트 · `console`에 없다. OpenRouter 오류 본문(`.detail`, 500자)은 `src/lib/ai/scrub.ts`가 `sk-or-…` 모양을 `sk-or-[가림]`으로 바꾼 뒤에만 담는다 |
+| 이벤트 | `ai_key_saved {replaced}` · `ai_key_deleted`(어떤 길로 지워지든 삭제 트리거가 한 번: 사용자의 DELETE `{}`, Lifetime 환불 · 사기 확정 `{by: refund}`, 그 밖의 직접 삭제 `{by: system}`, 계정 삭제는 남기지 않는다) · `ai_key_revoked {by: provider}`. 키 · 라벨 · 암호문은 props에 없다. 리텐션 활동에 들어가지 않는다 |
+
+**ZDR(처리방침 약속)과 BYOK:** 요청마다 보내는 `provider`(`zdr: true` · `data_collection: "deny"` · `only` · `allow_fallbacks: false`)는 사용자 키에도 그대로 간다. 키 주인 계정의 허용 공급자 목록은 천장이라 우리 `only`와 겹치지 않으면 요청이 **실패**한다(조건을 약하게 바꿔 다시 보내지 않는다). **막을 수 없는 것:** OpenRouter가 계정 단위로 주는 선택 기능("Input & Output Logging" · "Use of Inputs/Outputs" 1% 할인)은 요청 인자로 끌 수 없고 `GET /key`로 켜졌는지 알 수도 없다. 그래서 처리방침(PR-D)과 Mac 각주(N10)에 "계정의 로깅 설정은 사용자가 정한다"를 적는다.
+
+**키 회전 / 사고 대응:**
+- 한 키만 쓴다(BL-21 A). `USER_AI_KEY_ENCRYPTION_KEY`를 바꾸면 모든 저장 키가 열리지 않는다 → 그 Lifetime 사용자의 AI는 N13("Add your OpenRouter key…")으로 닫히고, 각자 키를 다시 넣으면 된다.
+- 암호화 키가 새어 나간 것으로 의심되면: ① env를 새 값으로 바꾸고(`CONNECTOR_TOKEN_KEY`와 다르게) 재배포 ② 옛 암호문을 지운다 — `delete from public.user_ai_keys;`(승인된 운영 질의, 한 명령에 한 문장) ③ 사용자에게 OpenRouter에서 옛 키를 폐기하고 새 키를 넣도록 알린다(암호문만 새면 env 키 없이 열리지 않지만, 둘 다 새면 사용자 키가 노출된 것이다).
+- `BYOK_ENABLED=false`는 즉시 되돌리기다: Lifetime 판매 · 키 route가 닫히고 Lifetime 계정의 AI는 닫힌 쪽으로 멈춘다(관리형으로 새지 않는다). 표 · 행은 둔다.
+
+**알려진 한계 (BYOK):**
+- BYOK 사용자의 실행 영수증 비용은 "모름"일 수 있다: 비용 확정 sweep(`lib/ai/generation.ts`)은 관리형 키로 generation을 찾는데, 사용자 키로 만든 generation은 그 키로만 보일 수 있다. 관리형 원가 장부에 행이 없어 sweep 대상도 아니다. 영수증의 비용 칸은 비어 있어도 청구에는 영향이 없다(사용자의 OpenRouter 청구서가 기준).
+- 한도 오류 표시(`ai_key_spend_error_at`)는 다음 성공 호출이 거둔다: 충전한 직후 AI를 쓰지 않으면 표시가 남아 있다.
+- 열리지 않는 봉인 글자(env 키 교체 · 행 이동)는 호출에서 "키 없음"으로 다루고 상태 응답은 행의 `status`(`connected`)를 그대로 내린다. 사용자가 키를 다시 넣으면 풀린다.
+- 계약 8장 표는 `BYOK_ENABLED`가 꺼지면 `DELETE`도 404라고 적었으나, 개인정보를 위해 사용자가 언제나 키를 지울 수 있게 `DELETE`는 플래그와 상관없이 연다(코디네이터 결정 2026-10-20).
+- 키 형식은 접두 `sk-or-` · 길이만 본다. 엄격한 정규식은 OpenRouter가 정하는 일이라 `GET /key`가 판정한다.
 
 ## 공식 참고
 

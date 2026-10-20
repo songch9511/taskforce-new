@@ -160,3 +160,12 @@ describe("decide", () => {
     );
   });
 });
+
+describe("오류 본문의 키 가리기", () => {
+  it("실패 응답 본문 속 OpenRouter 키 모양은 detail에 가려져 담긴다", async () => {
+    const SHAPE = "sk-or-v1-notarealkeynotarealkeynotarealkeynotarealkeynotarealkeynotarealkey";
+    const error = await decide(config(`bad ${SHAPE}`, 401), { state: {}, questions }).catch((e: JevError) => e);
+    expect(error).toBeInstanceOf(JevError);
+    expect((error as JevError).detail).toBe("bad sk-or-[가림]");
+  });
+});

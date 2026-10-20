@@ -69,6 +69,7 @@ const USER_TABLES = [
   "source_chunks",
   "sources",
   "suggestions",
+  "user_ai_keys",
   "weekly_checks",
   "work_contexts",
 ];
@@ -83,6 +84,8 @@ async function seed(userId: string, tokenHex: string) {
   await db.query("insert into billing_checkout_intents(user_id,plan,accepted_terms_version) values($1,'monthly','2026-10-08')",[userId]);
   await db.query("insert into billing_webhook_events(id,user_id) values($1,$2)",[randomUUID(),userId]);
   await db.query("select reserve_ai_spend($1,$2,'chat','m',0.1)", [userId, randomUUID()]);
+  // BYOK 키 (20261130000000): 암호문 자리에는 가짜 봉인 글자만 둔다
+  await db.query("insert into user_ai_keys(user_id,sealed_key,verified_at) values($1,'k1.x.y.z',now())",[userId]);
   const connectionId = await one(
     `insert into public.connections (user_id, provider, external_account_id) values ($1, 'notion', 'ws') returning id`,
     [userId],

@@ -214,11 +214,11 @@ describe("R2b 결제 등록부의 원천 함수", () => {
     expect(direct).toEqual([]);
   });
 
-  it("원천이 없는 type은 이유를 적는다 (ai_key 셋은 BYOK 서버가 남긴다)", () => {
-    const without = BILLING_EVENTS.filter((spec) => spec.sources.length === 0);
-    expect(without.map((spec) => spec.type)).toEqual(["ai_key_saved", "ai_key_deleted", "ai_key_revoked"]);
-    for (const spec of without) expect(spec.gap, spec.type).toBeTruthy();
-    expect(BILLING_EVENTS.filter((spec) => spec.sources.length > 0).every((spec) => !spec.gap)).toBe(true);
+  it("결제 · 키 type은 모두 남기는 곳이 있다 (ai_key 셋은 키 저장소 SQL 함수가 남긴다)", () => {
+    expect(BILLING_EVENTS.filter((spec) => spec.sources.length === 0)).toEqual([]);
+    expect(BILLING_EVENTS.every((spec) => !spec.gap)).toBe(true);
+    const key = Object.fromEntries(BILLING_EVENTS.filter((spec) => spec.type.startsWith("ai_key_")).map((spec) => [spec.type, spec.sources.map((source) => (source.kind === "sql" ? source.fn : source.kind))]));
+    expect(key).toEqual({ ai_key_saved: ["ai_key_put"], ai_key_deleted: ["ai_key_after_delete"], ai_key_revoked: ["ai_key_mark_revoked"] });
   });
 });
 

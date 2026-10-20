@@ -341,8 +341,9 @@ public final class FakeAgentProcess: AgentProcess, @unchecked Sendable {
             processCounter += 1
             return AgentProcessIdentity(pid: pid, startedAt: startedAt, processMarker: marker, externalTaskID: _externalTaskIDOverride ?? "turn-\(processCounter)")
         }
-        let run = Task { [self] in await play(script, marker: marker, events: events) }
         lock.withLock {
+            // play도 이 lock으로 실행을 찾는다. 등록 전에 시작해 없는 실행으로 끝내지 않게 함께 묶는다.
+            let run = Task { [self] in await play(script, marker: marker, events: events) }
             runs[marker] = Run(taskID: taskID, identity: identity, task: run, childProcess: child)
             storedSinks[marker] = events
         }

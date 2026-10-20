@@ -104,6 +104,7 @@ describe("초기 마이그레이션", () => {
       "source_chunks",
       "sources",
       "suggestions",
+      "user_ai_keys",
       "weekly_checks",
       "work_contexts",
     ]);
