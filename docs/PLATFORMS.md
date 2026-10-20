@@ -165,11 +165,11 @@ Server Action은 웹 폼 전용이라 Swift 앱에서 부를 수 없다.
 |---|---|---|
 | Sign in with Apple | 이후 | **기본** (Supabase `signInWithIdToken`). iPhone은 앱 안 로그인, **Mac은 브라우저 창**(Developer ID 앱은 앱 안 Apple 로그인을 쓸 수 없다, 아래) |
 | Sign in with Google | 쓰지 않음 | **기본** (Apple 아래 같은 크기, Google Sign-In SDK → Supabase `signInWithIdToken`, 로그인만). 2026-09-30 |
-| 이메일 + 비밀번호 | 쓰지 않음 | App Store 심사 계정용만 (가입 화면 없음). 허용 목록(`review_accounts`) 밖 이메일 가입은 DB 훅이 막는다 (Supabase 대시보드에서 훅을 켠 경우) |
-| 이메일 6자리 코드 | 이후 | 아직 없음 ([남은 일](GO_LIVE.md#10-남은-일-go-live-조건-아님)) |
-| 이메일 링크 | 지금 방식 유지 | 쓰지 않음 (앱으로 돌아오는 링크 처리가 번거로움) |
+| 이메일 + 비밀번호 | 쓰지 않음 | App Store 심사 계정용만 (가입 화면 없음). 심사 계정은 `app_metadata.review_account = true`로 구별한다 (`scripts/create-review-account.ts`) |
+| 이메일 6자리 코드 | 운영자 로그인(`/login`, 새 계정 없음) | **누구나** (Mac). Supabase `signInWithOTP` → `verifyOTP(.email)`, 처음 보는 주소면 그때 계정이 생긴다. Release는 `EmailSignInEnabled = NO`로 내고 여는 날 YES ([이메일 6자리 코드](#이메일-6자리-코드-oa-이메일-로그인)) |
+| 이메일 링크 | 쓰지 않음 (웹 `/login`도 코드로 바꿨다) | 쓰지 않음 (앱으로 돌아오는 링크 처리가 번거로움) |
 
-- 이메일 6자리 코드를 붙이려면 Supabase → Authentication → Email Templates의 Magic Link 템플릿에 `{{ .Token }}`을 넣어야 한다. 웹 링크 로그인과 함께 쓰려면 링크와 코드를 둘 다 넣는다.
+- 이메일 6자리 코드는 Supabase → Authentication → Email Templates의 **Magic Link와 Confirm signup 둘 다**에 `{{ .Token }}`만 넣는다(링크 없음). 원본은 [go-live/email-templates.md](go-live/email-templates.md). 웹 `/login`도 링크 대신 코드로 바꿨다(템플릿에서 링크가 사라지므로).
 - 원문에서 "누가 나인가"는 원문 종류마다 단서가 다르다. 메일 · 캘린더는 주소(`participants`)로 확실히 찾고,
   받아쓰기 회의록은 이름 문자열뿐이라 프로필의 별칭과 코드의 오타 후보 탐지(한 글자 차이 → '확인 필요')를 쓴다.
   앱은 메일 · 캘린더 원문을 보낼 때 보낸 사람 · 받는 사람 · 참조 · 참석자를 함께 보낸다.
@@ -190,6 +190,23 @@ Mac 앱은 Developer ID DMG로 배포한다(DEC-1 A). **Developer ID 프로필�
 - 계정 삭제 재확인도 같은 route를 쓴다(`response_type=code`, 범위 · nonce 없음): 5장의 `apple_client: web`. 서버는 code 교환에 서버 설정의 return URL(`APPLE_WEB_RETURN_URL`)을 `redirect_uri`로 보낸다. 삭제 응답의 `apple_revoked`가 false(폐기를 건너뜀)면 앱이 로그인 화면에 직접 지우는 방법을 한 줄로 알린다.
 - 중계 route는 로그인(`id_token`이 있음)이면 앱 주소에 `code`를 싣지 않는다(앱이 쓰지 않는다).
 - **받아들인 위험:** 피싱 + `taskforce://`를 가로채는 악성 로컬 앱이면 `id_token`을 가로챌 수 있다(Google 로그인 경로와 같은 종류). 이후 Associated Domains + https callback으로 강화한다.
+
+### 이메일 6자리 코드 (OA 이메일 로그인)
+
+누구나 이메일로 로그인한다 (사용자 결정 2026-10-19 "가장 편한 방법 · 가장 넓은 범용성", 메일 공급자 Resend 2026-10-20, 화면 · 문구 승인 2026-10-20). Mac만이다(iPhone은 타깃이 없고, 같은 Kit 모델을 쓴다).
+
+- **흐름:** 로그인 화면의 조용한 셋째 입구 "Continue with email"(Apple · Google 아래 글자 버튼) → 이메일 단계(`Email` 칸 · Send code · Back) → `SessionStore.sendEmailCode`(`signInWithOTP(shouldCreateUser: true)`, `data` · `redirectTo` · CAPTCHA 없음) → 코드 단계(`Code sent to {email}` · 한 칸 `Code` · Sign in · Resend code · Use a different email) → 6자리가 차면 **한 번** 자동 확인(`verifyEmailCode` = `verifyOTP(type: .email)`, 같은 값으로 두 번 부르지 않음). 새 주소 · 기존 주소 모두 같은 다음 화면이다(계정이 있는지 알려 주지 않는다).
+  - Kit `EmailSignInModel`(한 개: 설정 창을 닫았다 열어도 코드 단계가 남는다): 단계 · 주소 정리(`EmailAddress.normalize`) · 코드 정리(`EmailCode.sanitize`: 숫자만, "Your code is 123456." · "123 456" · 전각 숫자) · 다시 받기 60초 · 코드 만료 10분 · 실패 고르기(`EmailSignInFailure`). 서버 설명 · 오류 코드는 화면에 싣지 않는다. 화면은 `App/Shared/EmailSignInView.swift`, 문구는 `SignInCopy`.
+  - **오류는 모두 칸 아래 조용한 회색 한 줄**이다(빨강 없음): 주소 모양 · 일회용 도메인 · 틀리거나 만료된 코드("That code didn't work. Try the latest email.", 서버가 구별하지 않는다 `otp_expired`) · 보내기 실패 · 보내기 한도 · 확인 한도 · 다시 받기 실패(한 줄 "Couldn't continue. Try again in a few minutes.") · 연결 없음(앱에 있는 문구). 틀리면 칸이 전체 선택된다. 앱은 횟수로 잠그지 않는다(서버 IP 제한이 한다).
+  - **다시 받기 60초 잠금은 숫자를 보이지 않는다**: 막힌 버튼의 글자는 그대로 흐려지고, 이유("Available in {n} seconds")는 hover 제목 · VoiceOver에만 있다. Sign in은 6자리가 될 때까지 막힌다("Enter the 6-digit code", 같은 방식).
+  - **세션 경합:** 확인은 로그아웃 상태에서만 부른다(`state == .signedOut`이 아니면 서버를 부르지 않음). 시작 `accountEpoch`를 잡고, 기다리는 사이 다른 계정이 들어왔으면 늦은 오류를 쓰지 않는다(`.ignored`). 남는 틈: 다른 창에서 다른 로그인이 확인 요청 1초 안에 끝나면 SDK가 이메일 세션으로 덮을 수 있다(로그인 화면끼리의 일, 남의 계정에 쓰는 일은 아니다). 계정이 이 기기를 떠나면(`onSignedOut`) 모델을 비운다.
+- **게이트:** Info.plist `EmailSignInEnabled` ← `$(EMAIL_SIGN_IN_ENABLED)`. Debug · Debug-Test는 YES(`Base.xcconfig`), **Release는 NO로 커밋**(`Release.xcconfig`). NO면 이메일 입구 · Settings의 Email 줄과 이메일 계정의 Add가 없다(지금 모양 그대로, `SignInMethods.rows(emailSignIn:)`). 여는 날: 법률 게시 · Resend 도메인 확인과 Pro 전환 · 훅 마이그레이션 적용이 끝난 뒤 `Release.xcconfig`의 한 줄을 YES로 바꾸는 PR을 낸다.
+- **가입 훅**(마이그레이션 `20261201000000_email_signup_open.sql`, 여는 날 적용: 그 전에는 지금 훅이 이메일 가입을 막는다): 이름 · 인자가 그대로라 대시보드 설정은 바꿀 것이 없다. `provider = email`일 때만: 주소가 비었거나 `@`가 없음 403 → 심사 허용 목록(`review_accounts`)은 통과 → 일회용 도메인 표(`blocked_email_domains`)의 도메인 또는 상위 도메인 403 → 지난 1시간에 만들어진 미확인 이메일 사용자 100 이상이면 429 → 통과. Apple · Google은 그대로 통과한다. 일회용 도메인 표는 `scripts/sync-blocked-email-domains.ts --commit <40자리 커밋> --yes`(CC0 목록의 고정 커밋, 사용자가 운영 DB에 돌린다)로 채운다.
+- **미확인 가입 정리:** Supabase는 코드를 **보낼 때** `auth.users`에 미확인 행을 만든다(세션 · 앱 데이터 없음, 트리거 없음). 매일 retention cron이 `purge_unconfirmed_email_signups()`(service_role만, 한 번에 1,000행)를 불러 24시간이 지난 미확인 · 로그인한 적 없는 · 이메일이 아닌 identity가 없는 · 심사 목록에 없는 이메일 가입을 지운다.
+- **웹 `/login`**(내부 도구, 운영자): 링크 대신 코드 입력. `shouldCreateUser: false`(새 계정을 만들지 않음, 없는 주소도 같은 화면). `/auth/confirm`은 이미 보낸 옛 링크용으로 그대로 둔다.
+- **계정 연결 · Settings Sign-in:** 같은 이메일의 Apple · Google · 이메일 코드는 Supabase가 한 계정으로 잇는다(코드 0줄, L2에서 확인). 이메일 로그인이 열려 있으면 실제 주소가 있는 Apple · Google 계정에는 Email 줄이 이어져 있고(버튼 없음, "이메일 가리기" 주소는 Email 줄 없음), 이메일로 만든 계정에는 Apple · Google Add 둘과 "Add Apple or Google to sign in with either." 각주가 있다. 심사 계정(`app_metadata.review_account`)은 Email 줄만이다.
+- **메일 · 한도:** Resend SMTP(`mail.taskforcelabs.dev`, 도쿄, 추적 끔). Supabase 메일 발송 한도 **시간당 30통**, 코드 6자리 · 만료 600초 · Confirm email 켬. **Resend 무료는 하루 100통**: 하루 상한에 닿으면 보내기가 거절되고 앱은 "Couldn't continue…" 한 줄을 보인다. **하루 상한에 닿으면 Pro로 올린다**(쓰는 양을 보고 사용자가 올림). 설정 값 · 템플릿 원본은 [go-live/email-templates.md](go-live/email-templates.md), 순서는 [런북](go-live/runbook.md) 4장.
+- **받아들인 한계 · 확인 필요(L2):** 새 주소가 Confirm signup 템플릿을 받는지 · 코드 길이 · 다시 보내면 옛 코드가 무효인지 · 훅이 막을 때 앱이 받는 오류 코드(앱은 HTTP 403 · 429로 고른다) · Resend가 하루 상한에 닿았을 때 Supabase가 돌려주는 상태(429가 아니어도 "Couldn't continue…" 한 줄이라 문구는 같다) · macOS의 메일 코드 자동 채우기.
 
 ### Sign in with Google (2026-09-30)
 
@@ -215,7 +232,7 @@ Mac 앱은 Developer ID DMG로 배포한다(DEC-1 A). **Developer ID 프로필�
 - 이름: **Google 로그인 직후** 처음 읽은 프로필의 이름이 비어 있으면 그 로그인이 준 이름(`full_name`)으로 채운다(`SessionStore.takeAccountNameFill` → `AccountStore`, `AccountNameFill`). 그 로그인의 사용자가 지금 로그인한 사용자일 때만 저장하고, 기회는 한 번뿐이다(이름이 이미 있어도 쓴다). 그래서 사용자가 이름을 지운 뒤 다른 기기에서 앱을 열어도 다시 채우지 않는다(그 기기에서 다시 Google로 로그인하면 채운다). 채우면 iPhone의 첫 이름 질문이 뜨지 않는다. Apple 로그인은 이름을 받지 않아(범위 `email`만) 전처럼 처음 한 번 묻는다. 서버도 프로필 이름이 없으면 계정 이름(`full_name` → `name` → 이메일 앞부분)을 쓴다(`accountDisplayName`).
 - 로그아웃: Taskforce 로그인이 풀릴 때마다(Sign Out · 세션 만료 · 다른 곳에서 모두 로그아웃 · 계정 삭제, iPhone `RootView` · Mac `MacAppDelegate`의 로그인 상태 변화) 이 기기의 Google SDK 로그인도 지운다(권한은 남는다). 다음에 로그인한 다른 Taskforce 계정이 전 계정의 Google 토큰을 폐기하는 일이 없게.
 - 계정 삭제: Apple 로그인이 붙은 계정만 Apple 재확인(토큰 폐기용 code)을 받는다. Google 로그인이 붙은 계정은 삭제한 뒤 앱이 `GIDSignIn.disconnect()`로 Google 권한을 폐기한다(기다리지 않고, 실패해도 삭제는 끝났다). 이 기기에 Google 토큰이 없으면(다른 기기에서만 Google로 로그인) 폐기하지 못한다: 사용자가 Google 계정 → 보안 → 서드파티 앱에서 지울 수 있다. 이메일(심사 계정)은 폐기할 것이 없다. 무엇을 할지는 **삭제 직전에 서버에서 새로 읽은 사용자**(`auth.user()`)의 identities · `app_metadata`로 정한다(`AccountDeletionPlan`): 세션의 사용자는 토큰을 받은 때의 것이라, Google로 가입한 뒤 다른 기기에서 Apple을 이었으면 빠져 있다. 새로 읽지 못하거나, 새로 읽은 쪽에 없어도 세션에 Apple이 있으면 Apple 재확인을 받는다.
-- 가입 훅: Before User Created 훅(`hook_before_user_created`)은 `provider = email`만 막는다. Google 가입은 통과한다(`tests/db/review-accounts.test.ts`).
+- 가입 훅: Before User Created 훅(`hook_before_user_created`)은 `provider = email`만 본다(일회용 도메인 · 한 시간 미확인 가입 상한만 막는다, 위 "이메일 6자리 코드"). Google 가입은 통과한다(`tests/db/review-accounts.test.ts`).
 - **계정 연결:** Supabase는 확인된 같은 이메일의 로그인을 한 계정으로 자동으로 잇는다(Apple 실제 주소 = Google 주소면 한 계정). Apple "나의 이메일 가리기"(`@privaterelay.appleid.com`)로 가입한 사용자가 나중에 Google로 로그인하면 이메일이 달라 **별도 계정**이 된다. 수동으로 잇는 길은 위 "로그인 방법 이어 붙이기"다.
   **받아들인 위험:** 자동 연결은 "확인된 같은 이메일 = 같은 사람"을 믿는다. 그 이메일의 Google 계정(또는 Apple ID)을 가진 사람은 그 Taskforce 계정에 들어온다. Google · Apple 모두 확인한 주소만 "확인됨"으로 주므로 받아들인다(확인되지 않은 주소는 잇지 않는다). 연결하지 않으면 같은 사람이 로그인 방식마다 다른 계정을 갖게 된다.
 - 설정(iPhone 설정 시트 · Mac 설정 Account)의 로그인 계정 줄은 가입 방식에 따라 "Apple ID" · "Google Account" · "Email"이다.

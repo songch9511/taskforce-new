@@ -139,10 +139,39 @@ Supabase → Authentication:
 | Sign In / Providers → Apple | 켬, Client IDs `dev.taskforcelabs.taskforce`(iPhone 앱 안 로그인) **+ Mac 웹 로그인 Services ID `dev.taskforcelabs.taskforce.signin`**(쉼표). ID 토큰 로그인이라 Secret Key는 비워 둔다(6개월 갱신 불필요, PLATFORMS.md 4·6장) |
 | Auth → 계정 이어 붙이기(manual linking) | 켬. 꺼져 있으면 Settings의 "Add"가 `manual_linking_disabled`로 실패한다(대시보드의 정확한 자리 이름은 처음 켤 때 확인) |
 | Sign In / Providers → Google | 켬 ✅ (2026-09-30). Client IDs = 프로젝트 A iOS 클라이언트 ID `923900348266-iopmhbf1foor213n1jc3a8tv6v4fti82.apps.googleusercontent.com`, Client Secret 비움(웹 OAuth용이라 앱 로그인에는 쓰지 않는다), **Skip nonce checks 끔**(앱이 nonce를 보낸다). 5장 "Sign in with Google" |
-| Providers → Email | 웹 관리 화면의 링크 로그인용 + App Store 심사용 비밀번호 로그인으로 켬. 새 가입은 막지 않는다 — 허용 목록은 아래 Hooks가 대신 막는다 |
-| Hooks → Before User Created | Postgres function `public.hook_before_user_created` → **Enable** (마이그레이션 `20261007000000_review_account_signup_hook.sql`). `provider = email`로 가입하는 주소가 `review_accounts`에 없으면 403으로 거절한다. Apple · Google 가입에는 영향 없다(`docs/go-live/app-store.md` 3장, `tests/db/review-accounts.test.ts`) |
-| Email Templates → Magic Link | 앱에 이메일 6자리 코드를 붙이면 `{{ .Token }}` 추가 (PLATFORMS.md 4장) |
-| SMTP | 지금은 Supabase 기본 메일(한도가 낮음, 운영자 로그인용으로만 충분). 이용자에게 이메일 로그인을 열면 자체 SMTP를 붙이고 처리방침 7장에 수탁자를 더한다(`docs/legal/README.md` 결정 3) |
+| Providers → Email | 켬. **Confirm email 켬**(꺼져 있으면 코드를 보낼 때 이미 확인된 계정이 된다). **Email OTP Expiration `600`**(초), **Email OTP Length `6`**(자리 이름은 확인 필요: 기본이 8인 프로젝트가 있다). 새 가입은 막지 않는다 — 일회용 도메인 · 가입 상한은 아래 Hooks가 막는다 |
+| Hooks → Before User Created | Postgres function `public.hook_before_user_created` → **Enable**. 지금(이메일 가입을 열기 전): `20261007000000_review_account_signup_hook.sql`이 `provider = email`로 가입하는 주소가 `review_accounts`에 없으면 403으로 거절한다. **여는 날** `20261201000000_email_signup_open.sql`을 적용하면 같은 함수가 일회용 도메인(`blocked_email_domains`) 403 · 지난 1시간 미확인 가입 100 이상 429만 막는다(심사 목록은 통과). 함수 이름이 그대로라 대시보드에서 바꿀 것이 없다. Apple · Google 가입에는 영향 없다(`docs/go-live/app-store.md` 3장, `tests/db/review-accounts.test.ts` · `tests/db/email-signup-hook.test.ts`) |
+| Email Templates → Magic Link · Confirm signup | **둘 다** 제목 `Your Taskforce sign-in code`, 본문은 [email-templates.md](email-templates.md)(`{{ .Token }}`만, 링크 없음). 바꾸는 날 = 웹 `/login` 코드 PR 배포 날(링크가 사라지므로) |
+| SMTP | 이용자에게 이메일 로그인을 열기 전에 **Resend**(`smtp.resend.com` · 465 · 사용자 `resend` · 비밀번호 = API 키 · 보내는 주소 `Taskforce <signin@mail.taskforcelabs.dev>`)로 바꾼다. 기본 메일은 시간당 2통 · 팀 주소에만 간다. 값 · 순서 [email-templates.md](email-templates.md) 2장, 처리방침 7장에 수탁자 · 국외 이전 행을 더한다(`docs/legal/README.md`, #169) |
+| Rate Limits → 메일 발송 | **시간당 30통** (Resend 무료의 하루 100통에 빨리 닿지 않게). 나머지(보내기 · 확인 IP별 5분 30, 다시 받기 60초)는 기본 그대로 |
+| Attack Protection → CAPTCHA | 켜지 않는다 (미확인 가입이 하루 500을 넘거나 Resend 반송 · 신고 경고가 오면 별도 작업) |
+
+**Resend 하루 상한 (운영 메모):** Resend 무료 요금제는 하루 100통 · 한 달 3,000통이다. 하루 상한에 닿으면 Resend가 보내기를 거절하고 앱은 "Couldn't continue. Try again in a few minutes." 한 줄을 보인다. **하루 상한에 닿으면 Pro로 올린다**(Resend Settings → Billing → Pro, $20/월, 월 5만 통). 쓰는 양은 Resend 대시보드(보낸 수 · 반송 · 신고)를 주 1회 보고 사용자가 올린다. 본문 보관 끄기(월 $50 추가)는 여는 날 조건이 아니다.
+
+**이메일 로그인 여는 날 순서 (사용자, 비밀 값은 비밀번호 관리자에만):**
+1. Resend 가입 · 도메인 `mail.taskforcelabs.dev`(발송 지역 도쿄, 열기 · 클릭 추적 끔) · DNS 레코드를 그대로 복사 · Verified · API 키(보내기 권한 + 이 도메인만).
+2. 루트 `_dmarc.taskforcelabs.dev` TXT 확인(없으면 `v=DMARC1; p=none; rua=mailto:privacy@taskforcelabs.dev;`, 있으면 바꾸지 않고 코디네이터에게).
+3. Apple Developer → Sign in with Apple for Email Communication에 `mail.taskforcelabs.dev` · `send.mail.taskforcelabs.dev` 등록(가리기 주소로 가는 코드가 반송되지 않게).
+4. 위 표의 SMTP · Email · Rate Limits · Templates.
+5. 시험 메일(웹 `/login`): 헤더 `spf=pass` · `dkim=pass`, 보낸 사람, 받는 데 걸린 시간.
+6. 법률 게시(#169).
+7. 마이그레이션 `20261201000000_email_signup_open.sql`을 `--linked -f`로 적용 → `npx tsx --conditions react-server scripts/sync-blocked-email-domains.ts --commit <40자리 커밋> --yes` → `scripts/create-review-account.ts --yes`(심사 표식 `app_metadata.review_account` 넣기).
+8. `apple/Config/Release.xcconfig`의 `EMAIL_SIGN_IN_ENABLED`를 YES로 바꾸는 한 줄 PR → DMG. 여는 날 전에 Resend Pro로 올릴지 정한다.
+
+측정(읽기 전용, 사용자가 운영 DB에서 돌린다, 숫자만 본다. 새 이벤트는 없다):
+
+```sql
+-- 지난 7일 이메일 가입: 확인됨 / 미확인(정리 전) -> 코드 입력 전환율
+select count(*) filter (where email_confirmed_at is not null) as confirmed,
+       count(*) filter (where email_confirmed_at is null) as unconfirmed
+from auth.users
+where raw_app_meta_data ->> 'provider' = 'email' and created_at > now() - interval '7 days';
+
+-- 이메일로 만든 뒤 Apple 또는 Google을 이은 계정 수
+select count(*) from auth.users u
+where u.raw_app_meta_data ->> 'provider' = 'email'
+  and exists (select 1 from auth.identities i where i.user_id = u.id and i.provider in ('apple', 'google'));
+```
 
 심사 계정 만들기(위 Hook을 켠 뒤): `REVIEW_ACCOUNT_EMAIL=review@taskforcelabs.dev REVIEW_ACCOUNT_PASSWORD=… npx tsx --conditions react-server scripts/create-review-account.ts --yes`(운영 DB 키로, `docs/go-live/app-store.md` 3장).
 

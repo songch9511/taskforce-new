@@ -4,7 +4,7 @@
 Supabase가 코드를 만들어 메일로 보내고, 메일 발송은 Resend SMTP를 쓴다. 이 문서는 **사용자가 Supabase 대시보드에 붙여 넣는 값**의 원본이다.
 비밀 값(Resend API 키)은 이 저장소에 두지 않는다: 비밀번호 관리자와 Supabase SMTP 칸에만 있다.
 
-> 메일 문구(제목 · 본문)는 **사용자 승인 전 초안**이다 (계약 7.2). 승인된 글로 바뀌면 이 문서를 고치고 아래 시험이 같은 모양을 본다.
+> 메일 문구(제목 · 본문)는 계약 7.2 초안이다. 앱 화면 문구와 달리 따로 승인 표에 없으므로 바꾸면 이 문서를 고치고 아래 시험이 같은 모양을 본다.
 
 ## 1. 템플릿 (Authentication → Emails → Templates)
 
@@ -71,7 +71,7 @@ Resend 쪽: 도메인 `mail.taskforcelabs.dev`, 발송 지역 도쿄(`ap-northea
 ## 3. 운영 메모: Resend 무료 요금제의 하루 상한
 
 - 처음에는 Resend **무료 요금제**로 시작한다: **하루 100통**, 한 달 3,000통. Supabase 메일 발송 한도를 시간당 30통으로 둔 것은 하루 상한에 빨리 닿지 않게 하려는 것이다.
-- 하루 상한에 닿으면 Resend가 보내기를 거절하고, 앱은 **있는 rate-limited 글**("Too many sign-in attempts. Wait a moment before trying again.")을 보인다. 새 문구는 없다.
+- 하루 상한에 닿으면 Resend가 보내기를 거절하고, 앱은 보내기 실패 · 한도 · 확인 한도 · 다시 받기 실패를 합친 한 줄 "Couldn't continue. Try again in a few minutes."를 칸 아래 회색으로 보인다(사용자 승인 2026-10-20). Supabase가 이 거절을 어떤 상태로 돌려주는지는 처음 닿는 날 확인한다(429가 아니어도 같은 한 줄이다).
 - **하루 상한에 닿으면 Pro로 올린다** (Resend Settings → Billing → Pro, $20/월, 월 5만 통). 쓰는 양을 보고 사용자가 올린다. 주 1회 Resend 대시보드의 보낸 수 · 반송 · 신고를 본다.
 - 본문 보관 끄기(월 $50 추가)는 여는 날 조건이 아니다 (본문은 10분 뒤 효력 없는 코드뿐).
 
