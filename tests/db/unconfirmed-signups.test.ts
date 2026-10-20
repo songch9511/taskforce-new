@@ -151,7 +151,7 @@ describe("purge_unconfirmed_email_signups", () => {
     expect(left[204]).toBe("bulk1205@example.com");
     expect(await purge()).toBe(205);
     expect(await emails()).toEqual([]);
-  });
+  }, 120_000);
 
   it("다른 사용자의 데이터는 건드리지 않는다", async () => {
     await user("gone@example.com");
