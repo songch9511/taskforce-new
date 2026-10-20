@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { scrubSecrets } from "./scrub";
+
 // OpenRouter generation 메타데이터 조회 (GET /api/v1/generation?id=). LLM 시도 기록(llm.ts LlmAttempt)의 비용을 나중에 확정할 때 쓴다
 // (응답에 usage.cost가 없던 시도, 실행기 sweep의 원가 확정).
 // 사용자 글은 보내지도 받지도 않는다: 요청은 generation id뿐이고, 응답에는 모델 · 공급자 · 토큰 수 · 비용만 있다.
@@ -74,11 +76,11 @@ export async function fetchGeneration(config: GenerationConfig, id: string): Pro
       headers: { Authorization: `Bearer ${config.apiKey}` },
     });
     if (response.status === 404) return { status: "pending" };
-    if (!response.ok) throw new GenerationError(`generation 조회 실패 (${response.status})`, (await response.text()).slice(0, 500));
+    if (!response.ok) throw new GenerationError(`generation 조회 실패 (${response.status})`, scrubSecrets(await response.text()).slice(0, 500));
     return toLookup(id, await response.json());
   } catch (error) {
     if (error instanceof GenerationError) throw error;
-    throw new GenerationError(`generation 조회 실패 (${error instanceof Error ? error.name : "unknown"})`, error instanceof Error ? error.message : undefined);
+    throw new GenerationError(`generation 조회 실패 (${error instanceof Error ? error.name : "unknown"})`, error instanceof Error ? scrubSecrets(error.message) : undefined);
   }
 }
 

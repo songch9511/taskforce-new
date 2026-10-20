@@ -271,11 +271,11 @@ describe("paid-plan admission", () => {
     expect(f.send).not.toHaveBeenCalled();
     expect(f.rpcCalls).toEqual([]);
   });
-  it("a Lifetime account passes the plan gate but the database refuses a managed reservation: closed, nothing paid, v1 code unchanged", async () => {
-    const f = paid(accountRow({ lifetime_status: "active", lifetime_order_id: "o" }), undefined, { reserve_billing_ai_spend_v2: () => ({ error: { message: "byok_required" } }) });
-    await expect(f.fetch(chat, request)).rejects.toMatchObject({ code: "billing_required" });
-    expect(f.send).toHaveBeenCalledTimes(2); // catalog reads only
-    expect(names(f)).toEqual(["reserve_billing_ai_spend_v2"]);
+  it("a Lifetime account with no stored key is closed before any price lookup, reservation or paid call: v1 code unchanged, the managed key never stands in", async () => {
+    const f = paid(accountRow({ lifetime_status: "active", lifetime_order_id: "o" }));
+    await expect(f.fetch(chat, request)).rejects.toMatchObject({ code: "billing_required", message: "ai_key_missing" });
+    expect(f.send).not.toHaveBeenCalled();
+    expect(names(f)).toEqual([]);
   });
   it("a fair-use pause is the existing exhausted code, paid call never sent", async () => {
     const f = paid(proAccount(), undefined, { reserve_billing_ai_spend_v2: () => ({ error: { message: "ai_budget_exhausted" } }) });
