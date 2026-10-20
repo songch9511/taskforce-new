@@ -98,7 +98,7 @@ public final class SessionStore {
         }
     }
 
-    static let sessionNotSavedMessage = "Couldn't save your sign-in. Try again."
+    nonisolated static let sessionNotSavedMessage = "Couldn't save your sign-in. Try again."
 
     /// 저장된 세션이 만료됐더라도 로그인 상태로 둔다. 자동 갱신이 곧 `tokenRefreshed`를 보내고,
     /// 갱신이 끝내 실패하면 `signedOut`이 온다. 오프라인일 때 로그인 화면으로 튕기지 않게 하려는 것.
@@ -224,6 +224,45 @@ public final class SessionStore {
             errorMessage = "Can't reach the sign-in service. Check your connection."
         } catch {
             errorMessage = "Couldn't sign in. Try again in a moment."
+        }
+    }
+
+    // MARK: 이메일 6자리 코드 (OA 이메일 로그인 계약 5.1)
+
+    /// 이메일 로그인의 연결 실패 줄이 쓰는 문구: 이미 이메일 · 비밀번호 로그인(`signInWithEmail`)이 쓰는 글이다
+    nonisolated static let offlineMessage = "Can't reach the sign-in service. Check your connection."
+
+    /// 이메일로 6자리 코드를 보낸다. 처음 보는 주소면 이때 계정(코드를 넣기 전에는 미확인)이 만들어진다(`shouldCreateUser: true`).
+    /// 새 주소 · 기존 주소 모두 같은 결과다: 계정이 있는지 알려 주지 않는다. 서버가 준 설명 · 오류 코드는 화면에 싣지 않는다(`EmailSignInFailure`).
+    public func sendEmailCode(email: String) async -> EmailCodeSendResult {
+        errorMessage = nil
+        notice = nil
+        do {
+            try await auth.signInWithOTP(email: email, shouldCreateUser: true)
+            return .sent
+        } catch {
+            return .failed(EmailSignInFailure.forSend(error))
+        }
+    }
+
+    /// 받은 6자리 코드로 로그인한다 (`verifyOTP(type: .email)`). SDK가 응답의 세션을 저장하고 `apply`가 로그인 상태로 바꾼다.
+    /// **로그아웃 상태에서만** 부른다: 로그인해 있으면 서버를 부르지 않는다 (다른 계정의 세션을 이메일 세션이 덮지 않게).
+    /// 응답을 기다리는 사이 다른 계정이 들어왔으면(`accountEpoch`) 늦은 오류를 쓰지 않는다 (`.ignored`).
+    public func verifyEmailCode(email: String, code: String) async -> EmailCodeVerifyResult {
+        guard state == .signedOut else { return .ignored }
+        errorMessage = nil
+        notice = nil
+        let epoch = accountEpoch
+        do {
+            let response = try await auth.verifyOTP(email: email, token: code, type: .email)
+            // 세션을 Keychain에 저장하지 못했으면 로그인되지 않은 것이다 (`apply`와 같은 판단)
+            guard let session = response.session, auth.currentSession?.user.id == session.user.id else {
+                return .failed(.notSaved)
+            }
+            return .signedIn
+        } catch {
+            guard epoch == accountEpoch else { return .ignored }
+            return .failed(EmailSignInFailure.forVerify(error))
         }
     }
 
