@@ -4,10 +4,16 @@ import Testing
 
 /// 문이 열릴 때까지 기다리게 하는 장치: 응답이 늦게 오는 경우(계정 전환 · 겹친 읽기)를 고정된 순서로 만든다. 짧은 sleep에 기대지 않는다
 final class AsyncGate: @unchecked Sendable {
+    /// true면 첫 호출만 붙잡는다: 막아야 할 둘째 호출이 새어 나가도 시험이 멈추지 않고 호출 수로 빨개진다
+    private let holdsOnlyFirst: Bool
     private let lock = NSLock()
     private var continuations: [CheckedContinuation<Void, Never>] = []
     private var isOpen = false
     private var count = 0
+
+    init(holdsOnlyFirst: Bool = false) {
+        self.holdsOnlyFirst = holdsOnlyFirst
+    }
 
     /// 문 앞에 도착한 호출 수
     var entered: Int { lock.withLock { count } }
@@ -15,7 +21,7 @@ final class AsyncGate: @unchecked Sendable {
     func wait() async {
         let mustWait: Bool = lock.withLock {
             count += 1
-            return !isOpen
+            return !isOpen && (!holdsOnlyFirst || count == 1)
         }
         guard mustWait else { return }
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in

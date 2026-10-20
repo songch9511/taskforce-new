@@ -103,7 +103,7 @@ struct PlanSummaryStoreTests {
     }
 
     @Test func aSecondTapWhileOneActionIsRunningIsIgnored() async {
-        let gate = AsyncGate()
+        let gate = AsyncGate(holdsOnlyFirst: true)
         let gateway = FakePlanGateway(status: F.none)
         gateway.checkoutGate = gate
         let (store, opened) = make(gateway)
@@ -353,7 +353,7 @@ struct PlanSummaryStoreTests {
     }
 
     @Test func aLateCheckoutAnswerAfterAnAccountSwitchOpensNothingAndClearsNothingForTheNewAccount() async {
-        let gate = AsyncGate()
+        let gate = AsyncGate(holdsOnlyFirst: true)
         let gateway = FakePlanGateway(status: F.none)
         gateway.checkoutGate = gate
         let (store, opened) = make(gateway)
