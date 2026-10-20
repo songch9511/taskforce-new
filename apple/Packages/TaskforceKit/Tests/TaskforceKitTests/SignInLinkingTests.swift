@@ -643,7 +643,7 @@ struct SignInCopyTests {
         #expect(SignInCopy.wrongCode == "That code didn't work. Try the latest email.")
         #expect(SignInCopy.couldntContinue == "Couldn't continue. Try again in a few minutes.")
         #expect(SignInCopy.addEither == "Add Apple or Google to sign in with either.")
-        #expect(SignInCopy.enterSixDigits == "Enter the 6-digit code")
+        #expect(SignInCopy.enterEightDigits == "Enter the 8-digit code")
         #expect(SignInCopy.resendAvailableIn(seconds: 42) == "Available in 42 seconds")
         // 1초 남았을 때는 단수 (승인된 낱말 그대로)
         #expect(SignInCopy.resendAvailableIn(seconds: 1) == "Available in 1 second")
@@ -656,7 +656,7 @@ struct SignInCopyTests {
         let all = [
             SignInCopy.emailTitle, SignInCopy.emailLabel, SignInCopy.sendCode, SignInCopy.back, SignInCopy.codeLabel, SignInCopy.signIn,
             SignInCopy.resendCode, SignInCopy.useDifferentEmail, SignInCopy.addressInvalid, SignInCopy.addressBlocked, SignInCopy.wrongCode,
-            SignInCopy.couldntContinue, SignInCopy.addEither, SignInCopy.enterSixDigits, SignInCopy.codeSent(to: "a@b.co"), SignInCopy.newCodeSent(to: "a@b.co"),
+            SignInCopy.couldntContinue, SignInCopy.addEither, SignInCopy.enterEightDigits, SignInCopy.codeSent(to: "a@b.co"), SignInCopy.newCodeSent(to: "a@b.co"),
         ]
         for text in all {
             #expect(!text.contains("Couldn't send a code") && !text.contains("Too many tries") && !text.contains("or resend it"), "\(text)")

@@ -4,45 +4,48 @@ import Synchronization
 import Testing
 @testable import TaskforceKit
 
-/// 이메일 6자리 코드 로그인 (OA 이메일 로그인 계약 5.1–5.4 · 11.1): 코드 정리 · 주소 검사 · 실패 고르기 · 단계 모델.
+/// 이메일 8자리 코드 로그인 (OA 이메일 로그인 계약 5.1–5.4 · 11.1): 코드 정리 · 주소 검사 · 실패 고르기 · 단계 모델.
 /// 실제 메일 · Supabase 0: 가짜 전송(`FakeTransport`)과 주입 시계로 돈다.
 
 // MARK: 코드 정리
 
 struct EmailCodeTests {
     @Test(arguments: [
+        ("12345678", "12345678"),
+        ("1234 5678", "12345678"),
+        ("1234-5678", "12345678"),
+        (" 1 2 3 4 5 6 7 8 ", "12345678"),
+        ("Your code is 12345678.", "12345678"),
+        ("Your Taskforce sign-in code is: 12345678\nIt expires in 10 minutes.", "12345678"),
+        ("code 12 expires in 10 minutes: 12345678", "12345678"),
+        ("１２３４５６７８", "12345678"),
+        ("123456789", "12345678"),
+        ("1234567", "1234567"),
+        // 예전 6자리는 이제 다 채운 코드가 아니다 (자동 확인이 일어나지 않는다)
         ("123456", "123456"),
-        ("123 456", "123456"),
-        ("123-456", "123456"),
-        (" 1 2 3 4 5 6 ", "123456"),
         ("Your code is 123456.", "123456"),
-        ("Your Taskforce sign-in code is: 123456\nIt expires in 10 minutes.", "123456"),
-        ("code 12 expires in 10 minutes: 123456", "123456"),
-        ("１２３４５６", "123456"),
-        ("1234567", "123456"),
-        ("12345", "12345"),
         ("abc", ""),
         ("", ""),
-        ("123456 and 654321", "123456"),
-        ("654321 then 123456", "654321"),
+        ("12345678 and 87654321", "12345678"),
+        ("87654321 then 12345678", "87654321"),
         ("code: 12 34", "1234"),
     ])
     func sanitize(_ raw: String, _ expected: String) {
         #expect(EmailCode.sanitize(raw) == expected)
     }
 
-    @Test func aCodeIsSixDigits() {
-        #expect(EmailCode.length == 6)
+    @Test func aCodeIsEightDigits() {
+        #expect(EmailCode.length == 8)
     }
 
-    /// 입력 도중 값도 같은 규칙이다: 한 글자씩 쳐도 숫자만 남고 6자리를 넘지 않는다
-    @Test func typingOneCharacterAtATimeNeverExceedsSix() {
+    /// 입력 도중 값도 같은 규칙이다: 한 글자씩 쳐도 숫자만 남고 8자리를 넘지 않는다
+    @Test func typingOneCharacterAtATimeNeverExceedsEight() {
         var typed = ""
         for character in "12a3456789" {
             typed = EmailCode.sanitize(typed + String(character))
-            #expect(typed.count <= 6)
+            #expect(typed.count <= 8)
         }
-        #expect(typed == "123456")
+        #expect(typed == "12345678")
     }
 }
 
@@ -277,9 +280,9 @@ struct EmailSignInModelTests {
     @Test func aSuccessfulSignInEmptiesTheModel() async {
         let model = makeModel()
         await atTheCodeStep(model)
-        model.setCode("123456")
+        model.setCode("12345678")
         await model.settled()
-        #expect(transport.verifies.map(\.code) == ["123456"])
+        #expect(transport.verifies.map(\.code) == ["12345678"])
         #expect(transport.verifies.map(\.email) == ["me@example.com"])
         #expect(model.step == .methods)
         #expect(model.emailInput.isEmpty && model.address.isEmpty && model.codeInput.isEmpty)
@@ -334,24 +337,24 @@ struct EmailSignInModelTests {
 
     // MARK: 코드 · 자동 확인
 
-    @Test func sixDigitsVerifyExactlyOnceAndTheSameValueNeverAgain() async {
+    @Test func eightDigitsVerifyExactlyOnceAndTheSameValueNeverAgain() async {
         let model = makeModel()
         await atTheCodeStep(model)
         transport.verifyResults = [.failed(.wrongOrExpiredCode)]
-        model.setCode("12345")
+        model.setCode("1234567")
         #expect(transport.verifies.isEmpty)
-        model.setCode("123456")
+        model.setCode("12345678")
         await model.settled()
         #expect(transport.verifies.count == 1)
         // 같은 값을 다시 넣어도 부르지 않는다
-        model.setCode("123456")
-        model.setCode("123 456")
+        model.setCode("12345678")
+        model.setCode("1234 5678")
         await model.settled()
         #expect(transport.verifies.count == 1)
         // 값을 바꾸면 다시 한 번
-        model.setCode("654321")
+        model.setCode("87654321")
         await model.settled()
-        #expect(transport.verifies.map(\.code) == ["123456", "654321"])
+        #expect(transport.verifies.map(\.code) == ["12345678", "87654321"])
     }
 
     @Test func theSameCodeIsNotVerifiedTwiceWhileTheFirstIsStillOut() async {
@@ -359,11 +362,11 @@ struct EmailSignInModelTests {
         await atTheCodeStep(model)
         let gate = Gate()
         transport.verifyGate = gate
-        model.setCode("123456")
+        model.setCode("12345678")
         #expect(await gate.waitUntilEntered())
         #expect(model.isVerifying)
-        model.setCode("123456")
-        model.setCode("111111")
+        model.setCode("12345678")
+        model.setCode("11111111")
         model.submitCode()
         await gate.release()
         await model.settled()
@@ -373,19 +376,19 @@ struct EmailSignInModelTests {
     @Test func aPastedSentenceIsCleanedAndVerified() async {
         let model = makeModel()
         await atTheCodeStep(model)
-        model.setCode("Your code is 123456.")
+        model.setCode("Your code is 12345678.")
         await model.settled()
-        #expect(transport.verifies.map(\.code) == ["123456"])
+        #expect(transport.verifies.map(\.code) == ["12345678"])
     }
 
     @Test func returnOrSignInVerifiesTheSameWayAndFewerDigitsDoNothing() async {
         let model = makeModel()
         await atTheCodeStep(model)
         transport.verifyResults = [.failed(.wrongOrExpiredCode), .signedIn]
-        model.setCode("12345")
+        model.setCode("1234567")
         model.submitCode()
         #expect(transport.verifies.isEmpty)
-        model.setCode("123456")
+        model.setCode("12345678")
         await model.settled()
         #expect(transport.verifies.count == 1)
         // 틀린 코드를 다시 한 번 눌러 보는 것은 사용자가 시킨 일이다
@@ -399,28 +402,28 @@ struct EmailSignInModelTests {
         let model = makeModel()
         await atTheCodeStep(model)
         transport.verifyResults = [.failed(.wrongOrExpiredCode)]
-        model.setCode("123456")
+        model.setCode("12345678")
         await model.settled()
         #expect(model.line == .wrongCode)
         model.setCode("1")
         #expect(model.line == nil)
-        model.setCode("123456")
+        model.setCode("12345678")
         await model.settled()
         #expect(transport.verifies.count == 2)
     }
 
-    /// Sign in은 6자리가 들어올 때까지 막힌다. 확인하는 중에도 막힌다 (틀린 뒤에는 6자리가 그대로라 다시 열린다)
-    @Test func signInStaysDisabledUntilSixDigitsAndWhileSomethingIsOut() async {
+    /// Sign in은 8자리가 들어올 때까지 막힌다. 확인하는 중에도 막힌다 (틀린 뒤에는 8자리가 그대로라 다시 열린다)
+    @Test func signInStaysDisabledUntilEightDigitsAndWhileSomethingIsOut() async {
         let model = makeModel()
         #expect(!model.canSubmitCode)
         await atTheCodeStep(model)
         #expect(!model.canSubmitCode)
-        model.setCode("48291")
+        model.setCode("4829163")
         #expect(!model.canSubmitCode)
         let gate = Gate()
         transport.verifyGate = gate
         transport.verifyResults = [.failed(.wrongOrExpiredCode)]
-        model.setCode("482916")
+        model.setCode("48291637")
         #expect(await gate.waitUntilEntered())
         #expect(!model.canSubmitCode)
         await gate.release()
@@ -435,11 +438,11 @@ struct EmailSignInModelTests {
         await atTheCodeStep(model)
         transport.verifyResults = [.failed(.wrongOrExpiredCode)]
         let before = model.selectAllRequests
-        model.setCode("123456")
+        model.setCode("12345678")
         await model.settled()
         #expect(model.line == .wrongCode)
         #expect(model.selectAllRequests == before + 1)
-        #expect(model.codeInput == "123456")
+        #expect(model.codeInput == "12345678")
         #expect(!model.isVerifying)
         #expect(model.step == .code)
     }
@@ -449,7 +452,7 @@ struct EmailSignInModelTests {
         await atTheCodeStep(model)
         transport.verifyResults = [.failed(.rateLimited)]
         let before = model.selectAllRequests
-        model.setCode("123456")
+        model.setCode("12345678")
         await model.settled()
         #expect(model.line == .couldntContinue)
         #expect(model.selectAllRequests == before)
@@ -459,7 +462,7 @@ struct EmailSignInModelTests {
         let model = makeModel()
         await atTheCodeStep(model)
         transport.verifyResults = [.failed(.offline)]
-        model.setCode("123456")
+        model.setCode("12345678")
         await model.settled()
         #expect(model.line == .offline)
     }
@@ -575,6 +578,98 @@ struct EmailSignInModelTests {
         #expect(model.step == .methods)
     }
 
+    // MARK: 만료 경계 (보내는 · 확인하는 중에 10분이 지난다)
+
+    /// 코드 단계에서 599초째에 "Resend code"를 눌러 답을 기다리는 동안 시계가 10분을 넘긴다
+    private func resendCrossingTheExpiry(_ model: EmailSignInModel, gate: Gate) async {
+        await atTheCodeStep(model)
+        clock.advance(599)
+        transport.sendGate = gate
+        model.resend()
+        #expect(await gate.waitUntilEntered())
+        #expect(model.isSending)
+        clock.advance(2)
+        model.refresh()
+    }
+
+    @Test func aResendThatCrossesTheTenMinutesKeepsTheNewCode() async {
+        let model = makeModel()
+        let gate = Gate()
+        await resendCrossingTheExpiry(model, gate: gate)
+        // 보내는 중에는 비우지 않는다: 답이 와도 버려지지 않는다
+        #expect(model.step == .code)
+        #expect(model.isSending)
+        await gate.release()
+        await model.settled()
+        #expect(model.step == .code)
+        #expect(model.address == "me@example.com")
+        #expect(model.status == .newCodeSent)
+        #expect(!model.isSending)
+        #expect(model.line == nil)
+        // 새 코드의 10분은 답을 받은 때부터다
+        clock.advance(599)
+        model.refresh()
+        #expect(model.step == .code)
+        clock.advance(1)
+        model.refresh()
+        #expect(model.step == .methods)
+    }
+
+    @Test func aFailedResendThatCrossesTheTenMinutesShowsItsLineAndThenEmpties() async {
+        let model = makeModel()
+        let gate = Gate()
+        transport.sendResults = [.sent, .failed(.rateLimited)]
+        await resendCrossingTheExpiry(model, gate: gate)
+        #expect(model.step == .code)
+        await gate.release()
+        await model.settled()
+        // 보내지 못한 답은 줄로 보인다 (조용히 버려지지 않는다). 코드는 이미 만료라 다음 확인 때 비운다
+        #expect(model.step == .code)
+        #expect(model.line == .couldntContinue)
+        #expect(!model.isSending)
+        model.refresh()
+        #expect(model.step == .methods)
+    }
+
+    @Test func aVerificationThatCrossesTheTenMinutesIsStillAnswered() async {
+        let model = makeModel()
+        await atTheCodeStep(model)
+        clock.advance(599)
+        let gate = Gate()
+        transport.verifyGate = gate
+        transport.verifyResults = [.failed(.wrongOrExpiredCode)]
+        model.setCode("12345678")
+        #expect(await gate.waitUntilEntered())
+        clock.advance(2)
+        model.refresh()
+        #expect(model.step == .code)
+        #expect(model.isVerifying)
+        await gate.release()
+        await model.settled()
+        #expect(model.line == .wrongCode)
+        #expect(!model.isVerifying)
+        model.refresh()
+        #expect(model.step == .methods)
+    }
+
+    @Test func aSignInThatCrossesTheTenMinutesStillSignsIn() async {
+        let model = makeModel()
+        await atTheCodeStep(model)
+        clock.advance(599)
+        let gate = Gate()
+        transport.verifyGate = gate
+        var outcomes: [EmailSignInOutcome] = []
+        model.outcomeSink = { outcomes.append($0) }
+        model.setCode("12345678")
+        #expect(await gate.waitUntilEntered())
+        clock.advance(2)
+        model.refresh()
+        await gate.release()
+        await model.settled()
+        #expect(outcomes.contains(.verified))
+        #expect(model.step == .methods)
+    }
+
     // MARK: 흐름을 떠난 뒤 늦게 온 답
 
     @Test func aLateWrongCodeAfterLeavingTheStepIsNotShown() async {
@@ -583,7 +678,7 @@ struct EmailSignInModelTests {
         let gate = Gate()
         transport.verifyGate = gate
         transport.verifyResults = [.failed(.wrongOrExpiredCode)]
-        model.setCode("123456")
+        model.setCode("12345678")
         #expect(await gate.waitUntilEntered())
         model.useDifferentEmail()
         await gate.release()
@@ -614,7 +709,7 @@ struct EmailSignInModelTests {
         await atTheCodeStep(model)
         let gate = Gate()
         transport.verifyGate = gate
-        model.setCode("123456")
+        model.setCode("12345678")
         #expect(await gate.waitUntilEntered())
         model.useDifferentEmail()
         await gate.release()
@@ -631,9 +726,9 @@ struct EmailSignInModelTests {
         model.outcomeSink = { outcomes.append($0) }
         await atTheCodeStep(model)
         transport.verifyResults = [.failed(.wrongOrExpiredCode), .signedIn]
-        model.setCode("123456")
+        model.setCode("12345678")
         await model.settled()
-        model.setCode("654321")
+        model.setCode("87654321")
         await model.settled()
         #expect(outcomes == [.sent, .verifyFailed("wrong_code"), .verified])
     }
@@ -658,7 +753,7 @@ struct EmailSignInModelTests {
         let gate = Gate()
         transport.verifyGate = gate
         transport.verifyResults = [.failed(.wrongOrExpiredCode)]
-        model.setCode("123456")
+        model.setCode("12345678")
         #expect(await gate.waitUntilEntered())
         model.useDifferentEmail()
         await gate.release()

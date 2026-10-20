@@ -5,7 +5,7 @@ import Testing
 @testable import Taskforce
 @testable import TaskforceKit
 
-/// 이메일 6자리 코드 로그인 화면 (OA 이메일 로그인 11.2, 사용자 승인 2026-10-20): 막힌 버튼의 이유 · 단계 화면이 실제로 그려진다.
+/// 이메일 8자리 코드 로그인 화면 (OA 이메일 로그인 11.2, 사용자 승인 2026-10-20): 막힌 버튼의 이유 · 단계 화면이 실제로 그려진다.
 /// 실제 메일 · Supabase 0: 모델은 서버가 없는 가짜 장면(`debugForce`)이다. 시험 호스트(Debug-Test, 격리 번들 ID)에서만 돈다.
 @MainActor
 struct EmailSignInViewTests {
@@ -39,13 +39,13 @@ struct EmailSignInViewTests {
         #expect(EmailSignInHelp.resend(model, at: clock.now) == nil)
     }
 
-    @Test func theSignInReasonIsOnlyBeforeSixDigits() {
+    @Test func theSignInReasonIsOnlyBeforeEightDigits() {
         let model = model()
         model.debugForce(step: .code, address: "me@example.com", status: .codeSent)
-        #expect(EmailSignInHelp.signIn(model) == "Enter the 6-digit code")
-        model.debugForce(step: .code, address: "me@example.com", codeInput: "48291", status: .codeSent)
-        #expect(EmailSignInHelp.signIn(model) == "Enter the 6-digit code")
-        model.debugForce(step: .code, address: "me@example.com", codeInput: "482916", status: .codeSent)
+        #expect(EmailSignInHelp.signIn(model) == "Enter the 8-digit code")
+        model.debugForce(step: .code, address: "me@example.com", codeInput: "4829163", status: .codeSent)
+        #expect(EmailSignInHelp.signIn(model) == "Enter the 8-digit code")
+        model.debugForce(step: .code, address: "me@example.com", codeInput: "48291637", status: .codeSent)
         #expect(EmailSignInHelp.signIn(model) == nil)
         model.debugForce(step: .email)
         #expect(EmailSignInHelp.signIn(model) == nil)
@@ -82,8 +82,8 @@ struct EmailSignInViewTests {
         let scenes: [(String, EmailSignInModel)] = [
             ("empty", { let m = model(); m.debugForce(step: .code, address: long, status: .codeSent, resendAvailableAt: later); return m }()),
             ("partial", { let m = model(); m.debugForce(step: .code, address: long, codeInput: "482", status: .codeSent); return m }()),
-            ("verifying", { let m = model(); m.debugForce(step: .code, address: long, codeInput: "482916", status: .codeSent, isVerifying: true); return m }()),
-            ("wrong", { let m = model(); m.debugForce(step: .code, address: long, codeInput: "482917", status: .codeSent, line: .wrongCode); return m }()),
+            ("verifying", { let m = model(); m.debugForce(step: .code, address: long, codeInput: "48291637", status: .codeSent, isVerifying: true); return m }()),
+            ("wrong", { let m = model(); m.debugForce(step: .code, address: long, codeInput: "48291738", status: .codeSent, line: .wrongCode); return m }()),
             ("new", { let m = model(); m.debugForce(step: .code, address: long, status: .newCodeSent); return m }()),
         ]
         for (name, scene) in scenes {

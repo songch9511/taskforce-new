@@ -190,7 +190,7 @@ public enum SignInCopy {
     public static let addFailed = "Couldn't add it. Try again."
     /// Sign-in 각주에 더하는 문장: 이어 붙일 방법이 남았을 때만
     public static let addTheOther = "Add the other one to sign in with either."
-    // 이메일 6자리 코드 로그인 (사용자 승인 2026-10-20). 오류는 모두 칸 아래 회색 한 줄이다
+    // 이메일 8자리 코드 로그인 (사용자 승인 2026-10-20, 길이 8은 같은 날 사용자 결정). 오류는 모두 칸 아래 회색 한 줄이다
     public static let emailTitle = "Continue with email"
     public static let emailLabel = "Email"
     public static let sendCode = "Send code"
@@ -206,8 +206,8 @@ public enum SignInCopy {
     public static let couldntContinue = "Couldn't continue. Try again in a few minutes."
     /// Sign-in 각주에 더하는 문장: 이어 붙일 방법이 둘 남았을 때(이메일 계정). 하나 남았을 때는 `addTheOther`
     public static let addEither = "Add Apple or Google to sign in with either."
-    /// 막힌 버튼의 이유는 글로 보이지 않는다: hover 제목 · VoiceOver에만 (다시 받기 60초 · 6자리가 되기 전의 Sign in). 막힌 버튼의 글자는 그대로다
-    public static let enterSixDigits = "Enter the 6-digit code"
+    /// 막힌 버튼의 이유는 글로 보이지 않는다: hover 제목 · VoiceOver에만 (다시 받기 60초 · 8자리가 되기 전의 Sign in). 막힌 버튼의 글자는 그대로다
+    public static let enterEightDigits = "Enter the 8-digit code"
 
     public static func codeSent(to address: String) -> String { "Code sent to \(address)" }
     public static func newCodeSent(to address: String) -> String { "New code sent to \(address)" }

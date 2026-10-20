@@ -3,9 +3,9 @@ import SwiftUI
 import TaskforceKit
 import TaskforceUI
 
-// 이메일 6자리 코드 로그인의 두 단계 화면 (OA 이메일 로그인, 사용자 승인 2026-10-20: DZ-E1–E4 그림 · 문구 표).
+// 이메일 8자리 코드 로그인의 두 단계 화면 (OA 이메일 로그인, 사용자 승인 2026-10-20: DZ-E1–E4 그림 · 문구 표).
 // 규칙은 모두 Kit `EmailSignInModel`에 있고 여기는 그리기만 한다: 오류는 모두 칸 아래 조용한 회색 한 줄, 다시 받기 60초 잠금은 숫자를 보이지 않는다
-// (막힌 버튼의 이유는 hover 제목 · VoiceOver에만), Sign in은 6자리가 될 때까지 막는다 (막힌 버튼의 글자는 그대로 흐려질 뿐이다).
+// (막힌 버튼의 이유는 hover 제목 · VoiceOver에만), Sign in은 8자리가 될 때까지 막는다 (막힌 버튼의 글자는 그대로 흐려질 뿐이다).
 
 extension EmailSignInGate {
     /// 이 앱이 이메일 로그인 입구를 보이는지: Info.plist `EmailSignInEnabled` (Debug YES · Release NO로 커밋)
@@ -43,7 +43,7 @@ enum EmailSignInHelp {
     }
 
     static func signIn(_ model: EmailSignInModel) -> String? {
-        model.step == .code && model.codeInput.count < EmailCode.length ? SignInCopy.enterSixDigits : nil
+        model.step == .code && model.codeInput.count < EmailCode.length ? SignInCopy.enterEightDigits : nil
     }
 }
 
@@ -142,7 +142,7 @@ private struct PrimaryBlockButton: View {
             .frame(maxWidth: .infinity)
         }
         .buttonStyle(TFButtonStyle(.primary, size: .md))
-        // 보내는 · 확인하는 동안은 흐려지지 않고 스피너만 돈다 (눌림만 막는다). 6자리 전의 Sign in은 흐려진다
+        // 보내는 · 확인하는 동안은 흐려지지 않고 스피너만 돈다 (눌림만 막는다). 8자리 전의 Sign in은 흐려진다
         .disabled(disabled)
         .allowsHitTesting(!loading)
         .help(help ?? "")
@@ -168,7 +168,7 @@ private struct EmailStep: View {
 
 private struct CodeStep: View {
     @Bindable var model: EmailSignInModel
-    /// 칸에 보이는 글: 들어오는 글을 정리한 뒤 되돌려 쓴다 (붙여 넣은 "Your code is 123 456"이 칸에서 "123456"이 된다)
+    /// 칸에 보이는 글: 들어오는 글을 정리한 뒤 되돌려 쓴다 (붙여 넣은 "Your code is 1234 5678"이 칸에서 "12345678"이 된다)
     @State private var typed = ""
 
     var body: some View {

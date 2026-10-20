@@ -195,14 +195,14 @@ enum SettingsSnapshot {
             ("email-step-offline", { model.debugForce(step: .email, emailInput: short, line: .offline) }),
             ("code-step-empty", { model.debugForce(step: .code, address: short, status: .codeSent, resendAvailableAt: locked) }),
             ("code-step-partial-long-address", { model.debugForce(step: .code, address: long, codeInput: "482", status: .codeSent, resendAvailableAt: locked) }),
-            ("code-step-verifying", { model.debugForce(step: .code, address: long, codeInput: "482916", status: .codeSent, isVerifying: true, resendAvailableAt: locked) }),
+            ("code-step-verifying", { model.debugForce(step: .code, address: long, codeInput: "48291637", status: .codeSent, isVerifying: true, resendAvailableAt: locked) }),
             ("code-step-new-code", { model.debugForce(step: .code, address: long, status: .newCodeSent, resendAvailableAt: locked) }),
             ("code-step-resend-open", { model.debugForce(step: .code, address: long, status: .codeSent, resendAvailableAt: open) }),
-            ("code-step-wrong", { model.debugForce(step: .code, address: long, codeInput: "482917", status: .codeSent, line: .wrongCode, resendAvailableAt: locked) }),
-            ("code-step-expired", { model.debugForce(step: .code, address: long, codeInput: "482916", status: .codeSent, line: .wrongCode, resendAvailableAt: open) }),
-            ("code-step-couldnt-continue", { model.debugForce(step: .code, address: long, codeInput: "482917", status: .codeSent, line: .couldntContinue, resendAvailableAt: locked) }),
+            ("code-step-wrong", { model.debugForce(step: .code, address: long, codeInput: "48291738", status: .codeSent, line: .wrongCode, resendAvailableAt: locked) }),
+            ("code-step-expired", { model.debugForce(step: .code, address: long, codeInput: "48291637", status: .codeSent, line: .wrongCode, resendAvailableAt: open) }),
+            ("code-step-couldnt-continue", { model.debugForce(step: .code, address: long, codeInput: "48291738", status: .codeSent, line: .couldntContinue, resendAvailableAt: locked) }),
             ("code-step-resend-failed", { model.debugForce(step: .code, address: long, status: .codeSent, line: .couldntContinue, resendAvailableAt: open) }),
-            ("code-step-offline", { model.debugForce(step: .code, address: short, codeInput: "482916", status: .codeSent, line: .offline, resendAvailableAt: locked) }),
+            ("code-step-offline", { model.debugForce(step: .code, address: short, codeInput: "48291637", status: .codeSent, line: .offline, resendAvailableAt: locked) }),
         ]
         for scene in scenes {
             scene.apply()

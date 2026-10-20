@@ -898,7 +898,7 @@ struct SignInLogTests {
             "email verify ok", "email verify failed:wrong_code", "email verify canceled",
         ])
         for line in lines {
-            for secret in ["gildong@example.com", "482916"] { #expect(!line.contains(secret), "\(line)") }
+            for secret in ["gildong@example.com", "48291637"] { #expect(!line.contains(secret), "\(line)") }
             #expect(!line.contains("@"), "\(line)")
         }
     }

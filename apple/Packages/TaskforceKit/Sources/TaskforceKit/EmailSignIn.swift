@@ -2,7 +2,7 @@ import Auth
 import Foundation
 import Observation
 
-// 이메일 6자리 코드 로그인 (OA 이메일 로그인 계약 5.1–5.4). 화면 없는 규칙: 게이트 · 주소 검사 · 코드 정리 · 실패 고르기 · 단계 모델.
+// 이메일 8자리 코드 로그인 (OA 이메일 로그인 계약 5.1–5.4 · 19, 길이는 사용자 결정 2026-10-20). 화면 없는 규칙: 게이트 · 주소 검사 · 코드 정리 · 실패 고르기 · 단계 모델.
 // Supabase가 코드를 메일로 보내고(`SessionStore.sendEmailCode`) 코드를 넣으면 로그인한다(`verifyEmailCode`).
 // 화면의 글(사용자 승인 2026-10-20)은 `SignInCopy`에 있고, 여기서는 상태 · 줄을 글로 바꾸는 길만 둔다 (`EmailSignInLine.text` · `EmailSignInStatus.text`).
 
@@ -29,13 +29,13 @@ public enum EmailAddress {
     }
 }
 
-/// 코드 칸에 들어오는 글(입력 · 붙여 넣기 · 자동 채우기)을 6자리 숫자로 정리한다
+/// 코드 칸에 들어오는 글(입력 · 붙여 넣기 · 자동 채우기)을 8자리 숫자로 정리한다
 public enum EmailCode {
-    public static let length = 6
+    public static let length = 8
 
     /// - 전각 숫자는 ASCII로 바꾼다
-    /// - 글 안에 숫자 6개가 이어진 덩어리가 정확히 하나면 그것을 쓴다 ("Your code is 123456." → "123456")
-    /// - 그 밖에는 숫자만 모아 앞 6자리까지만 둔다 ("123 456" · "123-456" → "123456", "1234567" → "123456")
+    /// - 글 안에 숫자 8개가 이어진 덩어리가 정확히 하나면 그것을 쓴다 ("Your code is 12345678." → "12345678")
+    /// - 그 밖에는 숫자만 모아 앞 8자리까지만 둔다 ("1234 5678" · "1234-5678" → "12345678", "123456789" → "12345678")
     public static func sanitize(_ raw: String) -> String {
         var runs: [String] = []
         var current = ""
@@ -48,8 +48,8 @@ public enum EmailCode {
             }
         }
         if !current.isEmpty { runs.append(current) }
-        let exactlySix = runs.filter { $0.count == length }
-        if exactlySix.count == 1 { return exactlySix[0] }
+        let exactlyCodeLength = runs.filter { $0.count == length }
+        if exactlyCodeLength.count == 1 { return exactlyCodeLength[0] }
         return String(runs.joined().prefix(length))
     }
 }
@@ -275,8 +275,11 @@ public final class EmailSignInModel {
         lastAttempt = nil
     }
 
-    /// 코드가 살아 있는 10분이 지났으면 비운다 (화면이 시계마다, 창이 다시 열릴 때마다 부른다)
+    /// 코드가 살아 있는 10분이 지났으면 비운다 (화면이 시계마다, 창이 다시 열릴 때마다 부른다).
+    /// 보내는 · 확인하는 중에는 비우지 않는다: 다시 받기를 누른 채 10분 경계를 넘으면 비우는 순간 늦은 답(새 코드)이 버려지기 때문이다.
+    /// 답이 오면 새 코드의 10분이 시작되고(성공), 실패하면 줄을 보인 뒤 다음 확인 때 비운다.
     public func refresh() {
+        guard !isSending, !isVerifying else { return }
         if let expiresAt, now() >= expiresAt { reset() }
     }
 
@@ -351,7 +354,7 @@ public final class EmailSignInModel {
 
     // MARK: 코드 확인
 
-    /// 코드 칸에 글이 들어왔다 (입력 · 붙여 넣기 · 자동 채우기). 6자리가 차면 한 번 확인한다: 같은 값으로 두 번 부르지 않는다
+    /// 코드 칸에 글이 들어왔다 (입력 · 붙여 넣기 · 자동 채우기). 8자리가 차면 한 번 확인한다: 같은 값으로 두 번 부르지 않는다
     public func setCode(_ raw: String) {
         guard step == .code else { return }
         let code = EmailCode.sanitize(raw)
@@ -362,7 +365,7 @@ public final class EmailSignInModel {
         if code.count == EmailCode.length, lastAttempt != code { startVerification() }
     }
 
-    /// "Sign in" · Return: 6자리일 때 (이미 틀렸던 같은 값도 사용자가 다시 시키면 한 번 더)
+    /// "Sign in" · Return: 8자리일 때 (이미 틀렸던 같은 값도 사용자가 다시 시키면 한 번 더)
     public func submitCode() {
         guard step == .code, codeInput.count == EmailCode.length else { return }
         startVerification()

@@ -227,12 +227,12 @@ public final class SessionStore {
         }
     }
 
-    // MARK: 이메일 6자리 코드 (OA 이메일 로그인 계약 5.1)
+    // MARK: 이메일 8자리 코드 (OA 이메일 로그인 계약 5.1 · 19)
 
     /// 이메일 로그인의 연결 실패 줄이 쓰는 문구: 이미 이메일 · 비밀번호 로그인(`signInWithEmail`)이 쓰는 글이다
     nonisolated static let offlineMessage = "Can't reach the sign-in service. Check your connection."
 
-    /// 이메일로 6자리 코드를 보낸다. 처음 보는 주소면 이때 계정(코드를 넣기 전에는 미확인)이 만들어진다(`shouldCreateUser: true`).
+    /// 이메일로 8자리 코드를 보낸다. 처음 보는 주소면 이때 계정(코드를 넣기 전에는 미확인)이 만들어진다(`shouldCreateUser: true`).
     /// 새 주소 · 기존 주소 모두 같은 결과다: 계정이 있는지 알려 주지 않는다. 서버가 준 설명 · 오류 코드는 화면에 싣지 않는다(`EmailSignInFailure`).
     public func sendEmailCode(email: String) async -> EmailCodeSendResult {
         errorMessage = nil
@@ -245,7 +245,7 @@ public final class SessionStore {
         }
     }
 
-    /// 받은 6자리 코드로 로그인한다 (`verifyOTP(type: .email)`). SDK가 응답의 세션을 저장하고 `apply`가 로그인 상태로 바꾼다.
+    /// 받은 8자리 코드로 로그인한다 (`verifyOTP(type: .email)`). SDK가 응답의 세션을 저장하고 `apply`가 로그인 상태로 바꾼다.
     /// **로그아웃 상태에서만** 부른다: 로그인해 있으면 서버를 부르지 않는다 (다른 계정의 세션을 이메일 세션이 덮지 않게).
     /// 응답을 기다리는 사이 다른 계정이 들어왔으면(`accountEpoch`) 늦은 오류를 쓰지 않는다 (`.ignored`).
     public func verifyEmailCode(email: String, code: String) async -> EmailCodeVerifyResult {

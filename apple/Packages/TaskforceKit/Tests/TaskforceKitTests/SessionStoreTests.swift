@@ -562,7 +562,7 @@ struct AnySignInMethodSessionTests {
     }
 }
 
-// MARK: 이메일 6자리 코드 (`sendEmailCode` · `verifyEmailCode`, OA 이메일 로그인 계약 5.1 · 11.1)
+// MARK: 이메일 8자리 코드 (`sendEmailCode` · `verifyEmailCode`, OA 이메일 로그인 계약 5.1 · 11.1)
 
 /// 응답을 붙들어 두고 풀 수 있는 문 (한 번)
 private actor EmailGate {
@@ -682,14 +682,14 @@ struct SessionStoreEmailCodeTests {
         store.apply(event: .initialSession, session: nil)
         #expect(store.state == .signedOut)
 
-        let result = await store.verifyEmailCode(email: "me@example.com", code: "123456")
+        let result = await store.verifyEmailCode(email: "me@example.com", code: "12345678")
 
         #expect(result == .signedIn)
         let request = try #require(log.requests.first)
         #expect(request.url?.path == "/auth/v1/verify")
         let sent = try body(of: request)
         #expect(sent["type"] as? String == "email")
-        #expect(sent["token"] as? String == "123456")
+        #expect(sent["token"] as? String == "12345678")
         #expect(sent["email"] as? String == "me@example.com")
         #expect(sent["token_hash"] == nil)
         #expect(store.errorMessage == nil)
@@ -702,21 +702,21 @@ struct SessionStoreEmailCodeTests {
     func verifyingFailuresAreSorted(_ status: Int, _ body: String, _ expected: EmailSignInFailure) async {
         let store = store(reply: (status, body))
         store.apply(event: .initialSession, session: nil)
-        #expect(await store.verifyEmailCode(email: "me@example.com", code: "123456") == .failed(expected))
+        #expect(await store.verifyEmailCode(email: "me@example.com", code: "12345678") == .failed(expected))
         #expect(store.state == .signedOut)
     }
 
     @Test func verifyingOfflineIsOffline() async {
         let store = store(reply: nil)
         store.apply(event: .initialSession, session: nil)
-        #expect(await store.verifyEmailCode(email: "me@example.com", code: "123456") == .failed(.offline))
+        #expect(await store.verifyEmailCode(email: "me@example.com", code: "12345678") == .failed(.offline))
     }
 
     /// 서버는 로그인시켰지만 세션을 저장하지 못했으면 로그인되지 않은 것이다
     @Test func aSignInThatWasNotSavedFails() async throws {
         let store = store(storage: UnsavableStorage(), reply: (200, try sessionBody(fixtures.session(expiresIn: 3600))))
         store.apply(event: .initialSession, session: nil)
-        #expect(await store.verifyEmailCode(email: "me@example.com", code: "123456") == .failed(.notSaved))
+        #expect(await store.verifyEmailCode(email: "me@example.com", code: "12345678") == .failed(.notSaved))
     }
 
     /// 로그인해 있으면 확인을 부르지 않는다 (다른 계정의 세션을 이메일 세션이 덮지 않게)
@@ -726,7 +726,7 @@ struct SessionStoreEmailCodeTests {
         let store = store(storage: SavedSessionStorage(data: try JSONEncoder().encode(signedIn)), log: log, reply: (200, try sessionBody(signedIn)))
         store.apply(event: .signedIn, session: signedIn)
         #expect(store.state == .signedIn(userID: fixtures.userID, email: "me@example.com"))
-        #expect(await store.verifyEmailCode(email: "me@example.com", code: "123456") == .ignored)
+        #expect(await store.verifyEmailCode(email: "me@example.com", code: "12345678") == .ignored)
         #expect(log.requests.isEmpty)
     }
 
@@ -734,7 +734,7 @@ struct SessionStoreEmailCodeTests {
         let log = RequestLog()
         let store = store(log: log, reply: (200, "{}"))
         #expect(store.state == .loading)
-        #expect(await store.verifyEmailCode(email: "me@example.com", code: "123456") == .ignored)
+        #expect(await store.verifyEmailCode(email: "me@example.com", code: "12345678") == .ignored)
         #expect(log.requests.isEmpty)
     }
 
@@ -750,7 +750,7 @@ struct SessionStoreEmailCodeTests {
         store.apply(event: .initialSession, session: nil)
         #expect(store.state == .signedOut)
 
-        let pending = Task { await store.verifyEmailCode(email: "me@example.com", code: "123456") }
+        let pending = Task { await store.verifyEmailCode(email: "me@example.com", code: "12345678") }
         #expect(await gate.waitUntilEntered())
         // 그사이 Apple · Google로 다른 계정이 들어왔다
         store.apply(event: .signedIn, session: other)
