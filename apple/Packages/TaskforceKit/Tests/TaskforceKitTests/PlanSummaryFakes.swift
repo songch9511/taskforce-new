@@ -61,6 +61,7 @@ final class FakePlanGateway: PlanSummaryGateway, @unchecked Sendable {
     var saveError: Error?
     var removeError: Error?
     var checkoutGate: AsyncGate?
+    var portalGate: AsyncGate?
     /// false면 받은 키의 글자를 기록하지 않는다 (저장소가 키를 쥐고 있는지 거울로 훑을 때: 저장소는 이 가짜 길을 쥐고 있어서 기록이 섞이지 않게)
     var recordsKeys = true
 
@@ -102,6 +103,7 @@ final class FakePlanGateway: PlanSummaryGateway, @unchecked Sendable {
 
     func billingPortal(target: PlanPortalTarget) async throws -> URL {
         record("portal:\(target.rawValue)")
+        if let portalGate { await portalGate.wait() }
         return try portalResult.get()
     }
 
@@ -145,4 +147,11 @@ func waitUntil(_ what: String, timeout: Duration = .seconds(60), _ condition: ()
         }
         await Task.yield()
     }
+}
+
+/// 지금 로그인한 계정 (화면 밖의 진실): 시험이 마음대로 바꾼다. 저장소는 `follow`를 부르지 않아도 이것으로 계정이 떠난 것을 안다
+@MainActor
+final class AccountBox {
+    var id: UUID?
+    init(_ id: UUID?) { self.id = id }
 }

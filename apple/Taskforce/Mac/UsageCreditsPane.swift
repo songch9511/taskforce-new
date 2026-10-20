@@ -29,7 +29,10 @@ struct UsageCreditsPane: View {
             .frame(maxWidth: .infinity)
         }
         // 플랜은 Plan & usage와 같은 생애로 읽는다 (계정 · 다시 활성화 · 다시 열기)
-        .modifier(PlanSummaryLifecycle(store: plan, userID: SettingsWindowSession.accountUserID(session), gateway: PlanGateways.current(services)))
+        .modifier(PlanSummaryLifecycle(
+            store: plan, userID: SettingsWindowSession.accountUserID(session), gateway: PlanGateways.current(services),
+            currentAccount: PlanAccount.current(session), invalidatesOnDisappear: true
+        ))
         // 이 페이지를 열 때마다 새로 읽는다 (지급 · 정산 뒤 다시 열면 숫자 · 멈춘 카드가 바뀐다)
         .task(id: SettingsRoute.shared.openCount) {
             await runs.loadCredits()

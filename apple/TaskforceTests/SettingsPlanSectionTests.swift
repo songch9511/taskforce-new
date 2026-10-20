@@ -49,6 +49,20 @@ struct SettingsPlanStructureTests {
         #expect(String(describing: MacBillingSection.self) == "MacBillingSection")
     }
 
+    @Test func aChangeOfTheShownAccountInvalidatesThePreviousAccountsPlanStore() async {
+        let window = SettingsWindowModel()
+        let me = UUID()
+        window.plan.follow(userID: me, gateway: PlanHostGateway(status: PlanHostFixtures.status(.pro, plan: .monthly, refund: true)))
+        await window.plan.refresh()
+        window.accountChanged(to: me)
+        #expect(window.plan.owner == me && window.plan.status != nil, "같은 계정이면 그대로")
+        window.accountChanged(to: UUID())
+        #expect(window.plan.owner == nil && window.plan.status == nil, "다른 계정이 되면 비운다")
+        window.plan.follow(userID: me, gateway: PlanHostGateway(status: PlanHostFixtures.status(.pro, plan: .monthly)))
+        window.accountChanged(to: nil)
+        #expect(window.plan.owner == nil, "로그아웃도 비운다")
+    }
+
     @Test func theAccountLeavingClearsThePlanStateFromMemory() async {
         let window = SettingsWindowModel()
         let gateway = PlanHostGateway(status: PlanHostFixtures.status(.pro, plan: .monthly, refund: true))
@@ -115,6 +129,18 @@ struct SettingsPlanSourceTests {
         for forbidden in ["UserDefaults", "Keychain", "SecItem", "print(", "NSLog", "os_log", "Logger(", "dump("] {
             #expect(!planPart.contains(forbidden), "MacBillingSection에 \(forbidden)")
         }
+    }
+
+    /// 승인 규칙: 확인 행은 Cancel이 먼저다 (옛 창도 같다): 자리 · 처음 포커스. ↩로는 아무것도 확인되지 않는다 (기본 동작 버튼 없음)
+    @Test func theLegacyConfirmRowPutsCancelFirstAndGivesItTheFirstFocus() throws {
+        let text = try code("MacSettingsView.swift")
+        let start = try #require(text.range(of: "struct LegacyPlanConfirm: View"))
+        let block = String(text[start.lowerBound...].prefix(2_400))
+        let cancel = try #require(block.range(of: "PlanCopy.cancel"))
+        let confirm = try #require(block.range(of: "confirm.confirmTitle"))
+        #expect(cancel.lowerBound < confirm.lowerBound, "Cancel 버튼이 확인 버튼보다 앞에 있다")
+        #expect(block.contains("defaultFocus") && block.contains("cancelFocused"), "Cancel이 처음 포커스를 받는다")
+        #expect(!block.contains("defaultAction"), "↩ 기본 동작 버튼 없음")
     }
 
     @Test func theSampleGatewayIsOnlyReachableFromDebugCode() throws {
@@ -247,6 +273,114 @@ struct SettingsPlanRenderedTests {
         box.userID = nil
         await waitUntil("로그아웃은 비운다") { store.owner == nil }
         #expect(store.status == nil)
+    }
+
+    // MARK: 계정이 떠난 뒤의 늦은 응답 (PR-C 검토 1 P1)
+
+    /// 화면 제거 · 교체 때 늦은 checkout 응답이 전 계정의 결제 주소를 열지 못한다.
+    /// 진짜 Release 구역(`MacBillingSection`)을 `.id(userID)` 아래에 두고 (실제 계정 화면과 같다) 로그아웃 · 다른 계정 · 같은 계정 화면만 사라짐을 본다
+    @MainActor
+    @Observable
+    final class StoreRegistry {
+        @ObservationIgnored private var stores: [UUID: PlanSummaryStore] = [:]
+        func store(for id: UUID) -> PlanSummaryStore {
+            if let store = stores[id] { return store }
+            let store = PlanSummaryStore()
+            stores[id] = store
+            return store
+        }
+    }
+
+    private struct ReleaseHost: View {
+        let box: AccountBox
+        let stores: StoreRegistry
+        let gateway: PlanHostGateway
+        let accountFollowsBox: Bool
+
+        var body: some View {
+            if let id = box.userID {
+                Form {
+                    MacBillingSection(
+                        userID: id, store: stores.store(for: id), gatewayOverride: gateway,
+                        currentAccountOverride: accountFollowsBox ? { box.userID } : { id }
+                    )
+                    .id(id)
+                }
+                .formStyle(.grouped)
+            } else {
+                Text("Sign in")
+            }
+        }
+    }
+
+    @Test func aLateCheckoutAnswerOpensNothingWhenTheRealReleaseSectionIsRemovedOrReplaced() async {
+        let cases: [(next: UUID?, accountFollowsBox: Bool, why: String)] = [
+            (nil, true, "로그아웃"), (other, true, "다른 계정으로 바뀜"), (nil, false, "화면만 사라짐(계정은 그대로: 창을 닫음 · 페이지를 옮김)"),
+        ]
+        for item in cases {
+            let box = AccountBox(user)
+            let stores = StoreRegistry()
+            let gateway = PlanHostGateway(status: PlanHostFixtures.status(.none, checkout: true, lifetime: true))
+            let held = gateway.hold("checkout:pro:terms-host-test")
+            let opened = PlanOpenedURLs()
+            let (window, _) = await mount(ReleaseHost(box: box, stores: stores, gateway: gateway, accountFollowsBox: item.accountFollowsBox), width: 520, opened: opened)
+            defer { window.orderOut(nil) }
+            let previous = stores.store(for: user)
+            await waitUntil("옛 구역이 처음 읽음 (\(item.why))") { previous.status != nil }
+            let late = Task { await previous.perform(.checkout(.pro)) }
+            await waitUntil("checkout 요청이 서버 앞에 도착 (\(item.why))") { held.arrived }
+            box.userID = item.next
+            await waitUntil("옛 구역이 제거돼 저장소가 무효화됨 (\(item.why))") { previous.owner == nil }
+            held.open()
+            await late.value
+            #expect(opened.urls.isEmpty, "\(item.why): 이전 계정의 결제 주소를 열지 않는다")
+            #expect(previous.busy == nil && previous.status == nil)
+        }
+    }
+
+    @Test func aLatePortalAnswerOpensNothingWhenTheShownAccountLeftTheWindowBody() async {
+        let box = AccountBox(user)
+        let gateway = PlanHostGateway(status: PlanHostFixtures.status(.pastDue, plan: .monthly))
+        let held = gateway.hold("portal:payment")
+        let store = PlanSummaryStore()
+        let opened = PlanOpenedURLs()
+        struct Host: View {
+            let box: AccountBox
+            let store: PlanSummaryStore
+            let gateway: PlanHostGateway
+            var body: some View { SettingsPlanBody(store: store, userID: box.userID, gateway: gateway, currentAccount: { box.userID }) }
+        }
+        let (window, _) = await mount(Host(box: box, store: store, gateway: gateway), width: 520, opened: opened)
+        defer { window.orderOut(nil) }
+        await waitUntil("첫 읽기") { store.status != nil }
+        let late = Task { await store.perform(.portal(.payment)) }
+        await waitUntil("포털 요청이 서버 앞에 도착") { held.arrived }
+        box.userID = nil
+        held.open()
+        await late.value
+        #expect(opened.urls.isEmpty && store.owner == nil, "로그아웃 뒤 늦게 온 포털 주소를 열지 않는다")
+    }
+
+    // MARK: 환불 안내는 그 화면 흐름 안에서만 (PR-C 검토 1 P2)
+
+    @Test func comingBackToTheAccountScreenWithTheSameAccountDropsTheRefundIssuedNoticeAndShowsThePurchaseRows() async {
+        let gateway = PlanHostGateway([
+            .success(PlanHostFixtures.status(.pro, plan: .monthly, refund: true)),
+            .success(PlanHostFixtures.status(.none, checkout: true, lifetime: true)),
+        ])
+        let store = PlanSummaryStore()
+        let opened = PlanOpenedURLs()
+        let (first, _) = await mount(SettingsPlanBody(store: store, userID: user, gateway: gateway), width: 520, opened: opened)
+        await waitUntil("첫 읽기") { store.status?.state == .pro }
+        await store.perform(.confirmRefund)
+        #expect(store.state.notice?.title == "Refund issued" && store.state.rows.map(\.id) == ["plan"], "그 확인 흐름 안에서는 보인다")
+        // 탭을 옮겼다 돌아옴: 같은 저장소 · 같은 계정의 새 화면
+        first.orderOut(nil)
+        let (second, _) = await mount(SettingsPlanBody(store: store, userID: user, gateway: gateway), width: 520, opened: opened)
+        defer { second.orderOut(nil) }
+        await waitUntil("다시 들어와 환불 표시를 지움") { store.refundIssued == nil }
+        let state = store.state
+        #expect(state.notice == nil && state.rows.map(\.id) == ["plan", "pro", "lifetime"], "서버가 허용한 구매 줄이 보인다")
     }
 
     @Test func spendingOutsideTaskforceFitsTheWidth() async {

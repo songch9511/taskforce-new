@@ -207,6 +207,13 @@ final class SettingsWindowModel {
         confirming = nil
     }
 
+    /// 화면이 보이는 계정이 바뀌었다 (로그아웃 = nil 포함): 전 계정의 플랜 저장소를 무효화한다. 늦은 응답이 새 계정 · 로그인 화면 위에 아무것도 열지 못하게
+    /// (플랜 절이 사라져 그 절의 생애가 `follow`를 부르지 못하는 경우도 여기서 막는다)
+    func accountChanged(to userID: UUID?) {
+        guard plan.owner != nil, plan.owner != userID else { return }
+        plan.invalidate()
+    }
+
     /// 대화 · 기억 상태에 붙는다: 계정이 떠나면 열린 기억 상세를 닫는다 (다른 계정의 기억 id로 상세가 남지 않게)
     func bind(to runtime: ChatRuntime) {
         guard chatRuntime == nil else { return }
@@ -215,7 +222,7 @@ final class SettingsWindowModel {
             self?.close()
             self?.agents.accountLeft()
             // 전 계정의 플랜 · 키 상태를 메모리에 두지 않는다
-            self?.plan.follow(userID: nil, gateway: nil)
+            self?.plan.invalidate()
         }
     }
 }

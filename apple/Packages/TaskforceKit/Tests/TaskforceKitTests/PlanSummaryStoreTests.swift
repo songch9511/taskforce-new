@@ -9,11 +9,15 @@ struct PlanSummaryStoreTests {
     let user = UUID(uuidString: "a1111111-1111-4111-8111-111111111111")!
     let other = UUID(uuidString: "b2222222-2222-4222-8222-222222222222")!
 
-    private func make(_ gateway: FakePlanGateway, user: UUID? = nil, settleReads: Int = 3, pauses: PauseCounter = PauseCounter()) -> (PlanSummaryStore, OpenedURLs) {
+    private func make(
+        _ gateway: FakePlanGateway, user: UUID? = nil, settleReads: Int = 3, pauses: PauseCounter = PauseCounter(), account: AccountBox? = nil
+    ) -> (PlanSummaryStore, OpenedURLs) {
         let store = PlanSummaryStore(clock: { F.now }, calendar: F.calendar, pause: { _ in pauses.tick() }, settleReads: settleReads, settleInterval: .seconds(1))
         let opened = OpenedURLs()
         store.opener = { opened.record($0) }
-        store.follow(userID: user ?? self.user, gateway: gateway)
+        var provider: (@MainActor () -> UUID?)?
+        if let account { provider = { account.id } }
+        store.follow(userID: user ?? self.user, gateway: gateway, currentAccount: provider)
         return (store, opened)
     }
 
@@ -197,14 +201,15 @@ struct PlanSummaryStoreTests {
         #expect(!store.askingRefund && gateway.calls == ["status"])
     }
 
-    @Test func confirmingTheRefundSendsOneRequestThenShowsTheRequestedNoticeWhileThePlanStaysUntilConfirmed() async {
-        let gateway = FakePlanGateway(status: F.pro)
+    @Test func confirmingTheRefundSendsOneRequestThenShowsTheServersRequestedNoticeWhileThePlanStaysUntilConfirmed() async {
+        let requested = F.status(.pro, plan: .monthly, periodEndsAt: "2026-11-08T00:00:00Z", refundState: .requested, tokens: 2_400_000)
+        let gateway = FakePlanGateway([.success(F.pro), .success(requested)])
         let (store, _) = make(gateway)
         await store.refresh()
         await store.perform(.askRefund)
         await store.perform(.confirmRefund)
         #expect(gateway.calls == ["status", "refund", "status"])
-        #expect(!store.askingRefund && store.refundRequested)
+        #expect(!store.askingRefund && !store.refundRequested, "서버가 requested를 알려 주면 서버가 진실이다: 이 화면의 표시는 쓰지 않는다")
         let state = store.state
         #expect(state.notice?.title == "Refund requested" && state.row("plan")?.control == .value("Pro · Monthly · $12.99 a month", bold: false), "자격은 확정 뒤에만 바뀐다")
         #expect(state.row("refund") == nil)
@@ -240,6 +245,153 @@ struct PlanSummaryStoreTests {
         await store.perform(.confirmRefund)
         #expect(!store.askingRefund && !store.refundRequested && store.failure == .refund && gateway.calls == ["status", "refund", "status"])
         #expect(store.state.row("refund")?.detail.last == "Something went wrong. Try again in a moment.")
+    }
+
+    // MARK: 계정이 떠난 뒤의 늦은 응답 (PR-C 검토 1 P1): follow를 부르지 않아도 URL을 열기 직전에 현재 계정을 본다
+
+    @Test func aLateCheckoutAnswerOpensNothingWhenTheAccountLeftEvenWithoutAFollowCall() async {
+        for next in [nil, other] as [UUID?] {
+            let gate = AsyncGate(holdsOnlyFirst: true)
+            let gateway = FakePlanGateway(status: F.none)
+            gateway.checkoutGate = gate
+            let account = AccountBox(user)
+            let (store, opened) = make(gateway, account: account)
+            await store.refresh()
+            let late = Task { await store.perform(.checkout(.pro)) }
+            await waitUntil("checkout이 서버 앞에 도착") { gate.entered == 1 }
+            account.id = next
+            gate.open()
+            await late.value
+            #expect(opened.urls.isEmpty, "계정이 떠난 뒤 \(String(describing: next)): 전 계정의 결제 주소를 열지 않는다")
+            #expect(store.owner == nil && store.status == nil && store.busy == nil, "저장소가 무효화됐다")
+        }
+    }
+
+    @Test func aLateCheckoutAnswerOpensNothingAfterTheStoreWasInvalidatedByLeavingTheScreen() async {
+        let gate = AsyncGate(holdsOnlyFirst: true)
+        let gateway = FakePlanGateway(status: F.none)
+        gateway.checkoutGate = gate
+        let (store, opened) = make(gateway, account: AccountBox(user))
+        await store.refresh()
+        let late = Task { await store.perform(.checkout(.lifetime)) }
+        await waitUntil("checkout이 서버 앞에 도착") { gate.entered == 1 }
+        store.follow(userID: nil, gateway: nil)
+        gate.open()
+        await late.value
+        #expect(opened.urls.isEmpty && store.owner == nil)
+    }
+
+    @Test func aLatePortalAnswerOpensNothingWhenTheAccountLeft() async {
+        let gate = AsyncGate(holdsOnlyFirst: true)
+        let gateway = FakePlanGateway(status: F.pro)
+        gateway.portalGate = gate
+        let account = AccountBox(user)
+        let (store, opened) = make(gateway, account: account)
+        await store.refresh()
+        let late = Task { await store.perform(.portal(.payment)) }
+        await waitUntil("포털이 서버 앞에 도착") { gate.entered == 1 }
+        account.id = nil
+        gate.open()
+        await late.value
+        #expect(opened.urls.isEmpty && store.owner == nil && store.busy == nil)
+    }
+
+    @Test func aLateStatusReadForAnAccountThatLeftIsDropped() async {
+        let gate = AsyncGate(holdsOnlyFirst: true)
+        let gateway = FakePlanGateway(status: F.pro)
+        gateway.gateNextStatus(gate)
+        let account = AccountBox(user)
+        let (store, _) = make(gateway, account: account)
+        let late = Task { await store.refresh() }
+        await waitUntil("읽기가 서버 앞에 도착") { gate.entered == 1 }
+        account.id = other
+        gate.open()
+        await late.value
+        #expect(store.status == nil && store.owner == nil)
+    }
+
+    @Test func aKeyAnswerForAnAccountThatLeftChangesNothing() async {
+        let account = AccountBox(user)
+        let (store, _) = make(FakePlanGateway(status: F.status(.lifetime, aiKey: .missing)), account: account)
+        await store.refresh()
+        account.id = nil
+        await store.saveKey(SecretBox("sk-or-v1-aaaabbbbccccdddd"))
+        #expect(store.status == nil && store.owner == nil, "계정이 떠난 뒤의 응답은 아무 화면도 바꾸지 않는다")
+    }
+
+    @Test func theOpenerStillWorksWhileTheOwnerIsTheCurrentAccount() async {
+        let gateway = FakePlanGateway(status: F.none)
+        let (store, opened) = make(gateway, account: AccountBox(user))
+        await store.refresh()
+        await store.perform(.checkout(.pro))
+        #expect(opened.urls.count == 1 && store.owner == user)
+    }
+
+    // MARK: 환불 안내는 서버 상태를 따른다 (PR-C 검토 1 P2)
+
+    @Test func theRequestedNoticeFollowsTheServerSoAnIdleReadClearsIt() async {
+        let requested = F.status(.pro, plan: .monthly, periodEndsAt: "2026-11-08T00:00:00Z", refundUntil: "2026-10-23T12:00:00Z", refundState: .requested, tokens: 2_400_000)
+        let gateway = FakePlanGateway([.success(F.pro), .success(requested)])
+        let (store, _) = make(gateway)
+        await store.refresh()
+        await store.perform(.confirmRefund)
+        #expect(store.state.notice?.title == "Refund requested")
+        // 서버가 미확정 요청을 정리하고 idle로 돌려줬다: 안내가 사라지고 환불 줄이 다시 선다
+        gateway.setStatuses([.success(F.pro)])
+        await store.refresh()
+        #expect(store.state.notice == nil && store.state.row("refund") != nil && !store.refundRequested)
+    }
+
+    @Test func theLocalRequestMarkOnlyBridgesUntilTheNextGoodRead() async {
+        let gateway = FakePlanGateway([.success(F.pro), .failure(FakePlanGateway.Failure())])
+        let (store, _) = make(gateway)
+        await store.refresh()
+        await store.perform(.confirmRefund)
+        #expect(store.refundRequested && store.state.notice?.title == "Refund requested", "되읽기가 실패해도 요청을 보냈다는 사실은 보인다")
+        gateway.setStatuses([.success(F.pro)])
+        await store.refresh()
+        #expect(!store.refundRequested && store.state.notice == nil, "서버의 다음 상태가 이긴다")
+    }
+
+    @Test func aRequestedNoticeThatTheServerKeepsSurvivesReenteringTheScreen() async {
+        let requested = F.status(.pro, plan: .monthly, periodEndsAt: "2026-11-08T00:00:00Z", refundState: .requested)
+        let (store, _) = make(FakePlanGateway(status: requested))
+        await store.refresh()
+        store.beginVisit()
+        #expect(store.state.notice?.title == "Refund requested", "서버가 아는 요청은 화면에 다시 들어와도 그대로다")
+    }
+
+    @Test func aRefundIssuedNoticeBelongsToItsOwnVisitAndTheSameAccountSeesThePurchaseRowsWhenItComesBack() async {
+        let gateway = FakePlanGateway([.success(F.pro), .success(F.status(.none, canCheckout: true, canBuyLifetime: true, withTrial: false))])
+        let (store, _) = make(gateway)
+        await store.refresh()
+        await store.perform(.confirmRefund)
+        #expect(store.state.notice?.title == "Refund issued" && store.state.rows.map(\.id) == ["plan"], "그 확인 흐름 안에서는 보인다")
+        // 같은 계정이 화면에 다시 들어왔다 (탭을 옮겼다 돌아옴 · 창을 다시 엶)
+        store.beginVisit()
+        let state = store.state
+        #expect(store.refundIssued == nil && state.notice == nil)
+        #expect(state.rows.map(\.id) == ["plan", "pro", "lifetime"], "서버가 허용한 구매 줄이 다시 보인다")
+    }
+
+    @Test func aRefundThatEndsAfterTheVisitWasLeftIsNotCalledIssued() async {
+        let requested = F.status(.pro, plan: .monthly, periodEndsAt: "2026-11-08T00:00:00Z", refundState: .requested)
+        let gateway = FakePlanGateway([.success(F.pro), .success(requested)])
+        let (store, _) = make(gateway)
+        await store.refresh()
+        await store.perform(.confirmRefund)
+        store.beginVisit()
+        gateway.setStatuses([.success(F.status(.lapsed, canCheckout: true, canBuyLifetime: true))])
+        await store.refresh()
+        #expect(store.refundIssued == nil && store.state.notice?.title == "Pro ended · AI and execution paused")
+    }
+
+    @Test func reenteringClearsAnOpenRefundConfirmationToo() async {
+        let (store, _) = make(FakePlanGateway(status: F.pro))
+        await store.refresh()
+        await store.perform(.askRefund)
+        store.beginVisit()
+        #expect(!store.askingRefund)
     }
 
     // MARK: 키

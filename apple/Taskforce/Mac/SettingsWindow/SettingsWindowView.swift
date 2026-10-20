@@ -85,6 +85,10 @@ struct SettingsWindowView: View {
             guard case .signedIn = session.state else { return }
             Task { await runs.loadCredits() }
         }
+        // 계정이 바뀌거나 로그아웃하면 전 계정의 플랜 저장소를 무효화한다 (Plan & usage 절이 사라져도 늦은 응답이 결제 주소를 열지 못하게)
+        .onChange(of: SettingsWindowSession.accountUserID(session)) { _, userID in
+            model.accountChanged(to: userID)
+        }
         // Execution › Run with AI: 로그인한 계정마다 credits(200 · 404)를 읽는다
         .task(id: SettingsWindowSession.signedInUserID(session)) {
             guard SettingsWindowSession.signedInUserID(session) != nil else { return }

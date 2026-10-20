@@ -706,11 +706,30 @@ private struct MacAccountPane: View {
 /// Release는 L5까지 이 옛 창이라 여기서도 팔고 키를 받는다 (`EdgeSurfaces.release.settingsWindow == false`)
 struct MacBillingSection: View {
     let userID: UUID
+    /// 시험이 가짜 서버 · 가짜 계정 길 · 만든 저장소를 넣는 자리 (Release 경로는 모두 nil: 저장소는 이 화면이 만들고 서버는 `services.api`, 계정은 세션)
+    var gatewayOverride: (any PlanSummaryGateway)?
+    var currentAccountOverride: (@MainActor () -> UUID?)?
     @Environment(\.services) private var services
-    @State private var store = PlanSummaryStore()
+    /// 세션이 없으면(시험의 작은 호스트) 계정이 없는 것으로 본다. 실제 설정 창에는 늘 있다
+    @Environment(SessionStore.self) private var session: SessionStore?
+    @State private var store: PlanSummaryStore
+
+    init(
+        userID: UUID, store: PlanSummaryStore = PlanSummaryStore(), gatewayOverride: (any PlanSummaryGateway)? = nil,
+        currentAccountOverride: (@MainActor () -> UUID?)? = nil
+    ) {
+        self.userID = userID
+        self.gatewayOverride = gatewayOverride
+        self.currentAccountOverride = currentAccountOverride
+        _store = State(initialValue: store)
+    }
 
     var body: some View {
-        MacBillingSectionBody(store: store, userID: userID, gateway: PlanGateways.current(services))
+        // 이 화면은 계정마다 하나다(`.id(userID)`): 화면이 사라지면(로그아웃 · 계정 전환 · 창 닫기) 저장소도 무효화돼 늦은 응답이 이전 계정의 결제 주소를 열지 못한다
+        MacBillingSectionBody(
+            store: store, userID: userID, gateway: gatewayOverride ?? PlanGateways.current(services),
+            currentAccount: currentAccountOverride ?? PlanAccount.current(session), invalidatesOnDisappear: true
+        )
     }
 }
 
@@ -719,6 +738,8 @@ struct MacBillingSectionBody: View {
     let store: PlanSummaryStore
     let userID: UUID?
     let gateway: (any PlanSummaryGateway)?
+    var currentAccount: (@MainActor () -> UUID?)?
+    var invalidatesOnDisappear = false
     @State private var keyHandle = SecureFieldSmHandle()
 
     var body: some View {
@@ -727,7 +748,7 @@ struct MacBillingSectionBody: View {
             onAction: { action in Task { await store.perform(action) } },
             onSubmitKey: { key in Task { await store.saveKey(key) } }
         )
-        .modifier(PlanSummaryLifecycle(store: store, userID: userID, gateway: gateway))
+        .modifier(PlanSummaryLifecycle(store: store, userID: userID, gateway: gateway, currentAccount: currentAccount, invalidatesOnDisappear: invalidatesOnDisappear))
     }
 }
 
@@ -824,6 +845,34 @@ private struct LegacyPlanButton: View {
     }
 }
 
+/// 제자리 확인 (승인 규칙: Cancel이 먼저다): Cancel이 앞에 서고 처음 포커스를 받는다. ↩로 확인되는 기본 동작 버튼은 없다 (확인은 눌러야만 한다)
+struct LegacyPlanConfirm: View {
+    let confirm: PlanSummaryState.Confirm
+    let onAction: (PlanSummaryState.Action) -> Void
+    @FocusState private var cancelFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(confirm.title).fontWeight(.semibold)
+            Text(confirm.detail).font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Button(PlanCopy.cancel) { onAction(confirm.cancel) }
+                    .keyboardShortcut(.cancelAction)
+                    .focused($cancelFocused)
+                    .disabled(confirm.busy)
+                Button(confirm.confirmTitle) { onAction(confirm.confirm) }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(confirm.busy)
+                if confirm.busy { ProgressView().controlSize(.small) }
+            }
+        }
+        .defaultFocus($cancelFocused, true)
+        .onAppear { cancelFocused = true }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(confirm.title)
+    }
+}
+
 private struct LegacyPlanRow: View {
     let row: PlanSummaryState.Row
     let locked: Bool
@@ -863,17 +912,7 @@ private struct LegacyPlanRow: View {
             .disabled(locked)
             .accessibilityHint("Opens in browser")
         case .confirm(let confirm):
-            VStack(alignment: .leading, spacing: 8) {
-                Text(confirm.title).fontWeight(.semibold)
-                Text(confirm.detail).font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    Button(confirm.confirmTitle) { onAction(confirm.confirm) }.buttonStyle(.borderedProminent).disabled(confirm.busy)
-                    Button(PlanCopy.cancel) { onAction(confirm.cancel) }.keyboardShortcut(.cancelAction).disabled(confirm.busy)
-                    if confirm.busy { ProgressView().controlSize(.small) }
-                }
-            }
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel(confirm.title)
+            LegacyPlanConfirm(confirm: confirm, onAction: onAction)
         case .keyField(let save):
             LabeledContent {
                 HStack(spacing: 8) {

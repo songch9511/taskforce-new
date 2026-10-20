@@ -41,6 +41,9 @@ public final class PlanSummaryStore {
     @ObservationIgnored private var gateway: (any PlanSummaryGateway)?
     /// 계정이 바뀔 때마다 오른다: 전 계정의 늦은 응답을 버린다
     @ObservationIgnored private var generation = 0
+    /// 지금 로그인한 계정을 화면 밖의 진실에서 읽는 길 (세션). 화면이 `follow`를 부르지 못하고 사라져도(로그아웃 · 계정 전환 · 창 닫기) 요청이 끝났을 때 이것으로 계정이 떠난 것을 안다.
+    /// nil이면 확인하지 않는다 (시험 · 견본)
+    @ObservationIgnored private var currentAccount: (@MainActor () -> UUID?)?
     /// 읽기마다 오른다: 겹친 읽기에서 오래된 응답이 새 값을 덮지 않는다
     @ObservationIgnored private var readSerial = 0
     /// checkout 주소를 열었다: 앱이 다시 활성화되면 Checking…으로 다시 읽고 webhook이 닿을 때까지 조용히 몇 번 더 읽는다
@@ -76,14 +79,57 @@ public final class PlanSummaryStore {
 
     // MARK: 계정
 
-    /// 화면이 보이는 계정과 서버 길을 붙인다. 계정이 바뀌면(로그아웃 = nil 포함) 값 · 진행 중인 동작을 모두 비우고 늦은 응답을 버린다
-    public func follow(userID: UUID?, gateway: (any PlanSummaryGateway)?) {
+    /// 화면이 보이는 계정과 서버 길을 붙인다. 계정이 바뀌면(로그아웃 = nil 포함) 값 · 진행 중인 동작을 모두 비우고 늦은 응답을 버린다.
+    /// `currentAccount`: 지금 로그인한 계정을 읽는 길. 주면 요청이 끝날 때마다(주소를 열기 직전 포함) 이 저장소의 계정이 아직 그 계정인지 다시 본다
+    public func follow(userID: UUID?, gateway: (any PlanSummaryGateway)?, currentAccount: (@MainActor () -> UUID?)? = nil) {
         if owner != userID {
             generation += 1
             owner = userID
             reset()
         }
         self.gateway = userID == nil ? nil : gateway
+        self.currentAccount = userID == nil ? nil : currentAccount
+    }
+
+    /// 이 저장소를 무효화한다: 계정이 이 화면을 떠났다 (화면 제거 · 로그아웃 · 창 닫기). 진행 중인 요청의 늦은 응답은 아무것도 열지 못한다
+    public func invalidate() {
+        follow(userID: nil, gateway: nil)
+    }
+
+    /// 화면에 (다시) 들어왔다 (탭을 옮겼다 돌아옴 · 창을 다시 엶 · 같은 계정의 새 화면): 그 화면 흐름에만 속한 표시를 지운다.
+    /// "Refund issued"와 이 화면의 "요청함" 표시 · 환불 확인 줄은 한 번의 확인 흐름 안에서만 보인다. 서버가 아는 것(`refund_state`)은 그대로다
+    public func beginVisit() {
+        refundIssued = nil
+        refundPlan = nil
+        refundRequested = false
+        askingRefund = false
+    }
+
+    /// 이 저장소의 계정이 지금 로그인한 계정인가 (알 길이 없으면 맞다고 본다)
+    private func isAccountCurrent() -> Bool {
+        guard let owner else { return false }
+        guard let currentAccount else { return true }
+        return currentAccount() == owner
+    }
+
+    /// 요청이 끝났을 때: 같은 세대이고 계정이 그대로인가. 계정이 떠났으면 저장소를 무효화하고 false (늦은 응답은 버린다)
+    private func stillCurrent(_ generation: Int) -> Bool {
+        guard generation == self.generation else { return false }
+        guard isAccountCurrent() else {
+            invalidate()
+            return false
+        }
+        return true
+    }
+
+    /// 동작을 시작해도 되나: 계정이 떠났으면 시작하지 않고 무효화한다
+    private func canStart() -> Bool {
+        guard owner != nil else { return false }
+        guard isAccountCurrent() else {
+            invalidate()
+            return false
+        }
+        return true
     }
 
     private func reset() {
@@ -109,17 +155,17 @@ public final class PlanSummaryStore {
 
     @discardableResult
     private func read() async -> BillingStatusV2? {
-        guard let gateway, owner != nil else { return nil }
+        guard let gateway, canStart() else { return nil }
         let generation = generation
         readSerial += 1
         let serial = readSerial
         do {
             let value = try await gateway.billingStatus()
-            guard generation == self.generation, serial == readSerial else { return nil }
+            guard stillCurrent(generation), serial == readSerial else { return nil }
             apply(value)
             return value
         } catch {
-            guard generation == self.generation, serial == readSerial, !(error is CancellationError) else { return nil }
+            guard stillCurrent(generation), serial == readSerial, !(error is CancellationError) else { return nil }
             if status == nil { loadFailed = true }
             return nil
         }
@@ -128,6 +174,9 @@ public final class PlanSummaryStore {
     private func apply(_ value: BillingStatusV2) {
         status = value
         loadFailed = false
+        // "요청함" 표시는 서버의 다음 상태를 따른다: 서버가 requested를 알리면 그 값이 Notice를 세우고, idle로 돌아왔으면(미확정 요청을 서버가 정리) 이 화면의 표시도 지운다.
+        // 이 화면의 표시는 요청을 보낸 뒤 첫 읽기까지의 다리일 뿐이다
+        refundRequested = false
         // 이 화면에서 환불을 요청했는데 플랜이 끝났다: 환불이 확인됐다 ("Refund issued")
         if let plan = refundPlan, value.state == .none || value.state == .lapsed {
             refundIssued = plan
@@ -147,13 +196,13 @@ public final class PlanSummaryStore {
         let baseline = status?.state
         settling = true
         var current = await read()
-        guard generation == self.generation else { return }
+        guard stillCurrent(generation) else { return }
         settling = false
         var reads = 1
         // 결제가 반영되면 상태가 바뀐다. 안 바뀌면(결제 안 함 · 아직 webhook 전) 몇 번만 조용히 더 읽는다
         while let value = current, value.state == baseline, reads < settleReads {
             await pause(settleInterval)
-            guard generation == self.generation else { return }
+            guard stillCurrent(generation) else { return }
             current = await read()
             reads += 1
         }
@@ -190,67 +239,67 @@ public final class PlanSummaryStore {
     }
 
     private func openCheckout(_ kind: PlanCheckoutKind) async {
-        guard busy == nil, let gateway, owner != nil, let terms = status?.termsVersion else { return }
+        guard busy == nil, let gateway, canStart(), let terms = status?.termsVersion else { return }
         let generation = generation
         busy = .checkout(kind)
         failure = nil
         do {
             let url = try await gateway.billingCheckout(plan: kind, termsVersion: terms)
-            guard generation == self.generation else { return }
+            guard stillCurrent(generation) else { return }
             busy = nil
             checkoutOpened = true
             opener?(url)
         } catch {
-            guard generation == self.generation else { return }
+            guard stillCurrent(generation) else { return }
             busy = nil
             if !(error is CancellationError) { failure = .checkout(kind) }
         }
     }
 
     private func openPortal(_ target: PlanPortalTarget) async {
-        guard busy == nil, let gateway, owner != nil else { return }
+        guard busy == nil, let gateway, canStart() else { return }
         let generation = generation
         busy = .portal(target)
         failure = nil
         do {
             let url = try await gateway.billingPortal(target: target)
-            guard generation == self.generation else { return }
+            guard stillCurrent(generation) else { return }
             busy = nil
             opener?(url)
         } catch {
-            guard generation == self.generation else { return }
+            guard stillCurrent(generation) else { return }
             busy = nil
             if !(error is CancellationError) { failure = .portal(target) }
         }
     }
 
     private func resume() async {
-        guard busy == nil, let gateway, owner != nil else { return }
+        guard busy == nil, let gateway, canStart() else { return }
         let generation = generation
         busy = .resume
         failure = nil
         do {
             try await gateway.billingResume()
-            guard generation == self.generation else { return }
+            guard stillCurrent(generation) else { return }
             busy = nil
             // 자격은 webhook이 바꾼다: 요청만으로 화면을 바꾸지 않고 다시 읽는다
             await refresh()
         } catch {
-            guard generation == self.generation else { return }
+            guard stillCurrent(generation) else { return }
             busy = nil
             if !(error is CancellationError) { failure = .resume }
         }
     }
 
     private func requestRefund() async {
-        guard busy == nil, let gateway, owner != nil else { return }
+        guard busy == nil, let gateway, canStart() else { return }
         let generation = generation
         let plan: PlanSummaryInput.IssuedPlan = status?.state == .lifetime ? .lifetime : .pro
         busy = .refund
         failure = nil
         do {
             try await gateway.billingRefund()
-            guard generation == self.generation else { return }
+            guard stillCurrent(generation) else { return }
             busy = nil
             askingRefund = false
             // 요청했다: 서버가 다시 읽는 값이 `requested`로 바뀌기 전에도 Notice가 선다. 자격은 확정(webhook) 뒤에만 바뀐다
@@ -258,7 +307,7 @@ public final class PlanSummaryStore {
             refundPlan = plan
             await refresh()
         } catch {
-            guard generation == self.generation else { return }
+            guard stillCurrent(generation) else { return }
             busy = nil
             askingRefund = false
             if !(error is CancellationError) { failure = .refund }
@@ -271,19 +320,19 @@ public final class PlanSummaryStore {
 
     /// 키 칸의 Save · Return. 값은 `SecretBox`로 오고 서버로 한 번 가면 끝이다 (이 객체에 남기지 않는다)
     public func saveKey(_ key: SecretBox) async {
-        guard busy == nil, let gateway, owner != nil, status?.state == .lifetime, !key.isEmpty else { return }
+        guard busy == nil, let gateway, canStart(), status?.state == .lifetime, !key.isEmpty else { return }
         let generation = generation
         busy = .saveKey
         failure = nil
         do {
             try await gateway.saveOpenRouterKey(key)
-            guard generation == self.generation else { return }
+            guard stillCurrent(generation) else { return }
             busy = nil
             // 서버가 OpenRouter에 확인하고 저장했다: 다시 읽기 전까지도 줄이 맞게 보인다
             status = status?.replacingKey(.connected)
             await refresh()
         } catch {
-            guard generation == self.generation else { return }
+            guard stillCurrent(generation) else { return }
             busy = nil
             if error is CancellationError { return }
             switch (error as? APIError) {
@@ -295,19 +344,19 @@ public final class PlanSummaryStore {
     }
 
     private func removeKey() async {
-        guard busy == nil, let gateway, owner != nil else { return }
+        guard busy == nil, let gateway, canStart() else { return }
         let generation = generation
         busy = .removeKey
         failure = nil
         do {
             try await gateway.removeOpenRouterKey()
-            guard generation == self.generation else { return }
+            guard stillCurrent(generation) else { return }
             busy = nil
             confirmingRemoveKey = false
             status = status?.replacingKey(.missing)
             await refresh()
         } catch {
-            guard generation == self.generation else { return }
+            guard stillCurrent(generation) else { return }
             busy = nil
             confirmingRemoveKey = false
             if !(error is CancellationError) { failure = .keyRemove }
