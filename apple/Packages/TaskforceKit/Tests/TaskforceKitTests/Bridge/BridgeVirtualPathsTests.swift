@@ -235,7 +235,7 @@ struct BridgeVirtualPathsTests {
                 "parse": ["wrapper": "none", "argv": ["cat", literal], "paths": [["index": 1, "absolute": literal]], "implicit_cwd": false] as [String: Any],
             ])
             let outcome = await r.evaluate("Bash", #"{"command":"cat \#(literal)"}"#, cwd: r.workspace, id: "toolu_lit")
-            #expect(outcome.response.decision != .allow && outcome.code == "parse_check_failed", "\(literal)")
+            #expect(outcome.response.decision != .allow && outcome.code == "parse_check_failed", "\(literal): \(outcome.code)")
             #expect(outcome.response.command == nil)
         }
     }

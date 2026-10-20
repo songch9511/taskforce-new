@@ -294,7 +294,7 @@ struct ChatStoreInterleavingTests {
         }
 
         // 2. 서버가 마지막 사실로 멈춘 뒤: 서버가 없는 대화는 새로 읽기가 먼저 확인한 다음 늦은 응답을 놓는다 (되살리면 안 된다). 있는 대화는 응답을 다 놓은 뒤 새로 읽는다
-        let final = server.fact
+        let aliveBeforeDrain = server.fact.alive
         func drain(_ label: String) async {
             var guardSteps = 0
             while (finished < ops.count || !server.pending.isEmpty), guardSteps < 400 {
@@ -304,7 +304,7 @@ struct ChatStoreInterleavingTests {
             }
             if finished < ops.count { problems.append("\(label): 작업이 끝나지 않는다") }
         }
-        if !final.alive, Bool.random(using: &rng) {
+        if !aliveBeforeDrain, Bool.random(using: &rng) {
             server.autoDeliver = true
             await chat.refresh()
             observe("seed \(seed) 확인 새로 읽기")
@@ -324,6 +324,8 @@ struct ChatStoreInterleavingTests {
         }
 
         // 3. 수렴: 새로 읽기 한 번이면 보이는 상태가 서버의 마지막 사실과 같다
+        // 시작해 둔 POST/PATCH가 drain 중 서버에 도착할 수 있다. 모든 작업을 마친 뒤의 사실을 기준으로 삼는다.
+        let final = server.fact
         server.autoDeliver = true
         await chat.refresh()
         await chat.settle()
