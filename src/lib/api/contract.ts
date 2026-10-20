@@ -1336,7 +1336,7 @@ export type AiUsageTokens = z.infer<typeof aiUsageTokensSchema>;
 export const billingPricesV2Schema = z.object({ pro_monthly: z.string(), pro_first_month: z.string(), pro_yearly: z.string(), lifetime: z.string() });
 export type BillingPricesV2 = z.infer<typeof billingPricesV2Schema>;
 
-/** 사용자의 OpenRouter 키 상태 (Lifetime만). 값은 BYOK 서버(PR-B)가 채운다 — 그 전에는 lifetime이면 missing */
+/** 사용자의 OpenRouter 키 상태 (Lifetime만, 서버의 user_ai_keys가 정한다). 키 자체나 일부는 어디에도 내리지 않는다 */
 export const aiKeyStatusV2Schema = z.enum(["connected", "missing", "revoked"]);
 
 /** GET /api/v2/billing. 자격은 결제 제공자 webhook으로만 바뀐다 (I15, 클라이언트 신고 없음) */
@@ -1388,8 +1388,20 @@ export const billingRefundRequestV2Schema = z.object({}).strict();
 export const billingRefundResponseV2Schema = z.object({ requested: z.literal(true) });
 export type BillingRefundResponseV2 = z.infer<typeof billingRefundResponseV2Schema>;
 
-/** v2 결제 route의 오류 코드. 켜져 있지 않거나 지금 할 수 없는 요청은 409, 제공자 · DB 장애는 503 (같은 billing_unavailable) */
-export const billingErrorCodeV2Schema = z.enum(["unauthorized", "invalid_request", "billing_unavailable", "billing_terms_required", "billing_refund_window_closed", "billing_refund_used", "billing_refund_pending"]);
+/**
+ * PUT /api/v2/billing/openrouter-key — Lifetime 사용자의 OpenRouter 키 (BYOK). 키는 이 본문으로만 들어오고 서버는 다시 내려 주지 않는다(상태만).
+ * 모양(접두 sk-or- · 길이 20–256 · 앞뒤 공백 지움)과 OpenRouter에서의 확인은 서버가 하고, 여기서는 터무니없이 큰 본문만 거른다.
+ */
+export const billingOpenRouterKeyRequestV2Schema = z.object({ key: z.string().min(1).max(4096) }).strict();
+export const billingOpenRouterKeyResponseV2Schema = z.object({ ai_key: z.literal("connected") }).strict();
+/** DELETE /api/v2/billing/openrouter-key는 본문 없이 204 */
+
+/**
+ * v2 결제 route의 오류 코드. 켜져 있지 않거나 지금 할 수 없는 요청은 409, 제공자 · DB 장애는 503 (같은 billing_unavailable).
+ * 키 저장: 422 ai_key_invalid(OpenRouter가 거절했거나 모양이 아님) · 422 ai_key_management(관리 키) · 429 rate_limited(Retry-After, 시간당 10회).
+ * v1 오류 코드는 늘지 않는다: 호출 중 키 문제는 v1 밖에서 billing_required로 닫히고 정확한 이유는 상태의 ai_key가 말한다.
+ */
+export const billingErrorCodeV2Schema = z.enum(["unauthorized", "invalid_request", "billing_unavailable", "billing_terms_required", "billing_refund_window_closed", "billing_refund_used", "billing_refund_pending", "ai_key_invalid", "ai_key_management", "rate_limited"]);
 export const billingErrorV2Schema = z.object({ error: z.object({ code: billingErrorCodeV2Schema, message: z.string() }) });
 export type BillingErrorCodeV2 = z.infer<typeof billingErrorCodeV2Schema>;
 

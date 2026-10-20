@@ -66,7 +66,7 @@ export const AGENT_EVENTS: readonly AgentEventSpec[] = [
 // ─── 결제 · 키 이벤트 등록부 (OA 결제 PR-A, 20261129000000) ───
 
 /**
- * 결제 · 키 지표 type 20개 (CHECK 블록 v4, 20261129000000_billing_pro_lifetime.sql). 에이전트 카드의 대상이 아니라 따로 둔 묶음이다.
+ * 결제 · 키 지표 type 20개 (CHECK 블록 v4, 20261129000000_billing_pro_lifetime.sql; 키 셋의 원천 함수는 20261130000000_user_ai_keys.sql). 에이전트 카드의 대상이 아니라 따로 둔 묶음이다.
  * 상태 전이 SQL 함수가 같은 트랜잭션에서 billing_emit(…)으로 남긴다(재전달에 두 번 세지 않는다). 금액 · 이메일 · LS id · 키는 props에 없다.
  * 읽는 카드(/admin/metrics 결제 카드)는 후속이고, 지금은 이 목록이 "모르는 type"으로 새지 않게 하고 CHECK ↔ 원천 함수 ↔ 시험을 대조하는 집이다
  * (tests/metrics/agent-event-registry.test.ts R1 · R2b · R3b · R6).
@@ -93,10 +93,11 @@ export const BILLING_EVENTS: readonly BillingEventSpec[] = [
   { type: "billing_review_needed", sources: [sql("billing_apply_subscription_v2"), sql("billing_apply_lifetime")] },
   { type: "billing_legacy_marked", sources: [sql("billing_seed_legacy")] },
   { type: "billing_notice_scheduled", sources: [sql("billing_schedule_legacy_notice")] },
-  // CHECK는 미리 열어 두었고 남기는 곳은 BYOK 서버(PR-B)가 더한다
-  { type: "ai_key_saved", sources: [], gap: "남기는 곳 없음 (BYOK 서버 PR-B: 키 저장)" },
-  { type: "ai_key_deleted", sources: [], gap: "남기는 곳 없음 (BYOK 서버 PR-B: 키 지우기)" },
-  { type: "ai_key_revoked", sources: [], gap: "남기는 곳 없음 (BYOK 서버 PR-B: 제공자 401로 폐기)" },
+  // BYOK 키 저장소(20261130000000): 키를 쓰는 SQL이 같은 트랜잭션에서 남긴다. props는 {replaced} · {}(사용자 지우기) · {by:"refund" | "system"}(삭제 트리거: 환불 · 직접 삭제) ·
+  // {by:"provider"}뿐이고 키 · 암호문은 없다. 지우기는 어떤 길로 지워지든 삭제 트리거 함수 하나가 남긴다
+  { type: "ai_key_saved", sources: [sql("ai_key_put")] },
+  { type: "ai_key_deleted", sources: [sql("ai_key_after_delete")] },
+  { type: "ai_key_revoked", sources: [sql("ai_key_mark_revoked")] },
 ];
 
 /** OA 전에 있던 type 7개 (compute.ts의 지표 1–5 · 연결 카드가 읽는다) */

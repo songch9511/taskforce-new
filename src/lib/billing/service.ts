@@ -1,4 +1,5 @@
 import { AiBudgetError } from '@/lib/ai/budget-error';
+import { AI_KEY_LIMIT, checkKeyFormat, deleteUserKey, putUserKey, userKeyEncryptionKey, userKeyStatus, UserKeyError, verifyOpenRouterKey } from '@/lib/ai/user-key';
 import { aiSpendSummarySchema, billingStatusV2Schema, type BillingStatusV2 } from '@/lib/api/contract';
 import 'server-only';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -107,6 +108,48 @@ export async function resume(admin: SupabaseClient, userId: string) {
     await resumeSubscription(account.subscription_id);
     await enqueueReconcile(admin, 'subscriptions', account.subscription_id);
     return { requested: true as const };
+}
+export type OpenRouterKeyResult =
+    | { ok: true }
+    | { ok: false; reason: 'invalid' | 'management' | 'unavailable' | 'not_entitled' }
+    | { ok: false; reason: 'rate_limited'; retryAt: Date };
+/**
+ * Lifetime owner's own OpenRouter key (BYOK, contract 6.5). Checked with OpenRouter before anything is stored: an unverifiable key is never kept.
+ * Only a Lifetime account may hold one (a key nobody can use is a secret we should not keep). The attempt count is taken before the outbound
+ * call so the server cannot be used as a key-checking tool. The key lives in this call and in the sealed row; it is in no result, error or log.
+ */
+export async function saveOpenRouterKey(admin: SupabaseClient, userId: string, raw: string, send: typeof fetch = fetch): Promise<OpenRouterKeyResult> {
+    if (!billingEnabled())
+        return { ok: false, reason: 'not_entitled' };
+    if (planState(await accountFor(admin, userId), Date.now(), billingFlags()).state !== 'lifetime')
+        return { ok: false, reason: 'not_entitled' };
+    const format = checkKeyFormat(raw);
+    if (!format.ok)
+        return { ok: false, reason: 'invalid' };
+    // A server that cannot seal must not spend the user's attempt or send their key anywhere: fail before the outbound call.
+    userKeyEncryptionKey();
+    const taken = await admin.rpc('take_rate_limit', { p_user_id: userId, p_kind: 'ai_key', p_max: AI_KEY_LIMIT.max, p_window_seconds: AI_KEY_LIMIT.windowMs / 1000 });
+    if (taken.error)
+        throw new Error('billing_unavailable');
+    if (taken.data)
+        return { ok: false, reason: 'rate_limited', retryAt: new Date(String(taken.data)) };
+    const verdict = await verifyOpenRouterKey(format.key, send);
+    if (verdict !== 'ok')
+        return { ok: false, reason: verdict };
+    try {
+        await putUserKey(admin, userId, format.key);
+    }
+    catch (error) {
+        // The database re-checks the entitlement under the account lock (a refund can land while OpenRouter was being asked).
+        if (error instanceof UserKeyError && error.code === 'byok_not_entitled')
+            return { ok: false, reason: 'not_entitled' };
+        throw error;
+    }
+    return { ok: true };
+}
+/** Removes the stored key (and writes the event). Nothing to remove is not an error. */
+export async function removeOpenRouterKey(admin: SupabaseClient, userId: string): Promise<void> {
+    await deleteUserKey(admin, userId);
 }
 const bestEffort = (step: Promise<unknown>) => step.then(() => undefined, () => { console.error('billing follow-up failed'); });
 const withinRefundWindow = (createdAt: string) => Date.now() - Date.parse(createdAt) <= REFUND_WINDOW_HOURS * 3_600_000;
@@ -266,12 +309,13 @@ export async function billingStatusV2(admin: SupabaseClient, userId: string): Pr
             // The window is the trial's while no payment has happened (also for a plan cancelled inside its trial); a paid account's is the UTC month.
             pausedUntil = info.state === 'trial' || !account.last_payment_at ? (account.trial_ends_at ?? info.current_period_ends_at) : utcMonthStart(now, 1);
     }
+    // Only a Lifetime account has a key to report; the sealed value is never read for this.
+    const key = info.state === 'lifetime' ? await userKeyStatus(admin, userId).catch(() => { throw new Error('billing_unavailable'); }) : null;
     return billingStatusV2Schema.parse({
         state: info.state, plan: info.plan, trial_ends_at: info.trial_ends_at, current_period_ends_at: info.current_period_ends_at, cancel_at: info.cancel_at,
         notice_ends_at: info.notice_ends_at, refund_until: info.refund_until, refund_state: info.refund_state, can_use_ai: info.ai, can_checkout: info.can_checkout,
         can_buy_lifetime: info.can_buy_lifetime, with_trial: info.with_trial, terms_version: BILLING_TERMS_VERSION, prices: billingPrices(),
         ai_usage_this_month: usage, fair_use_paused_until: pausedUntil,
-        // The key table arrives with the BYOK change: until then a Lifetime account has no key to report.
-        ai_key: info.state === 'lifetime' ? 'missing' : null, ai_key_spend_error_at: null,
+        ai_key: key?.ai_key ?? null, ai_key_spend_error_at: key?.spend_error_at ?? null,
     });
 }

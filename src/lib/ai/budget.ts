@@ -7,7 +7,10 @@ export { AiBudgetError } from "./budget-error";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 
+import { flagEnabled } from "@/lib/flags";
+
 import { fetchGeneration, generationConfigFromEnv } from "./generation";
+import { markUserKeyRevoked, noteUserKeyOk, noteUserKeySpendError, readUserKey, UserKeyError, type OwnKey } from "./user-key";
 
 const CHAT = "https://openrouter.ai/api/v1/chat/completions";
 const EMBEDDINGS = "https://openrouter.ai/api/v1/embeddings";
@@ -61,7 +64,10 @@ const decisionRequest = z.object({ model: z.literal("typesafe/jev-1.13"), state:
 export function budgetFetch(admin: SupabaseClient, userId: string, send: typeof fetch = fetch): typeof fetch {
   return async (url, init) => {
     if (!userId) throw new AiBudgetError("ai_user_required");
-    await requireBillingAccess(admin, userId);
+    const access = await requireBillingAccess(admin, userId);
+    // Lifetime (BYOK, contract 6.2): the owner's own OpenRouter key pays. Decided before any network call, so a missing, revoked or
+    // unreadable key closes with zero requests and the managed key never stands in for it.
+    const own = access?.state === "lifetime" ? await ownKeyFor(admin, userId) : null;
     const endpoint = String(url) === CHAT ? "chat" : String(url) === EMBEDDINGS ? "embeddings" : String(url) === DECISIONS ? "decisions" : null;
     if (!endpoint) throw new AiBudgetError("ai_price_bound_unavailable");
     if (init?.method !== "POST" || typeof init.body !== "string" || Buffer.byteLength(init.body) > MAX_BODY_BYTES) throw new AiBudgetError("ai_request_bound_unavailable");
@@ -122,6 +128,15 @@ export function budgetFetch(admin: SupabaseClient, userId: string, send: typeof 
     const items = "input" in body ? body.input.length : 1;
     // Round UP plus one micro-dollar for floating conversion error (< $10 admission); DB uses exact numeric.
     const reserved = (Math.ceil(model.context_length * items * (price.prompt + price.completion + cacheReadPrice)) + 1) / 1_000_000;
+    if (own) {
+      // The owner's money, not Taskforce's: nothing is reserved or settled in the managed ledger and the shared caps do not count it.
+      // max_price (above) still bounds what one request can cost them. The incoming Authorization header (the managed key) is dropped.
+      const headers = new Headers(init.headers);
+      headers.set("Authorization", `Bearer ${own.key}`);
+      const result = await send(url, { ...init, headers, body: JSON.stringify({ ...body, provider: { ...body.provider, max_price: price } }) });
+      await recordOwnKeyOutcome(admin, userId, own, result.status);
+      return result;
+    }
     const id = crypto.randomUUID();
     const reservation = await admin.rpc(billingEnabled() ? "reserve_billing_ai_spend_v2" : "reserve_ai_spend", { p_user_id: userId, p_id: id, p_endpoint: endpoint, p_model: body.model, p_reserved_usd: reserved, ...(billingEnabled() ? billingBudgets() : {}) });
     if (reservation.error) throw new AiBudgetError(reservation.error.message);
@@ -138,6 +153,40 @@ export function budgetFetch(admin: SupabaseClient, userId: string, send: typeof 
     if (meta?.usage && meta.usage.cost > reserved) throw new AiBudgetError("ai_provider_cost_exceeded_reservation");
     return result;
   };
+}
+
+type ConnectedKey = Extract<OwnKey, { status: "connected" }>;
+
+/** Fail closed: every reason a Lifetime account cannot spend its own key ends here, before any request. v1 codes stay frozen (budget-error.ts). */
+async function ownKeyFor(admin: SupabaseClient, userId: string): Promise<ConnectedKey> {
+  if (!flagEnabled("BYOK_ENABLED")) throw new AiBudgetError("byok_required");
+  let own: OwnKey;
+  try {
+    own = await readUserKey(admin, userId);
+  } catch (error) {
+    // Store or configuration problem: nothing about the key is revealed, nothing is sent.
+    if (error instanceof UserKeyError) throw new AiBudgetError("ai_budget_unavailable");
+    throw error;
+  }
+  if (own.status === "revoked") throw new AiBudgetError("ai_key_revoked");
+  if (own.status !== "connected") throw new AiBudgetError("ai_key_missing");
+  return own;
+}
+
+/**
+ * What the provider said about the owner's key, written against the exact sealed value that made the call (a key replaced meanwhile is untouched).
+ * 401 = key off or invalid: revoked, and calls stop until it is replaced. 402/403 = out of credit, key limit, guardrail: only the time is kept, the key stays
+ * connected so a top-up works at once. Success clears an old mark. Never changes the response and never fails the call.
+ */
+async function recordOwnKeyOutcome(admin: SupabaseClient, userId: string, own: ConnectedKey, status: number): Promise<void> {
+  try {
+    if (status === 401) await markUserKeyRevoked(admin, userId, own.sealed);
+    else if (status === 402 || status === 403) await noteUserKeySpendError(admin, userId, own.sealed);
+    else if (status >= 200 && status < 300 && own.stale) await noteUserKeyOk(admin, userId, own.sealed);
+  } catch {
+    // Fixed text only: no key, no database message.
+    console.error("ai key state update failed");
+  }
 }
 
 export type AiSpendReconciliation = { attempted: number; settled: number; deferred: number; errors: number };

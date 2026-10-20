@@ -28,6 +28,8 @@ import {
   billingCheckoutRequestV2Schema,
   billingErrorCodeV2Schema,
   billingErrorV2Schema,
+  billingOpenRouterKeyRequestV2Schema,
+  billingOpenRouterKeyResponseV2Schema,
   billingPortalRequestV2Schema,
   billingRefundRequestV2Schema,
   billingRefundResponseV2Schema,
@@ -700,8 +702,17 @@ describe("결제 v2", () => {
     expect(billingResumeResponseV2Schema.safeParse({ requested: false }).success).toBe(false);
   });
 
+  it("키 저장 요청은 key 하나만, 응답은 상태 하나만 (키를 되돌려 주는 자리가 없다)", () => {
+    expect(billingOpenRouterKeyRequestV2Schema.parse({ key: "sk-or-v1-fake" })).toEqual({ key: "sk-or-v1-fake" });
+    for (const body of [{}, { key: "" }, { key: 1 }, { key: "x".repeat(4097) }, { key: "sk-or-v1-fake", label: "mine" }, { key: "sk-or-v1-fake", user_id: "u" }])
+      expect(billingOpenRouterKeyRequestV2Schema.safeParse(body).success, JSON.stringify(body).slice(0, 40)).toBe(false);
+    expect(billingOpenRouterKeyResponseV2Schema.parse({ ai_key: "connected" })).toEqual({ ai_key: "connected" });
+    for (const body of [{ ai_key: "missing" }, { ai_key: "connected", key: "sk-or-v1-fake" }, { ai_key: "connected", hint: "ake" }, {}])
+      expect(billingOpenRouterKeyResponseV2Schema.safeParse(body).success, JSON.stringify(body)).toBe(false);
+  });
+
   it("오류 코드는 닫힌 목록이다", () => {
-    expect(billingErrorCodeV2Schema.options).toEqual(["unauthorized", "invalid_request", "billing_unavailable", "billing_terms_required", "billing_refund_window_closed", "billing_refund_used", "billing_refund_pending"]);
+    expect(billingErrorCodeV2Schema.options).toEqual(["unauthorized", "invalid_request", "billing_unavailable", "billing_terms_required", "billing_refund_window_closed", "billing_refund_used", "billing_refund_pending", "ai_key_invalid", "ai_key_management", "rate_limited"]);
     expect(billingErrorV2Schema.parse({ error: { code: "billing_refund_used", message: "m" } })).toEqual({ error: { code: "billing_refund_used", message: "m" } });
     expect(billingErrorV2Schema.safeParse({ error: { code: "ai_key_missing", message: "m" } }).success).toBe(false);
   });

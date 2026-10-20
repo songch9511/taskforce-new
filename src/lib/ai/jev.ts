@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { DeadlineExceededError, MIN_REQUEST_MS } from "./deadline";
 import { DEFAULT_JEV_PROVIDERS, parseProviders, providerRouting } from "./providers";
+import { scrubSecrets } from "./scrub";
 
 // Jev 판정 호출 (OpenRouter Decisions API, docs/TRUTH_RULES.md 1장). chat completions와 다른 API라 fetch로 직접 부른다.
 // Decisions API는 alpha라 요청 · 응답 형식이 바뀔 수 있다. 호출은 이 파일에만 두고 응답은 zod로 검증한다.
@@ -144,7 +145,7 @@ export async function decide(
   };
 
   if (!response.ok) {
-    throw new JevError(`Decisions API 요청 실패 (${response.status})`, (await readBody(() => response.text())).slice(0, 500));
+    throw new JevError(`Decisions API 요청 실패 (${response.status})`, scrubSecrets(await readBody(() => response.text())).slice(0, 500));
   }
 
   const parsed = decisionResponseSchema.safeParse(await readBody(() => response.json()));

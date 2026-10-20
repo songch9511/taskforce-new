@@ -42,6 +42,26 @@ struct FakeAgentProcessTests {
         #expect(agent.startedTurns.first?.text == "hi" && agent.startedTurns.first?.marker == "marker-t1")
     }
 
+    /// 지연 없는 대본을 동시에 띄워도 등록 전에 play가 끝나 사건이 사라지는 실행이 없어야 한다.
+    @Test func concurrentImmediateScriptsAllEmitAndFinish() async throws {
+        let agent = FakeAgentProcess(clock: .system)
+        agent.setScript(.init([.accepted, .end(AgentExit(code: 0))]))
+        defer { agent.killEverything() }
+        let collectors = (0..<128).map { _ in Collector() }
+        let starts = collectors.indices.map { turn(task: "immediate-\($0)") }
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for (start, collector) in zip(starts, collectors) {
+                group.addTask { _ = try await agent.startTurn(start, events: collector.sink) }
+            }
+            try await group.waitForAll()
+        }
+        #expect(await eventually { collectors.allSatisfy { $0.events.count == 2 } })
+        for collector in collectors {
+            #expect(collector.events == [.accepted, .ended(AgentExit(code: 0))])
+        }
+        #expect(agent.liveRunCount == 0)
+    }
+
     @Test func f2AQuestionWaitsForTheAnswerThenFinishes() async throws {
         let agent = FakeAgentProcess(clock: .system)
         let question = AgentQuestion(providerRequestID: "r1", kind: .input, structured: true, text: "Which?", items: [AgentQuestionItem(id: "q", header: "", text: "", options: [])])
