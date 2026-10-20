@@ -76,6 +76,7 @@ struct SettingsProfileSection: View {
 
 /// Sign-in 절이 무엇을 보이는지 (줄 · 컨트롤 · 각주). 화면은 이것만 그린다: 시험이 구조를 본다 (사용자 승인 2026-10-19, DZ-1 그림).
 /// 이어진 방법이 먼저(Apple · Google · Email 순), 이어지지 않은 Apple · Google은 그 뒤에 Add. 이메일(심사 계정)은 Email 줄만이다.
+/// 이메일 로그인이 열려 있으면(`EmailSignInGate`) 실제 주소가 있는 Apple · Google 계정에는 Email 줄이 이어져 있고, 이메일로 만든 계정에는 Apple · Google Add가 있다 (`SignInMethods.rows`).
 /// 방식을 모르면(세션에 정보가 없음) 예전 한 줄(`accountLabel` · 이메일 · Sign Out)로 둔다.
 struct SignInSectionModel: Equatable {
     enum Control: Equatable {
@@ -100,9 +101,10 @@ struct SignInSectionModel: Equatable {
     let footnote: String
 
     static func make(
-        methods: SignInMethods, accountEmail: String?, busy: SignInMethodRow.Method? = nil, messages: [SignInMethodRow.Method: String] = [:]
+        methods: SignInMethods, accountEmail: String?, busy: SignInMethodRow.Method? = nil, messages: [SignInMethodRow.Method: String] = [:],
+        emailSignIn: Bool = EmailSignInGate.isOpen
     ) -> SignInSectionModel {
-        let methodRows = methods.rows(accountEmail: accountEmail)
+        let methodRows = methods.rows(accountEmail: accountEmail, emailSignIn: emailSignIn)
         guard !methodRows.isEmpty else {
             return SignInSectionModel(rows: [Row(method: nil, label: methods.accountLabel, detail: accountEmail, control: .signOut)], footnote: AccountCopy.signOutScope)
         }
@@ -115,8 +117,13 @@ struct SignInSectionModel: Equatable {
                 rows.append(Row(method: row.method, label: label, detail: messages[row.method], control: .add(busy: busy == row.method)))
             }
         }
-        // 이어 붙일 방법이 남았을 때만 새 문장이 붙는다 (둘 다 이어지면 · Email 심사 계정이면 지금 문장 하나)
-        let footnote = methodRows.contains(where: \.canAdd) ? "\(AccountCopy.signOutScope) \(SignInCopy.addTheOther)" : AccountCopy.signOutScope
+        // 이어 붙일 방법이 남았을 때만 새 문장이 붙는다: 하나 남으면 "the other one", 둘 남으면(이메일 계정) 둘을 이름으로. 없으면(다 이어짐 · 심사 계정) 지금 문장 하나
+        let footnote: String
+        switch methodRows.filter(\.canAdd).count {
+        case 0: footnote = AccountCopy.signOutScope
+        case 1: footnote = "\(AccountCopy.signOutScope) \(SignInCopy.addTheOther)"
+        default: footnote = "\(AccountCopy.signOutScope) \(SignInCopy.addEither)"
+        }
         return SignInSectionModel(rows: rows, footnote: footnote)
     }
 }

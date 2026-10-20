@@ -6,23 +6,50 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
-import { sendMagicLink, type LoginState } from "./actions";
+import { sendCode, verifyCode, type LoginState } from "./actions";
 
 const initialState: LoginState = { status: "idle" };
 
 export function LoginForm() {
-  const [state, formAction, pending] = useActionState(sendMagicLink, initialState);
+  const [sendState, sendAction, sending] = useActionState(sendCode, initialState);
+  const [verifyState, verifyAction, verifying] = useActionState(verifyCode, initialState);
 
-  if (state.status === "sent") {
+  // 코드를 보낸 뒤: 코드 입력 (틀리면 같은 칸에 오류, 다시 받으려면 새로고침 없이 처음 칸으로)
+  if (sendState.status === "sent") {
+    const error = verifyState.status === "sent" ? verifyState.error : undefined;
     return (
-      <p className="text-sm leading-6">
-        <strong>{state.email}</strong>로 로그인 링크를 보냈습니다. 메일함에서 링크를 눌러 주세요.
-      </p>
+      <form action={verifyAction} className="flex flex-col gap-4">
+        <p className="text-sm leading-6">
+          <strong>{sendState.email}</strong>로 8자리 코드를 보냈습니다. 메일함에서 확인해 주세요.
+        </p>
+        <input type="hidden" name="email" value={sendState.email} />
+        <div className="flex flex-col gap-2">
+          <Label htmlFor="token">코드</Label>
+          <Input
+            id="token"
+            name="token"
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            placeholder="12345678"
+            maxLength={12}
+            required
+            aria-invalid={error !== undefined}
+          />
+        </div>
+        {error && (
+          <p role="alert" className="text-destructive text-sm">
+            {error}
+          </p>
+        )}
+        <Button type="submit" disabled={verifying}>
+          {verifying ? "확인하는 중…" : "로그인"}
+        </Button>
+      </form>
     );
   }
 
   return (
-    <form action={formAction} className="flex flex-col gap-4">
+    <form action={sendAction} className="flex flex-col gap-4">
       <div className="flex flex-col gap-2">
         <Label htmlFor="email">이메일</Label>
         <Input
@@ -31,18 +58,18 @@ export function LoginForm() {
           type="email"
           autoComplete="email"
           placeholder="you@company.com"
-          defaultValue={state.status === "error" ? state.email : undefined}
+          defaultValue={sendState.status === "error" ? sendState.email : undefined}
           required
-          aria-invalid={state.status === "error"}
+          aria-invalid={sendState.status === "error"}
         />
       </div>
-      {state.status === "error" && (
+      {sendState.status === "error" && (
         <p role="alert" className="text-destructive text-sm">
-          {state.message}
+          {sendState.message}
         </p>
       )}
-      <Button type="submit" disabled={pending}>
-        {pending ? "보내는 중…" : "로그인 링크 받기"}
+      <Button type="submit" disabled={sending}>
+        {sending ? "보내는 중…" : "로그인 코드 받기"}
       </Button>
     </form>
   );

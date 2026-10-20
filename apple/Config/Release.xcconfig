@@ -27,3 +27,8 @@ SPARKLE_PUBLIC_ED_KEY =
 
 // Mac bridge (OA D2b): Release도 기본 꺼짐. 켜는 것(L5)은 이 줄을 YES로 바꾸는 것이다 (Base.xcconfig).
 TF_BRIDGE_ENABLED = NO
+
+// 이메일 8자리 코드 로그인 입구 (OA 이메일 로그인): Release는 꺼진 채로 낸다 (Base.xcconfig는 Debug용 YES).
+// 여는 날(법률 게시 · Resend 도메인 확인과 Pro 전환 · 훅 마이그레이션 적용이 끝난 날) 이 줄을 YES로 바꾸는 한 줄 PR을 낸다.
+// NO면 로그인 화면의 이메일 입구 · Settings의 Email 줄 · 이메일 계정의 Add가 없다 (지금 모양 그대로).
+EMAIL_SIGN_IN_ENABLED = NO

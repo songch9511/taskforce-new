@@ -13,6 +13,8 @@ import { createAdminClient } from "@/lib/supabase/admin";
 // 운영자 시험 규모라 짧다. 밀린 산출물이 많아지면 그만큼 원문 정리 시간이 줄어든다: 그때 한도를 두는 판으로 바꾼다).
 // 이어서 만든 지 90일이 지난 끝난 run의 글(요청 · 지시 · 받는 사람 후보 · 되묻는 질문)을 지운다 (purge_expired_execution_text, 한 번에 PURGE_LIMIT개 run, 남은 것은 다음 날).
 // 둘 다 실패해도 나머지 정리 · Slack 토큰 확인은 하고, 응답을 500으로 해 cron 기록에 남긴다 (실패한 칸은 null).
+// 코드를 요청하고 24시간 안에 넣지 않은 이메일 가입(미확인 행)도 여기서 지운다 (purge_unconfirmed_email_signups, 한 번에 1,000행. 로그 · 응답에는 지운 수뿐, 이메일은 남기지 않는다).
+// 그 함수는 마이그레이션 20261201000000이 만든다. 코드가 먼저 배포되어 함수가 아직 없으면(PGRST202만) 실패가 아니라 준비 전(unconfirmed_email_signups_ready: false)으로 보고 200을 낸다. 42883(undefined_function)은 경고를 남기고 실패(500)로, 그 밖의 오류도 500으로 보고한다.
 // 한 번에 최대 PURGE_LIMIT건씩 지우므로, 밀린 게 있으면(어느 하나라도 한도만큼 지워졌으면) 시간 한도 안에서 반복해서 부른다.
 export const maxDuration = 60;
 
@@ -23,6 +25,20 @@ const TIME_BUDGET_MS = (maxDuration - 10) * 1000;
 const SLACK_TOKEN_CHECK_MS = 20_000;
 // 한도 직전에 시작한 Slack 호출이 끝날 시간 (slack/client.ts 호출 제한 10초)
 const SLACK_CALL_TIMEOUT_MS = 10_000;
+
+function errorCode(error: unknown): unknown {
+  return typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
+}
+
+/** 아직 없는 함수: PostgREST가 스키마 캐시에서 못 찾는다(PGRST202). 호출에 인자가 없으므로 인자 불일치가 아니라 함수가 없다는 뜻이다 */
+function isMissingFunction(error: unknown): boolean {
+  return errorCode(error) === "PGRST202";
+}
+
+/** Postgres undefined_function: 준비 전이 아니라 실패로 본다 (경고를 남긴다) */
+function isUndefinedFunction(error: unknown): boolean {
+  return errorCode(error) === "42883";
+}
 
 type PurgeCounts = { sources_purged: number; judge_logs_deleted: number; rate_limit_events_deleted: number; missing_reports_deleted: number };
 type SlackPurgeCounts = { messages_deleted: number; threads_deleted: number; sources_repurged: number };
@@ -40,7 +56,7 @@ export async function GET(request: Request) {
   const started = Date.now();
   const tokenDeadline = started + TIME_BUDGET_MS - SLACK_CALL_TIMEOUT_MS;
   const purgeDeadline = tokenDeadline - SLACK_TOKEN_CHECK_MS;
-  let calls = 4; // artifacts · execution text · bridge commands · path leases
+  let calls = 5; // artifacts · execution text · bridge commands · path leases · unconfirmed email sign-ups
   const artifactsPurged = await admin
     .rpc("purge_expired_artifacts")
     .throwOnError()
@@ -90,6 +106,21 @@ export async function GET(request: Request) {
         return null;
       },
     );
+  const unconfirmedEmailSignups = await admin
+    .rpc("purge_unconfirmed_email_signups")
+    .throwOnError()
+    .then(
+      ({ data }) => ({ ready: true, deleted: data as number | null }),
+      (error: unknown) => {
+        // 마이그레이션 20261201000000을 적용하기 전(코드가 먼저 배포된 동안)에는 함수가 없다: 지울 것도 없으니 실패가 아니다
+        if (isMissingFunction(error)) return { ready: false, deleted: 0 };
+        // 42883(undefined_function)은 준비 전이 아니다: API는 함수를 알고 있는데 데이터베이스가 무언가를 못 찾는다(함수 안의 버그일 수 있다). 조용히 넘기지 않고 경고를 남기고 실패로 보고한다
+        if (isUndefinedFunction(error)) console.warn(JSON.stringify({ event: "unconfirmed_email_signup_purge_undefined_function" }));
+        console.error(JSON.stringify({ event: "unconfirmed_email_signup_purge_failed" }));
+        return { ready: true, deleted: null };
+      },
+    );
+  const unconfirmedEmailSignupsDeleted = unconfirmedEmailSignups.deleted;
   for (;;) {
     calls++;
     const { data } = await admin
@@ -130,6 +161,8 @@ export async function GET(request: Request) {
       execution_text_purged: executionTextPurged,
       bridge_commands_purged: bridgeCommandsPurged,
       path_leases_purged: pathLeasesPurged,
+      unconfirmed_email_signups_deleted: unconfirmedEmailSignupsDeleted,
+      unconfirmed_email_signups_ready: unconfirmedEmailSignups.ready,
       slack_tokens_checked: slackTokens?.checked ?? 0,
       slack_tokens_revoked: slackTokens?.revoked ?? 0,
       slack_messages_deleted: slack.messages_deleted,
@@ -137,6 +170,6 @@ export async function GET(request: Request) {
       slack_sources_repurged: slack.sources_repurged,
       calls,
     },
-    { status: billingCleanup === null || artifactsPurged === null || executionTextPurged === null || bridgeCommandsPurged === null || pathLeasesPurged === null ? 500 : 200 },
+    { status: billingCleanup === null || artifactsPurged === null || executionTextPurged === null || bridgeCommandsPurged === null || pathLeasesPurged === null || unconfirmedEmailSignupsDeleted === null ? 500 : 200 },
   );
 }

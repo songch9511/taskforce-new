@@ -2,8 +2,9 @@
 //
 //   REVIEW_ACCOUNT_EMAIL=… REVIEW_ACCOUNT_PASSWORD=… npx tsx --conditions react-server scripts/create-review-account.ts --yes [--reseed]
 //
-// 1. 주소를 허용 목록(review_accounts)에 넣는다: Before User Created 훅(20261007000000)이 목록에 없는 이메일 가입을 막는다.
-// 2. 사용자를 만들거나(이미 있으면 비밀번호만 바꾼다) 이메일 확인을 마친 상태로 둔다.
+// 1. 주소를 허용 목록(review_accounts)에 넣는다: Before User Created 훅은 이 주소를 차단 도메인 · 가입 상한 검사 없이 받고(20261201000000), 미확인 가입 정리도 이 주소를 지우지 않는다.
+// 2. 사용자를 만들거나(이미 있으면 비밀번호만 바꾼다) 이메일 확인을 마친 상태로 둔다. app_metadata.review_account = true를 넣는다:
+//    이메일 로그인을 모두에게 연 뒤에도(20261201000000) 앱이 심사 계정만 Email 줄 하나로 보이게 한다 (Add 버튼 없이). 관리자 키로만 쓸 수 있는 값이다.
 // 3. 프로필 이름 · 별칭(Alex Kim · Alex)을 정하고 외부 AI 처리에 동의한 상태로 둔다 (심사자가 동의 화면을 거치지 않아도 할 일이 보이게).
 // 4. "[Review] …" 합성 원문 두 개를 보통 파이프라인(추출 → 검증 → Jev → 병합)으로 처리해 근거가 붙은 할 일을 만든다.
 //    이미 있으면 건너뛴다 (--reseed면 지우고 다시 만든다). 실제 사용자 데이터는 쓰지 않는다.
@@ -111,11 +112,22 @@ async function main() {
   // 2) 사용자
   let userId = await findUserId(admin, email);
   if (userId) {
-    const { error } = await admin.auth.admin.updateUserById(userId, { password, email_confirm: true, user_metadata: { name: REVIEWER_NAME } });
+    const { error } = await admin.auth.admin.updateUserById(userId, {
+      password,
+      email_confirm: true,
+      user_metadata: { name: REVIEWER_NAME },
+      app_metadata: { review_account: true },
+    });
     if (error) throw error;
     console.log("기존 사용자의 비밀번호를 바꿨습니다.");
   } else {
-    const { data, error } = await admin.auth.admin.createUser({ email, password, email_confirm: true, user_metadata: { name: REVIEWER_NAME } });
+    const { data, error } = await admin.auth.admin.createUser({
+      email,
+      password,
+      email_confirm: true,
+      user_metadata: { name: REVIEWER_NAME },
+      app_metadata: { review_account: true },
+    });
     if (error) throw error;
     userId = data.user.id;
     console.log("사용자를 만들었습니다.");

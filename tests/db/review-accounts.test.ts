@@ -3,7 +3,8 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import { asUser, createLocalSupabase } from "./local-supabase";
 
-// App Store 심사 계정 (20261007000000_review_account_signup_hook): 이메일 가입은 허용 목록에 있는 주소만.
+// App Store 심사 계정 (20261007000000_review_account_signup_hook): 허용 목록의 주소는 늘 받는다.
+// 이메일 가입은 이제 모두에게 열려 있다 (20261201000000_email_signup_open): 목록 밖의 주소는 일회용 도메인 · 상한만 막는다 (email-signup-hook.test.ts가 자세히 본다).
 // Supabase Auth가 supabase_auth_admin 역할로 훅 함수를 부르는 것을 흉내 낸다.
 
 const ALICE = "00000000-0000-0000-0000-00000000000a";
@@ -29,6 +30,15 @@ async function hook(provider: string, email: string | null): Promise<Record<stri
 
 beforeAll(async () => {
   db = await createLocalSupabase();
+  // 시험 DB의 auth.users는 (id, email)뿐이라(tests/db/local-supabase.ts) 훅이 읽는 실제 Supabase 열을 더한다
+  await db.exec(`
+    alter table auth.users
+      add column raw_app_meta_data jsonb not null default '{}'::jsonb,
+      add column email_confirmed_at timestamptz,
+      add column created_at timestamptz not null default now();
+    grant usage on schema auth to supabase_auth_admin;
+    grant select on auth.users to supabase_auth_admin;
+  `);
   await db.query("insert into auth.users (id, email) values ($1, 'alice@example.com')", [ALICE]);
   await db.query(`insert into public.review_accounts (email, note) values ('appreview@taskforcelabs.dev', 'App Store 심사')`);
 }, 60_000);
@@ -39,11 +49,9 @@ describe("hook_before_user_created", () => {
     expect(await hook("email", " AppReview@TaskforceLabs.dev ")).toEqual({});
   });
 
-  it("목록에 없는 이메일 가입은 403으로 거절한다", async () => {
-    expect(await hook("email", "someone@example.com")).toEqual({
-      error: { http_code: 403, message: "이메일로는 새로 가입할 수 없어요. Sign in with Apple을 사용해 주세요." },
-    });
-    expect((await hook("email", null)).error).toBeDefined();
+  it("목록에 없는 이메일 가입도 받는다 (이메일 가입을 모두에게 열었다). 이메일이 비면 403", async () => {
+    expect(await hook("email", "someone@example.com")).toEqual({});
+    expect((await hook("email", null)).error).toMatchObject({ http_code: 403 });
   });
 
   it("Sign in with Apple 가입은 그대로 받는다", async () => {
@@ -51,10 +59,9 @@ describe("hook_before_user_created", () => {
     expect(await hook("apple", null)).toEqual({});
   });
 
-  it("Sign in with Google 가입은 그대로 받고, 같은 주소의 이메일 가입은 여전히 거절한다", async () => {
+  it("Sign in with Google 가입은 그대로 받는다", async () => {
     expect(await hook("google", "someone@gmail.com")).toEqual({});
     expect(await hook("google", "Someone@Example.com")).toEqual({});
-    expect((await hook("email", "someone@gmail.com")).error).toMatchObject({ http_code: 403 });
   });
 
   it("허용 목록은 소문자 주소만 받는다", async () => {

@@ -561,3 +561,212 @@ struct AnySignInMethodSessionTests {
         #expect(store.notice == nil)
     }
 }
+
+// MARK: 이메일 8자리 코드 (`sendEmailCode` · `verifyEmailCode`, OA 이메일 로그인 계약 5.1 · 11.1)
+
+/// 응답을 붙들어 두고 풀 수 있는 문 (한 번)
+private actor EmailGate {
+    private var entered = false
+    private var released = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+
+    func pass() async {
+        entered = true
+        if released { return }
+        await withCheckedContinuation { waiting.append($0) }
+    }
+
+    func release() {
+        released = true
+        for continuation in waiting { continuation.resume() }
+        waiting = []
+    }
+
+    func waitUntilEntered(timeout: Duration = .seconds(60)) async -> Bool {
+        let deadline = ContinuousClock.now + timeout
+        while !entered, ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(5)) }
+        return entered
+    }
+}
+
+/// 저장 · 읽기가 되는 메모리 저장소 (SDK가 로그인한 세션을 저장하고 `currentSession`이 읽는다)
+private final class KeyedStorage: AuthLocalStorage, @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String: Data] = [:]
+    func store(key: String, value: Data) throws { lock.withLock { values[key] = value } }
+    func retrieve(key: String) throws -> Data? { lock.withLock { values[key] } }
+    func remove(key: String) throws { lock.withLock { _ = values.removeValue(forKey: key) } }
+}
+
+@MainActor
+struct SessionStoreEmailCodeTests {
+    let fixtures = SessionStoreTests()
+
+    /// `reply`로 답하는 가짜 인증 서버 (nil이면 오프라인). 받은 요청은 `log`에 남는다
+    fileprivate func store(
+        storage: any AuthLocalStorage = KeyedStorage(), log: RequestLog = RequestLog(), gate: EmailGate? = nil,
+        reply: (status: Int, body: String)?
+    ) -> SessionStore {
+        SessionStore(auth: AuthClient(
+            url: URL(string: "https://example.supabase.co/auth/v1")!, localStorage: storage,
+            fetch: { request in
+                log.append(request)
+                await gate?.pass()
+                guard let reply else { throw URLError(.notConnectedToInternet) }
+                return (Data(reply.body.utf8), HTTPURLResponse(
+                    url: request.url!, statusCode: reply.status, httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json", "X-Supabase-Api-Version": "2024-01-01"]
+                )!)
+            },
+            autoRefreshToken: false
+        ))
+    }
+
+    func sessionBody(_ session: Session) throws -> String {
+        String(decoding: try AuthClient.Configuration.jsonEncoder.encode(session), as: UTF8.self)
+    }
+
+    func body(of request: URLRequest) throws -> [String: Any] {
+        try #require(JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: Any])
+    }
+
+    // MARK: 코드 보내기
+
+    /// 새 사용자를 만들 수 있게(`create_user: true`) 이메일만 보낸다: 사용자 데이터 · 돌아올 주소 · CAPTCHA 없음
+    @Test func sendingAsksForANewUserAndSendsNothingElse() async throws {
+        let log = RequestLog()
+        let store = store(log: log, reply: (200, "{}"))
+        let result = await store.sendEmailCode(email: "me@example.com")
+        #expect(result == .sent)
+        let request = try #require(log.requests.first)
+        #expect(log.requests.count == 1)
+        #expect(request.httpMethod == "POST")
+        #expect(request.url?.path == "/auth/v1/otp")
+        #expect(URLComponents(url: try #require(request.url), resolvingAgainstBaseURL: false)?.queryItems == nil)
+        let sent = try body(of: request)
+        #expect(sent["email"] as? String == "me@example.com")
+        #expect(sent["create_user"] as? Bool == true)
+        #expect(sent["data"] == nil)
+        #expect(sent["gotrue_meta_security"] == nil)
+    }
+
+    @Test func sendingClearsTheOldQuietLine() async {
+        let store = store(reply: (200, "{}"))
+        store.reportError("Couldn't sign in with Apple. Try again.")
+        _ = await store.sendEmailCode(email: "me@example.com")
+        #expect(store.errorMessage == nil && store.notice == nil)
+    }
+
+    @Test(arguments: [
+        (429, #"{"code":"over_email_send_rate_limit","msg":"email rate limit exceeded"}"#, EmailSignInFailure.rateLimited),
+        (429, #"{"code":"over_request_rate_limit","msg":"too many"}"#, .rateLimited),
+        (403, #"{"code":"unexpected_failure","msg":"This email address can't be used."}"#, .blockedAddress),
+        (500, #"{"code":"unexpected_failure","msg":"Error sending confirmation email"}"#, .sendFailed),
+    ])
+    func sendingFailuresAreSorted(_ status: Int, _ body: String, _ expected: EmailSignInFailure) async {
+        let store = store(reply: (status, body))
+        #expect(await store.sendEmailCode(email: "me@example.com") == .failed(expected))
+    }
+
+    @Test func sendingOfflineIsOffline() async {
+        let store = store(reply: nil)
+        #expect(await store.sendEmailCode(email: "me@example.com") == .failed(.offline))
+    }
+
+    // MARK: 코드 확인
+
+    @Test func verifyingUsesTheEmailTypeAndSignsIn() async throws {
+        let session = fixtures.session(expiresIn: 3600)
+        let log = RequestLog()
+        let store = store(log: log, reply: (200, try sessionBody(session)))
+        store.apply(event: .initialSession, session: nil)
+        #expect(store.state == .signedOut)
+
+        let result = await store.verifyEmailCode(email: "me@example.com", code: "12345678")
+
+        #expect(result == .signedIn)
+        let request = try #require(log.requests.first)
+        #expect(request.url?.path == "/auth/v1/verify")
+        let sent = try body(of: request)
+        #expect(sent["type"] as? String == "email")
+        #expect(sent["token"] as? String == "12345678")
+        #expect(sent["email"] as? String == "me@example.com")
+        #expect(sent["token_hash"] == nil)
+        #expect(store.errorMessage == nil)
+    }
+
+    @Test(arguments: [
+        (403, #"{"code":"otp_expired","msg":"Token has expired or is invalid"}"#, EmailSignInFailure.wrongOrExpiredCode),
+        (429, #"{"code":"over_request_rate_limit","msg":"too many requests"}"#, .rateLimited),
+    ])
+    func verifyingFailuresAreSorted(_ status: Int, _ body: String, _ expected: EmailSignInFailure) async {
+        let store = store(reply: (status, body))
+        store.apply(event: .initialSession, session: nil)
+        #expect(await store.verifyEmailCode(email: "me@example.com", code: "12345678") == .failed(expected))
+        #expect(store.state == .signedOut)
+    }
+
+    @Test func verifyingOfflineIsOffline() async {
+        let store = store(reply: nil)
+        store.apply(event: .initialSession, session: nil)
+        #expect(await store.verifyEmailCode(email: "me@example.com", code: "12345678") == .failed(.offline))
+    }
+
+    /// 서버는 로그인시켰지만 세션을 저장하지 못했으면 로그인되지 않은 것이다
+    @Test func aSignInThatWasNotSavedFails() async throws {
+        let store = store(storage: UnsavableStorage(), reply: (200, try sessionBody(fixtures.session(expiresIn: 3600))))
+        store.apply(event: .initialSession, session: nil)
+        #expect(await store.verifyEmailCode(email: "me@example.com", code: "12345678") == .failed(.notSaved))
+    }
+
+    /// 로그인해 있으면 확인을 부르지 않는다 (다른 계정의 세션을 이메일 세션이 덮지 않게)
+    @Test func verifyingWhileSignedInDoesNotCallTheServer() async throws {
+        let signedIn = fixtures.session(expiresIn: 3600)
+        let log = RequestLog()
+        let store = store(storage: SavedSessionStorage(data: try JSONEncoder().encode(signedIn)), log: log, reply: (200, try sessionBody(signedIn)))
+        store.apply(event: .signedIn, session: signedIn)
+        #expect(store.state == .signedIn(userID: fixtures.userID, email: "me@example.com"))
+        #expect(await store.verifyEmailCode(email: "me@example.com", code: "12345678") == .ignored)
+        #expect(log.requests.isEmpty)
+    }
+
+    @Test func verifyingBeforeTheSessionIsReadDoesNotCallTheServer() async throws {
+        let log = RequestLog()
+        let store = store(log: log, reply: (200, "{}"))
+        #expect(store.state == .loading)
+        #expect(await store.verifyEmailCode(email: "me@example.com", code: "12345678") == .ignored)
+        #expect(log.requests.isEmpty)
+    }
+
+    /// 확인하는 사이 다른 계정이 들어왔으면 늦은 오류를 쓰지 않는다 (지금 계정의 화면에 남의 오류가 뜨지 않게)
+    @Test func aLateVerifyErrorAfterAnotherAccountSignedInIsIgnored() async throws {
+        var other = fixtures.session(expiresIn: 3600)
+        other.user.id = UUID()
+        let gate = EmailGate()
+        let store = store(
+            storage: SavedSessionStorage(data: try JSONEncoder().encode(other)), gate: gate,
+            reply: (403, #"{"code":"otp_expired","msg":"Token has expired or is invalid"}"#)
+        )
+        store.apply(event: .initialSession, session: nil)
+        #expect(store.state == .signedOut)
+
+        let pending = Task { await store.verifyEmailCode(email: "me@example.com", code: "12345678") }
+        #expect(await gate.waitUntilEntered())
+        // 그사이 Apple · Google로 다른 계정이 들어왔다
+        store.apply(event: .signedIn, session: other)
+        #expect(store.state == .signedIn(userID: other.user.id, email: "me@example.com"))
+        await gate.release()
+
+        #expect(await pending.value == .ignored)
+        #expect(store.errorMessage == nil)
+    }
+
+    // MARK: 이미 있는 문구
+
+    /// 연결 실패 줄은 새 문구가 아니라 이미 있는 문구다: 이메일 · 비밀번호 로그인(심사 계정)과 같은 글
+    @Test func theOfflineWordsAreTheOnesThePasswordSignInAlreadyUses() async {
+        let offline = store(reply: nil)
+        await offline.signInWithEmail(email: "me@example.com", password: "password")
+        #expect(offline.errorMessage == SessionStore.offlineMessage)
+    }
+}

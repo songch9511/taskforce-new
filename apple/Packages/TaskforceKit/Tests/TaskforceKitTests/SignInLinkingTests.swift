@@ -12,8 +12,13 @@ private func identity(_ provider: String, email: String?, userID: UUID) -> UserI
         provider: provider, createdAt: nil, lastSignInAt: nil, updatedAt: nil)
 }
 
-private func user(id: UUID, providers: [String], emails: [String: String] = [:], accountEmail: String? = "me@example.com", withIdentities: Bool = true) -> User {
-    User(id: id, appMetadata: ["provider": .string(providers.first ?? "email"), "providers": .array(providers.map { .string($0) })], userMetadata: [:],
+private func user(
+    id: UUID, providers: [String], emails: [String: String] = [:], accountEmail: String? = "me@example.com", withIdentities: Bool = true,
+    appMetadata extra: [String: AnyJSON] = [:]
+) -> User {
+    var appMetadata: [String: AnyJSON] = ["provider": .string(providers.first ?? "email"), "providers": .array(providers.map { .string($0) })]
+    appMetadata.merge(extra) { _, new in new }
+    return User(id: id, appMetadata: appMetadata, userMetadata: [:],
         aud: "authenticated", email: accountEmail, createdAt: Date(), updatedAt: Date(),
         identities: withIdentities ? providers.map { identity($0, email: emails[$0], userID: id) } : nil)
 }
@@ -495,6 +500,93 @@ struct SignInMethodRowTests {
         #expect(mixed.allSatisfy { $0.linked })
     }
 
+    // MARK: 이메일 로그인을 연 뒤의 줄 (OA 이메일 로그인 계약 5.8, 게이트 `emailSignIn: true`)
+
+    func reviewMethods() -> SignInMethods {
+        SignInMethods(user: user(id: id, providers: ["email"], appMetadata: ["review_account": .bool(true)]))
+    }
+
+    /// Apple · Google로 만든 계정의 주소가 실제 주소면 그 주소로 코드 로그인이 되니 Email 줄이 이어져 있다 (버튼 없음)
+    @Test func aGoogleAccountWithARealAddressAlsoShowsAnEmailRow() {
+        let rows = methods(["google"], emails: ["google": "me@gmail.com"]).rows(accountEmail: "me@gmail.com", emailSignIn: true)
+        #expect(rows == [
+            SignInMethodRow(method: .google, linked: true, email: "me@gmail.com"),
+            SignInMethodRow(method: .email, linked: true, email: "me@gmail.com"),
+            SignInMethodRow(method: .apple, linked: false, email: nil),
+        ])
+        #expect(rows.map(\.canAdd) == [false, false, true])
+    }
+
+    @Test func anAppleAccountWithARealAddressShowsAnEmailRowBetweenAppleAndTheAdd() {
+        let rows = methods(["apple"], emails: ["apple": "me@icloud.com"]).rows(accountEmail: "me@icloud.com", emailSignIn: true)
+        #expect(rows.map(\.method) == [.apple, .email, .google])
+        #expect(rows.map(\.linked) == [true, true, false])
+        #expect(rows[1].email == "me@icloud.com")
+    }
+
+    /// "이메일 가리기" 주소(`@privaterelay.appleid.com`)로는 코드를 받기 어렵다: Email 줄을 보이지 않는다
+    @Test(arguments: ["relay-x1y2z3@privaterelay.appleid.com", "Relay-X@PrivateRelay.AppleID.com"])
+    func aHiddenAppleAddressHasNoEmailRow(_ address: String) {
+        let rows = methods(["apple"], emails: ["apple": address]).rows(accountEmail: address, emailSignIn: true)
+        #expect(rows.map(\.method) == [.apple, .google])
+        #expect(rows.map(\.linked) == [true, false])
+    }
+
+    @Test func anAccountWithoutAnAddressHasNoEmailRow() {
+        let rows = methods(["apple"]).rows(accountEmail: nil, emailSignIn: true)
+        #expect(rows.map(\.method) == [.apple, .google])
+        #expect(methods(["google"]).rows(accountEmail: "  ", emailSignIn: true).map(\.method) == [.google, .apple])
+    }
+
+    /// 이메일 코드로 만든 계정은 Email 줄이 이어져 있고 Apple · Google은 둘 다 Add다
+    @Test func anEmailCodeAccountCanAddAppleAndGoogle() {
+        let rows = methods(["email"], emails: ["email": "me@example.com"]).rows(accountEmail: "me@example.com", emailSignIn: true)
+        #expect(rows == [
+            SignInMethodRow(method: .email, linked: true, email: "me@example.com"),
+            SignInMethodRow(method: .apple, linked: false, email: nil),
+            SignInMethodRow(method: .google, linked: false, email: nil),
+        ])
+        #expect(rows.map(\.canAdd) == [false, true, true])
+    }
+
+    @Test func anEmailCodeAccountWithGoogleAddedHasOneAddLeft() {
+        let rows = methods(["email", "google"], emails: ["google": "other@gmail.com"]).rows(accountEmail: "me@example.com", emailSignIn: true)
+        #expect(rows.map(\.method) == [.google, .email, .apple])
+        #expect(rows.map(\.linked) == [true, true, false])
+        #expect(rows[0].email == "other@gmail.com")
+        #expect(rows[1].email == "me@example.com")
+    }
+
+    /// 심사 계정(`app_metadata.review_account`)은 이메일을 모두에게 연 뒤에도 Email 줄만 있다: 심사원이 Add를 누르지 않게
+    @Test func theReviewAccountKeepsOnlyItsEmailRow() {
+        let rows = reviewMethods().rows(accountEmail: "review@example.com", emailSignIn: true)
+        #expect(rows == [SignInMethodRow(method: .email, linked: true, email: "review@example.com")])
+        #expect(rows.allSatisfy { !$0.canAdd })
+    }
+
+    @Test func theReviewMarkerMustBeTheBooleanTrue() {
+        func parsed(_ marker: AnyJSON?) -> Bool {
+            SignInMethods(user: user(id: id, providers: ["email"], appMetadata: marker.map { ["review_account": $0] } ?? [:])).isReviewAccount
+        }
+        #expect(parsed(.bool(true)))
+        #expect(!parsed(.bool(false)))
+        #expect(!parsed(.string("true")))
+        #expect(!parsed(.integer(1)))
+        #expect(!parsed(nil))
+        #expect(!SignInMethods(providers: ["email"], primary: "email").isReviewAccount)
+    }
+
+    /// 이메일 로그인이 닫혀 있으면(게이트 NO) 줄은 지금과 같다: 이메일 계정은 Email 줄만, Apple · Google에는 Email 줄이 없다
+    @Test func withTheGateClosedTheRowsAreTheOldOnes() {
+        #expect(methods(["google"], emails: ["google": "me@gmail.com"]).rows(accountEmail: "me@gmail.com", emailSignIn: false).map(\.method) == [.google, .apple])
+        #expect(methods(["email"]).rows(accountEmail: "me@example.com", emailSignIn: false).map(\.method) == [.email])
+        #expect(methods(["email"]).rows(accountEmail: "me@example.com") == methods(["email"]).rows(accountEmail: "me@example.com", emailSignIn: false))
+    }
+
+    @Test func anUnknownMethodListStillGivesNoRowsWithTheGateOpen() {
+        #expect(SignInMethods.unknown.rows(accountEmail: "me@example.com", emailSignIn: true).isEmpty)
+    }
+
     @Test func anUnknownMethodListGivesNoRows() {
         #expect(SignInMethods.unknown.rows(accountEmail: "me@example.com").isEmpty)
     }
@@ -532,6 +624,44 @@ struct SignInCopyTests {
         #expect(SignInCopy.deleteRemovesAccess == "We try to remove Apple, Google, and connected-service access, but it may remain.")
         #expect(SignInCopy.signInBeforeDeleting == "Sign in before deleting your account.")
         #expect(SignInCopy.appleRevokeSkipped == "Account deleted. To remove Sign in with Apple too, go to account.apple.com › Sign-In and Security › Sign in with Apple.")
+    }
+
+    /// 이메일 로그인의 승인된 문구 (사용자 승인 2026-10-20, handoffs/oa-email-signin-dz/README.md): 글자 하나하나 고정한다
+    @Test func theApprovedEmailWordsAreExactlyTheApprovedOnes() {
+        #expect(SignInCopy.emailTitle == "Continue with email")
+        #expect(SignInCopy.emailLabel == "Email")
+        #expect(SignInCopy.sendCode == "Send code")
+        #expect(SignInCopy.back == "Back")
+        #expect(SignInCopy.codeLabel == "Code")
+        #expect(SignInCopy.signIn == "Sign in")
+        #expect(SignInCopy.resendCode == "Resend code")
+        #expect(SignInCopy.useDifferentEmail == "Use a different email")
+        #expect(SignInCopy.codeSent(to: "a@b.co") == "Code sent to a@b.co")
+        #expect(SignInCopy.newCodeSent(to: "a@b.co") == "New code sent to a@b.co")
+        #expect(SignInCopy.addressInvalid == "Add the full address, like jordan@example.com.")
+        #expect(SignInCopy.addressBlocked == "This address can't be used. Try another one.")
+        #expect(SignInCopy.wrongCode == "That code didn't work. Try the latest email.")
+        #expect(SignInCopy.couldntContinue == "Couldn't continue. Try again in a few minutes.")
+        #expect(SignInCopy.addEither == "Add Apple or Google to sign in with either.")
+        #expect(SignInCopy.enterEightDigits == "Enter the 8-digit code")
+        #expect(SignInCopy.resendAvailableIn(seconds: 42) == "Available in 42 seconds")
+        // 1초 남았을 때는 단수 (승인된 낱말 그대로)
+        #expect(SignInCopy.resendAvailableIn(seconds: 1) == "Available in 1 second")
+        #expect(SignInCopy.resendAvailableIn(seconds: 2) == "Available in 2 seconds")
+        #expect(SignInCopy.resendAvailableIn(seconds: 60) == "Available in 60 seconds")
+    }
+
+    /// 버린 문구는 어디에도 없다: 계약 7.2의 "Couldn't send a code…" · "Too many tries…"(합친 한 줄이 대신), 빨강 입력 오류의 옛 글
+    @Test func theReplacedEmailWordsAreNotCopy() {
+        let all = [
+            SignInCopy.emailTitle, SignInCopy.emailLabel, SignInCopy.sendCode, SignInCopy.back, SignInCopy.codeLabel, SignInCopy.signIn,
+            SignInCopy.resendCode, SignInCopy.useDifferentEmail, SignInCopy.addressInvalid, SignInCopy.addressBlocked, SignInCopy.wrongCode,
+            SignInCopy.couldntContinue, SignInCopy.addEither, SignInCopy.enterEightDigits, SignInCopy.codeSent(to: "a@b.co"), SignInCopy.newCodeSent(to: "a@b.co"),
+        ]
+        for text in all {
+            #expect(!text.contains("Couldn't send a code") && !text.contains("Too many tries") && !text.contains("or resend it"), "\(text)")
+            #expect(!text.contains("{"), "\(text)")
+        }
     }
 
     @Test func addMessagesAreOneQuietLineAndNothingOnSuccess() {

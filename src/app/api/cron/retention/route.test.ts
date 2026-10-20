@@ -20,15 +20,15 @@ let now = 0;
  * 부를 때마다 2초가 걸리는 가짜 service role 클라이언트. busy면 원문 · Slack 정리가 매번 한도(5000건)만큼 지워 밀린 것이 남는다.
  * artifacts · execution: purge_expired_artifacts · purge_expired_execution_text가 돌려줄 수, Error면 실패. args: RPC마다 받은 인자
  */
-function fakeAdmin({ busy = false, artifacts = 0, execution = 0, bridge = 0, paths = 0 }: { busy?: boolean; artifacts?: number | Error; execution?: number | Error; bridge?: number | Error; paths?: number | Error } = {}) {
+function fakeAdmin({ busy = false, artifacts = 0, execution = 0, bridge = 0, paths = 0, signups = 0 }: { busy?: boolean; artifacts?: number | Error; execution?: number | Error; bridge?: number | Error; paths?: number | Error; signups?: number | Error } = {}) {
   const calls: string[] = [];
   const args: Record<string, unknown> = {};
   const n = busy ? 5000 : 0;
   const call = async (fn: string) => {
     calls.push(fn);
     now += 2_000;
-    if (fn === "purge_expired_artifacts" || fn === "purge_expired_execution_text" || fn === "purge_bridge_commands" || fn === "purge_agent_path_leases") {
-      const result = fn === "purge_expired_artifacts" ? artifacts : fn === "purge_bridge_commands" ? bridge : fn === "purge_agent_path_leases" ? paths : execution;
+    if (fn === "purge_expired_artifacts" || fn === "purge_expired_execution_text" || fn === "purge_bridge_commands" || fn === "purge_agent_path_leases" || fn === "purge_unconfirmed_email_signups") {
+      const result = fn === "purge_expired_artifacts" ? artifacts : fn === "purge_bridge_commands" ? bridge : fn === "purge_agent_path_leases" ? paths : fn === "purge_unconfirmed_email_signups" ? signups : execution;
       if (result instanceof Error) throw result;
       return { data: result };
     }
@@ -76,8 +76,8 @@ describe("GET /api/cron/retention", () => {
     const response = await cron();
 
     expect(response.status).toBe(200);
-    expect(calls).toEqual(["purge_expired_artifacts", "purge_expired_execution_text", "purge_bridge_commands", "purge_agent_path_leases", "purge_expired_source_text", "purge_slack_buffers"]);
-    expect(await response.json()).toMatchObject({ artifacts_purged: 3, execution_text_purged: 2, sources_purged: 0, calls: 6 });
+    expect(calls).toEqual(["purge_expired_artifacts", "purge_expired_execution_text", "purge_bridge_commands", "purge_agent_path_leases", "purge_unconfirmed_email_signups", "purge_expired_source_text", "purge_slack_buffers"]);
+    expect(await response.json()).toMatchObject({ artifacts_purged: 3, execution_text_purged: 2, sources_purged: 0, calls: 7 });
     expect(checkSlackConnectionTokens).toHaveBeenCalledOnce();
     // 기준 시각 = 지금 - EXECUTION_TEXT_RETENTION_DAYS (run을 만든 시각과 비교한다), 한 번에 5000개 run
     expect(EXECUTION_TEXT_RETENTION_DAYS).toBe(90);
@@ -94,7 +94,7 @@ describe("GET /api/cron/retention", () => {
     const response = await cron();
 
     expect(response.status).toBe(500);
-    expect(calls).toEqual(["purge_expired_artifacts", "purge_expired_execution_text", "purge_bridge_commands", "purge_agent_path_leases", "purge_expired_source_text", "purge_slack_buffers"]);
+    expect(calls).toEqual(["purge_expired_artifacts", "purge_expired_execution_text", "purge_bridge_commands", "purge_agent_path_leases", "purge_unconfirmed_email_signups", "purge_expired_source_text", "purge_slack_buffers"]);
     expect(await response.json()).toMatchObject({ artifacts_purged: null, execution_text_purged: 0, sources_purged: 0 });
     expect(checkSlackConnectionTokens).toHaveBeenCalledOnce();
     expect(error).toHaveBeenCalledWith("실행 산출물 본문 정리 실패:", "function public.purge_expired_artifacts() does not exist");
@@ -107,7 +107,7 @@ describe("GET /api/cron/retention", () => {
     const response = await cron();
 
     expect(response.status).toBe(500);
-    expect(calls).toEqual(["purge_expired_artifacts", "purge_expired_execution_text", "purge_bridge_commands", "purge_agent_path_leases", "purge_expired_source_text", "purge_slack_buffers"]);
+    expect(calls).toEqual(["purge_expired_artifacts", "purge_expired_execution_text", "purge_bridge_commands", "purge_agent_path_leases", "purge_unconfirmed_email_signups", "purge_expired_source_text", "purge_slack_buffers"]);
     expect(await response.json()).toMatchObject({ artifacts_purged: 1, execution_text_purged: null, sources_purged: 0 });
     expect(checkSlackConnectionTokens).toHaveBeenCalledOnce();
     expect(error).toHaveBeenCalledWith(
@@ -123,7 +123,7 @@ describe("GET /api/cron/retention", () => {
     const response = await cron();
 
     expect(response.status).toBe(500);
-    expect(calls).toEqual(["purge_expired_artifacts", "purge_expired_execution_text", "purge_bridge_commands", "purge_agent_path_leases", "purge_expired_source_text", "purge_slack_buffers"]);
+    expect(calls).toEqual(["purge_expired_artifacts", "purge_expired_execution_text", "purge_bridge_commands", "purge_agent_path_leases", "purge_unconfirmed_email_signups", "purge_expired_source_text", "purge_slack_buffers"]);
     expect(await response.json()).toMatchObject({ artifacts_purged: null, execution_text_purged: null, sources_purged: 0 });
     expect(checkSlackConnectionTokens).toHaveBeenCalledOnce();
   });
@@ -183,4 +183,91 @@ it("U6 contains path purge errors, preserves remaining cleanup and records retry
   expect(calls).toContain("purge_slack_buffers");
   expect(checkSlackConnectionTokens).toHaveBeenCalledOnce();
   expect(console.error).toHaveBeenCalledExactlyOnceWith(JSON.stringify({ event: "path_lease_purge_failed" }));
+});
+
+it("purges unconfirmed email sign-ups once a day with no arguments and reports only the count", async () => {
+  const { calls, args } = fakeAdmin({ signups: 7 });
+  const response = await cron();
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({ unconfirmed_email_signups_deleted: 7 });
+  expect(calls.filter((fn) => fn === "purge_unconfirmed_email_signups")).toHaveLength(1);
+  expect(args.purge_unconfirmed_email_signups).toBeUndefined();
+});
+it("contains the sign-up purge error without logging exception content, keeps cleaning and records retry HTTP 500", async () => {
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  const { calls } = fakeAdmin({ signups: new Error("PRIVATE-EMAIL someone@example.com") });
+  const response = await cron();
+  expect(response.status).toBe(500);
+  expect(await response.json()).toMatchObject({ unconfirmed_email_signups_deleted: null });
+  expect(calls).toContain("purge_slack_buffers");
+  expect(checkSlackConnectionTokens).toHaveBeenCalledOnce();
+  expect(console.error).toHaveBeenCalledExactlyOnceWith(JSON.stringify({ event: "unconfirmed_email_signup_purge_failed" }));
+  expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain("someone@example.com");
+});
+
+// 정리 함수가 아직 없는 동안(마이그레이션 20261201000000을 여는 날 적용한다, 코드는 먼저 배포된다)에는 cron이 매일 500을 내지 않는다 (준비 여부 게이트).
+// PostgREST는 없는 함수를 PGRST202(스키마 캐시에 없음), Postgres는 42883(undefined_function)로 알린다. 그 밖의 실제 오류는 그대로 500으로 보고한다.
+const withCode = (code: string, message: string) => Object.assign(new Error(message), { code });
+
+it("does not fail the whole cron while the sign-up purge function does not exist yet (PGRST202), and logs nothing", async () => {
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  const { calls } = fakeAdmin({
+    signups: withCode("PGRST202", "Could not find the function public.purge_unconfirmed_email_signups without parameters in the schema cache"),
+  });
+  const response = await cron();
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({ unconfirmed_email_signups_deleted: 0, unconfirmed_email_signups_ready: false });
+  expect(calls).toContain("purge_slack_buffers");
+  expect(checkSlackConnectionTokens).toHaveBeenCalledOnce();
+  expect(error).not.toHaveBeenCalled();
+});
+
+it("does not treat Postgres undefined_function (42883) as not ready: it may be a bug inside the function, so it warns and stays a failure (HTTP 500)", async () => {
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const { calls } = fakeAdmin({ signups: withCode("42883", "function pg_catalog.PRIVATE-EMAIL someone@example.com(text) does not exist") });
+  const response = await cron();
+  expect(response.status).toBe(500);
+  expect(await response.json()).toMatchObject({ unconfirmed_email_signups_deleted: null, unconfirmed_email_signups_ready: true });
+  expect(calls).toContain("purge_slack_buffers");
+  expect(warn).toHaveBeenCalledExactlyOnceWith(JSON.stringify({ event: "unconfirmed_email_signup_purge_undefined_function" }));
+  expect(error).toHaveBeenCalledExactlyOnceWith(JSON.stringify({ event: "unconfirmed_email_signup_purge_failed" }));
+  expect(JSON.stringify([...warn.mock.calls, ...error.mock.calls])).not.toContain("someone@example.com");
+});
+
+it("PGRST202 stays silent: no warning, no error", async () => {
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  fakeAdmin({ signups: withCode("PGRST202", "Could not find the function public.purge_unconfirmed_email_signups without parameters in the schema cache") });
+  const response = await cron();
+  expect(response.status).toBe(200);
+  expect(warn).not.toHaveBeenCalled();
+  expect(error).not.toHaveBeenCalled();
+});
+
+it("reports the sign-up purge as ready once the function exists", async () => {
+  fakeAdmin({ signups: 3 });
+  const response = await cron();
+  expect(await response.json()).toMatchObject({ unconfirmed_email_signups_deleted: 3, unconfirmed_email_signups_ready: true });
+});
+
+it("still reports a real sign-up purge error (timeout, permission) as HTTP 500 with the event log", async () => {
+  for (const [code, message] of [
+    ["57014", "canceling statement due to statement timeout"],
+    ["42501", "permission denied for table users"],
+    ["XX000", "PRIVATE-EMAIL someone@example.com"],
+    ["PGRST301", "JWT expired"],
+  ]) {
+    vi.restoreAllMocks();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(checkSlackConnectionTokens).mockResolvedValue({ checked: 0, revoked: 0, failed: 0 });
+    const { calls } = fakeAdmin({ signups: withCode(code, message) });
+    const response = await cron();
+    expect(response.status, code).toBe(500);
+    expect(await response.json(), code).toMatchObject({ unconfirmed_email_signups_deleted: null });
+    expect(calls, code).toContain("purge_slack_buffers");
+    expect(console.error, code).toHaveBeenCalledExactlyOnceWith(JSON.stringify({ event: "unconfirmed_email_signup_purge_failed" }));
+    expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain("someone@example.com");
+  }
 });

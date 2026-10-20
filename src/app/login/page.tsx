@@ -20,12 +20,12 @@ export default async function LoginPage({
       <Card className="w-full max-w-sm">
         <CardHeader>
           <CardTitle className="text-xl">Taskforce</CardTitle>
-          <CardDescription>이메일로 받은 링크를 누르면 로그인됩니다.</CardDescription>
+          <CardDescription>이메일로 받은 8자리 코드를 입력하면 로그인됩니다.</CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           {error === "link" && (
             <p role="alert" className="text-destructive text-sm">
-              로그인 링크가 만료되었거나 올바르지 않습니다. 다시 받아 주세요.
+              로그인 링크가 만료되었거나 올바르지 않습니다. 코드로 로그인해 주세요.
             </p>
           )}
           <LoginForm />

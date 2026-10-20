@@ -18,3 +18,7 @@ SPARKLE_PUBLIC_ED_KEY =
 // Mac bridge (OA D2b): Info.plist의 TaskforceBridgeEnabled로 들어간다. 모든 구성에서 기본 꺼짐(NO) — 꺼진 빌드는 네트워크 · 프로세스 0.
 // 켜는 것(L5)은 이 줄을 YES로 바꾸는 것이다. Debug는 여기에 더해 실행 인자 -TF_BRIDGE YES가 있어야 켜진다 (apple/Taskforce/Mac/Bridge/BridgeFlag.swift).
 TF_BRIDGE_ENABLED = NO
+
+// 이메일 8자리 코드 로그인 입구 (OA 이메일 로그인): Info.plist의 EmailSignInEnabled로 들어간다. Debug · Debug-Test는 켜짐(YES), Release는 꺼짐(NO, Release.xcconfig).
+// 켜는 것(여는 날)은 Release.xcconfig의 줄을 YES로 바꾸는 것이다: 법률 게시 · Resend 도메인 확인과 Pro 전환 · 훅 마이그레이션 적용이 끝난 날.
+EMAIL_SIGN_IN_ENABLED = YES

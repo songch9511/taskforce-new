@@ -1,21 +1,21 @@
 import { describe, expect, it } from "vitest";
 
-import { magicLinkErrorMessage } from "./errors";
+import { maskEmail } from "./errors";
 
-describe("magicLinkErrorMessage", () => {
-  it("발송 한도 초과를 알려준다", () => {
-    expect(magicLinkErrorMessage({ code: "over_email_send_rate_limit", status: 429 })).toMatch(/한도/);
+describe("maskEmail", () => {
+  it("대소문자와 상관없이 모든 자리의 주소를 <email>로 가린다", () => {
+    expect(maskEmail("limit for Operator@EXAMPLE.com and operator@example.com, OPERATOR@example.COM.", "operator@example.com")).toBe(
+      "limit for <email> and <email>, <email>.",
+    );
   });
 
-  it("키 오류를 알려준다", () => {
-    expect(magicLinkErrorMessage({ code: undefined, status: 401 })).toMatch(/PUBLISHABLE_KEY/);
+  it("주소의 점 · 더하기는 글자 그대로 본다 (정규식 문자로 읽지 않는다)", () => {
+    expect(maskEmail("a.b+c@example.com / aXb+c@example.com / a.bbc@example.com", "a.b+c@example.com")).toBe(
+      "<email> / aXb+c@example.com / a.bbc@example.com",
+    );
   });
 
-  it("연결 실패는 URL을 확인하라고 한다", () => {
-    expect(magicLinkErrorMessage({ code: undefined, status: undefined })).toMatch(/SUPABASE_URL/);
-  });
-
-  it("모르는 오류는 터미널 로그를 보라고 한다", () => {
-    expect(magicLinkErrorMessage({ code: "unexpected_failure", status: 500 })).toMatch(/터미널/);
+  it("주소가 없으면 글을 그대로 둔다", () => {
+    expect(maskEmail("Token has expired", "operator@example.com")).toBe("Token has expired");
   });
 });

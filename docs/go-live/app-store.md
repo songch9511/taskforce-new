@@ -84,7 +84,7 @@ Feedback: privacy@taskforcelabs.dev or the TestFlight screenshot feedback.
 
 ### 결정: 데모 계정으로 어떻게 로그인하나 — 해결됨 (2026-09-27)
 
-결정할 때(2026-09-27) 앱은 Sign in with Apple만 있었다. 심사원이 자기 Apple ID로 로그인하면 빈 계정이 되어 기능을 볼 수 없고, 이메일 6자리 코드는 심사원이 받을 수 없다.
+결정할 때(2026-09-27) 앱은 Sign in with Apple만 있었다. 심사원이 자기 Apple ID로 로그인하면 빈 계정이 되어 기능을 볼 수 없고, 이메일 8자리 코드는 심사원이 받을 수 없다.
 
 검토했던 안:
 
@@ -95,6 +95,8 @@ Feedback: privacy@taskforcelabs.dev or the TestFlight screenshot feedback.
 | C | 심사 메모에 데모 Apple ID와 비밀번호 | Apple이 권하지 않는다. 2단계 인증 코드 문제 |
 
 **구현 (A):** Supabase Auth의 **Before User Created** 훅으로 `public.hook_before_user_created`(마이그레이션 `20261007000000_review_account_signup_hook.sql`)를 켠다. 이 함수는 `provider = email`로 새로 가입하는 요청 중 `review_accounts` 표에 없는 주소를 403으로 거절한다. Apple 가입과 이미 있는 사용자는 그대로 통과한다. 대시보드 설정 · env는 `runbook.md` 4장.
+
+**이메일 로그인을 모두에게 연 뒤(`20261201000000_email_signup_open.sql`, 여는 날 적용):** 같은 훅이 목록 밖 주소도 받고 일회용 도메인 · 가입 상한만 막는다. 심사 계정은 목록에 있어 늘 통과하고(차단 도메인 · 상한 검사 없이) 미확인 가입 정리에서도 지워지지 않는다. 앱은 이메일 계정이면 모두 심사 계정이라고 가정하지 않는다: `scripts/create-review-account.ts`가 넣는 `app_metadata.review_account = true`가 있는 계정만 Settings › Sign-in에서 Email 줄 하나로 보이고(심사원이 눌러 볼 Add 없음), 그 표식이 없는 이메일 계정에는 Apple · Google Add가 있다. **여는 날 마이그레이션을 적용한 뒤 스크립트를 한 번 더 돌려 표식을 넣는다**(다시 돌려도 안전).
 
 데모 계정은 `scripts/create-review-account.ts`가 만든다: `REVIEW_ACCOUNT_EMAIL` · `REVIEW_ACCOUNT_PASSWORD`로 실행하면 (1) 그 주소를 `review_accounts`에 넣고, (2) 이메일 확인을 마친 사용자로 만들거나 비밀번호만 바꾸고, (3) 프로필 이름 · 별칭(`Alex Kim` · `Alex`)을 정하고 AI 처리에 동의한 상태로 두고, (4) "[Review] …" 합성 원문을 보통 파이프라인으로 처리해 근거가 붙은 할 일을 만든다(다시 실행해도 안전, `--reseed`로 다시 만들 수 있음).
 

@@ -16,6 +16,8 @@
 	<string>$(APPLE_SERVICES_ID)</string>
 	<key>AppleWebReturnURL</key>
 	<string>$(APPLE_WEB_RETURN_URL)</string>
+	<key>EmailSignInEnabled</key>
+	<string>$(EMAIL_SIGN_IN_ENABLED)</string>
 	<key>SUFeedURL</key>
 	<string>$(SPARKLE_FEED_URL)</string>
 	<key>SUPublicEDKey</key>

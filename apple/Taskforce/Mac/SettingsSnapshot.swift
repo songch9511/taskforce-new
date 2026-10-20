@@ -127,13 +127,15 @@ enum SettingsSnapshot {
         let add = SignInAddModel.shared
         func settle(_ seconds: Double = 1.0) async { try? await Task.sleep(for: .seconds(seconds)) }
         let me = UUID()
-        func user(_ providers: [String], _ emails: [String: String]) -> SignInMethods {
+        let longAddress = "alexandra.kim-henderson.design@shape-creative-studio.co"
+        func user(_ providers: [String], _ emails: [String: String], review: Bool = false) -> SignInMethods {
             let identities = providers.map {
                 UserIdentity(id: "sub-\($0)", identityId: UUID(), userId: me, identityData: emails[$0].map { ["email": .string($0)] } ?? [:],
                     provider: $0, createdAt: nil, lastSignInAt: nil, updatedAt: nil)
             }
-            return SignInMethods(user: User(id: me, appMetadata: ["provider": .string(providers.first ?? "email"), "providers": .array(providers.map { .string($0) })],
-                userMetadata: [:], aud: "authenticated", createdAt: Date(), updatedAt: Date(), identities: identities))
+            var appMetadata: [String: AnyJSON] = ["provider": .string(providers.first ?? "email"), "providers": .array(providers.map { .string($0) })]
+            if review { appMetadata["review_account"] = .bool(true) }
+            return SignInMethods(user: User(id: me, appMetadata: appMetadata, userMetadata: [:], aud: "authenticated", createdAt: Date(), updatedAt: Date(), identities: identities))
         }
         for (appearance, name) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
             NSApplication.shared.appearance = NSAppearance(named: appearance)
@@ -147,13 +149,19 @@ enum SettingsSnapshot {
             await session.accountDeleted(note: SignInCopy.appleRevokeSkipped)
             await captureSignInScreen(session: session, to: folder.appending(path: "signin-screen-note.png"))
             await session.accountDeleted(note: nil)
+            await captureEmailSteps(to: folder)
             // Account › Sign-in 절
             let google = user(["google"], ["google": "daniel@gmail.com"])
             let scenarios: [(String, SignInMethods, String?, SignInMethodRow.Method?, [SignInMethodRow.Method: String])] = [
                 ("account-google-add-apple", google, "daniel@gmail.com", nil, [:]),
                 ("account-apple-add-google", user(["apple"], ["apple": "relay-x1y2z3@privaterelay.appleid.com"]), "relay-x1y2z3@privaterelay.appleid.com", nil, [:]),
                 ("account-both", user(["apple", "google"], ["apple": "relay-x1y2z3@privaterelay.appleid.com", "google": "daniel@gmail.com"]), "daniel@gmail.com", nil, [:]),
-                ("account-review-email-only", user(["email"], [:]), "appreview@taskforcelabs.dev", nil, [:]),
+                ("account-review-email-only", user(["email"], [:], review: true), "appreview@taskforcelabs.dev", nil, [:]),
+                // 이메일 로그인을 연 뒤의 줄 (OA 이메일 로그인 5.8, 사용자 승인 2026-10-20 DZ-E4)
+                ("account-google-email-add-apple", user(["google"], ["google": longAddress]), longAddress, nil, [:]),
+                ("account-apple-real-email-add-google", user(["apple"], ["apple": "alex.kim@icloud.com"]), "alex.kim@icloud.com", nil, [:]),
+                ("account-all-three", user(["apple", "google"], ["apple": "alex.kim@icloud.com", "google": longAddress]), longAddress, nil, [:]),
+                ("account-email-add-both", user(["email"], ["email": longAddress]), longAddress, nil, [:]),
                 ("account-add-busy", google, "daniel@gmail.com", .apple, [:]),
                 ("account-add-error-apple-other-account", google, "daniel@gmail.com", nil, [.apple: SignInCopy.appleBelongsToAnotherAccount]),
                 ("account-add-error-google-other-account", user(["apple"], ["apple": "dnl.s@icloud.com"]), "dnl.s@icloud.com", nil, [.google: SignInCopy.googleBelongsToAnotherAccount]),
@@ -177,9 +185,44 @@ enum SettingsSnapshot {
         NSApplication.shared.appearance = nil
     }
 
+    /// 이메일 로그인의 이메일 · 코드 단계 모든 상태 (사용자 승인 2026-10-20 DZ-E2 · E3): 서버 없이 모델의 장면만 바꿔 찍는다 (실제 메일 · Supabase 0)
+    private static func captureEmailSteps(to folder: URL) async {
+        guard EmailSignInGate.isOpen, case .ready(let session, _) = AppRuntime.startup else { return }
+        let model = EmailSignInModel.shared
+        let long = "alexandra.kim-henderson.design@shape-creative-studio.co"
+        let short = "alex@shape.co"
+        let locked = Date().addingTimeInterval(45)
+        let open = Date().addingTimeInterval(-5)
+        typealias Scene = (name: String, apply: () -> Void)
+        let scenes: [Scene] = [
+            ("email-step-empty", { model.debugForce(step: .email) }),
+            ("email-step-long-address", { model.debugForce(step: .email, emailInput: long) }),
+            ("email-step-sending", { model.debugForce(step: .email, emailInput: long, isSending: true) }),
+            ("email-step-invalid", { model.debugForce(step: .email, emailInput: "alex@shape", line: .addressInvalid) }),
+            ("email-step-blocked", { model.debugForce(step: .email, emailInput: "alex@mailinator.com", line: .addressBlocked) }),
+            ("email-step-couldnt-continue", { model.debugForce(step: .email, emailInput: long, line: .couldntContinue) }),
+            ("email-step-offline", { model.debugForce(step: .email, emailInput: short, line: .offline) }),
+            ("code-step-empty", { model.debugForce(step: .code, address: short, status: .codeSent, resendAvailableAt: locked) }),
+            ("code-step-partial-long-address", { model.debugForce(step: .code, address: long, codeInput: "482", status: .codeSent, resendAvailableAt: locked) }),
+            ("code-step-verifying", { model.debugForce(step: .code, address: long, codeInput: "48291637", status: .codeSent, isVerifying: true, resendAvailableAt: locked) }),
+            ("code-step-new-code", { model.debugForce(step: .code, address: long, status: .newCodeSent, resendAvailableAt: locked) }),
+            ("code-step-resend-open", { model.debugForce(step: .code, address: long, status: .codeSent, resendAvailableAt: open) }),
+            ("code-step-wrong", { model.debugForce(step: .code, address: long, codeInput: "48291738", status: .codeSent, line: .wrongCode, resendAvailableAt: locked) }),
+            ("code-step-expired", { model.debugForce(step: .code, address: long, codeInput: "48291637", status: .codeSent, line: .wrongCode, resendAvailableAt: open) }),
+            ("code-step-couldnt-continue", { model.debugForce(step: .code, address: long, codeInput: "48291738", status: .codeSent, line: .couldntContinue, resendAvailableAt: locked) }),
+            ("code-step-resend-failed", { model.debugForce(step: .code, address: long, status: .codeSent, line: .couldntContinue, resendAvailableAt: open) }),
+            ("code-step-offline", { model.debugForce(step: .code, address: short, codeInput: "48291637", status: .codeSent, line: .offline, resendAvailableAt: locked) }),
+        ]
+        for scene in scenes {
+            scene.apply()
+            await captureSignInScreen(session: session, to: folder.appending(path: "signin-\(scene.name).png"), height: 520)
+        }
+        model.reset()
+    }
+
     /// 로그아웃 상태의 로그인 화면 하나 (설정 창의 로그인 칸과 같은 크기)
-    private static func captureSignInScreen(session: SessionStore, to url: URL) async {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 440), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    private static func captureSignInScreen(session: SessionStore, to url: URL, height: CGFloat = 440) async {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: height), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         // 프로그램으로 만든 창은 닫을 때 한 번 더 해제되지 않게 한다 (Swift가 이미 소유한다)
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: SettingsSignInPanel().environment(session))
