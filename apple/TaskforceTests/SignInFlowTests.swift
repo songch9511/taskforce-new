@@ -271,8 +271,12 @@ func waitUntil(timeout: Duration = .seconds(60), _ condition: () -> Bool) async 
 
 // MARK: 가짜 Supabase 인증 서버
 
-private func fixtureUser(id: UUID, providers: [String], emails: [String: String] = [:], accountEmail: String? = "me@example.com") -> User {
-    User(id: id, appMetadata: ["provider": .string(providers.first ?? "email"), "providers": .array(providers.map { .string($0) })], userMetadata: [:],
+private func fixtureUser(
+    id: UUID, providers: [String], emails: [String: String] = [:], accountEmail: String? = "me@example.com", appMetadata extra: [String: AnyJSON] = [:]
+) -> User {
+    var appMetadata: [String: AnyJSON] = ["provider": .string(providers.first ?? "email"), "providers": .array(providers.map { .string($0) })]
+    appMetadata.merge(extra) { _, new in new }
+    return User(id: id, appMetadata: appMetadata, userMetadata: [:],
         aud: "authenticated", email: accountEmail, createdAt: Date(), updatedAt: Date(),
         identities: providers.map {
             UserIdentity(id: "sub-\($0)", identityId: UUID(), userId: id, identityData: emails[$0].map { ["email": .string($0)] } ?? [:],
@@ -352,13 +356,13 @@ private final class FakeSupabase: @unchecked Sendable {
 struct SignInSectionModelTests {
     let me = UUID()
 
-    func methods(_ providers: [String], emails: [String: String] = [:]) -> SignInMethods {
-        SignInMethods(user: fixtureUser(id: me, providers: providers, emails: emails))
+    func methods(_ providers: [String], emails: [String: String] = [:], review: Bool = false) -> SignInMethods {
+        SignInMethods(user: fixtureUser(id: me, providers: providers, emails: emails, appMetadata: review ? ["review_account": .bool(true)] : [:]))
     }
 
     /// 방식을 모르면(세션에 정보가 없음) 예전 한 줄 (계정 줄 이름 · 이메일 · Sign Out)
     @Test func unknownMethodsStayOneRow() {
-        let model = SignInSectionModel.make(methods: .unknown, accountEmail: "me@example.com")
+        let model = SignInSectionModel.make(methods: .unknown, accountEmail: "me@example.com", emailSignIn: false)
         #expect(model.rows.count == 1 && model.rows[0].control == .signOut)
         #expect(model.rows[0].method == nil)
         #expect(model.rows[0].label == "Apple ID")
@@ -368,7 +372,7 @@ struct SignInSectionModelTests {
 
     /// 이어진 Google이 먼저, 안 이어진 Apple은 Add. 각주는 지금 문장 + 새 문장
     @Test func aGoogleAccountShowsGoogleThenAddApple() {
-        let model = SignInSectionModel.make(methods: methods(["google"], emails: ["google": "me@gmail.com"]), accountEmail: "me@example.com")
+        let model = SignInSectionModel.make(methods: methods(["google"], emails: ["google": "me@gmail.com"]), accountEmail: "me@example.com", emailSignIn: false)
         #expect(model.rows == [
             .init(method: .google, label: "Google", detail: "me@gmail.com", control: .signOut),
             .init(method: .apple, label: "Apple", detail: nil, control: .add(busy: false)),
@@ -377,7 +381,7 @@ struct SignInSectionModelTests {
     }
 
     @Test func anAppleAccountShowsAppleThenAddGoogle() {
-        let model = SignInSectionModel.make(methods: methods(["apple"], emails: ["apple": "relay-x1y2z3@privaterelay.appleid.com"]), accountEmail: nil)
+        let model = SignInSectionModel.make(methods: methods(["apple"], emails: ["apple": "relay-x1y2z3@privaterelay.appleid.com"]), accountEmail: nil, emailSignIn: false)
         #expect(model.rows == [
             .init(method: .apple, label: "Apple", detail: "relay-x1y2z3@privaterelay.appleid.com", control: .signOut),
             .init(method: .google, label: "Google", detail: nil, control: .add(busy: false)),
@@ -386,7 +390,7 @@ struct SignInSectionModelTests {
     }
 
     @Test func bothLinkedShowTwoRowsAndSignOutOnlyOnTheFirst() {
-        let model = SignInSectionModel.make(methods: methods(["google", "apple"], emails: ["google": "g@x.co", "apple": "a@x.co"]), accountEmail: nil)
+        let model = SignInSectionModel.make(methods: methods(["google", "apple"], emails: ["google": "g@x.co", "apple": "a@x.co"]), accountEmail: nil, emailSignIn: false)
         #expect(model.rows == [
             .init(method: .apple, label: "Apple", detail: "a@x.co", control: .signOut),
             .init(method: .google, label: "Google", detail: "g@x.co", control: .none),
@@ -396,9 +400,66 @@ struct SignInSectionModelTests {
 
     /// 심사 계정은 Email 줄만이다: Add도 새 각주 문장도 없다
     @Test func theReviewAccountShowsOnlyTheEmailRow() {
-        let model = SignInSectionModel.make(methods: methods(["email"]), accountEmail: "review@example.com")
-        #expect(model.rows == [.init(method: .email, label: "Email", detail: "review@example.com", control: .signOut)])
+        // 게이트가 닫혀 있으면 표식 없이도 지금처럼
+        let closed = SignInSectionModel.make(methods: methods(["email"]), accountEmail: "review@example.com", emailSignIn: false)
+        #expect(closed.rows == [.init(method: .email, label: "Email", detail: "review@example.com", control: .signOut)])
+        #expect(closed.footnote == AccountCopy.signOutScope)
+        // 열려 있으면 심사 표식이 있는 계정만
+        let open = SignInSectionModel.make(methods: methods(["email"], review: true), accountEmail: "review@example.com", emailSignIn: true)
+        #expect(open.rows == [.init(method: .email, label: "Email", detail: "review@example.com", control: .signOut)])
+        #expect(open.footnote == AccountCopy.signOutScope)
+    }
+
+    // MARK: 이메일 로그인을 연 뒤 (게이트 `emailSignIn: true`, 사용자 승인 2026-10-20 DZ-E4)
+
+    @Test func aGoogleAccountWithARealAddressShowsGoogleThenEmailThenAddApple() {
+        let model = SignInSectionModel.make(methods: methods(["google"], emails: ["google": "me@gmail.com"]), accountEmail: "me@gmail.com", emailSignIn: true)
+        #expect(model.rows == [
+            .init(method: .google, label: "Google", detail: "me@gmail.com", control: .signOut),
+            .init(method: .email, label: "Email", detail: "me@gmail.com", control: .none),
+            .init(method: .apple, label: "Apple", detail: nil, control: .add(busy: false)),
+        ])
+        #expect(model.footnote == "Sign Out applies only to this device. Add the other one to sign in with either.")
+    }
+
+    @Test func anAppleAccountWithAHiddenAddressHasNoEmailRow() {
+        let model = SignInSectionModel.make(
+            methods: methods(["apple"], emails: ["apple": "x7k2m9qp4d@privaterelay.appleid.com"]), accountEmail: "x7k2m9qp4d@privaterelay.appleid.com", emailSignIn: true)
+        #expect(model.rows.map(\.method) == [.apple, .google])
+        #expect(model.footnote.hasSuffix("Add the other one to sign in with either."))
+    }
+
+    @Test func allThreeLinkedHasNoAddAndNoNewSentence() {
+        let model = SignInSectionModel.make(
+            methods: methods(["apple", "google"], emails: ["apple": "a@icloud.com", "google": "g@gmail.com"]), accountEmail: "g@gmail.com", emailSignIn: true)
+        #expect(model.rows.map(\.method) == [.apple, .google, .email])
+        #expect(model.rows.map(\.control) == [.signOut, .none, .none])
         #expect(model.footnote == AccountCopy.signOutScope)
+    }
+
+    /// 이메일로 만든 계정: Email 줄 하나 + Apple · Google Add 둘, 각주는 "the other one"이 틀리니 둘을 이름으로 부르는 문장
+    @Test func anEmailAccountAddsAppleOrGoogleWithTheTwoNameFootnote() {
+        let model = SignInSectionModel.make(methods: methods(["email"], emails: ["email": "me@example.com"]), accountEmail: "me@example.com", emailSignIn: true)
+        #expect(model.rows == [
+            .init(method: .email, label: "Email", detail: "me@example.com", control: .signOut),
+            .init(method: .apple, label: "Apple", detail: nil, control: .add(busy: false)),
+            .init(method: .google, label: "Google", detail: nil, control: .add(busy: false)),
+        ])
+        #expect(model.footnote == "Sign Out applies only to this device. Add Apple or Google to sign in with either.")
+    }
+
+    /// 게이트가 닫혀 있으면(Release) 이메일 계정에도 새 각주 문장이 없다
+    @Test func withTheGateClosedAnEmailAccountHasNoAddAndNoNewFootnote() {
+        let model = SignInSectionModel.make(methods: methods(["email"]), accountEmail: "me@example.com", emailSignIn: false)
+        #expect(model.rows.map(\.method) == [.email])
+        #expect(model.footnote == AccountCopy.signOutScope)
+    }
+
+    /// 앱 기본값은 Info.plist 게이트다 (시험 호스트는 Debug-Test라 YES)
+    @Test func theDefaultFollowsTheBuildGate() {
+        let byDefault = SignInSectionModel.make(methods: methods(["google"], emails: ["google": "me@gmail.com"]), accountEmail: "me@gmail.com")
+        let explicit = SignInSectionModel.make(methods: methods(["google"], emails: ["google": "me@gmail.com"]), accountEmail: "me@gmail.com", emailSignIn: EmailSignInGate.isOpen)
+        #expect(byDefault == explicit)
     }
 
     @Test func busyAndMessagesLandOnTheRowThatIsBeingAdded() {
@@ -413,7 +474,7 @@ struct SignInSectionModelTests {
     /// 줄 이름에 계정 줄의 옛 이름("Apple ID" · "Google Account")이 섞이지 않는다
     @Test func rowLabelsAreTheShortApprovedNames() {
         for providers in [["google"], ["apple"], ["apple", "google"], ["email"]] {
-            let model = SignInSectionModel.make(methods: methods(providers), accountEmail: "e")
+            let model = SignInSectionModel.make(methods: methods(providers), accountEmail: "e", emailSignIn: true)
             for row in model.rows { #expect(["Apple", "Google", "Email"].contains(row.label), "\(row.label)") }
         }
     }
@@ -825,6 +886,39 @@ struct SignInLogTests {
         }
     }
 
+    /// 이메일 코드: 결과 낱말만 남고 이메일 · 로그인 코드는 한 글자도 없다
+    @Test func emailOutcomesLogOnlyFixedWords() async {
+        let lines = await capture {
+            for outcome: EmailSignInOutcome in [.sent, .sendFailed("blocked_address"), .sendFailed("rate_limited"), .verified, .verifyFailed("wrong_code"), .verifyCanceled] {
+                EmailSignInFlow.log(outcome)
+            }
+        }
+        #expect(lines == [
+            "email send ok", "email send failed:blocked_address", "email send failed:rate_limited",
+            "email verify ok", "email verify failed:wrong_code", "email verify canceled",
+        ])
+        for line in lines {
+            for secret in ["gildong@example.com", "482916"] { #expect(!line.contains(secret), "\(line)") }
+            #expect(!line.contains("@"), "\(line)")
+        }
+    }
+
+    /// 모델이 보내고 확인하는 사이 실제로 로그가 이어진다 (이메일 주소 · 코드가 든 상태에서도 줄에는 낱말뿐)
+    @Test func theModelSinkWritesTheSameLines() async {
+        let lines = Lines()
+        let previous = SignInLog.sink
+        SignInLog.sink = { lines.all.append($0) }
+        defer { SignInLog.sink = previous }
+        let model = EmailSignInModel(transport: nil)
+        model.outcomeSink = { EmailSignInFlow.log($0) }
+        model.begin()
+        model.emailInput = "gildong@example.com"
+        model.submitEmail()
+        await waitUntil { !model.isSending }
+        #expect(lines.all == ["email send failed:send_failed"])
+        #expect(!lines.all.joined().contains("gildong"))
+    }
+
     @Test func aResultCodeNeverCarriesAnythingButSafeCharacters() {
         for dirty in ["a@b.com token=XYZ", "한글", "", "x y", String(repeating: "e", count: 300), "ok;rm -rf"] {
             let text = SignInLog.Result.failed(dirty).text
@@ -841,6 +935,7 @@ struct SignInLogTests {
     @Test func theSignInFilesNeverPrint() throws {
         let apple = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         for file in ["Taskforce/Shared/AppleSignIn.swift", "Taskforce/Shared/GoogleSignIn.swift", "Taskforce/Shared/AccountDeletion.swift",
+                     "Taskforce/Shared/EmailSignInView.swift", "Packages/TaskforceKit/Sources/TaskforceKit/EmailSignIn.swift",
                      "Packages/TaskforceKit/Sources/TaskforceKit/AppleWebAuthorization.swift", "Packages/TaskforceKit/Sources/TaskforceKit/SessionStore.swift"] {
             let text = try String(contentsOf: apple.appending(path: file), encoding: .utf8)
             for banned in ["print(", "NSLog(", "debugPrint(", "dump(", "os_log(", "Logger("] {

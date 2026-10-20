@@ -409,6 +409,25 @@ struct EmailSignInModelTests {
         #expect(transport.verifies.count == 2)
     }
 
+    /// Sign in은 6자리가 들어올 때까지 막힌다. 확인하는 중에도 막힌다 (틀린 뒤에는 6자리가 그대로라 다시 열린다)
+    @Test func signInStaysDisabledUntilSixDigitsAndWhileSomethingIsOut() async {
+        let model = makeModel()
+        #expect(!model.canSubmitCode)
+        await atTheCodeStep(model)
+        #expect(!model.canSubmitCode)
+        model.setCode("48291")
+        #expect(!model.canSubmitCode)
+        let gate = Gate()
+        transport.verifyGate = gate
+        transport.verifyResults = [.failed(.wrongOrExpiredCode)]
+        model.setCode("482916")
+        #expect(await gate.waitUntilEntered())
+        #expect(!model.canSubmitCode)
+        await gate.release()
+        await model.settled()
+        #expect(model.canSubmitCode, "틀린 뒤에는 다시 눌러 볼 수 있다 (앱은 횟수로 막지 않는다)")
+    }
+
     // MARK: 오류 고르기
 
     @Test func aWrongCodeIsOneQuietLineAndTheFieldIsSelectedForRetyping() async {

@@ -124,6 +124,7 @@
 		ABCFB52E21116368C3509D2D /* EdgeSnapshotTaskforce.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CB9C124D2369312AB9D8D1D /* EdgeSnapshotTaskforce.swift */; };
 		ACEE667EAA0D6726E434B3BE /* EdgeRailCapsuleMoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8922969078B53700E1D4B2A0 /* EdgeRailCapsuleMoreTests.swift */; };
 		AD139F865D5065F4EC89CD97 /* NowStoreReviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CDA036B7DA61843FB9DBDCD /* NowStoreReviewTests.swift */; };
+		AF7C7B8507FAB0DC19488939 /* EmailSignInView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E67247B4FF239B22BA52E757 /* EmailSignInView.swift */; };
 		AF947F2BD43B557FCF6EAACA /* LauncherListPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = C314FCA48C9C473BEC0F5388 /* LauncherListPane.swift */; };
 		B12630859AFFAB6A88E428E6 /* GoogleSignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0EEFD4BECF876565725DFA15 /* GoogleSignIn.swift */; };
 		B1CC59880F2E7DB9E145834B /* AccountViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E2BFF6EF4C37CFDCEBD88DB /* AccountViews.swift */; };
@@ -166,6 +167,7 @@
 		E1C25933FFD0E3BF47AAD73D /* BridgeHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CC993637C8CA1F1EC530017 /* BridgeHost.swift */; };
 		E2E22004841EC931D746713B /* AccountStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E5447C917C7443CACB72BD8 /* AccountStore.swift */; };
 		E53051711C7DE01561C1DF94 /* ReviewDesk.swift in Sources */ = {isa = PBXBuildFile; fileRef = 199E1DF5D5ECCE229D98D5FC /* ReviewDesk.swift */; };
+		E5EB60DCC44FFEE407F80364 /* EmailSignInViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BAF3D3E29850EBE0DD34C7CF /* EmailSignInViewTests.swift */; };
 		E78483F49D40CD28B4764FF9 /* ReleaseAppcastScriptTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BFBE515CA5096C0721BEE25 /* ReleaseAppcastScriptTests.swift */; };
 		E9FF4630E2A023E47E3CBE13 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 61502A661BD123C408697237 /* GoogleSignIn */; };
 		EEF31FD388053B5863C030DB /* LauncherDraftPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB01D992A7923CAF4414A91D /* LauncherDraftPane.swift */; };
@@ -361,6 +363,7 @@
 		B685D9169E022928E243C657 /* EdgeSessionActionsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeSessionActionsTests.swift; sourceTree = "<group>"; };
 		B701324DD03164B78BB88972 /* EdgeSnapshotQuestions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeSnapshotQuestions.swift; sourceTree = "<group>"; };
 		B9D9D65A427403FE1B316DDD /* EdgeReview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeReview.swift; sourceTree = "<group>"; };
+		BAF3D3E29850EBE0DD34C7CF /* EmailSignInViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmailSignInViewTests.swift; sourceTree = "<group>"; };
 		BBB841970EC9F4B0554357BF /* UsageCreditsPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageCreditsPane.swift; sourceTree = "<group>"; };
 		BBD3E7D1D9EE7600950CF52C /* EdgeShellModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeShellModel.swift; sourceTree = "<group>"; };
 		BFABA2B3A32BF5846AF461F3 /* BridgeSecretSubmitterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeSecretSubmitterTests.swift; sourceTree = "<group>"; };
@@ -389,6 +392,7 @@
 		E253FA362A5012D158C8468F /* FakeClaudeCode */ = {isa = PBXFileReference; includeInIndex = 0; path = FakeClaudeCode; sourceTree = BUILT_PRODUCTS_DIR; };
 		E26FB76847081254A7CBDAC8 /* SettingsAgentsTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsAgentsTestSupport.swift; sourceTree = "<group>"; };
 		E50FFEE2074DAE11B00DE1E8 /* SettingsAgentsSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsAgentsSnapshot.swift; sourceTree = "<group>"; };
+		E67247B4FF239B22BA52E757 /* EmailSignInView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmailSignInView.swift; sourceTree = "<group>"; };
 		E79E5EA9083E82E3C6AE58E9 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		E93E5DE9D5429324E5F5A37F /* AppUpdaterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdaterTests.swift; sourceTree = "<group>"; };
 		E98C340690397756C8AC5858 /* EdgeInteraction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeInteraction.swift; sourceTree = "<group>"; };
@@ -655,6 +659,7 @@
 				536211C5DCA9714C9693EDA4 /* EdgeTaskforceTests.swift */,
 				610A9DE84A54D9724C3CDAEE /* EdgeWorkContextsTests.swift */,
 				C58F5AE03837589EB835718F /* EdgeWorkListTests.swift */,
+				BAF3D3E29850EBE0DD34C7CF /* EmailSignInViewTests.swift */,
 				1AE065BCE63FAD6180201421 /* HotKeyCenterTests.swift */,
 				D30BD73A1EB36763CBA0B37E /* LauncherModelSessionTests.swift */,
 				AB6C40E329E6EAB3368F0C0B /* LauncherPresentationFixtureRendersTests.swift */,
@@ -701,6 +706,7 @@
 				9E2BFF6EF4C37CFDCEBD88DB /* AccountViews.swift */,
 				9B61143ECDB3A70FF32355F0 /* AppEnvironment.swift */,
 				382436521FFFE721D7D6D39F /* AppleSignIn.swift */,
+				E67247B4FF239B22BA52E757 /* EmailSignInView.swift */,
 				0EEFD4BECF876565725DFA15 /* GoogleSignIn.swift */,
 				F0C3F69D6A673231631FB11C /* NowStore.swift */,
 				7439B64C561B831037F0D2E2 /* PushCenter.swift */,
@@ -1043,6 +1049,7 @@
 				53F1CB481BC6C08A788E1FE6 /* EdgeTaskforceTests.swift in Sources */,
 				FE7873A58E4B39A8927CD2FC /* EdgeWorkContextsTests.swift in Sources */,
 				A8ED53988256E090313DF71C /* EdgeWorkListTests.swift in Sources */,
+				E5EB60DCC44FFEE407F80364 /* EmailSignInViewTests.swift in Sources */,
 				1D320494D52534D188026379 /* HotKeyCenterTests.swift in Sources */,
 				1D21B5CFAA41940E0383FCBE /* LauncherModelSessionTests.swift in Sources */,
 				49860D5AA10B47E94115ACA7 /* LauncherPresentationFixtureRendersTests.swift in Sources */,
@@ -1147,6 +1154,7 @@
 				58C68A8A46B10B63FF240426 /* EdgeSurfaces.swift in Sources */,
 				B7787C386C838D3DC056B069 /* EdgeTaskforce.swift in Sources */,
 				E147D7CE5FF4219D93669F16 /* EdgeWorkLinks.swift in Sources */,
+				AF7C7B8507FAB0DC19488939 /* EmailSignInView.swift in Sources */,
 				B12630859AFFAB6A88E428E6 /* GoogleSignIn.swift in Sources */,
 				BDD2EC4FA6C9D0C3A53DD751 /* HotKeyCenter.swift in Sources */,
 				2968707A8D04FE217A0AFB5E /* KeyboardShortcutsPane.swift in Sources */,

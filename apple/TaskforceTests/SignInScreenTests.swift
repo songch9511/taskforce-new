@@ -18,6 +18,18 @@ struct SignInScreenTests {
         #expect(SignInScreen.make(appleAvailable: false, googleAvailable: true).buttons == [.google])
     }
 
+    /// 이메일 입구(사용자 승인 2026-10-20)는 맨 아래 조용한 글자 버튼이고, 게이트(`EmailSignInEnabled`)가 닫히면 없다
+    @Test func theEmailEntryComesLastAndOnlyWhenTheGateIsOpen() {
+        #expect(SignInScreen.make(appleAvailable: true, googleAvailable: true, emailAvailable: true).buttons == [.apple, .google, .email])
+        #expect(SignInScreen.make(appleAvailable: true, googleAvailable: true, emailAvailable: false).buttons == [.apple, .google])
+        // 게이트를 따로 알리지 않으면 닫힌 것과 같다 (지금 모양)
+        #expect(SignInScreen.make(appleAvailable: true, googleAvailable: true).buttons == [.apple, .google])
+        // 이메일만 있어도 "unavailable" 한 줄은 없다
+        let emailOnly = SignInScreen.make(appleAvailable: false, googleAvailable: false, emailAvailable: true)
+        #expect(emailOnly.buttons == [.email] && emailOnly.unavailable == nil)
+        #expect(SignInScreen.make(appleAvailable: false, googleAvailable: true, emailAvailable: true).buttons == [.google, .email])
+    }
+
     /// 설정이 하나도 없으면(Debug 빌드) 한 줄
     @Test func withoutAnyConfigurationOneLineSaysSo() {
         let screen = SignInScreen.make(appleAvailable: false, googleAvailable: false)
@@ -87,6 +99,32 @@ struct SignInScreenTests {
         #expect(plist["AppleWebReturnURL"] as? String == "$(APPLE_WEB_RETURN_URL)")
         // 치환되지 않은 값은 설정으로 받아들이지 않는다
         #expect(AppleWebSignInConfig(infoDictionary: plist) == nil)
+    }
+
+    /// 이메일 로그인 게이트: Info.plist가 빌드 설정을 읽고, Debug · Debug-Test는 YES, **Release는 NO로 커밋**한다 (여는 날 한 줄 PR로 YES)
+    @Test func theEmailGateIsYesForDebugAndNoForRelease() throws {
+        let apple = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        func value(_ file: String, _ key: String) throws -> String? {
+            let text = try String(contentsOf: apple.appending(path: "Config/\(file)"), encoding: .utf8)
+            return text.split(separator: "\n").lazy
+                .filter { !$0.hasPrefix("//") }
+                .compactMap { line -> String? in
+                    let parts = line.split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+                    return parts.count == 2 && parts[0] == key ? parts[1] : nil
+                }.first
+        }
+        #expect(try value("Base.xcconfig", "EMAIL_SIGN_IN_ENABLED") == "YES")
+        #expect(try value("Release.xcconfig", "EMAIL_SIGN_IN_ENABLED") == "NO")
+        // Debug-Test는 Base를 포함하고 이 값을 덮지 않는다 (Release만 덮는다)
+        #expect(try value("DebugTest.xcconfig", "EMAIL_SIGN_IN_ENABLED") == nil)
+        let data = try Data(contentsOf: apple.appending(path: "Taskforce/Info.plist"))
+        let plist = try #require(try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any])
+        #expect(plist["EmailSignInEnabled"] as? String == "$(EMAIL_SIGN_IN_ENABLED)")
+        // 치환되지 않은 값은 열린 것으로 받아들이지 않는다
+        #expect(!EmailSignInGate.isEnabled(infoDictionary: plist))
+        // 시험 호스트(Debug-Test)는 열려 있다
+        #expect(EmailSignInGate.isOpen)
+        #expect(Bundle.main.infoDictionary?["EmailSignInEnabled"] as? String == "YES")
     }
 
     /// 예전 Google 전용 문구 · 연락 링크는 앱 소스 어디에도 남지 않았다 (Release `strings` 검사가 바이너리에서 한 번 더 본다)

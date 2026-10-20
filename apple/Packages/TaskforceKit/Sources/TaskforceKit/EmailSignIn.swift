@@ -417,4 +417,25 @@ public final class EmailSignInModel {
     func settled() async {
         await pending?.value
     }
+
+    #if DEBUG
+    /// 견본(`-TFSettingsSnapshotSignIn`, Debug 전용): 서버 없이 한 장면을 만든다. Release에는 없다
+    public func debugForce(
+        step: Step, emailInput: String = "", address: String = "", codeInput: String = "", status: EmailSignInStatus? = nil, line: EmailSignInLine? = nil,
+        isSending: Bool = false, isVerifying: Bool = false, resendAvailableAt: Date? = nil
+    ) {
+        generation += 1
+        self.step = step
+        self.emailInput = emailInput
+        self.address = address
+        self.codeInput = codeInput
+        self.status = status
+        self.line = line
+        self.isSending = isSending
+        self.isVerifying = isVerifying
+        self.resendAvailableAt = resendAvailableAt
+        expiresAt = step == .code ? now().addingTimeInterval(Self.codeLifetime) : nil
+        lastAttempt = nil
+    }
+    #endif
 }
