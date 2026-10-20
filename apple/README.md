@@ -91,6 +91,8 @@ Mac은 `--show-launcher -TFSampleData -TFSnapshot <폴더>`로 실행하면 런�
 
 Release 표면(R1): Release 빌드는 **Edge 셸 + All work + S4 Review(confirm 요청에 Confirm · Dismiss, 기존 v1) + C3 ReturnSummary**만 켠다(`EdgeSurfaces.release`). Chats(B3) · 프로젝트 묶음(S3b) · 기억 · 0.2.0 설정 창은 Release에서 꺼져 있다(설정은 구 창: Plan & usage · billing 그대로). 격리 Debug에서 같은 표면을 보려면 `-TF_RELEASE_SURFACES YES -TFSampleData`(다른 `-TF_*` 인자와 상관없이 Release 표면, **서명된 앱이 아니다**); 합성 조작은 `-TFEdgeInteractRelease <로그 파일> [-TFEdgeInteractShots <폴더>] -TFSampleSummaryEnglish`. DEBUG의 `-TF_EDGE_SHELL YES`는 지금처럼 Chats · 0.2.0 설정 창을 함께 켠다.
 
+내부 배포 빌드(OA 내부 DMG): `scripts/release-mac-dmg.sh --internal`이 `TF_INTERNAL_BUILD=YES TF_BRIDGE_ENABLED=YES`로 아카이브하면 Info.plist `TaskforceInternalBuild` · `TaskforceBridgeEnabled`가 YES가 되고, 비 Debug 빌드가 `EdgeSurfaces.internalBuild`(0.2.0 표면 전부 + Claude Code bridge)를 쓴다. 기본 Release(`EdgeSurfaces.release`)와 Debug는 그대로다. 절차: [`docs/go-live/mac-dmg.md`](../docs/go-live/mac-dmg.md) "내부 배포 (--internal)".
+
 ### 테스트 격리 (Mac 앱 테스트)
 
 Mac 앱 테스트는 앱 자신을 호스트로 띄운다. 호스트의 `UserDefaults.standard`는 그 번들 ID의 설정 도메인이라, 실사용 ID(`dev.taskforcelabs.taskforce`)로 테스트를 돌리면 실사용 앱의 설정 도메인을 다시 쓴다(2026-10-11 B3에서 두 번 있었고 이전 값은 모른다). 그래서 이렇게 막는다.
