@@ -20,7 +20,7 @@ export function LoginForm() {
     return (
       <form action={verifyAction} className="flex flex-col gap-4">
         <p className="text-sm leading-6">
-          <strong>{sendState.email}</strong>로 6자리 코드를 보냈습니다. 메일함에서 확인해 주세요.
+          <strong>{sendState.email}</strong>로 8자리 코드를 보냈습니다. 메일함에서 확인해 주세요.
         </p>
         <input type="hidden" name="email" value={sendState.email} />
         <div className="flex flex-col gap-2">
@@ -30,7 +30,7 @@ export function LoginForm() {
             name="token"
             inputMode="numeric"
             autoComplete="one-time-code"
-            placeholder="123456"
+            placeholder="12345678"
             maxLength={12}
             required
             aria-invalid={error !== undefined}

@@ -14,6 +14,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 // 이어서 만든 지 90일이 지난 끝난 run의 글(요청 · 지시 · 받는 사람 후보 · 되묻는 질문)을 지운다 (purge_expired_execution_text, 한 번에 PURGE_LIMIT개 run, 남은 것은 다음 날).
 // 둘 다 실패해도 나머지 정리 · Slack 토큰 확인은 하고, 응답을 500으로 해 cron 기록에 남긴다 (실패한 칸은 null).
 // 코드를 요청하고 24시간 안에 넣지 않은 이메일 가입(미확인 행)도 여기서 지운다 (purge_unconfirmed_email_signups, 한 번에 1,000행. 로그 · 응답에는 지운 수뿐, 이메일은 남기지 않는다).
+// 그 함수는 마이그레이션 20261201000000이 만든다. 코드가 먼저 배포되어 함수가 아직 없으면(PGRST202 · 42883) 실패가 아니라 준비 전(unconfirmed_email_signups_ready: false)으로 보고 200을 낸다. 그 밖의 오류는 500으로 보고한다.
 // 한 번에 최대 PURGE_LIMIT건씩 지우므로, 밀린 게 있으면(어느 하나라도 한도만큼 지워졌으면) 시간 한도 안에서 반복해서 부른다.
 export const maxDuration = 60;
 
@@ -24,6 +25,12 @@ const TIME_BUDGET_MS = (maxDuration - 10) * 1000;
 const SLACK_TOKEN_CHECK_MS = 20_000;
 // 한도 직전에 시작한 Slack 호출이 끝날 시간 (slack/client.ts 호출 제한 10초)
 const SLACK_CALL_TIMEOUT_MS = 10_000;
+
+/** 없는 함수: PostgREST는 PGRST202(스키마 캐시에 없음), Postgres는 42883(undefined_function). 호출에 인자가 없으므로 인자 불일치가 아니라 함수가 없다는 뜻이다 */
+function isMissingFunction(error: unknown): boolean {
+  const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
+  return code === "PGRST202" || code === "42883";
+}
 
 type PurgeCounts = { sources_purged: number; judge_logs_deleted: number; rate_limit_events_deleted: number; missing_reports_deleted: number };
 type SlackPurgeCounts = { messages_deleted: number; threads_deleted: number; sources_repurged: number };
@@ -91,16 +98,19 @@ export async function GET(request: Request) {
         return null;
       },
     );
-  const unconfirmedEmailSignupsDeleted = await admin
+  const unconfirmedEmailSignups = await admin
     .rpc("purge_unconfirmed_email_signups")
     .throwOnError()
     .then(
-      ({ data }) => data as number,
-      () => {
+      ({ data }) => ({ ready: true, deleted: data as number | null }),
+      (error: unknown) => {
+        // 마이그레이션 20261201000000을 적용하기 전(코드가 먼저 배포된 동안)에는 함수가 없다: 지울 것도 없으니 실패가 아니다
+        if (isMissingFunction(error)) return { ready: false, deleted: 0 };
         console.error(JSON.stringify({ event: "unconfirmed_email_signup_purge_failed" }));
-        return null;
+        return { ready: true, deleted: null };
       },
     );
+  const unconfirmedEmailSignupsDeleted = unconfirmedEmailSignups.deleted;
   for (;;) {
     calls++;
     const { data } = await admin
@@ -142,6 +152,7 @@ export async function GET(request: Request) {
       bridge_commands_purged: bridgeCommandsPurged,
       path_leases_purged: pathLeasesPurged,
       unconfirmed_email_signups_deleted: unconfirmedEmailSignupsDeleted,
+      unconfirmed_email_signups_ready: unconfirmedEmailSignups.ready,
       slack_tokens_checked: slackTokens?.checked ?? 0,
       slack_tokens_revoked: slackTokens?.revoked ?? 0,
       slack_messages_deleted: slack.messages_deleted,

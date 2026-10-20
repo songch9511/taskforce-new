@@ -204,3 +204,56 @@ it("contains the sign-up purge error without logging exception content, keeps cl
   expect(console.error).toHaveBeenCalledExactlyOnceWith(JSON.stringify({ event: "unconfirmed_email_signup_purge_failed" }));
   expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain("someone@example.com");
 });
+
+// 정리 함수가 아직 없는 동안(마이그레이션 20261201000000을 여는 날 적용한다, 코드는 먼저 배포된다)에는 cron이 매일 500을 내지 않는다 (준비 여부 게이트).
+// PostgREST는 없는 함수를 PGRST202(스키마 캐시에 없음), Postgres는 42883(undefined_function)로 알린다. 그 밖의 실제 오류는 그대로 500으로 보고한다.
+const withCode = (code: string, message: string) => Object.assign(new Error(message), { code });
+
+it("does not fail the whole cron while the sign-up purge function does not exist yet (PGRST202), and logs nothing", async () => {
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  const { calls } = fakeAdmin({
+    signups: withCode("PGRST202", "Could not find the function public.purge_unconfirmed_email_signups without parameters in the schema cache"),
+  });
+  const response = await cron();
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({ unconfirmed_email_signups_deleted: 0, unconfirmed_email_signups_ready: false });
+  expect(calls).toContain("purge_slack_buffers");
+  expect(checkSlackConnectionTokens).toHaveBeenCalledOnce();
+  expect(error).not.toHaveBeenCalled();
+});
+
+it("treats Postgres undefined_function (42883) as not ready too", async () => {
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  fakeAdmin({ signups: withCode("42883", "function public.purge_unconfirmed_email_signups() does not exist") });
+  const response = await cron();
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({ unconfirmed_email_signups_deleted: 0, unconfirmed_email_signups_ready: false });
+  expect(error).not.toHaveBeenCalled();
+});
+
+it("reports the sign-up purge as ready once the function exists", async () => {
+  fakeAdmin({ signups: 3 });
+  const response = await cron();
+  expect(await response.json()).toMatchObject({ unconfirmed_email_signups_deleted: 3, unconfirmed_email_signups_ready: true });
+});
+
+it("still reports a real sign-up purge error (timeout, permission) as HTTP 500 with the event log", async () => {
+  for (const [code, message] of [
+    ["57014", "canceling statement due to statement timeout"],
+    ["42501", "permission denied for table users"],
+    ["XX000", "PRIVATE-EMAIL someone@example.com"],
+    ["PGRST301", "JWT expired"],
+  ]) {
+    vi.restoreAllMocks();
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(checkSlackConnectionTokens).mockResolvedValue({ checked: 0, revoked: 0, failed: 0 });
+    const { calls } = fakeAdmin({ signups: withCode(code, message) });
+    const response = await cron();
+    expect(response.status, code).toBe(500);
+    expect(await response.json(), code).toMatchObject({ unconfirmed_email_signups_deleted: null });
+    expect(calls, code).toContain("purge_slack_buffers");
+    expect(console.error, code).toHaveBeenCalledExactlyOnceWith(JSON.stringify({ event: "unconfirmed_email_signup_purge_failed" }));
+    expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain("someone@example.com");
+  }
+});

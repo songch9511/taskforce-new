@@ -20,7 +20,7 @@ export default async function LoginPage({
       <Card className="w-full max-w-sm">
         <CardHeader>
           <CardTitle className="text-xl">Taskforce</CardTitle>
-          <CardDescription>이메일로 받은 6자리 코드를 입력하면 로그인됩니다.</CardDescription>
+          <CardDescription>이메일로 받은 8자리 코드를 입력하면 로그인됩니다.</CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           {error === "link" && (
