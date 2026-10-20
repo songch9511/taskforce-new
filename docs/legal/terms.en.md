@@ -37,7 +37,7 @@ These terms set out how you may use the Taskforce app (iOS and macOS) and its se
 
 ## 4. Your account
 
-1. You create an account with Sign in with Apple or your Google account. Accounts the Company creates for app review or operations sign in with an email address.
+1. You create an account with Sign in with Apple, your Google account, or your email address. General users sign in by email with an 8-digit verification code received in that mailbox, without a password. Email-and-password sign-in is reserved for accounts the Company designates for app review.
 2. You must be at least 14 years old to use the Service.
 3. The beta is not offered to people who live in the European Economic Area (EEA, including the European Union) or the United Kingdom. Please do not sign up from these regions.
 4. Keep your account and devices secure. Tell us right away if you learn your account has been used without permission.
