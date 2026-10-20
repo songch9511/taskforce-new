@@ -86,6 +86,7 @@ describe("초기 마이그레이션", () => {
       "identity_links",
       "inbox_events",
       "judge_logs",
+      "login_code_attempts",
       "memory_items",
       "metric_events",
       "missing_reports",
