@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { DeadlineExceededError } from "./deadline";
 import { DEFAULT_LLM_PROVIDERS, parseProviders, providerRouting } from "./providers";
+import { scrubSecrets } from "./scrub";
 
 // 생성형 LLM 호출 (OpenRouter chat completions). 구조화 출력(JSON 스키마)으로만 받고 zod로 검증한다.
 // eval 스크립트에서도 그대로 쓰도록 server-only를 걸지 않고, 설정은 인자로 받는다.
@@ -297,7 +298,7 @@ async function completeJsonOnce<T extends z.ZodType>(
 
   if (!response.ok) {
     // 응답 본문에는 원문이 들어 있지 않지만, 길이를 제한해 로그가 커지지 않게 한다.
-    const body = (await response.text()).slice(0, 500);
+    const body = scrubSecrets(await response.text()).slice(0, 500);
     const kind = response.status === 404 && UNSUPPORTED_PARAMETERS.test(body) ? "unsupported_parameters" : undefined;
     throw new LlmError(`OpenRouter 요청 실패 (${response.status})`, body, false, false, kind);
   }

@@ -412,3 +412,19 @@ describe("시도마다 원가 기록 (generation id · usage.cost)", () => {
     expect(llmAttemptsOf("x")).toEqual([]);
   });
 });
+
+// 제공자는 거절한 키를 본문에 되풀이할 수 있다: 오류의 detail(500자)에는 키 모양이 가려진 채로만 담긴다 (결제 계약 6.4)
+describe("오류 본문의 키 가리기", () => {
+  const SHAPE = "sk-or-v1-notarealkeynotarealkeynotarealkeynotarealkeynotarealkeynotarealkey";
+  it("실패 응답 본문 속 키는 detail에 가려져 담기고, 경계에 걸쳐도 앞부분이 남지 않는다", async () => {
+    for (const body of [`{"error":{"message":"Invalid key ${SHAPE}"}}`, `${"x".repeat(490)}${SHAPE}`]) {
+      const c: LlmConfig = { apiKey: "key", model: "m", fetch: (async () => new Response(body, { status: 401 })) as typeof fetch };
+      const error = await completeJson(c, request).catch((e: LlmError) => e);
+      expect(error).toBeInstanceOf(LlmError);
+      expect(String((error as LlmError).detail)).not.toMatch(/sk-or-v1/);
+      expect(String((error as LlmError).detail).length).toBeLessThanOrEqual(500);
+    }
+    const c: LlmConfig = { apiKey: "key", model: "m", fetch: (async () => new Response(`bad ${SHAPE}`, { status: 401 })) as typeof fetch };
+    expect(String(((await completeJson(c, request).catch((e: LlmError) => e)) as LlmError).detail)).toBe("bad sk-or-[가림]");
+  });
+});

@@ -5,7 +5,7 @@ import TaskforceKit
 import TaskforceUI
 
 // Settings › Execution · Reports · Shortcuts. 지금 실제로 있는 것만 보인다:
-// - Execution: Run with AI를 이 계정이 쓸 수 있는지 (기존 `GET /credits` 200 · 404). 정책 · 외부 비용은 데이터가 없어 넣지 않는다
+// - Execution: Run with AI를 이 계정이 쓸 수 있는지 (기존 `GET /credits` 200 · 404) + Spending outside Taskforce(Claude Code 한 줄, `SpendingOutsideSection`). 정책은 데이터가 없어 넣지 않는다
 // - Reports: 이 Mac의 알림 권한 (읽기 전용, 꺼져 있으면 시스템 설정으로). 보고 설정(H2)은 저장 · 보내는 곳이 아직 없다
 // - Shortcuts: 기존 전역 단축키 기록(런처 · 설정 창) + Edge 패널에서 지금 동작하는 키
 

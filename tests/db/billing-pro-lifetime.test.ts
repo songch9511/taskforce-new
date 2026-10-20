@@ -380,8 +380,8 @@ describe('lifetime entitlement', () => {
   });
   it('a refund ends it, drops the claim, counts once and deletes a stored key', async () => {
     const u = await user(); const i = await intent(u, 'lifetime');
-    await db.exec('create table if not exists public.user_ai_keys(user_id uuid primary key references auth.users(id) on delete cascade)');
-    await db.query('insert into public.user_ai_keys(user_id) values($1)', [u]);
+    // the key table exists since 20261130000000: a row with a fake sealed value (never a real key)
+    await db.query("insert into public.user_ai_keys(user_id,sealed_key,verified_at) values($1,'k1.x.y.z',now())", [u]);
     await applyLife(u, { intent: i });
     await setAccount(u, { refund_requested_at: iso(-1000), self_refund_used_at: iso(-1000) });
     expect(await applyLife(u, { status: 'refunded', updated: '2026-10-19T00:00:20Z' })).toBe('applied');
@@ -389,8 +389,7 @@ describe('lifetime entitlement', () => {
     expect(await row(u)).toMatchObject({ lifetime_status: 'refunded', refund_requested_at: null });
     expect(await kind(u)).toBe('lapsed');
     expect((await db.query('select * from public.user_ai_keys where user_id=$1', [u])).rows).toEqual([]);
-    expect(await events(u)).toEqual(['billing_lifetime_purchased {}', 'billing_refund_requested {"plan":"lifetime"}', 'billing_refunded {"plan":"lifetime"}']);
-    await db.exec('drop table public.user_ai_keys');
+    expect(await events(u)).toEqual(['ai_key_deleted {"by":"refund"}', 'billing_lifetime_purchased {}', 'billing_refund_requested {"plan":"lifetime"}', 'billing_refunded {"plan":"lifetime"}']);
   });
   it('a refund of an unknown order is rejected; a deleting account cannot buy', async () => {
     const u = await user(); await applyLife(u, { intent: await intent(u, 'lifetime') });

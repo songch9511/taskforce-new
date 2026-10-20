@@ -93,3 +93,19 @@ describe("fetchGeneration", () => {
     expect(generationConfigFromEnv({ OPENROUTER_API_KEY: "k" })).toEqual({ apiKey: "k" });
   });
 });
+
+describe("오류 본문의 키 가리기", () => {
+  const SHAPE = "sk-or-v1-notarealkeynotarealkeynotarealkeynotarealkeynotarealkeynotarealkey";
+  it("실패 응답 본문 속 키 모양은 detail에 가려져 담긴다", async () => {
+    const error = await fetchGeneration(config(401, `bad ${SHAPE}`), data.id).catch((e: GenerationError) => e);
+    expect(error).toBeInstanceOf(GenerationError);
+    expect((error as GenerationError).detail).toBe("bad sk-or-[가림]");
+  });
+
+  it("네트워크 오류 글에 키가 실려 와도 detail에 가려져 담긴다", async () => {
+    const throwing: GenerationConfig = { apiKey: "key", fetch: (async () => { throw new Error(`socket closed for ${SHAPE}`); }) as typeof fetch };
+    const error = await fetchGeneration(throwing, data.id).catch((e: GenerationError) => e);
+    expect((error as GenerationError).detail).toBe("socket closed for sk-or-[가림]");
+    expect(JSON.stringify([(error as Error).message, (error as GenerationError).detail])).not.toContain("sk-or-v1");
+  });
+});
