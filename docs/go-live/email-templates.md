@@ -8,10 +8,10 @@ Supabase가 코드를 만들어 메일로 보내고, 메일 발송은 Resend SMT
 
 ## 1. 템플릿 (Authentication → Emails → Templates)
 
-Supabase 이메일 템플릿 **여섯 개 모두**에 같은 제목 · 같은 본문을 붙인다: **Confirm signup** · **Magic Link** · **Invite user** · **Change Email Address** · **Reset Password** · **Reauthentication** (대시보드 이름은 처음 붙일 때 확인한다).
+Supabase 이메일 템플릿 **여섯 개 모두**를 링크 없는 본문으로 바꾼다: **Confirm signup** · **Magic Link** · **Reset Password** · **Invite user**에는 아래 로그인 코드 본문을, **Change Email Address** · **Reauthentication**에는 1b의 확인 코드 본문을 붙인다 (대시보드 이름은 처음 붙일 때 확인한다).
 
 - 로그인 코드가 가는 곳은 둘이다: 처음 보는 주소는 Confirm signup 템플릿을 받고, 이미 있는 주소는 Magic Link 템플릿을 받는다 (Supabase 동작. 실제로 그런지는 작성 첫날 로컬 GoTrue로 확인했다: 노트 참고).
-- 나머지 넷(Invite user · Change Email Address · Reset Password · Reauthentication)은 이 앱이 쓰지 않는 흐름이다. 그래도 같은 본문으로 바꾼다: 기본 템플릿에는 링크(`{{ .ConfirmationURL }}`)가 있고, 비밀번호 재설정 같은 일부는 공개 API로 누구나 아무 주소에 보낼 수 있어서 링크가 든 메일이 이 서비스 이름으로 나가지 않게 하려는 것이다. 이 코드로 앱에서 할 수 있는 일은 없다 (앱은 그 흐름을 쓰지 않는다). 제목 · 본문의 "sign-in" 문구가 그 흐름에는 맞지 않아도 링크가 없는 쪽이 안전하다고 보고 같은 문구를 쓴다.
+- 나머지 넷(Invite user · Change Email Address · Reset Password · Reauthentication)은 이 앱이 쓰지 않는 흐름이다. 그래도 링크 없는 본문으로 바꾼다(Reset Password · Invite user는 아래 같은 로그인 코드 본문, Change Email Address · Reauthentication은 "로그인"이라고 말하지 않는 1b 본문): 기본 템플릿에는 링크(`{{ .ConfirmationURL }}`)가 있고, 비밀번호 재설정 같은 일부는 공개 API로 누구나 아무 주소에 보낼 수 있어서 링크가 든 메일이 이 서비스 이름으로 나가지 않게 하려는 것이다. 이 코드로 앱에서 할 수 있는 일은 없다 (앱은 그 흐름을 쓰지 않는다). 제목 · 본문의 "sign-in" 문구가 그 흐름에는 맞지 않아도 링크가 없는 쪽이 안전하다고 보고 같은 문구를 쓴다.
 
 - 제목: `Your Taskforce sign-in code` (코드를 제목에 넣지 않는다: 잠금 화면 · 알림 미리보기에 코드가 보이지 않게)
 - 본문: 아래 HTML. 코드(`{{ .Token }}`)만 있다. **링크 · 이미지 · 추적 픽셀이 없다** (`{{ .ConfirmationURL }}`을 쓰지 않는다: 메일 검사기가 링크를 먼저 열어 버리는 문제를 피하고, 앱 사용자의 메일에 웹 로그인 길이 생기지 않게 한다).
@@ -51,6 +51,65 @@ Your Taskforce sign-in code is:
 It expires in 10 minutes. If you didn't ask for it, you can ignore this email.
 ```
 
+### 1b. Change Email Address · Reauthentication (확인 코드: "로그인"이라고 말하지 않는다)
+
+이 둘은 로그인 코드가 아니라 계정을 바꿀 때의 확인 코드다. 로그인 문구로 나가면 받는 사람이 로그인 코드로 오해해 남에게 줄 수 있어 문구를 따로 둔다 (최종 보안 검토 2026-10-20). 링크 · 이미지 · 추적이 없는 것은 위와 같다.
+
+- **Change Email Address**: 제목 `Confirm your Taskforce email change`, 본문은 아래 첫째 HTML.
+- **Reauthentication**: 제목 `Your Taskforce confirmation code`, 본문은 아래 둘째 HTML.
+
+```html
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="supported-color-schemes" content="light dark">
+<style>
+  body { margin: 0; padding: 24px 16px; background: #ffffff; color: #1f1f1f; font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; }
+  .code { margin: 16px 0; font: 600 32px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 6px; }
+  .note { color: #5f6368; font-size: 13px; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #1c1c1e; color: #f2f2f7; }
+    .note { color: #a1a1a6; }
+  }
+</style>
+</head>
+<body>
+<p>Your Taskforce confirmation code is:</p>
+<p class="code">{{ .Token }}</p>
+<p class="note">This code confirms an email change. Don't share it with anyone. It expires in 10 minutes. If you didn't ask for it, you can ignore this email.</p>
+</body>
+</html>
+```
+
+```html
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="supported-color-schemes" content="light dark">
+<style>
+  body { margin: 0; padding: 24px 16px; background: #ffffff; color: #1f1f1f; font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; }
+  .code { margin: 16px 0; font: 600 32px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 6px; }
+  .note { color: #5f6368; font-size: 13px; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #1c1c1e; color: #f2f2f7; }
+    .note { color: #a1a1a6; }
+  }
+</style>
+</head>
+<body>
+<p>Your Taskforce confirmation code is:</p>
+<p class="code">{{ .Token }}</p>
+<p class="note">This code confirms a change to your account. Don't share it with anyone. It expires in 10 minutes. If you didn't ask for it, you can ignore this email.</p>
+</body>
+</html>
+```
+
 **바꾸는 날**: 웹 `/login` 코드 PR(`sendCode` · `verifyCode`)이 배포된 날이다. 템플릿에서 링크를 빼면 옛 웹 링크 로그인이 사라지기 때문이다. `/auth/confirm`은 그대로 둔다 (이미 보낸 옛 메일의 링크용).
 
 ## 2. Supabase 설정 (운영 대시보드, 사용자)
@@ -67,7 +126,7 @@ It expires in 10 minutes. If you didn't ask for it, you can ignore this email.
 | Authentication → Rate Limits | Rate limit for sending emails | **시간당 30통** |
 | 〃 | 나머지 (보내기 · 확인 IP별 5분 30, 다시 받기 60초) | 기본 그대로 |
 | Authentication → Hooks | Before User Created | `public.hook_before_user_created` (켜져 있는지 본다. 함수 이름이 그대로라 마이그레이션 뒤 바꿀 것이 없다) |
-| Authentication → Attack Protection | CAPTCHA | 처음에는 켜지 않는다. **Resend 하루 상한 도달 · 반송 2% 초과 · 시간당 429 관측** 중 하나가 보이면 켜는 별도 작업을 한다 (앱이 `captchaToken`을 보내야 하므로 앱 변경이 필요하다) |
+| Authentication → Attack Protection | CAPTCHA | 처음에는 켜지 않는다. **Resend 하루 상한 도달 · 반송 2% 초과 · 시간당 429 관측 · 훅 429 관측** 중 하나가 보이면 켜는 별도 작업을 한다 (앱이 `captchaToken`을 보내야 하므로 앱 변경이 필요하다) |
 
 Resend 쪽: 도메인 `mail.taskforcelabs.dev`, 발송 지역 도쿄(`ap-northeast-1`, 나중에 바꾸려면 도메인을 지우고 DNS를 다시 넣어야 한다), 열기 · 클릭 추적 끔, API 키는 보내기 권한만 + 이 도메인만.
 

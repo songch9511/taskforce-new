@@ -300,8 +300,22 @@ describe("docs/go-live/email-templates.md", () => {
   const doc = readFileSync(path.resolve(__dirname, "../../../docs/go-live/email-templates.md"), "utf8");
   const blocks = [...doc.matchAll(/```(html|text)\n([\s\S]*?)```/g)].map((m) => ({ kind: m[1], body: m[2] }));
 
-  it("붙여 넣을 본문(HTML · 글자판)이 있다", () => {
-    expect(blocks.map((b) => b.kind)).toEqual(["html", "text"]);
+  it("붙여 넣을 본문이 있다: 로그인 코드(HTML · 글자판)와 Change Email · Reauthentication의 확인 코드(HTML 둘)", () => {
+    expect(blocks.map((b) => b.kind)).toEqual(["html", "text", "html", "html"]);
+  });
+
+  it("Change Email · Reauthentication 본문은 \"sign-in code\"라고 말하지 않고 코드를 남에게 주지 말라고 한다", () => {
+    const [signIn, , changeEmail, reauth] = blocks;
+    expect(signIn.body).toContain("sign-in code");
+    for (const [name, block] of [["Change Email", changeEmail], ["Reauthentication", reauth]] as const) {
+      expect(block.body, name).not.toMatch(/sign-in|sign in|login|log in/i);
+      expect(block.body, name).toContain("Don't share it with anyone");
+    }
+    expect(changeEmail.body).toContain("This code confirms an email change.");
+    expect(reauth.body).toContain("This code confirms a change to your account.");
+    // 제목도 로그인 코드가 아니다
+    expect(doc).toMatch(/Change Email[^\n]*제목[^\n]*`Confirm your Taskforce email change`/);
+    expect(doc).toMatch(/Reauthentication[^\n]*제목[^\n]*`Your Taskforce confirmation code`/);
   });
 
   it("본문은 코드({{ .Token }})만 싣고 링크 · 이미지 · 추적이 없다", () => {
@@ -316,12 +330,23 @@ describe("docs/go-live/email-templates.md", () => {
     }
   });
 
-  it("Supabase 이메일 템플릿 여섯 개 모두에 같은 본문을 붙이라고 적는다 (앱이 안 쓰는 흐름도 링크가 남지 않게)", () => {
+  it("Supabase 이메일 템플릿 여섯 개를 모두 적는다 (앱이 안 쓰는 흐름도 링크가 남지 않게)", () => {
     for (const name of ["Confirm signup", "Magic Link", "Reset Password", "Invite user", "Change Email Address", "Reauthentication"]) {
       expect(doc, name).toContain(name);
     }
     expect(doc).toContain("Your Taskforce sign-in code");
     expect(doc).toMatch(/여섯|6개/);
+  });
+
+  it("CAPTCHA 켜는 조건에 훅 429 관측이 있다 (이 문서와 런북 모두)", () => {
+    const runbook = readFileSync(path.resolve(__dirname, "../../../docs/go-live/runbook.md"), "utf8");
+    for (const [name, text] of [["email-templates.md", doc], ["runbook.md", runbook]] as const) {
+      const captcha = text.split("\n").find((line) => line.includes("CAPTCHA") && line.includes("하루 상한 도달")) ?? "";
+      expect(captcha, name).toContain("Resend 하루 상한 도달");
+      expect(captcha, name).toContain("반송 2% 초과");
+      expect(captcha, name).toContain("시간당 429 관측");
+      expect(captcha, name).toContain("훅 429 관측");
+    }
   });
 
   it("운영 메모: 시간당 메일 한도 30 · 코드 8자리 · 만료 600초 · 하루 상한이면 Pro", () => {
