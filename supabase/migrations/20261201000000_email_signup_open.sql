@@ -24,11 +24,11 @@ create policy "auth_admin_select" on public.blocked_email_domains for select to 
 
 -- 2) Before User Created 훅. 허락하면 {}, 거절하면 { error: { http_code, message } } (Supabase Auth Hooks 형식).
 --    provider가 email일 때만 본다 (Apple · Google은 그대로 통과). 순서:
---      주소가 비었거나 @가 없음(403) → 심사 허용 목록(통과) → user_metadata에 Auth가 넣지 않는 키(403)
+--      주소가 비었거나 @가 없음(403) → 심사 허용 목록(통과) → user_metadata가 비어 있지 않음(403)
 --      → 차단 도메인 또는 그 상위 도메인(403, 절대 막지 않을 도메인은 제외) → 한 시간 미확인 가입 15 이상(429) → 통과
 --    상한: 지난 1시간에 만들어진 미확인 이메일 사용자. Supabase 메일 한도(시간당 30)와 Resend 하루 상한(무료 100)을 한 곳이 바닥내지 못하게 하는 전체 차단기다.
 --    숫자는 함수 안 상수다 (바꾸려면 새 마이그레이션). IP별 제한은 여기서 하지 않는다: 훅은 stable이라 기록할 수 없고, Supabase IP 제한(5분 30)이 한다.
---    user_metadata: 가입 요청의 data가 그대로 들어오는 칸이다. 이 앱은 가입 때 아무것도 싣지 않으므로 비어 있어야 한다 (Auth가 스스로 넣는 email · email_verified · phone_verified · sub만 허용).
+--    user_metadata: 가입 요청의 data가 그대로 들어오는 칸이다. 이 앱은 가입 때 아무것도 싣지 않으므로 비어 있어야 한다. 로컬 GoTrue v2.197.0은 가입 훅에 빈 객체를 준다(Auth가 스스로 넣는 키는 훅 뒤에 생긴다): 키가 하나라도 있으면 막는다.
 --    메시지는 앱에 보이지 않는다 (앱은 HTTP 상태로 고른다).
 create or replace function public.hook_before_user_created(event jsonb)
 returns jsonb
@@ -42,7 +42,7 @@ declare
   -- 마지막 @ 뒤, 끝 점 없이 (user@mailinator.com. 로 우회하지 못하게)
   v_domain text;
   v_hourly_limit constant integer := 15;
-  -- 가입 요청의 user_metadata: 키 없음 → null, JSON null → 'null', 그 밖에는 object여야 한다
+  -- 가입 요청의 user_metadata: 키 없음 → null, JSON null → 'null', 그 밖에는 빈 object여야 한다
   v_meta jsonb := event -> 'user' -> 'user_metadata';
   v_meta_type text := jsonb_typeof(event -> 'user' -> 'user_metadata');
   -- 외부 차단 목록에 잘못 들어와도 막지 않을 흔한 개인 메일 (scripts/sync-blocked-email-domains.ts의 NEVER_BLOCK_DOMAINS와 같다). 정확히 같은 도메인만 면제한다
@@ -62,12 +62,8 @@ begin
     return '{}'::jsonb;
   end if;
 
-  if v_meta_type is not null and v_meta_type <> 'null' then
-    if v_meta_type <> 'object' or exists (
-      select 1 from jsonb_object_keys(v_meta) k where k <> all (array['email', 'email_verified', 'phone_verified', 'sub'])
-    ) then
-      return jsonb_build_object('error', jsonb_build_object('http_code', 403, 'message', 'This email address can''t be used.'));
-    end if;
+  if v_meta_type is not null and v_meta_type <> 'null' and v_meta <> '{}'::jsonb then
+    return jsonb_build_object('error', jsonb_build_object('http_code', 403, 'message', 'This email address can''t be used.'));
   end if;
 
   v_domain := rtrim(substring(v_email from '@([^@]*)$'), '.');
@@ -131,14 +127,15 @@ $$;
 revoke execute on function public.purge_unconfirmed_email_signups() from public, anon, authenticated;
 grant execute on function public.purge_unconfirmed_email_signups() to service_role;
 
--- 4) 이메일 사용자는 비밀번호를 가질 수 없다 (심사 허용 목록의 계정만 예외). 가입 전 비밀번호 탈취(pre-account takeover)를 막는다:
+-- 4) 사용자는 비밀번호를 가질 수 없다 (심사 허용 목록의 계정만 예외, 제공자와 상관없이). 가입 전 비밀번호 탈취(pre-account takeover)를 막는다:
 --    이메일 로그인을 모두에게 열면 누구나 피해자 주소를 비밀번호와 함께 미리 가입(미확인)해 둘 수 있다. 피해자가 나중에 자기 메일의 코드로 확인하면
---    그 행이 확인되고, 공격자는 처음 정한 비밀번호로 로그인한다. 그래서 provider가 email인 행의 encrypted_password는 넣을 때와 바뀔 때마다 빈 문자열로 만든다
+--    그 행이 확인되고, 공격자는 처음 정한 비밀번호로 로그인한다. 그래서 (심사 계정이 아닌) 모든 행의 encrypted_password는 넣을 때와 바뀔 때마다 빈 문자열로 만든다
 --    (비밀번호 없는 사용자의 GoTrue 값과 같다: Apple · Google 사용자도 빈 값이고, 빈 해시는 어떤 비밀번호와도 맞지 않아 비밀번호 로그인이 거절된다.
 --    NULL이 아닌 빈 문자열인 것은 열의 NOT NULL 여부에 기대지 않으려는 것이다). 이 트리거는 대시보드 단계 없이 SQL만으로 막는다.
 --    - 넣을 때: 공격자가 정한 비밀번호가 저장되지 않는다. 확인 전 사용자가 다시 가입하며 비밀번호를 갈아 끼우는 갱신(UPDATE)도 같다.
 --    - 처음 확인할 때: 이 트리거가 생기기 전에 만든 행에 비밀번호가 남아 있어도 확인하는 갱신에서 비운다 (GoTrue는 갱신 때 모든 열을 다시 쓴다).
---    - 예외: review_accounts에 있는 주소 (create-review-account.ts가 허용 목록에 먼저 넣고 비밀번호와 함께 만든다). Apple · Google 가입은 건드리지 않는다.
+--    - 예외: review_accounts에 있는 주소 (create-review-account.ts가 허용 목록에 먼저 넣고 비밀번호와 함께 만든다).
+--    - 제공자를 가리지 않는다 (최종 보안 검토): 앱에 비밀번호 로그인이 없으므로 Apple · Google로 만든 계정도 비밀번호를 가질 수 없다. 이 값들은 원래 빈 값이라 평소에는 아무것도 바뀌지 않는다.
 --    시험 DB의 auth.users에는 이 열들이 없을 수 있어(tests/db/local-supabase.ts) 열을 직접 쓰지 않고 행을 jsonb로 바꿔 읽고 되돌린다.
 --    security definer: 행을 넣는 Auth 역할의 권한과 상관없이 review_accounts를 읽는다.
 create function public.strip_unverified_email_password()
@@ -151,9 +148,6 @@ declare
   v_row jsonb := to_jsonb(new);
   v_email text := lower(nullif(trim(v_row ->> 'email'), ''));
 begin
-  if v_row #>> '{raw_app_meta_data,provider}' is distinct from 'email' then
-    return new;
-  end if;
   if coalesce(v_row ->> 'encrypted_password', '') = '' then
     return new;
   end if;

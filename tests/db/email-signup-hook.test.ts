@@ -155,7 +155,10 @@ describe("hook_before_user_created: user_metadata", () => {
     expect(await hook("email", "someone@example.com", null)).toEqual({});
   });
 
-  it("Auth가 스스로 넣는 키(email · email_verified · phone_verified · sub)만 있으면 받는다", async () => {
+  it("Auth가 스스로 넣는 이름의 키(email · email_verified · phone_verified · sub)도 가입 요청에 들어 있으면 403이다 (로컬 GoTrue v2.197.0이 가입 훅에 주는 user_metadata는 빈 객체였다)", async () => {
+    for (const key of ["email", "email_verified", "phone_verified", "sub"]) {
+      expect(await hook("email", "someone@example.com", { [key]: "x" }), key).toEqual(blocked);
+    }
     expect(
       await hook("email", "someone@example.com", {
         email: "someone@example.com",
@@ -163,7 +166,7 @@ describe("hook_before_user_created: user_metadata", () => {
         phone_verified: false,
         sub: "ff7fc9ae-3b1b-4642-9241-64adb9848a03",
       }),
-    ).toEqual({});
+    ).toEqual(blocked);
   });
 
   it("공격자가 넣은 키가 하나라도 있으면 403 (가입 때 임의의 user_metadata를 심지 못한다)", async () => {
@@ -289,10 +292,10 @@ describe("auth.users 트리거: 이메일 사용자는 비밀번호를 가질 �
   const VICTIM = "victim@trg.test";
   const ATTACKER_HASH = "$2a$10$attackerchosenpasswordhashxxxxxxxxxxxxxxxxxxxxxxxxxxx";
 
-  async function signUp(email: string, { password = ATTACKER_HASH, provider = "email", confirmed = false }: { password?: string | null; provider?: string; confirmed?: boolean } = {}) {
+  async function signUp(email: string, { password = ATTACKER_HASH, provider = "email", confirmed = false }: { password?: string | null; provider?: string | null; confirmed?: boolean } = {}) {
     await db.query(
       `insert into auth.users (id, email, raw_app_meta_data, email_confirmed_at, encrypted_password)
-       values (gen_random_uuid(), $1, jsonb_build_object('provider', $2::text), case when $3::boolean then now() else null end, $4)`,
+       values (gen_random_uuid(), $1, case when $2::text is null then '{}'::jsonb else jsonb_build_object('provider', $2::text) end, case when $3::boolean then now() else null end, $4)`,
       [email, provider, confirmed, password],
     );
   }
@@ -364,13 +367,29 @@ describe("auth.users 트리거: 이메일 사용자는 비밀번호를 가질 �
     expect((await stored("Reviewer2@TRG.test")).password).toBe("$2a$10$second");
   });
 
-  it("이메일 제공자가 아닌 가입(Apple · Google)과 비밀번호가 없는 행은 건드리지 않는다", async () => {
-    await signUp("g@trg.test", { provider: "google", password: "$2a$10$notours", confirmed: true });
-    expect((await stored("g@trg.test")).password).toBe("$2a$10$notours");
+  it("Apple · Google을 비롯한 모든 제공자의 가입도 비밀번호를 가질 수 없다 (앱에 비밀번호 로그인은 없다)", async () => {
+    for (const provider of ["google", "apple", "phone", "anonymous", "", null]) {
+      const email = `p-${provider ?? "none"}-${provider === "" ? "empty" : "x"}@trg.test`;
+      await signUp(email, { provider, password: "$2a$10$notours", confirmed: true });
+      expect((await stored(email)).password, String(provider)).toBe("");
+      await db.query(`update auth.users set encrypted_password = '$2a$10$later' where email = $1`, [email]);
+      expect((await stored(email)).password, `${provider} 갱신`).toBe("");
+    }
+  });
+
+  it("심사 허용 목록의 주소는 제공자와 상관없이 비밀번호를 가진다", async () => {
+    await db.query(`insert into public.review_accounts (email, note) values ('reviewer3@trg.test', 'App Store 심사')`);
+    await signUp("reviewer3@trg.test", { provider: "google", password: "$2a$10$reviewerkept", confirmed: true });
+    expect((await stored("reviewer3@trg.test")).password).toBe("$2a$10$reviewerkept");
+  });
+
+  it("비밀번호가 없는 행(빈 값 · NULL)은 그대로다", async () => {
     await signUp("empty@trg.test", { password: "" });
     expect((await stored("empty@trg.test")).password).toBe("");
     await signUp("none@trg.test", { password: null });
     expect((await stored("none@trg.test")).password).toBeNull();
+    await signUp("g-none@trg.test", { provider: "google", password: null, confirmed: true });
+    expect((await stored("g-none@trg.test")).password).toBeNull();
   });
 
   it("비밀번호와 상관없는 갱신은 행을 바꾸지 않는다 (로그인 시각 갱신 등)", async () => {

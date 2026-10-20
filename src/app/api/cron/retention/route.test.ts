@@ -222,12 +222,26 @@ it("does not fail the whole cron while the sign-up purge function does not exist
   expect(error).not.toHaveBeenCalled();
 });
 
-it("treats Postgres undefined_function (42883) as not ready too", async () => {
+it("does not treat Postgres undefined_function (42883) as not ready: it may be a bug inside the function, so it warns and stays a failure (HTTP 500)", async () => {
   const error = vi.spyOn(console, "error").mockImplementation(() => {});
-  fakeAdmin({ signups: withCode("42883", "function public.purge_unconfirmed_email_signups() does not exist") });
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const { calls } = fakeAdmin({ signups: withCode("42883", "function pg_catalog.PRIVATE-EMAIL someone@example.com(text) does not exist") });
+  const response = await cron();
+  expect(response.status).toBe(500);
+  expect(await response.json()).toMatchObject({ unconfirmed_email_signups_deleted: null, unconfirmed_email_signups_ready: true });
+  expect(calls).toContain("purge_slack_buffers");
+  expect(warn).toHaveBeenCalledExactlyOnceWith(JSON.stringify({ event: "unconfirmed_email_signup_purge_undefined_function" }));
+  expect(error).toHaveBeenCalledExactlyOnceWith(JSON.stringify({ event: "unconfirmed_email_signup_purge_failed" }));
+  expect(JSON.stringify([...warn.mock.calls, ...error.mock.calls])).not.toContain("someone@example.com");
+});
+
+it("PGRST202 stays silent: no warning, no error", async () => {
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  fakeAdmin({ signups: withCode("PGRST202", "Could not find the function public.purge_unconfirmed_email_signups without parameters in the schema cache") });
   const response = await cron();
   expect(response.status).toBe(200);
-  expect(await response.json()).toMatchObject({ unconfirmed_email_signups_deleted: 0, unconfirmed_email_signups_ready: false });
+  expect(warn).not.toHaveBeenCalled();
   expect(error).not.toHaveBeenCalled();
 });
 
