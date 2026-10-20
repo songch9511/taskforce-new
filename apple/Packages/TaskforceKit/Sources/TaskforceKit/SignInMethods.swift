@@ -211,7 +211,7 @@ public enum SignInCopy {
 
     public static func codeSent(to address: String) -> String { "Code sent to \(address)" }
     public static func newCodeSent(to address: String) -> String { "New code sent to \(address)" }
-    public static func resendAvailableIn(seconds: Int) -> String { "Available in \(seconds) seconds" }
+    public static func resendAvailableIn(seconds: Int) -> String { "Available in \(seconds) \(seconds == 1 ? "second" : "seconds")" }
 
     // 계정 삭제
     public static let deleteRemovesAccess = "We try to remove Apple, Google, and connected-service access, but it may remain."

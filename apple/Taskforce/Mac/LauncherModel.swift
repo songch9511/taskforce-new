@@ -305,7 +305,7 @@ final class LauncherModel {
         return LauncherContent.sections(
             for: inputMode, now: board?.now, doneToday: board?.doneToday ?? [], signedIn: isSignedIn,
             needsConsent: account?.shouldPromptConsent ?? false, policyNotice: account?.policyNotice,
-            appleSignIn: AppleSignInFlow.isAvailable, googleSignIn: GoogleSignInFlow.isAvailable, layout: layout
+            appleSignIn: AppleSignInFlow.isAvailable, googleSignIn: GoogleSignInFlow.isAvailable, emailSignIn: EmailSignInGate.isOpen, layout: layout
         )
     }
 
@@ -1389,6 +1389,8 @@ final class LauncherModel {
             startAppleSignIn()
         case .signInWithGoogle:
             startGoogleSignIn()
+        case .signInWithEmail:
+            startEmailSignIn()
         case .allowAI:
             openSettings(.ai)
         case .policyNotice(let notice):
@@ -1694,10 +1696,13 @@ final class LauncherModel {
         close()
     }
 
+    /// Settings 창을 여는 곳 (시험은 창 없이 어느 탭을 열었는지만 받는다)
+    var settingsOpener: (MacSettingsTab?) -> Void = { SettingsOpener.open($0) }
+
     /// `tab`이 없으면 마지막에 본 페이지 (`SettingsOpener.open`)
     func openSettings(_ tab: MacSettingsTab? = nil) {
         close()
-        SettingsOpener.open(tab)
+        settingsOpener(tab)
     }
 
     // MARK: 물어보기 · 원문 보내기
@@ -2079,6 +2084,13 @@ final class LauncherModel {
             self.suspendsAutoClose = false
             self.focusRequest += 1
         }
+    }
+
+    /// 런처의 "Continue with email" 행: 런처 안에서 이메일을 치지 않는다. 로그인 화면(Settings 창 Account)을 이메일 단계로 열어 거기서 이어 간다
+    /// (이미 코드 단계라면 그 단계 그대로: 10분 안에 닫았다 다시 열어도 코드 단계가 남는다)
+    func startEmailSignIn() {
+        EmailSignInModel.shared.begin()
+        openSettings(.account)
     }
 
     /// 기한 선택기의 Date ↔ 기한 날짜 (선택기는 기기 시간대로 날짜를 보여준다)

@@ -30,7 +30,9 @@ struct EmailSignInViewTests {
         #expect(EmailSignInHelp.resend(model, at: clock.now) == "Available in 60 seconds")
         clock.advance(17.5)
         #expect(EmailSignInHelp.resend(model, at: clock.now) == "Available in 43 seconds")
-        clock.advance(42.5)
+        clock.advance(41.7)
+        #expect(EmailSignInHelp.resend(model, at: clock.now) == "Available in 1 second", "남은 초가 1이면 단수")
+        clock.advance(1)
         #expect(EmailSignInHelp.resend(model, at: clock.now) == nil, "60초가 지나면 이유가 없다")
         // 이메일 단계에는 다시 받기가 없다
         model.debugForce(step: .email)
@@ -96,5 +98,40 @@ struct EmailSignInViewTests {
         m.debugForce(step: .methods)
         let size = fitting(m)
         #expect(size.height < 60, "\(size)")
+    }
+
+    // MARK: 옛 런처의 "Continue with email" 행
+
+    /// 행을 누르면 Settings 창(Account)을 열고 로그인 화면을 이메일 단계로 둔다: 런처 안에서 이메일을 치지 않는다 (창은 열지 않고 열 탭만 받는다)
+    @Test func theLauncherEmailRowOpensAccountSettingsAtTheEmailStep() {
+        let shared = EmailSignInModel.shared
+        shared.reset()
+        defer { shared.reset() }
+        let launcher = LauncherModel(configurationError: "test")
+        var opened: [MacSettingsTab?] = []
+        var closed = 0
+        launcher.settingsOpener = { opened.append($0) }
+        launcher.close = { closed += 1 }
+
+        launcher.run(.signInWithEmail)
+
+        #expect(shared.step == .email)
+        #expect(opened == [.account])
+        #expect(closed == 1, "런처 패널은 닫는다")
+    }
+
+    /// 이미 코드 단계라면 그 단계 그대로 둔다 (10분 안에 닫았다 다시 열어도 코드 단계가 남는다)
+    @Test func theLauncherEmailRowKeepsAnOpenCodeStep() {
+        let shared = EmailSignInModel.shared
+        shared.reset()
+        defer { shared.reset() }
+        shared.debugForce(step: .code, address: "me@example.com", status: .codeSent)
+        let launcher = LauncherModel(configurationError: "test")
+        launcher.settingsOpener = { _ in }
+
+        launcher.run(.signInWithEmail)
+
+        #expect(shared.step == .code)
+        #expect(shared.address == "me@example.com")
     }
 }

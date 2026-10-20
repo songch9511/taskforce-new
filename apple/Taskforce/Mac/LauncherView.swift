@@ -211,6 +211,8 @@ struct LauncherFlowView: View {
             LauncherRow(title: SignInCopy.appleTitle, selected: selected, leading: .symbol("apple.logo"))
         case .signInWithGoogle:
             LauncherRow(title: SignInCopy.googleTitle, selected: selected, leading: .google)
+        case .signInWithEmail:
+            LauncherRow(title: SignInCopy.emailTitle, selected: selected, leading: .symbol("envelope"))
         case .command(let command):
             LauncherRow(title: command.title, selected: selected, leading: .symbol(command.symbolName))
         default:

@@ -166,14 +166,32 @@ struct LauncherTests {
         #expect(items(apple: true, google: false) == [.signInWithApple, .command(.quit)])
         #expect(items(apple: false, google: true) == [.signInWithGoogle, .command(.quit)])
         #expect(items(apple: false, google: false) == [.command(.quit)])
-        for signedIn in [LauncherContent.sections(for: .empty, now: now, signedIn: true, appleSignIn: true, googleSignIn: true).flatMap(\.items)] {
-            #expect(!signedIn.contains(.signInWithApple) && !signedIn.contains(.signInWithGoogle))
+        for signedIn in [LauncherContent.sections(for: .empty, now: now, signedIn: true, appleSignIn: true, googleSignIn: true, emailSignIn: true).flatMap(\.items)] {
+            #expect(!signedIn.contains(.signInWithApple) && !signedIn.contains(.signInWithGoogle) && !signedIn.contains(.signInWithEmail))
         }
+    }
+
+    /// 이메일 로그인이 열려 있으면 Apple → Google → Continue with email → Quit. 닫혀 있으면(Release) 이메일 행이 없다 (사용자 승인 2026-10-20)
+    @Test func signedOutShowsTheEmailRowThirdOnlyWhenTheGateIsOpen() {
+        func items(apple: Bool, google: Bool, email: Bool) -> [LauncherItem] {
+            LauncherContent.sections(for: .empty, now: nil, signedIn: false, appleSignIn: apple, googleSignIn: google, emailSignIn: email).flatMap(\.items)
+        }
+        #expect(items(apple: true, google: true, email: true) == [.signInWithApple, .signInWithGoogle, .signInWithEmail, .command(.quit)])
+        #expect(items(apple: true, google: true, email: false) == [.signInWithApple, .signInWithGoogle, .command(.quit)])
+        #expect(items(apple: false, google: false, email: true) == [.signInWithEmail, .command(.quit)])
+        #expect(items(apple: true, google: false, email: true) == [.signInWithApple, .signInWithEmail, .command(.quit)])
+        // 게이트를 따로 알리지 않으면 닫힌 것과 같다 (지금 모양)
+        #expect(LauncherContent.sections(for: .empty, now: nil, signedIn: false, appleSignIn: true, googleSignIn: true).flatMap(\.items) == [.signInWithApple, .signInWithGoogle, .command(.quit)])
+        // 로그인 행은 첫 구역(제목 없음)에, Quit은 Commands 구역에 있다
+        let sections = LauncherContent.sections(for: .empty, now: nil, signedIn: false, appleSignIn: true, googleSignIn: true, emailSignIn: true)
+        #expect(sections.map(\.title) == [nil, "Commands"])
+        #expect(sections[0].items == [.signInWithApple, .signInWithGoogle, .signInWithEmail])
     }
 
     @Test func signInRowsHaveTheirOwnStableIDs() {
         #expect(LauncherItem.signInWithApple.id == "sign-in-apple")
         #expect(LauncherItem.signInWithGoogle.id == "sign-in-google")
+        #expect(LauncherItem.signInWithEmail.id == "sign-in-email")
     }
 
     @Test func missingConsentAddsAllowRowOnTopWithoutHidingTheList() {

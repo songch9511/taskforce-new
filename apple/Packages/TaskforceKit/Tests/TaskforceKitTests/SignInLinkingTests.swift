@@ -645,6 +645,10 @@ struct SignInCopyTests {
         #expect(SignInCopy.addEither == "Add Apple or Google to sign in with either.")
         #expect(SignInCopy.enterSixDigits == "Enter the 6-digit code")
         #expect(SignInCopy.resendAvailableIn(seconds: 42) == "Available in 42 seconds")
+        // 1초 남았을 때는 단수 (승인된 낱말 그대로)
+        #expect(SignInCopy.resendAvailableIn(seconds: 1) == "Available in 1 second")
+        #expect(SignInCopy.resendAvailableIn(seconds: 2) == "Available in 2 seconds")
+        #expect(SignInCopy.resendAvailableIn(seconds: 60) == "Available in 60 seconds")
     }
 
     /// 버린 문구는 어디에도 없다: 계약 7.2의 "Couldn't send a code…" · "Too many tries…"(합친 한 줄이 대신), 빨강 입력 오류의 옛 글

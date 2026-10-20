@@ -68,6 +68,8 @@ public enum LauncherItem: Hashable, Sendable, Identifiable {
     case signInWithApple
     /// Sign in with Google (설정이 있을 때만)
     case signInWithGoogle
+    /// Continue with email (이메일 로그인이 열려 있을 때만, `EmailSignInGate`): Settings 창의 로그인 화면을 이메일 단계로 연다. 런처 안에서 이메일을 치지 않는다
+    case signInWithEmail
     /// 외부 AI 처리 동의 전이라 연동 원문을 읽지 못함 (목록은 그대로 보인다)
     case allowAI
     /// 처리방침 변경 안내: ↩ View (처리방침 페이지) · ⌘⌫ 닫기
@@ -93,6 +95,7 @@ public enum LauncherItem: Hashable, Sendable, Identifiable {
         case .addAction: "add-action"
         case .signInWithApple: "sign-in-apple"
         case .signInWithGoogle: "sign-in-google"
+        case .signInWithEmail: "sign-in-email"
         case .allowAI: "allow-ai"
         case .policyNotice: "policy-notice"
         case .failedSources: "failed-sources"
@@ -156,7 +159,7 @@ public enum LauncherContent {
     /// 찾는 중에는 네 구역을 모두 거르고, Done Today는 Ask · Add 아래에 둔다 (맞는 열린 할 일이 없으면 Add가 맨 위라 ↩ 한 번으로 시작).
     /// `needsConsent`: 동의 전이면 빈 입력창 맨 위에 "Allow AI processing" 한 줄 (목록을 막지 않는다)
     /// `policyNotice`: 처리방침 변경 안내가 있으면 빈 입력창 맨 위에 한 줄 (동의 줄 아래)
-    /// `appleSignIn` · `googleSignIn`: 로그인 전 목록에 둘 로그인 행. Apple이 먼저, Google이 그 아래 (각각 설정이 있을 때만)
+    /// `appleSignIn` · `googleSignIn` · `emailSignIn`: 로그인 전 목록에 둘 로그인 행. Apple이 먼저, Google, 이메일 순 (Apple · Google은 설정이 있을 때만, 이메일은 `EmailSignInEnabled`가 켜졌을 때만)
     /// Mac 런처 셸(U1 PR4)의 목록 모양. 기본값(`nil`)이면 예전 모양 그대로다 (명령 구역 · 접지 않음 · 모든 범위).
     public struct Layout: Sendable, Hashable {
         /// 섹션 접기 (`Show N More` · Done Today 접힌 한 줄). 기준값은 `/now` `section_limits`
@@ -185,11 +188,13 @@ public enum LauncherContent {
     /// 범위는 네 구역을 좁히고, 접기는 빈 입력창 · All Tasks에서만 한다 (`SectionCaps.isUnfolded`).
     public static func sections(
         for mode: LauncherInput.Mode, now: NowResponse?, doneToday: [ActionSummary] = [], signedIn: Bool, needsConsent: Bool = false,
-        policyNotice: PolicyNotice? = nil, appleSignIn: Bool = false, googleSignIn: Bool = false, layout: Layout? = nil
+        policyNotice: PolicyNotice? = nil, appleSignIn: Bool = false, googleSignIn: Bool = false, emailSignIn: Bool = false, layout: Layout? = nil
     ) -> [LauncherSection] {
         guard signedIn else {
             return [
-                LauncherSection(title: nil, items: (appleSignIn ? [.signInWithApple] : []) + (googleSignIn ? [.signInWithGoogle] : [])),
+                LauncherSection(
+                    title: nil,
+                    items: (appleSignIn ? [.signInWithApple] : []) + (googleSignIn ? [.signInWithGoogle] : []) + (emailSignIn ? [.signInWithEmail] : [])),
                 LauncherSection(title: "Commands", items: [.command(.quit)]),
             ].filter { !$0.items.isEmpty }
         }
