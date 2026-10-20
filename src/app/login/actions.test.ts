@@ -121,39 +121,81 @@ describe("sendCode", () => {
     expect(await sendCode(idle, form({ email: "operator@example.com" }))).toEqual({ status: "sent", email: "operator@example.com" });
   });
 
-  it("보내기 실패는 원인 문구로 알리고, 로그에는 이메일 주소를 (대소문자 상관없이) 가린다", async () => {
+  // 이메일 모양이 맞고 목록 밖이면 늘 { status: "sent" }다. 목록 안의 보내기 실패도 같은 응답이어야 한다: 아니면 응답 모양으로 목록에 있는지 알 수 있다 (Astra 최종 재검토 P2)
+  const sendFailures: AuthError[] = [
+    { code: "over_email_send_rate_limit", status: 429, message: "email rate limit exceeded" },
+    { code: "over_request_rate_limit", status: 429, message: "too many requests" },
+    { code: "email_address_invalid", status: 400, message: "invalid" },
+    { code: "email_address_not_authorized", status: 400, message: "not authorized" },
+    { code: "email_provider_disabled", status: 422, message: "disabled" },
+    { code: "otp_disabled", status: 422, message: "Signups not allowed for otp" },
+    { code: undefined, status: 401, message: "bad key" },
+    { code: undefined, status: 403, message: "forbidden" },
+    { code: undefined, status: undefined, message: "fetch failed" },
+    { code: "unexpected_failure", status: 500, message: "boom" },
+  ];
+  const withoutEmail = (state: LoginState) => ({ ...state, email: "" });
+
+  it("보내기 실패(한도 429 · 공급자 오류 · 연결 실패 …)는 목록 안이어도 목록 밖과 똑같은 '보냈다' 응답이다", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    fakeSupabase();
+    const outside = await sendCode(idle, form({ email: "someone@example.com" }));
+    expect(outside).toEqual({ status: "sent", email: "someone@example.com" });
+    for (const otp of sendFailures) {
+      fakeSupabase({ otp });
+      const inside = await sendCode(idle, form({ email: "operator@example.com" }));
+      expect(inside, JSON.stringify(otp)).toEqual({ status: "sent", email: "operator@example.com" });
+      expect(withoutEmail(inside), JSON.stringify(otp)).toEqual(withoutEmail(outside));
+      expect(Object.keys(inside).sort(), JSON.stringify(otp)).toEqual(Object.keys(outside).sort());
+    }
+  });
+
+  it("429와 공급자 오류를 목록 안 · 밖으로 나란히 보내면 응답이 같다 (회귀)", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    for (const otp of [sendFailures[0], sendFailures[9]]) {
+      fakeSupabase({ otp });
+      const [inside, outside] = [
+        await sendCode(idle, form({ email: "operator@example.com" })),
+        await sendCode(idle, form({ email: "stranger@example.com" })),
+      ];
+      expect(withoutEmail(inside), JSON.stringify(otp)).toEqual(withoutEmail(outside));
+      expect(inside).not.toHaveProperty("message");
+      expect(inside.status).toBe("sent");
+    }
+  });
+
+  it("예외가 던져져도(클라이언트를 못 만듦 · 호출이 던짐) 같은 '보냈다' 응답이다", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(createClient).mockRejectedValueOnce(new Error("PRIVATE operator@example.com"));
+    expect(await sendCode(idle, form({ email: "operator@example.com" }))).toEqual({ status: "sent", email: "operator@example.com" });
+    const signInWithOtp = vi.fn(async () => {
+      throw new Error("network down for operator@example.com");
+    });
+    vi.mocked(createClient).mockResolvedValue({ auth: { signInWithOtp, verifyOtp: vi.fn() } } as unknown as Awaited<ReturnType<typeof createClient>>);
+    expect(await sendCode(idle, form({ email: "operator@example.com" }))).toEqual({ status: "sent", email: "operator@example.com" });
+  });
+
+  it("보내기 실패는 서버 로그에만 남기고(code · status), 로그에는 이메일 주소가 (대소문자 상관없이) 없다", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     fakeSupabase({
       otp: { code: "over_email_send_rate_limit", status: 429, message: "email rate limit exceeded for Operator@EXAMPLE.com and operator@example.com and OPERATOR@example.COM" },
     });
     const state = await sendCode(idle, form({ email: "operator@example.com" }));
-    expect(state).toMatchObject({ status: "error", email: "operator@example.com" });
-    expect((state as { message: string }).message).toMatch(/한도/);
+    expect(state).toEqual({ status: "sent", email: "operator@example.com" });
     const logged = JSON.stringify(error.mock.calls);
     expect(logged.toLowerCase()).not.toContain("operator@example.com");
-    expect(logged).toContain("<email>");
     expect(logged).toContain("over_email_send_rate_limit");
+    expect(logged).toContain("429");
   });
 
-  it("화면에 보이는 오류 문구에는 내부 설정 안내(.env · Supabase 대시보드 · Resend · 문서 경로)가 없다", async () => {
-    vi.spyOn(console, "error").mockImplementation(() => {});
-    const codes: AuthError[] = [
-      { code: "over_email_send_rate_limit", status: 429, message: "x" },
-      { code: "email_address_invalid", status: 400, message: "x" },
-      { code: "email_address_not_authorized", status: 400, message: "x" },
-      { code: "email_provider_disabled", status: 422, message: "x" },
-      { code: undefined, status: 401, message: "x" },
-      { code: undefined, status: 403, message: "x" },
-      { code: undefined, status: undefined, message: "x" },
-      { code: "unexpected_failure", status: 500, message: "x" },
-    ];
-    for (const otp of codes) {
-      fakeSupabase({ otp });
-      const state = await sendCode(idle, form({ email: "operator@example.com" }));
-      const message = (state as { message: string }).message;
-      expect(message, JSON.stringify(otp)).toBeTruthy();
-      expect(message, JSON.stringify(otp)).not.toMatch(/\.env|NEXT_PUBLIC|Supabase|Resend|\bPro\b|runbook|docs\/|터미널|대시보드|Authentication/);
-    }
+  it("던져진 예외의 로그에도 이메일 주소 · 오류 내용이 없다", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.mocked(createClient).mockRejectedValueOnce(new Error("PRIVATE operator@example.com"));
+    await sendCode(idle, form({ email: "operator@example.com" }));
+    const logged = JSON.stringify(error.mock.calls);
+    expect(error).toHaveBeenCalled();
+    expect(logged.toLowerCase()).not.toContain("operator@example.com");
+    expect(logged).not.toContain("PRIVATE");
   });
 });
 
@@ -209,6 +251,41 @@ describe("verifyCode", () => {
     expect(logged).not.toContain("operator@example.com");
     expect(logged).not.toContain("87654321");
     expect(logged).toContain("otp_expired");
+  });
+});
+
+describe("verifyCode: 실패는 목록 안 · 밖이 같다", () => {
+  const verifyFailures: AuthError[] = [
+    { code: "otp_expired", status: 403, message: "Token has expired or is invalid" },
+    { code: "over_request_rate_limit", status: 429, message: "too many requests" },
+    { code: undefined, status: undefined, message: "fetch failed" },
+    { code: "unexpected_failure", status: 500, message: "boom" },
+  ];
+
+  it("확인 실패(틀린 · 만료 · 429 · 공급자 오류 · 연결 실패)는 목록 안이어도 밖과 같은 틀린 코드 문구다", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    fakeSupabase();
+    fakeAdmin();
+    const outside = await verifyCode(idle, form({ email: "someone@example.com", token: "12345678" }));
+    expect(outside).toEqual({ status: "sent", email: "someone@example.com", error: WRONG_CODE });
+    for (const verify of verifyFailures) {
+      fakeSupabase({ verify });
+      fakeAdmin();
+      const inside = await verifyCode(idle, form({ email: "operator@example.com", token: "12345678" }));
+      expect(inside, JSON.stringify(verify)).toEqual({ status: "sent", email: "operator@example.com", error: WRONG_CODE });
+      expect({ ...inside, email: "" }, JSON.stringify(verify)).toEqual({ ...outside, email: "" });
+    }
+  });
+
+  it("확인 호출이 예외를 던져도 같은 틀린 코드 문구다 (예외가 화면 오류로 새지 않는다)", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    fakeAdmin();
+    const verifyOtp = vi.fn(async () => {
+      throw new Error("network down for operator@example.com");
+    });
+    vi.mocked(createClient).mockResolvedValue({ auth: { signInWithOtp: vi.fn(), verifyOtp } } as unknown as Awaited<ReturnType<typeof createClient>>);
+    expect(await verifyCode(idle, form({ email: "operator@example.com", token: "12345678" }))).toEqual({ status: "sent", email: "operator@example.com", error: WRONG_CODE });
+    expect(JSON.stringify(error.mock.calls).toLowerCase()).not.toContain("operator@example.com");
   });
 });
 
