@@ -513,8 +513,8 @@ struct SettingsProfileAccountBoundaryTests {
 }
 
 struct SettingsWindowSectionTests {
-    @Test func accountShowsProfileSignInDeleteAboutAndLinks() {
-        #expect(SettingsWindowTab.account.sections(.signedIn) == [.profile, .signIn, .remembered, .deleteAccount, .about, .legal])
+    @Test func accountShowsProfileSignInPlanAndUsageDeleteAboutAndLinks() {
+        #expect(SettingsWindowTab.account.sections(.signedIn) == [.profile, .signIn, .planAndUsage, .remembered, .deleteAccount, .about, .legal])
         // 로그아웃 · 읽는 중: 로그인 자리 · About · 링크 (프로필 · 삭제는 없다)
         #expect(SettingsWindowTab.account.sections(.signedOut) == [.signIn, .about, .legal])
         #expect(SettingsWindowTab.account.sections(.loading) == [.signIn, .about, .legal])
@@ -523,7 +523,7 @@ struct SettingsWindowSectionTests {
     @Test func connectionsOpensWithAIProcessingThenSources() {
         #expect(SettingsWindowTab.connections.sections(.signedIn) == [.aiProcessing, .sources, .moreServices, .yourAgents])
         #expect(SettingsWindowTab.connections.sections(.signedOut) == [.signInRequired])
-        #expect(SettingsWindowTab.execution.sections(.signedIn) == [.runWithAI])
+        #expect(SettingsWindowTab.execution.sections(.signedIn) == [.runWithAI, .externalCosts])
         #expect(SettingsWindowTab.execution.sections(.loading) == [.signInRequired])
     }
 
@@ -537,18 +537,16 @@ struct SettingsWindowSectionTests {
     /// 연결되지 않은 것은 보이지 않는다 (소유자 규칙): 어느 탭 · 로그인 상태에서도 숨긴 주제의 제목이 없다
     @Test func gatedTopicsStayHidden() {
         let hidden = Set(SettingsWindowHidden.allCases.map(\.rawValue))
-        #expect(hidden.isSuperset(of: [
-            "Plan & usage", "Usage & Credits", "Subscription", "Default for new work",
-            "Spending outside Taskforce", "Delivery", "Task List",
-        ]))
+        // Plan & usage · Spending outside Taskforce는 결제 PR-C가 붙여 뺐다 (`SettingsPlanSectionTests`)
+        #expect(hidden.isSuperset(of: ["Usage & Credits", "Subscription", "Default for new work", "Delivery", "Task List"]))
         for tab in SettingsWindowTab.allCases {
             for access in [SettingsWindowAccess.signedIn, .signedOut, .loading] {
                 let titles = Set(tab.sections(access).compactMap(\.title))
                 #expect(titles.isDisjoint(with: hidden), "\(tab) \(access)")
             }
         }
-        #expect(SettingsWindowHidden.planAndUsage.tab == .account)
-        #expect(SettingsWindowHidden.externalCosts.tab == .execution)
+        #expect(SettingsWindowHidden.usageAndCredits.tab == .account)
+        #expect(SettingsWindowHidden.policyDefault.tab == .execution)
         #expect(SettingsWindowHidden.reportsDelivery.tab == .reports)
         #expect(SettingsWindowHidden.allCases.allSatisfy { !$0.reason.isEmpty })
     }

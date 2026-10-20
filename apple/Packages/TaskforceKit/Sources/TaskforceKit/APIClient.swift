@@ -16,6 +16,15 @@ public enum APIErrorCode: String, Decodable, Sendable {
     case aiProviderBoundViolation = "ai_provider_bound_violation"
     case aiBudgetUnavailable = "ai_budget_unavailable"
     case billingRequired = "billing_required"
+    /// v2 결제 route의 오류 (contract.ts `billingErrorCodeV2Schema`): 켜져 있지 않거나 지금 할 수 없다 · 약관 판이 다르다 · 환불 창이 닫혔다 · 셀프 환불을 썼다 · 환불이 확정을 기다린다
+    case billingUnavailable = "billing_unavailable"
+    case billingTermsRequired = "billing_terms_required"
+    case billingRefundWindowClosed = "billing_refund_window_closed"
+    case billingRefundUsed = "billing_refund_used"
+    case billingRefundPending = "billing_refund_pending"
+    /// OpenRouter 키 저장 422: OpenRouter가 거절했거나 모양이 아니다 · 관리 키다 (BYOK, `PUT /api/v2/billing/openrouter-key`)
+    case aiKeyInvalid = "ai_key_invalid"
+    case aiKeyManagement = "ai_key_management"
     /// v2 기억 쓰기의 409 이유 (B3): 정책상 이 항목은 확인할 수 없다 / 범위를 옮길 수 없다. version 충돌(`conflict`)과 달리 다시 읽어도 소용없다: 앱은 그 동작을 감춘다
     case confirmUnavailable = "confirm_unavailable"
     case scopeUnavailable = "scope_unavailable"
@@ -75,8 +84,9 @@ public enum APIError: Error, Equatable, Sendable, CustomStringConvertible {
     /// 화면에 보여줄 한 줄 (화면 틀은 영어, docs/BRAND.md "UI 문구"). 서버의 한국어 설명은 보이지 않는다.
     public var userMessage: String {
         switch self {
-        case .server(_, .billingRequired, _):
-            "Your trial or subscription has ended. Open Settings → Account → Subscription to continue AI processing."
+        case .server(_, .billingRequired, let message):
+            // 같은 코드가 둘이다 (v1 오류 코드는 늘리지 않는다): 키가 필요한 Lifetime은 N13, 끝난 플랜은 N12. 서버가 승인된 문장을 그대로 보낸다
+            message == PlanCopy.keyRequired ? PlanCopy.keyRequired : PlanCopy.planEnded
         case .server(_, .aiUserDailyBudgetExhausted, _):
             "Your daily AI allowance cannot cover this request. Try again after the next UTC day. Pending reservations still count."
         case .server(_, .aiGlobalDailyBudgetExhausted, _):
@@ -350,25 +360,65 @@ public struct APIClient: Sendable {
         try await send(.get, "ai-budget")
     }
 
+    /// 옛 v1 읽기 (화면 0): v1은 동결이라 서버가 새 상태를 옛 말로 옮겨 내린다. 새 화면은 `billingStatus()`(v2)만 쓴다
     public func billing() async throws -> BillingSummary {
         try await send(.get, "billing")
     }
 
-    public func billingCheckout(plan: BillingPlan) async throws -> URL {
+    // MARK: 결제 v2 (Plan & usage). v1 checkout은 서버가 늘 409다: 새 화면은 아래 v2만 쓴다
+
+    public func billingStatus() async throws -> BillingStatusV2 {
+        try await send(.get, "billing", version: .v2)
+    }
+
+    /// checkout 주소. 본문은 상품 · 약관 판뿐이다 (가격 · 변형 · 코드 · 돌아올 주소는 서버가 정한다). https `*.lemonsqueezy.com`만 받는다
+    public func billingCheckout(plan: PlanCheckoutKind, termsVersion: String) async throws -> URL {
         struct Request: Encodable {
-            let plan: BillingPlan
-            let termsVersion = "2026-10-08"
+            let plan: PlanCheckoutKind
+            let termsVersion: String
             enum CodingKeys: String, CodingKey { case plan; case termsVersion = "terms_version" }
         }
         struct Response: Decodable { let url: URL }
-        let response: Response = try await send(.post, "billing/checkout", body: Request(plan: plan))
+        let response: Response = try await send(.post, "billing/checkout", body: Request(plan: plan, termsVersion: termsVersion), version: .v2)
         return try BillingSummary.validatedURL(response.url)
     }
 
-    public func billingPortal() async throws -> URL {
+    public func billingPortal(target: PlanPortalTarget) async throws -> URL {
+        struct Request: Encodable { let target: PlanPortalTarget }
         struct Response: Decodable { let url: URL }
-        let response: Response = try await send(.post, "billing/portal")
+        let response: Response = try await send(.post, "billing/portal", body: Request(target: target), version: .v2)
         return try BillingSummary.validatedURL(response.url)
+    }
+
+    /// 해지했고 기간이 남았을 때 다시 시작을 요청한다 (본문 없음). 자격은 webhook이 오면 바뀐다
+    public func billingResume() async throws {
+        struct Response: Decodable { let requested: Bool }
+        let response: Response = try await send(.post, "billing/resume", version: .v2)
+        guard response.requested else { throw APIError.decoding("requested가 true가 아님") }
+    }
+
+    /// 서버가 3일 창 · 셀프 1회를 확인하고 환불을 요청한다 (본문 없음). 자격은 환불이 확정(webhook)된 뒤에만 바뀐다
+    public func billingRefund() async throws {
+        struct Response: Decodable { let requested: Bool }
+        let response: Response = try await send(.post, "billing/refund", version: .v2)
+        guard response.requested else { throw APIError.decoding("requested가 true가 아님") }
+    }
+
+    /// Lifetime의 OpenRouter 키 (BYOK). 키는 이 본문으로만 서버에 가고 응답은 상태뿐이다. 422 `ai_key_invalid` · `ai_key_management`
+    public func saveOpenRouterKey(_ key: SecretBox) async throws {
+        struct Request: Encodable {
+            let key: String
+        }
+        struct Response: Decodable {
+            let aiKey: String
+            enum CodingKeys: String, CodingKey { case aiKey = "ai_key" }
+        }
+        let response: Response = try await send(.put, "billing/openrouter-key", body: Request(key: key.reveal()), version: .v2)
+        guard response.aiKey == "connected" else { throw APIError.decoding("ai_key가 connected가 아님") }
+    }
+
+    public func removeOpenRouterKey() async throws {
+        try await sendNoContent(.delete, "billing/openrouter-key", version: .v2)
     }
 
     // MARK: 요청
@@ -453,8 +503,8 @@ public struct APIClient: Sendable {
         }
     }
 
-    private func sendNoContent(_ method: Method, _ path: String, body: (any Encodable)? = nil, timeout: TimeInterval? = nil) async throws {
-        _ = try await perform(method, path, body: body, timeout: timeout)
+    private func sendNoContent(_ method: Method, _ path: String, body: (any Encodable)? = nil, timeout: TimeInterval? = nil, version: Version = .v1) async throws {
+        _ = try await perform(method, path, body: body, timeout: timeout, version: version)
     }
 
     static func error(status: Int, data: Data) -> APIError {

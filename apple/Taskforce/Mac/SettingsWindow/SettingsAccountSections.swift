@@ -6,7 +6,7 @@ import TaskforceUI
 
 // Settings › Account (디자인 SettingsPage Account): Profile · Sign-in · Delete Account · About · 링크.
 // 기존 창의 Account(프로필 · 로그인 계정 · Sign Out · 계정 삭제 · 링크)와 About(빌드 정보)을 옮겼다.
-// Plan & usage · Remembered · 구독(Subscription)은 아직 넣지 않는다 (`SettingsWindowHidden`).
+// Plan & usage는 `SettingsPlanSections.swift`(결제 PR-C), Remembered는 `SettingsRememberedSections.swift`. 옛 구독 · Usage & Credits는 넣지 않는다 (`SettingsWindowHidden`).
 
 /// 이름 · 다른 이름 (서버 PUT /profile). Return을 누르거나 다른 칸 · 탭 · 창을 떠나면 바뀐 것만 저장한다.
 /// 편집 상태(칸 · 오류 · 보내는 중인 저장)는 `ProfileDraft`(설정 창 모델)에 있어 이 화면이 사라져도 남는다

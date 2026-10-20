@@ -10,6 +10,7 @@ import TaskforceKit
 /// 동의 화면(460×440 시트)은 처음 · 끝(`consent-prompt` · `consent-prompt-end`)을, Usage의 멈춘 카드 ›로 연 런처(`usage-working`)도 담는다.
 /// `LauncherSnapshot`처럼 화면 녹화 권한 없이 자기 창만 그린다 (신호등 · 창 그림자는 담기지 않는다).
 /// `-TFSettingsSnapshotSignIn`이면 로그인 화면과 Account › Sign-in 절의 모든 상태만 (OA 로그인 5.7, `SignInSnapshot`).
+/// `-TFSettingsSnapshotPlan`이면 Plan & usage의 모든 상태만 (OA 결제 PR-C, `SettingsSnapshotPlan.swift`): 0.2.0 창은 `-TF_EDGE_SHELL YES`와, 옛 창은 그것 없이.
 /// `-TF_EDGE_SHELL YES`면 0.2.0 탭 창(`SettingsWindowView`)을 견본 데이터로만 담는다: 탭마다 `mac-settings-window-<탭>-light.png` · `-dark.png`
 /// (스크롤이 있으면 `-end`도), 상세 · 트레이 안 확인(`connections-privacy` · `connections-notion` · `connections-notion-disconnect` ·
 /// `connections-withdraw` · `account-delete`). 렌더된 견본일 뿐이다: 실제 포인터 · 키보드 · VoiceOver 확인이 아니다.
@@ -33,10 +34,18 @@ enum SettingsSnapshot {
                         await captureAgents(to: directory)
                     } else if SignInSnapshot.isRequested {
                         await captureSignIn(to: directory)
+                    } else if PlanSnapshot.isRequested {
+                        await capturePlan(to: directory, legacy: false)
                     } else {
                         await captureWindow(to: directory)
                     }
                 }
+                NSApplication.shared.terminate(nil)
+                return
+            }
+            // `-TFSettingsSnapshotPlan`: Plan & usage의 모든 상태만 (옛 창 Form 줄, OA 결제 PR-C)
+            if PlanSnapshot.isRequested {
+                if SampleData.isEnabled { await capturePlan(to: directory, legacy: true) }
                 NSApplication.shared.terminate(nil)
                 return
             }
@@ -259,7 +268,7 @@ enum SettingsSnapshot {
     }
 
     /// 그 탭을 마지막 탭으로 적고 창 밖에서 연다 (More 메뉴와 같은 길)
-    private static func show(_ tab: SettingsWindowTab) async {
+    static func show(_ tab: SettingsWindowTab) async {
         UserDefaults.standard.set(tab.storedValue, forKey: SettingsOpener.tabKey)
         SettingsOpener.open()
         try? await Task.sleep(for: .seconds(1.5))
@@ -296,7 +305,7 @@ enum SettingsSnapshot {
     }
 
     /// 창 안에서 가장 긴 스크롤 칸을 끝까지 내린다. 스크롤할 것이 없으면 false
-    private static func scrollToEnd(_ window: NSWindow) -> Bool {
+    static func scrollToEnd(_ window: NSWindow) -> Bool {
         guard let root = window.contentView else { return false }
         var stack: [NSView] = [root]
         var best: (view: NSScrollView, overflow: CGFloat)?
@@ -315,7 +324,7 @@ enum SettingsSnapshot {
     }
 
     /// 창 안에서 가장 긴 스크롤 칸을 맨 위로 올린다
-    private static func scrollToStart(_ window: NSWindow) {
+    static func scrollToStart(_ window: NSWindow) {
         guard let root = window.contentView else { return }
         var stack: [NSView] = [root]
         var best: (view: NSScrollView, overflow: CGFloat)?
@@ -332,7 +341,7 @@ enum SettingsSnapshot {
         best.view.reflectScrolledClipView(best.view.contentView)
     }
 
-    private static var settingsWindow: NSWindow? {
+    static var settingsWindow: NSWindow? {
         NSApplication.shared.windows.first { $0.isVisible && !($0 is NSPanel) && !$0.isSheet && $0.frame.width > 300 }
     }
 
@@ -350,7 +359,7 @@ enum SettingsSnapshot {
 
     /// `LauncherSnapshot`과 같은 방법: 창 바탕색 위에 내용 뷰의 층을 그린다.
     /// `drawsHostedContent`: 런처 패널처럼 유리(`NSGlassEffectView`) 층이 내용을 그리지 않으면 안쪽 SwiftUI 뷰를 그린다
-    private static func capture(_ window: NSWindow, to url: URL, drawsHostedContent: Bool = false) {
+    static func capture(_ window: NSWindow, to url: URL, drawsHostedContent: Bool = false) {
         guard let content = window.contentView else { return }
         let view = drawsHostedContent ? (hostingView(in: content) ?? content) : content
         guard let layer = view.layer else { return }
