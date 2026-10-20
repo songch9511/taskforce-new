@@ -64,7 +64,7 @@ enum SettingsWindowTab: String, CaseIterable, Identifiable {
         if let tab = SettingsWindowTab(rawValue: stored) { return tab }
         let legacy = stored == "shortcut" ? .keyboardShortcuts : MacSettingsTab(rawValue: stored)
         switch legacy {
-        // Usage & Credits는 G2(Plan & usage, Account)까지 숨김, About은 Account 안으로
+        // Usage & Credits(옛 구독 · 한도 화면)는 Plan & usage로 대신해 Account 안으로, About도 Account 안으로
         case .account?, .about?, .usage?: return .account
         // Privacy & AI Data는 Connections의 AI processing으로
         case .connections?, .ai?: return .connections
@@ -143,6 +143,8 @@ final class SettingsWindowModel {
     var connectRequest: ConnectionProvider?
     /// Connections › Your agents의 상태 · 동작 (OA Settings › Your agents). 창 · 탭을 옮겨도 눌림 · 읽은 값이 남는다 — 끊는 동안 창을 닫아도 일은 계속한다
     let agents = AgentSettingsModel()
+    /// Account › Plan & usage의 상태 · 동작 (OA 결제 PR-C). 탭을 옮겨도 진행 중인 요청 · 읽은 값이 남고, 계정이 바뀌면 비운다
+    let plan = PlanSummaryStore()
 
     /// 창 제목: 연 상세, 없으면 탭 이름 (그 탭의 상세만)
     func title(on tab: SettingsWindowTab) -> String {
@@ -212,6 +214,8 @@ final class SettingsWindowModel {
         runtime.scope.onLeft { [weak self] in
             self?.close()
             self?.agents.accountLeft()
+            // 전 계정의 플랜 · 키 상태를 메모리에 두지 않는다
+            self?.plan.follow(userID: nil, gateway: nil)
         }
     }
 }
@@ -370,6 +374,10 @@ enum SettingsWindowSection: String, CaseIterable, Identifiable {
     case yourAgents
     /// 탭 맨 위 Notice 하나: 이 계정의 Mac이 10대일 때만 (`sections(_:macsNotice:)`)
     case macsNotice
+    /// Account › Plan & usage (OA 결제 PR-C): 플랜 · 환불 · Lifetime의 OpenRouter 키. Notice 하나는 이 절 맨 위에 선다
+    case planAndUsage
+    /// Execution › Spending outside Taskforce (DS ExternalCosts): 다른 곳에서 내는 비용 (Claude Code 한 줄)
+    case externalCosts
     case runWithAI
     case notifications
     case launcher, panelKeys
@@ -387,6 +395,8 @@ enum SettingsWindowSection: String, CaseIterable, Identifiable {
         case .sources: "Sources"
         case .yourAgents: AgentSettingsCopy.sectionTitle
         case .runWithAI: "Run with AI"
+        case .planAndUsage: PlanCopy.sectionTitle
+        case .externalCosts: PlanCopy.spendingTitle
         case .notifications: "Notifications"
         case .launcher: "Launcher"
         case .panelKeys: "In the panel"
@@ -405,11 +415,11 @@ extension SettingsWindowTab {
     /// `macsNotice`: 이 계정의 Mac이 10대라 Connections 탭 맨 위에 Notice 하나가 선다 (README "at most one Notice")
     func sections(_ access: SettingsWindowAccess, macsNotice: Bool = false) -> [SettingsWindowSection] {
         switch (self, access) {
-        case (.account, .signedIn): [.profile, .signIn, .remembered, .deleteAccount, .about, .legal]
+        case (.account, .signedIn): [.profile, .signIn, .planAndUsage, .remembered, .deleteAccount, .about, .legal]
         // 로그아웃: 로그인 화면, 그 아래 About · 링크는 그대로 (읽는 중이면 로그인 자리에 진행 표시)
         case (.account, _): [.signIn, .about, .legal]
         case (.connections, .signedIn): (macsNotice ? [.macsNotice] : []) + [.aiProcessing, .sources, .moreServices, .yourAgents]
-        case (.execution, .signedIn): [.runWithAI]
+        case (.execution, .signedIn): [.runWithAI, .externalCosts]
         case (.connections, _), (.execution, _): [.signInRequired]
         case (.reports, _): [.notifications]
         case (.shortcuts, _): [.launcher, .panelKeys]
@@ -418,21 +428,19 @@ extension SettingsWindowTab {
 }
 
 /// 디자인에는 있지만 이 창에 아직 넣지 않는 것과 이유 (소유자 규칙: 연결되지 않은 것을 되는 것처럼 보이지 않는다).
-/// 그 단위가 진짜 데이터 · 서버를 붙일 때 주제를 더하고 여기서 뺀다
+/// 그 단위가 진짜 데이터 · 서버를 붙일 때 주제를 더하고 여기서 뺀다. Plan & usage · Spending outside Taskforce는 결제 PR-C가 붙여 뺐다
 enum SettingsWindowHidden: String, CaseIterable {
-    case planAndUsage = "Plan & usage"
     case usageAndCredits = "Usage & Credits"
     case subscription = "Subscription"
     case policyDefault = "Default for new work"
     case policyOverrides = "Overrides"
-    case externalCosts = "Spending outside Taskforce"
     case reportsDelivery = "Delivery"
     case taskList = "Task List"
 
     var tab: SettingsWindowTab {
         switch self {
-        case .planAndUsage, .usageAndCredits, .subscription, .taskList: .account
-        case .policyDefault, .policyOverrides, .externalCosts: .execution
+        case .usageAndCredits, .subscription, .taskList: .account
+        case .policyDefault, .policyOverrides: .execution
         case .reportsDelivery: .reports
         }
     }
@@ -440,8 +448,8 @@ enum SettingsWindowHidden: String, CaseIterable {
     /// 숨긴 이유 (구현 계획의 단위)
     var reason: String {
         switch self {
-        case .planAndUsage, .usageAndCredits, .subscription, .externalCosts:
-            "G2: 10-09 가격(Lemon Squeezy v2)이 $9.99 구독 · credits를 대신한다. UsageCreditsPane · 구독은 기존 창에 남는다"
+        case .usageAndCredits, .subscription:
+            "옛 개념: 10-09 가격에서는 Plan & usage가 옛 구독 · USD 한도 화면을 대신한다. UsageCreditsPane의 실행 크레딧은 기존 창에 남는다"
         case .policyDefault, .policyOverrides: "실행 정책 데이터 · API가 아직 없다"
         case .reportsDelivery: "H2: 보고 설정을 아직 저장 · 보내지 않는다"
         case .taskList: "런처 전용 구역 수 제한. Edge 패널은 쓰지 않는다 (기존 창에 남는다)"

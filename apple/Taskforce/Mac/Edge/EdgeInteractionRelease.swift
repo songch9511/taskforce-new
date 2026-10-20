@@ -44,7 +44,7 @@ extension EdgeInteraction {
             check("no Chats runtime exists in this process", AppRuntime.existingChatRuntime == nil && edge.chat == nil && SettingsWindowModel.shared.chatRuntime == nil && !shell.chatsEnabled, "existing=\(String(describing: AppRuntime.existingChatRuntime)) edge.chat=\(String(describing: edge.chat))")
             check("no project groups (S3b): the shell has no membership store", shell.contexts == nil, "contexts=\(String(describing: shell.contexts))")
             check("S4 Review and the C3 summary are connected", shell.review != nil && shell.summary != nil, "review=\(shell.review != nil) summary=\(shell.summary != nil)")
-            check("Settings stays the legacy window (live billing)", MacSettingsRootKind.current == .legacy, "kind=\(MacSettingsRootKind.current)")
+            check("Settings stays the legacy window (Plan & usage)", MacSettingsRootKind.current == .legacy, "kind=\(MacSettingsRootKind.current)")
 
             // 2) 레일: 고정 칸은 All work · More 둘뿐
             check("the rail has two fixed controls (no Chats item)", shell.controls == [.allWork, .more] && shell.controls.map(\.label) == ["All work", "More"], "controls=\(shell.controls.map(\.label))")

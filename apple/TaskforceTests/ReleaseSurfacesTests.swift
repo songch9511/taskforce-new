@@ -73,7 +73,8 @@ struct ReleaseSurfacesTests {
     // MARK: 설정 창
 
     @Test func theReleaseSurfacesKeepTheLegacySettingsWindow() {
-        #expect(MacSettingsRootKind(surfaces: .release) == .legacy, "billing이 있는 구 창")
+        #expect(MacSettingsRootKind(surfaces: .release) == .legacy, "Plan & usage(옛 Form 줄)가 있는 구 창")
+        #expect(String(describing: MacBillingSection.self) == "MacBillingSection", "Release 옛 창이 쓰는 Plan & usage 절")
         #expect(MacSettingsRootKind(surfaces: EdgeSurfaces.debug()) == .legacy)
         #expect(MacSettingsRootKind(surfaces: EdgeSurfaces(shell: true, review: false, summary: false, chats: true, projects: false, settingsWindow: true)) == .window)
         #expect(MacSettingsRootKind.current == .legacy)

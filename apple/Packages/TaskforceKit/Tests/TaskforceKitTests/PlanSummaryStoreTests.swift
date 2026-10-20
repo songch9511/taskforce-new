@@ -298,10 +298,14 @@ struct PlanSummaryStoreTests {
         let secret = "sk-or-v1-NEVER-SHOW-THIS-0123456789"
         let gateway = FakePlanGateway(status: F.status(.lifetime, aiKey: .missing))
         gateway.saveError = APIError.server(status: 422, code: .aiKeyInvalid, message: "서버 설명")
+        gateway.recordsKeys = false
         let (store, _) = make(gateway)
         await store.refresh()
         await store.saveKey(SecretBox(secret))
-        let dumps = [String(describing: store), String(reflecting: store), String(describing: store.state), store.state.allText.joined(separator: "\n"), String(describing: store.failure as Any)]
+        // 저장소의 모든 저장 속성(비공개 · 관찰 제외 포함)을 거울로 훑은 글에도 키가 없다
+        var walked = ""
+        dump(store, to: &walked, maxDepth: 6)
+        let dumps = [String(describing: store), String(reflecting: store), String(describing: store.state), store.state.allText.joined(separator: "\n"), String(describing: store.failure as Any), walked]
         for dump in dumps { #expect(!dump.contains(secret) && !dump.contains("NEVER-SHOW")) }
         #expect(Mirror(reflecting: SecretBox(secret)).children.isEmpty && "\(SecretBox(secret))" == "<secret>")
     }

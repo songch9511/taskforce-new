@@ -141,11 +141,15 @@ struct PlanSummaryRowView: View {
 }
 
 /// 각주: 문단마다 한 줄 이상, 법률 줄은 마지막 (DS SignIn 문장 + 나이 · 지역 문장, 링크 "Terms" · "Privacy Policy")
-struct PlanSummaryFootnoteView: View {
+public struct PlanSummaryFootnoteView: View {
     let footnote: PlanSummaryState.Footnote
 
+    public init(footnote: PlanSummaryState.Footnote) {
+        self.footnote = footnote
+    }
+
     /// 법률 줄: 링크가 약관 · 처리방침 페이지로 간다
-    static var legalLine: AttributedString {
+    public static var legalLine: AttributedString {
         var line = AttributedString(PlanCopy.legalLead)
         var terms = AttributedString(PlanCopy.terms)
         terms.link = LegalLinks.terms
@@ -158,7 +162,7 @@ struct PlanSummaryFootnoteView: View {
         return line
     }
 
-    var body: some View {
+    public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(footnote.paragraphs.enumerated()), id: \.offset) { _, paragraph in
                 Text(paragraph)

@@ -701,92 +701,186 @@ private struct MacAccountPane: View {
     }
 }
 
-private struct MacBillingSection: View {
+/// Account › Plan & usage (옛 창, OA 결제 PR-C): Kit의 `PlanSummaryState`(0.2.0 창과 같은 규칙 · 같은 문구)를 SwiftUI Form 줄로 그린다.
+/// 결제 화면은 그리지 않는다: checkout · 포털 · 결제 수단은 브라우저(Lemon Squeezy)로 연다. 가격 · 날짜 · 토큰은 서버 값이다.
+/// Release는 L5까지 이 옛 창이라 여기서도 팔고 키를 받는다 (`EdgeSurfaces.release.settingsWindow == false`)
+struct MacBillingSection: View {
     let userID: UUID
     @Environment(\.services) private var services
-    @Environment(SessionStore.self) private var session
-    @Environment(\.openURL) private var openURL
-    @State private var billing: BillingSummary?
-    @State private var loading = false
-    @State private var message: String?
-    @State private var requestID = UUID()
-    @State private var acceptedTerms = false
+    @State private var store = PlanSummaryStore()
 
     var body: some View {
-        Section {
-            if let billing {
-                Text(billing.label)
-                if let end = billing.currentPeriodEndsAt ?? billing.trialEndsAt {
-                    Text("Access until \(String(end.prefix(10))) (UTC)").foregroundStyle(.secondary)
-                }
-                if let allowance = billing.aiAllowance {
-                    LabeledContent("AI allowance remaining", value: AiSpendSummary.dollars(allowance.remainingUSD))
-                }
-                if billing.canCheckout {
-                    Toggle("I agree to the subscription terms and have read the billing privacy information. I am 14 or older and do not live in the EEA or UK.", isOn: $acceptedTerms)
-                        .font(.caption)
-                    HStack {
-                        Link("Subscription terms", destination: URL(string: "https://www.taskforcelabs.dev/en/terms")!)
-                        Link("Billing privacy", destination: URL(string: "https://www.taskforcelabs.dev/en/privacy")!)
-                    }.font(.caption)
-                    Button("Subscribe monthly — $9.99 / month") { open(.monthly) }.disabled(!acceptedTerms)
-                    Button("Subscribe yearly — $101.90 / year · Save 15%") { open(.annual) }.disabled(!acceptedTerms)
-                    Text("Payment starts immediately at checkout, including during your trial. Automatically renews until cancelled. Applicable tax is extra.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                if billing.plan != nil { Button("Manage subscription") { open(nil) } }
-                if billing.status == "legacy_beta" {
-                    Text("Your free beta access remains available. A future paid transition requires 30 days’ notice and your separate agreement.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            } else if loading { ProgressView() }
-            if let message { Text(message).font(.caption).foregroundStyle(.secondary) }
-            Button("Refresh subscription") { Task { await refresh() } }
-        } header: { Text("Subscription") } footer: {
-            Text("Plans include $3 of AI processing per UTC calendar month, reset on the first day. The 7-day trial includes $1 total. AI pauses at the limit; no automatic overage charges. Return here and refresh after checkout.")
-        }
-        .disabled(loading)
-        .task(id: userID) { billing = nil; message = nil; acceptedTerms = false; await refresh() }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            Task { await refresh() }
-        }
-        .onDisappear { requestID = UUID() }
+        MacBillingSectionBody(store: store, userID: userID, gateway: PlanGateways.current(services))
     }
+}
 
-    private var isCurrentAccount: Bool {
-        if case .signedIn(let id, _) = session.state { return id == userID }
-        return false
+/// 알맹이: 시험은 가짜 길 · 가짜 계정으로 이것을 바로 붙인다
+struct MacBillingSectionBody: View {
+    let store: PlanSummaryStore
+    let userID: UUID?
+    let gateway: (any PlanSummaryGateway)?
+    @State private var keyHandle = SecureFieldSmHandle()
+
+    var body: some View {
+        LegacyPlanRows(
+            state: store.state, keyHandle: keyHandle,
+            onAction: { action in Task { await store.perform(action) } },
+            onSubmitKey: { key in Task { await store.saveKey(key) } }
+        )
+        .modifier(PlanSummaryLifecycle(store: store, userID: userID, gateway: gateway))
     }
+}
 
-    private func refresh() async {
-        guard let services else { return }
-        let id = UUID(); requestID = id; loading = true
-        defer { if requestID == id { loading = false } }
-        do {
-            let value = try await services.api.billing()
-            guard !Task.isCancelled, requestID == id, isCurrentAccount else { return }
-            billing = value; message = nil
-        } catch {
-            guard !Task.isCancelled, requestID == id, isCurrentAccount else { return }
-            message = "Could not load your subscription. Try refreshing."
-        }
-    }
+/// Form 줄: Notice 하나(있으면) + 절들 (머리 "Plan & usage"). 규칙이 정한 값을 그대로 그리고 동작은 저장소로 보낸다.
+/// 버튼은 한 번에 하나만 눌린다 (`state.isBusy`). 색은 더하지 않는다: 실패 줄은 조용한 보조 색, 굵은 말은 Missing · Revoked뿐
+struct LegacyPlanRows: View {
+    let state: PlanSummaryState
+    let keyHandle: SecureFieldSmHandle
+    let onAction: (PlanSummaryState.Action) -> Void
+    let onSubmitKey: (SecretBox) -> Void
 
-    private func open(_ plan: BillingPlan?) {
-        guard let services, !loading else { return }
-        let id = UUID(); requestID = id; loading = true
-        Task {
-            defer { if requestID == id { loading = false } }
-            do {
-                let url: URL
-                if let plan { url = try await services.api.billingCheckout(plan: plan) }
-                else { url = try await services.api.billingPortal() }
-                guard !Task.isCancelled, requestID == id, isCurrentAccount else { return }
-                openURL(url)
-            } catch {
-                guard requestID == id, isCurrentAccount else { return }
-                message = "Could not open billing. An existing checkout may still be open. Try again or contact support."
+    var body: some View {
+        Group {
+            if let notice = state.notice {
+                Section { LegacyPlanNotice(notice: notice, locked: state.isBusy, onAction: onAction) }
             }
+            ForEach(state.sections) { section in
+                Section {
+                    if let empty = section.empty {
+                        Text(empty).foregroundStyle(.secondary)
+                    } else {
+                        ForEach(section.rows) { row in
+                            LegacyPlanRow(row: row, locked: state.isBusy, keyHandle: keyHandle, onAction: onAction, onSubmitKey: onSubmitKey)
+                        }
+                    }
+                } header: {
+                    if let title = section.title { Text(title) }
+                } footer: {
+                    if let footnote = section.footnote { PlanSummaryFootnoteView(footnote: footnote) }
+                }
+            }
+        }
+    }
+}
+
+private struct LegacyPlanNotice: View {
+    let notice: PlanSummaryState.Notice
+    let locked: Bool
+    let onAction: (PlanSummaryState.Action) -> Void
+
+    private var symbol: String {
+        switch notice.icon {
+        case .warning: "exclamationmark.triangle"
+        case .clock: "clock"
+        case .check: "checkmark.circle"
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: symbol).font(.title3).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(notice.title).fontWeight(.semibold)
+                if let message = notice.message { Text(message).foregroundStyle(.secondary) }
+                if let button = notice.button {
+                    LegacyPlanButton(button: button, locked: locked, onAction: onAction).padding(.top, 4)
+                }
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+}
+
+private struct LegacyPlanButton: View {
+    let button: PlanSummaryState.Button
+    let locked: Bool
+    var name: String?
+    let onAction: (PlanSummaryState.Action) -> Void
+
+    init(button: PlanSummaryState.Button, locked: Bool, name: String? = nil, onAction: @escaping (PlanSummaryState.Action) -> Void) {
+        self.button = button
+        self.locked = locked
+        self.name = name
+        self.onAction = onAction
+    }
+
+    var body: some View {
+        let base = Button {
+            guard !button.busy else { return }
+            onAction(button.action)
+        } label: {
+            HStack(spacing: 6) {
+                if button.busy { ProgressView().controlSize(.small) }
+                Text(button.title)
+            }
+        }
+        .accessibilityLabel(name ?? button.title)
+        .disabled(locked && !button.busy)
+        if button.prominent {
+            base.buttonStyle(.borderedProminent)
+        } else {
+            base.buttonStyle(.bordered)
+        }
+    }
+}
+
+private struct LegacyPlanRow: View {
+    let row: PlanSummaryState.Row
+    let locked: Bool
+    let keyHandle: SecureFieldSmHandle
+    let onAction: (PlanSummaryState.Action) -> Void
+    let onSubmitKey: (SecretBox) -> Void
+
+    /// 라벨 + 보조 글 (줄마다 조용한 보조 색 한 줄)
+    private var label: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(row.label)
+            ForEach(Array(row.detail.enumerated()), id: \.offset) { _, line in
+                Text(line).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    var body: some View {
+        switch row.control {
+        case .none:
+            label
+        case .value(let value, let bold):
+            LabeledContent {
+                Text(value).fontWeight(bold ? .semibold : .regular).foregroundStyle(bold ? .primary : .secondary).lineLimit(1).truncationMode(.tail)
+            } label: { label }
+        case .button(let button):
+            LabeledContent {
+                LegacyPlanButton(button: button, locked: locked, name: "\(button.title) \(row.label)", onAction: onAction)
+            } label: { label }
+        case .opens(let action):
+            Button { onAction(action) } label: {
+                LabeledContent {
+                    Image(systemName: "arrow.up.right").foregroundStyle(.secondary).accessibilityHidden(true)
+                } label: { label }
+            }
+            .buttonStyle(.plain)
+            .disabled(locked)
+            .accessibilityHint("Opens in browser")
+        case .confirm(let confirm):
+            VStack(alignment: .leading, spacing: 8) {
+                Text(confirm.title).fontWeight(.semibold)
+                Text(confirm.detail).font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Button(confirm.confirmTitle) { onAction(confirm.confirm) }.buttonStyle(.borderedProminent).disabled(confirm.busy)
+                    Button(PlanCopy.cancel) { onAction(confirm.cancel) }.keyboardShortcut(.cancelAction).disabled(confirm.busy)
+                    if confirm.busy { ProgressView().controlSize(.small) }
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(confirm.title)
+        case .keyField(let save):
+            LabeledContent {
+                HStack(spacing: 8) {
+                    SecureFieldSm(label: PlanCopy.keyFieldName, placeholder: PlanCopy.keyPlaceholder, handle: keyHandle, onSubmit: onSubmitKey)
+                    LegacyPlanButton(button: save, locked: locked, name: "\(save.title) \(row.label)", onAction: { _ in keyHandle.submit() })
+                }
+            } label: { label }
         }
     }
 }

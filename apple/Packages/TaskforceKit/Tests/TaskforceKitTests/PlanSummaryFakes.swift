@@ -55,6 +55,8 @@ final class FakePlanGateway: PlanSummaryGateway, @unchecked Sendable {
     var saveError: Error?
     var removeError: Error?
     var checkoutGate: AsyncGate?
+    /// false면 받은 키의 글자를 기록하지 않는다 (저장소가 키를 쥐고 있는지 거울로 훑을 때: 저장소는 이 가짜 길을 쥐고 있어서 기록이 섞이지 않게)
+    var recordsKeys = true
 
     init(_ statuses: [Result<BillingStatusV2, Error>] = []) {
         self.statuses = statuses
@@ -109,7 +111,7 @@ final class FakePlanGateway: PlanSummaryGateway, @unchecked Sendable {
 
     func saveOpenRouterKey(_ key: SecretBox) async throws {
         record("saveKey")
-        lock.withLock { keys.append(key.reveal()) }
+        if recordsKeys { lock.withLock { keys.append(key.reveal()) } }
         if let saveError { throw saveError }
     }
 

@@ -258,6 +258,8 @@ private struct SettingsSectionView: View {
         case .yourAgents: SettingsYourAgentsSection()
         case .macsNotice: SettingsMacsNotice()
         case .runWithAI: SettingsRunWithAISection()
+        case .planAndUsage: SettingsPlanSection()
+        case .externalCosts: SpendingOutsideSection()
         case .notifications: SettingsNotificationsSection()
         case .launcher: SettingsLauncherShortcutsSection()
         case .panelKeys: SettingsPanelKeysSection()

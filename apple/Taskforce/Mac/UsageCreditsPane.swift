@@ -3,73 +3,20 @@ import SwiftUI
 import TaskforceKit
 import TaskforceUI
 
-/// Beta supplier USD is available to every signed-in account; execution credits remain separately gated.
+/// Usage & Credits (옛 창): "Your plan" 한 줄(Plan & usage와 같은 모델의 Plan 줄)과 실행 크레딧. 옛 USD 한도("Plan limits")는 10-09 가격에서 사라졌다:
+/// 사용자에게 보이는 월 한도는 없고, 공정 사용 안전장치에 닿으면 Plan & usage의 Notice가 이유를 말한다. 실행 크레딧은 별개라 그대로 둔다
 struct UsageCreditsPane: View {
     @Environment(RunStore.self) private var runs
+    @Environment(SessionStore.self) private var session
     @Environment(\.services) private var services
-    @State private var budget: AiSpendSummary?
-    @State private var budgetFailed = false
-    @State private var billing: BillingSummary?
-    @State private var billingFailed = false
+    @State private var plan = PlanSummaryStore()
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
                 section("Your plan") {
                     SettingsCard {
-                        if let billing {
-                            SettingsRow(billing.label, subtitle: accessEnd(billing)) {
-                                QuietButton("Manage") { SettingsOpener.open(.account) }
-                            }
-                        } else if billingFailed {
-                            SettingsRow("Plan unavailable", subtitle: "Refresh to try again.") {
-                                QuietButton("Refresh") { Task { await loadBilling() } }
-                            }
-                        } else {
-                            SettingsRow("Loading plan") { ProgressView().controlSize(.small) }
-                        }
-                    }
-                }
-                section("Plan limits") {
-                    if let budget {
-                        SettingsCard {
-                            VStack(alignment: .leading, spacing: TFSpace.md) {
-                                HStack {
-                                    Text("AI allowance").font(TFFont.footnoteEmphasis)
-                                    Spacer()
-                                    Text("\(AiSpendSummary.dollars(budget.remainingUSD)) remaining")
-                                        .font(TFFont.footnote)
-                                }
-                                ProgressView(value: Self.allowanceFraction(budget))
-                                    .tint(TFColor.textPrimary)
-                                    .accessibilityLabel("AI allowance spent or reserved")
-                                Text("\(AiSpendSummary.dollars(budget.confirmedUSD + budget.reservedUSD)) of \(AiSpendSummary.dollars(budget.capUSD)) spent or reserved")
-                                    .font(TFFont.meta)
-                                    .foregroundStyle(TFColor.textSecondary)
-                                if let billing {
-                                    Text(Self.resetDescription(billing))
-                                        .font(TFFont.meta)
-                                        .foregroundStyle(TFColor.textSecondary)
-                                }
-                            }
-                            .padding(TFSpace.lg)
-                            SettingsDivider()
-                            budgetRow("Confirmed spend", budget.confirmedUSD)
-                            SettingsDivider()
-                            budgetRow("Reserved · \(budget.pendingCount) pending", budget.reservedUSD)
-                        }
-                        Text("Reservations are worst-case estimates, not confirmed spend. AI pauses at the limit with no automatic overage charges.")
-                            .font(TFFont.meta)
-                            .foregroundStyle(TFColor.textSecondary)
-                        if let notice = budget.notice { Text(notice).font(TFFont.footnote) }
-                    } else if budgetFailed {
-                        SettingsCard {
-                            SettingsRow("Allowance unavailable") {
-                                QuietButton("Refresh") { Task { await loadBudget() } }
-                            }
-                        }
-                    } else {
-                        ProgressView().accessibilityLabel("Loading AI allowance")
+                        planRow(plan.state.compact)
                     }
                 }
                 if case .available = runs.credits {
@@ -81,62 +28,27 @@ struct UsageCreditsPane: View {
             .padding(.bottom, 32)
             .frame(maxWidth: .infinity)
         }
+        // 플랜은 Plan & usage와 같은 생애로 읽는다 (계정 · 다시 활성화 · 다시 열기)
+        .modifier(PlanSummaryLifecycle(store: plan, userID: SettingsWindowSession.accountUserID(session), gateway: PlanGateways.current(services)))
         // 이 페이지를 열 때마다 새로 읽는다 (지급 · 정산 뒤 다시 열면 숫자 · 멈춘 카드가 바뀐다)
         .task(id: SettingsRoute.shared.openCount) {
-            await loadBilling()
-            await loadBudget()
             await runs.loadCredits()
             await runs.refreshActive()
         }
     }
 
-    private func loadBudget() async {
-        budget = nil
-        budgetFailed = false
-        do {
-            guard let services else { budgetFailed = true; return }
-            let result = try await services.api.aiBudget()
-            guard !Task.isCancelled else { return }
-            budget = result
-        } catch {
-            guard !Task.isCancelled else { return }
-            budgetFailed = true
+    /// 같은 모델의 Plan 줄 하나 (라벨 + 날짜 한 줄). 못 읽었으면 한 줄 + Refresh
+    @ViewBuilder
+    private func planRow(_ compact: PlanSummaryState.Compact) -> some View {
+        if compact.failed {
+            SettingsRow(compact.label) {
+                QuietButton("Refresh") { Task { await plan.refresh() } }
+            }
+        } else {
+            SettingsRow(compact.label, subtitle: compact.detail) {
+                QuietButton("Manage") { SettingsOpener.open(.account) }
+            }
         }
-    }
-
-    private func loadBilling() async {
-        billing = nil
-        billingFailed = false
-        do {
-            guard let services else { billingFailed = true; return }
-            let result = try await services.api.billing()
-            guard !Task.isCancelled else { return }
-            billing = result
-        } catch {
-            guard !Task.isCancelled else { return }
-            billingFailed = true
-        }
-    }
-
-    private func accessEnd(_ billing: BillingSummary) -> String? {
-        (billing.currentPeriodEndsAt ?? billing.trialEndsAt).map { "Access until \(String($0.prefix(10))) (UTC)" }
-    }
-
-    static func allowanceFraction(_ budget: AiSpendSummary) -> Double {
-        guard budget.capUSD > 0 else { return 0 }
-        let value = NSDecimalNumber(decimal: (budget.confirmedUSD + budget.reservedUSD) / budget.capUSD).doubleValue
-        return min(max(value, 0), 1)
-    }
-
-    static func resetDescription(_ billing: BillingSummary) -> String {
-        if let reset = billing.allowanceResetsAt { return "Resets \(String(reset.prefix(10))) (UTC)" }
-        if billing.status == "legacy_beta" { return "Cumulative beta allowance · no scheduled reset" }
-        if billing.status == "trialing" || billing.status == "trial_pending" { return "Total trial allowance · no recurring reset" }
-        return "No scheduled reset available"
-    }
-
-    private func budgetRow(_ title: String, _ amount: Decimal) -> some View {
-        SettingsRow(title) { SettingsValue(AiSpendSummary.dollars(amount)) }
     }
 
     @ViewBuilder
