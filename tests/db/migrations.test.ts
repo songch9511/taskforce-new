@@ -54,6 +54,7 @@ describe("초기 마이그레이션", () => {
   "billing_checkout_intents",
   "billing_webhook_events",
   "billing_webhook_inbox",
+  "blocked_email_domains",
       "bridge_commands",
       "bridges",
       "claims",
