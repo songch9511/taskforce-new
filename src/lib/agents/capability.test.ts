@@ -1,24 +1,48 @@
 import { describe, expect, it } from "vitest";
-import { agentCapabilitySchema } from "@/lib/api/contract";
+import { agentCapabilitySchema, type AgentCapability } from "@/lib/api/contract";
 import { agentAccess, directChat } from "./capability";
 import { AGENT_REGISTRY, adapterEnabled, openAgentAdapters } from "./registry";
 
 describe("S0 registry and access", () => {
-  it("keeps both descriptors and S0 conservative boundaries", () => {
+  it("keeps both descriptors; Claude Code boundaries are verified only where R1 real-CLI evidence exists (2026-10-21)", () => {
     const cc = AGENT_REGISTRY["agent:claude-code"];
     const cx = AGENT_REGISTRY["agent:codex"];
     for (const capability of [cc, cx]) expect(agentCapabilitySchema.parse(capability)).toEqual(capability);
-    expect(cc).toMatchObject({ display_name: "Claude Code", cancel_scope: "turn_and_processes", version_range: ">=2.1.241 <2.2", question: { structured: true }, enforcement: { approval_gate: { verified: true }, target_scope: { verified: false }, read_only: { verified: false }, revocation: { verified: false } } });
+    expect(cc).toMatchObject({ display_name: "Claude Code", cancel_scope: "turn_and_processes", version_range: ">=2.1.241 <2.2", question: { structured: true } });
+    // Each promoted boundary names its scenario and date; budget stays unverified (no R1 scenario covers it).
+    expect(cc.enforcement.approval_gate).toMatchObject({ channel: "PreToolUse", verified: true });
+    expect(cc.enforcement.revocation).toMatchObject({ channel: "PreToolUse", verified: true, evidence: expect.stringMatching(/R1-04 2026-10-21/) });
+    expect(cc.enforcement.read_only).toMatchObject({ verified: true, evidence: expect.stringMatching(/R1-02 2026-10-21/) });
+    expect(cc.enforcement.target_scope).toMatchObject({ channel: "PreToolUse", verified: true, evidence: expect.stringMatching(/R1-03 .*2026-10-21/) });
+    expect(cc.enforcement.budget).toEqual({ channel: null, verified: false });
     expect(cx).toMatchObject({ display_name: "Codex", cancel_scope: "turn", version_range: ">=0.162.1 <0.163", enforcement: { target_scope: { verified: true }, read_only: { verified: true }, revocation: { verified: false } } });
     for (const mode of ["manual", "auto", "full"] as const) {
-      expect(agentAccess(cc, mode)).toBeNull();
-      expect(directChat(cc, mode)).toBe("unsupported");
+      expect(agentAccess(cc, mode)).toBe("write");
+      expect(directChat(cc, mode)).toBe("supported");
       expect(agentAccess(cx, mode)).toBe("read_only");
       expect(directChat(cx, mode)).toBe("supported");
     }
   });
+  it("Claude Code: dropping one verified boundary closes exactly the grades that need it", () => {
+    const lose = (edit: (c: AgentCapability) => void) => {
+      const c = structuredClone(AGENT_REGISTRY["agent:claude-code"]);
+      edit(c);
+      return { manual: agentAccess(c, "manual"), auto: agentAccess(c, "auto"), full: agentAccess(c, "full"), chat: directChat(c, "manual") };
+    };
+    // Without revocation no write grade opens; the verified read_only grade keeps a read-only chat.
+    expect(lose((c) => { c.enforcement.revocation.verified = false; })).toEqual({ manual: "read_only", auto: "read_only", full: "read_only", chat: "supported" });
+    // Without target_scope Manual still writes; Auto and Full fall back to read_only.
+    expect(lose((c) => { c.enforcement.target_scope.verified = false; })).toEqual({ manual: "write", auto: "read_only", full: "read_only", chat: "supported" });
+    // Without the approval gate nothing writes.
+    expect(lose((c) => { c.enforcement.approval_gate.verified = false; })).toEqual({ manual: "read_only", auto: "read_only", full: "read_only", chat: "supported" });
+    // Without read_only and revocation there is no grade at all, so no direct chat.
+    expect(lose((c) => { c.enforcement.revocation.verified = false; c.enforcement.read_only!.verified = false; })).toEqual({ manual: null, auto: null, full: null, chat: "unsupported" });
+  });
   it("requires the mode-specific write gates, never budget alone", () => {
     const c = structuredClone(AGENT_REGISTRY["agent:claude-code"]);
+    c.enforcement.revocation.verified = false;
+    c.enforcement.target_scope.verified = false;
+    c.enforcement.read_only!.verified = false;
     c.enforcement.budget.verified = true;
     expect(agentAccess(c, "manual")).toBeNull();
     c.enforcement.revocation.verified = true;

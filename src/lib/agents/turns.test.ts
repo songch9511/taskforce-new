@@ -18,6 +18,7 @@ function db(count = 0, response: unknown = started) {
 const input = { userId, messageId, capability: AGENT_REGISTRY["agent:codex"], mode: "manual", connectionStatus: "active" } as const;
 // OD-2: Codex 대화도 gate(AGENT_ADAPTER_CODEX_ENABLED, 기본 꺼짐)가 켜져야 시작한다.
 const CODEX_ON = { AGENT_BETA_USER_IDS: userId, CONVERSATIONS_V2_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" };
+const CLAUDE_ON = { AGENT_BETA_USER_IDS: userId, CONVERSATIONS_V2_ENABLED: "true", AGENT_ADAPTER_CLAUDE_CODE_ENABLED: "true" };
 
 describe("startAgentTurn", () => {
   it("starts S0 Codex with read_only and validates RPC output", async () => {
@@ -34,9 +35,18 @@ describe("startAgentTurn", () => {
   it.each([{ status: "answered", step_id: userId }, { status: "duplicate", step_id: userId }, { status: "secret_requires_local" }, { status: "question_stale" }, { status: "invalid_answer" }])("preserves question routing outcomes", async (response) => {
     expect(await startAgentTurn(db(0, response).admin, input, CODEX_ON)).toEqual(response);
   });
-  it("marks S0 Claude Code not_sent with no dispatch", async () => {
+  it("starts Claude Code with the write grade its R1 evidence verified (manual)", async () => {
+    const d = db();
+    expect(await startAgentTurn(d.admin, { ...input, capability: AGENT_REGISTRY["agent:claude-code"] }, CLAUDE_ON)).toEqual(started);
+    expect(d.rpc).toHaveBeenCalledExactlyOnceWith("route_agent_message", { p_user_id: userId, p_message_id: messageId, p_action_ids: [], p_context_ids: [], p_access: "write", p_live_limit: MAX_LIVE_EXTERNAL_TASKS });
+    expect(d.from).not.toHaveBeenCalled();
+  });
+  it("marks Claude Code not_sent with no dispatch when no grade is verified", async () => {
+    const capability = structuredClone(AGENT_REGISTRY["agent:claude-code"]);
+    capability.enforcement.revocation.verified = false;
+    capability.enforcement.read_only!.verified = false;
     const d = db(0, { status: "not_sent", reason: "write_gate_closed" });
-    expect(await startAgentTurn(d.admin, { ...input, capability: AGENT_REGISTRY["agent:claude-code"] }, { AGENT_BETA_USER_IDS: userId, CONVERSATIONS_V2_ENABLED: "true", AGENT_ADAPTER_CLAUDE_CODE_ENABLED: "true" })).toEqual({ status: "not_sent", reason: "write_gate_closed" });
+    expect(await startAgentTurn(d.admin, { ...input, capability }, CLAUDE_ON)).toEqual({ status: "not_sent", reason: "write_gate_closed" });
     expect(d.rpc).toHaveBeenCalledExactlyOnceWith("mark_agent_message_not_sent", { p_user_id: userId, p_message_id: messageId, p_reason: "write_gate_closed" });
     expect(d.from).not.toHaveBeenCalled();
   });
@@ -128,10 +138,24 @@ describe("startNextQueuedTurn", () => {
     for (const table of ["agent_sessions", "agent_connections", "execution_policies", "conversation_messages"]) expect(d.from).toHaveBeenCalledWith(table);
     for (const result of d.from.mock.results) expect(result.value.eq).toHaveBeenCalledWith("user_id", userId);
   });
-  it("uses the registry to keep Claude Code's unverified gate closed", async () => {
+  it("uses the registry: Claude Code starts with write once its R1 boundaries are verified", async () => {
     const d = queuedDb("agent:claude-code");
-    expect(await startNextQueuedTurn(d.admin, { userId, sessionId: userId }, { AGENT_BETA_USER_IDS: userId, CONVERSATIONS_V2_ENABLED: "true", AGENT_ADAPTER_CLAUDE_CODE_ENABLED: "true" })).toEqual({ status: "not_sent", reason: "write_gate_closed" });
-    expect(d.rpc).toHaveBeenLastCalledWith("mark_agent_message_not_sent", expect.objectContaining({ p_reason: "write_gate_closed" }));
+    expect(await startNextQueuedTurn(d.admin, { userId, sessionId: userId }, CLAUDE_ON)).toEqual(started);
+    expect(d.rpc).toHaveBeenLastCalledWith("route_agent_message", expect.objectContaining({ p_message_id: messageId, p_access: "write" }));
+  });
+  it("uses the registry to keep a gate closed when its evidence is dropped", async () => {
+    const claude = AGENT_REGISTRY["agent:claude-code"];
+    const saved = { revocation: claude.enforcement.revocation.verified, readOnly: claude.enforcement.read_only!.verified };
+    claude.enforcement.revocation.verified = false;
+    claude.enforcement.read_only!.verified = false;
+    try {
+      const d = queuedDb("agent:claude-code");
+      expect(await startNextQueuedTurn(d.admin, { userId, sessionId: userId }, CLAUDE_ON)).toEqual({ status: "not_sent", reason: "write_gate_closed" });
+      expect(d.rpc).toHaveBeenLastCalledWith("mark_agent_message_not_sent", expect.objectContaining({ p_reason: "write_gate_closed" }));
+    } finally {
+      claude.enforcement.revocation.verified = saved.revocation;
+      claude.enforcement.read_only!.verified = saved.readOnly;
+    }
   });
   it("uses current revoked connection state", async () => {
     const d = queuedDb("agent:codex", "revoked");

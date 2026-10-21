@@ -18,9 +18,21 @@ export const AGENT_REGISTRY: Record<"agent:claude-code" | "agent:codex", AgentCa
     resume: "supported",
     enforcement: {
       approval_gate: { channel: "PreToolUse", verified: true, evidence: "S0 CC-3 CC-9 CC-10 CC-12; manual" },
-      target_scope: { channel: null, verified: false },
-      revocation: { channel: null, verified: false },
-      read_only: { channel: null, verified: false },
+      target_scope: {
+        channel: "PreToolUse",
+        verified: true,
+        evidence: "R1-03 R1-03b R1-03c 2026-10-21 real claude 2.1.241: Read, Write and Edit outside the workspace denied at the hook with no server call, outside files unchanged; Bash scope not claimed",
+      },
+      revocation: {
+        channel: "PreToolUse",
+        verified: true,
+        evidence: "R1-04 2026-10-21 real claude 2.1.241: Write allowed and file created, scripted decider switched to deny, next Write denied (write_gate_closed), file unchanged; scripted decider, not live server revocation",
+      },
+      read_only: {
+        channel: "--tools Read,Glob,Grep + PreToolUse",
+        verified: true,
+        evidence: "R1-02 2026-10-21 real claude 2.1.241: init tools exactly Read Glob Grep + ask_user (self-check), Read allowed at the hook, Edit refused by the CLI as disabled for the session, file unchanged",
+      },
       budget: { channel: null, verified: false },
     },
     cost: "unknown",

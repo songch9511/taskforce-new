@@ -162,10 +162,27 @@ describe("startNextAgentMessage", () => {
     expect(already.rpcCalls("mark_agent_message_not_sent_auto")).toEqual([]);
   });
 
-  it("쓰기 등급을 못 받는 adapter(Claude Code)는 시작 대신 not_sent/write_gate_closed로 표시한다", async () => {
+  const CLAUDE_ON = { AGENT_BETA_USER_IDS: USER, CONVERSATIONS_V2_ENABLED: "true", AGENT_ADAPTER_CLAUDE_CODE_ENABLED: "true", EXECUTION_ENABLED: "true" };
+  it("Claude Code는 R1 증거(revocation · read_only · target_scope verified)로 쓰기 등급을 받아 시작한다 (manual 기본)", async () => {
     const fake = world({ state: "queued" }, { adapter: "agent:claude-code" });
-    expect(await run(fake, { AGENT_BETA_USER_IDS: USER, CONVERSATIONS_V2_ENABLED: "true", AGENT_ADAPTER_CLAUDE_CODE_ENABLED: "true", EXECUTION_ENABLED: "true" })).toEqual({ status: "not_sent", reason: "write_gate_closed" });
-    expect(fake.rpcCalls("start_agent_turn_auto")).toEqual([]);
+    expect(await run(fake, CLAUDE_ON)).toEqual(started);
+    expect(fake.rpcCalls("start_agent_turn_auto")[0].args).toMatchObject({ p_access: "write" });
+    expect(fake.rpcCalls("mark_agent_message_not_sent_auto")).toEqual([]);
+  });
+
+  it("쓰기 등급을 못 받는 adapter는 시작 대신 not_sent/write_gate_closed로 표시한다 (Claude Code의 철회 · 읽기 전용 증거를 뺀 registry)", async () => {
+    const claude = AGENT_REGISTRY["agent:claude-code"];
+    const saved = { revocation: claude.enforcement.revocation.verified, readOnly: claude.enforcement.read_only!.verified };
+    claude.enforcement.revocation.verified = false;
+    claude.enforcement.read_only!.verified = false;
+    try {
+      const fake = world({ state: "queued" }, { adapter: "agent:claude-code" });
+      expect(await run(fake, CLAUDE_ON)).toEqual({ status: "not_sent", reason: "write_gate_closed" });
+      expect(fake.rpcCalls("start_agent_turn_auto")).toEqual([]);
+    } finally {
+      claude.enforcement.revocation.verified = saved.revocation;
+      claude.enforcement.read_only!.verified = saved.readOnly;
+    }
   });
 
   it("실행 kill switch가 꺼져 있으면: queued 머리만 not_sent/write_gate_closed로 표시한다 (시작 0)", async () => {
