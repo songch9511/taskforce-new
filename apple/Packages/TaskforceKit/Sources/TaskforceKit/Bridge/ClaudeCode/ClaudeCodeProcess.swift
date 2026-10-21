@@ -680,7 +680,14 @@ public actor ClaudeCodeProcess: AgentProcess {
         switch started {
         case .success(let value): kept = value
         case .failure(.notRun): throw launchFailed(spawn, ended: true, claude: nil, reason: "keeper_spawn")
-        case .failure(.stopped(let ended)): throw launchFailed(spawn, ended: ended, claude: nil, reason: "root_id")
+        case .failure(.stopped(let ended, let diagnostic)):
+            log.log("claude_start_diagnostic", [
+                "cause": .code(diagnostic.cause.rawValue), "ended": .count(ended ? 1 : 0),
+                "ended_report": .count(diagnostic.abort.sawEnded ? 1 : 0), "forced_kill": .count(diagnostic.abort.forcedKill ? 1 : 0),
+                "exit_code": .count(Int(diagnostic.abort.code ?? -1)), "signal": .count(Int(diagnostic.abort.signal ?? -1)),
+                "wait": .millis(diagnostic.waitMilliseconds), "abort": .millis(diagnostic.abortMilliseconds),
+            ])
+            throw launchFailed(spawn, ended: ended, claude: nil, reason: diagnostic.cause.launchReason)
         }
         spawn.process = kept.keeper
         // 지킴이 · 뿌리를 바로 파일에 적는다 (13장 2). 적지 못했으면 이 spawn의 끝을 나중에 증명할 수 없다: 정체 commit · stdin 전에 멈춘다 (11장 2 · 14장 1)
