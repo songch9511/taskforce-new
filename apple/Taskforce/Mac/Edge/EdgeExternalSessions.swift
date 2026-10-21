@@ -107,14 +107,12 @@ struct ExternalSessionsPanelBody: View {
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(ExternalSessionGrouping.visibleRows(group, expanded: open)) { row in
-                        let line = shell.externalLine(row, now: now)
-                        ExternalSessionLineView(content: line) { action in
+                        // 여는 동안(`isBusy`)의 "Opening…" 글자와 비활성은 줄 그림이 `content`에서 스스로 정한다
+                        ExternalSessionLineView(content: shell.externalLine(row, now: now)) { action in
                             switch action {
                             case .openInClaude: shell.openInClaude(row)
                             }
                         }
-                        // 여는 동안 버튼은 눌리지 않는다 (줄 안의 버튼 스타일이 비활성 모양으로 보인다)
-                        .disabled(line.isBusy)
                     }
                 }
             }

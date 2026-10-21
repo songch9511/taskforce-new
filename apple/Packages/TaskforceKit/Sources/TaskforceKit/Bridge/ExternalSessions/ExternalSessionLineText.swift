@@ -20,7 +20,7 @@ public enum ExternalSessionCopy {
     public static let terminal = "Terminal"
     public static let untitled = "Untitled"
     public static let openInClaude = "Open in Claude"
-    /// 누른 바로 그 순간부터 결과가 올 때까지 줄의 둘째 줄에 보이는 회색 한 줄. **제안 문구: 사용자 승인 전(Debug 상수)** — 승인되면 `everyCopyStringIsTheApprovedOne` 목록으로 옮긴다
+    /// 누른 바로 그 순간부터 결과가 올 때까지 Open in Claude 버튼에 보이는 글자 (비활성). 사용자 승인 2026-10-22 (코디네이터가 전함)
     public static let opening = "Opening…"
     public static let showAll = "Show all"
     public static let showLess = "Show less"
@@ -46,7 +46,7 @@ public struct ExternalSessionLineContent: Equatable, Sendable {
     /// 상태 말 뒤에 오는 조각 (이유 · 시각 · 출처), `·`로 이어 쓴다
     public var detail: [String]
     public var action: Action?
-    /// 방금 누른 동작이 아직 도는 중이다: 줄을 그리는 쪽이 버튼을 비활성으로 보인다 (둘째 줄은 `ExternalSessionCopy.opening`)
+    /// 방금 누른 동작이 아직 도는 중이다: 버튼 글자가 `ExternalSessionCopy.opening`이 되고 줄을 그리는 쪽이 버튼을 비활성으로 보인다 (`actionTitle`)
     public var isBusy = false
 
     public init(title: String, statusWord: String, statusIsEmphasis: Bool, detail: [String], action: Action?) {
@@ -65,6 +65,9 @@ public struct ExternalSessionLineContent: Equatable, Sendable {
 
     /// "{제목} — {둘째 줄}"
     public var accessibilityName: String { "\(title) — \(metaText)" }
+
+    /// 오른쪽 버튼의 글자: 여는 동안은 "Opening…"(비활성), 그 밖에는 "Open in Claude"
+    public var actionTitle: String { isBusy ? ExternalSessionCopy.opening : ExternalSessionCopy.openInClaude }
 }
 
 public enum ExternalSessionLineText {
@@ -107,21 +110,15 @@ public enum ExternalSessionLineText {
             emphasis = false
             detail = [time]
         }
-        // 버튼이 있는 줄만, 둘째 줄을 회색 한 줄로 바꾼다 (버튼은 그대로): 누른 Open in Claude가 아직 도는 중이면 "Opening…"(`busy`, 바쁘다고 표시 — 거절 줄보다 먼저),
-        // "다른 터미널에 열려 있다"고 거절당했으면 `notice`. 거절 뒤에는 터미널을 닫고 다시 누를 수 있다
-        var isBusy = false
-        if busy, action != nil {
-            word = ExternalSessionCopy.opening
-            emphasis = false
-            detail = []
-            isBusy = true
-        } else if let notice, action != nil {
+        // 버튼이 있는 줄만: "다른 터미널에 열려 있다"고 거절당했으면 둘째 줄을 `notice` 한 줄(회색)로 바꾼다 (버튼은 그대로라 터미널을 닫고 다시 누를 수 있다).
+        if let notice, action != nil {
             word = notice
             emphasis = false
             detail = []
         }
         var content = ExternalSessionLineContent(title: title(row), statusWord: word, statusIsEmphasis: emphasis, detail: detail, action: action)
-        content.isBusy = isBusy
+        // 누른 Open in Claude가 아직 도는 중이면(`busy`) 버튼 글자가 "Opening…"이 되고 눌리지 않는다 (`actionTitle` · 줄 그림). 둘째 줄은 그대로다
+        content.isBusy = busy && action != nil
         return content
     }
 

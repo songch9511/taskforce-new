@@ -694,14 +694,14 @@ final class EdgeShellModel {
 
     /// 지금 거절 줄을 보이는 세션 (한 줄만). 사용자가 터미널을 닫고 다시 누르거나 시간이 지나면 사라진다
     private(set) var openNoticeSessionID: String?
-    /// 열기(다시 확인 · 띄우기 · 거절 뒤 다시 훑기)가 도는 세션: 줄이 누르는 즉시 "Opening…" · 비활성으로 보인다 (`externalLine`)
+    /// 열기(다시 확인 · 띄우기 · 거절 뒤 다시 훑기)가 도는 세션: 줄의 버튼이 누르는 즉시 "Opening…" · 비활성으로 보인다 (`externalLine`)
     private(set) var openingSessionIDs: Set<String> = []
     @ObservationIgnored private var openNoticeTimer: EdgeTimer?
 
     /// 줄의 Open in Claude.
     /// - **모델의 가드 (보안 검토 P3)**: CLI는 `Idle`인 데스크톱 출처 줄(`.available` + `claudeDesktop`)에만 닿는다. 그 밖은 — Running in Claude 줄(실측 2026-10-22: 이미 데스크톱 앱이 쥔 세션에 `--desktop --resume`을 하면
     ///   CLI가 "open in another terminal"로 거절하고 1로 끝난다) · 다른 상태 · 터미널 출처 줄 모두 — 줄을 그리는 쪽이 어떻게 하든 앱만 앞으로 가져온다.
-    /// - **Idle 데스크톱 줄**: 누르는 즉시 줄이 "Opening…"이 된다(비활성). 띄우기 **직전에** 그 세션의 쥠을 다시 보고(`recheck`) 쥔 곳이 있으면(또는 모르면) 띄우지 않는다. 비어 있으면 `claude --desktop --resume`:
+    /// - **Idle 데스크톱 줄**: 누르는 즉시 버튼이 "Opening…"이 된다(비활성). 띄우기 **직전에** 그 세션의 쥠을 다시 보고(`recheck`) 쥔 곳이 있으면(또는 모르면) 띄우지 않는다. 비어 있으면 `claude --desktop --resume`:
     ///   `.opened`면 앱이 앞으로 오는 것은 `claude`가 하고, 목록은 뒤에서 다시 훑는다(줄이 곧 Running in Claude가 된다).
     ///   "다른 터미널에 열려 있다"는 거절은 스캔과 클릭 사이에 누가 쥐었다는 뜻이다: **클릭 뒤에 시작하는 훑기**가 끝나면 고친 줄로 정한다 — 이제 Claude 앱이 쥔 줄이면 앱만 앞으로(거절 줄 없음),
     ///   아니면 이미 승인된 "Running in Terminal"을 회색 한 줄로 8초 보인다. 그 밖의 실패(`claude` 없음 · 앱 없음 · 폴더 규칙 · 옛 버전 · 시간 초과 …)는 앱만 앞으로 가져온다.
@@ -768,7 +768,7 @@ final class EdgeShellModel {
         openNoticeSessionID = nil
     }
 
-    /// 패널의 줄 글: 여는 중인 줄은 둘째 줄이 회색 "Opening…"(그리는 쪽이 버튼을 비활성으로 보인다), 방금 "다른 터미널에 열려 있다"고 막힌 쉬는 줄은 회색 "Running in Terminal" 한 줄
+    /// 패널의 줄 글: 여는 중인 줄은 `isBusy`(버튼 글자 "Opening…" · 비활성은 줄 그림이 정한다), 방금 "다른 터미널에 열려 있다"고 막힌 쉬는 줄은 둘째 줄이 회색 "Running in Terminal" 한 줄
     func externalLine(_ row: ExternalSessionRow, now: Date) -> ExternalSessionLineContent {
         ExternalSessionLineText.make(
             row, now: now, notice: openNoticeSessionID == row.id ? ExternalSessionCopy.runningInTerminal : nil, busy: openingSessionIDs.contains(row.id)

@@ -450,7 +450,7 @@ Taskforce 밖에서 시작한 Claude Code 세션을 이 Mac의 레일 "On this M
 - **무엇을 하나 — 줄 상태로 갈린다 (모델의 가드, `EdgeShellModel.openInClaude`)**: CLI는 **`Idle`인 데스크톱 출처 줄(`.available` + `claudeDesktop`)에만** 닿는다. 그 밖은 줄을 그리는 쪽이 어떻게 하든 앱만 앞으로 가져온다(`NSWorkspace`, 옛 동작).
   - **`Running in Claude`(데스크톱 앱이 이미 쥔 줄)**: **실측(2026-10-22, CLI 2.1.306, 일회용 세션)**: 이미 데스크톱 앱이 쥔 세션에 `claude --desktop --resume <id>`를 하면 CLI가 `Session … is open in another terminal. Run /desktop there instead.`를 찍고 **종료 코드 1**로 거절한다. 그래서 이 줄에서는 CLI를 쓰지 않는다. (Claude가 이미 맨 앞이면 이 줄의 버튼은 눈에 보이는 일이 없다.)
   - **`Idle`**: 그 세션을 데스크톱 앱에서 연다. 아래.
-- **누르는 즉시 피드백**: 누른 호출 안에서 그 줄의 둘째 줄이 회색 **`Opening…`**으로 바뀌고 버튼은 눌리지 않는다(`.disabled`, 버튼 스타일이 흐리게 그린다). 결과가 오면 풀린다. `Opening…`은 **승인 전 Debug 상수**(`ExternalSessionCopy.opening`)다. 버튼 글자 자체를 "Opening…"으로 바꾸는 것은 `TaskforceUI/ExternalSessionLineView.swift`의 두 줄(`Button(content.actionTitle)` + `.disabled(content.isBusy)`)이 필요한데 그 파일은 이 작업의 범위 밖이다.
+- **누르는 즉시 피드백**: 누른 호출 안에서 그 줄의 **버튼 글자가 `Opening…`**이 되고 눌리지 않는다(`ExternalSessionLineView`가 `content.actionTitle` · `.disabled(content.isBusy)`로 스스로 정한다, 버튼 스타일이 흐리게 그린다). 줄의 둘째 줄은 그대로다. 결과가 오면 풀린다. `Opening…`은 사용자 승인(2026-10-22)을 받은 문구라 `ExternalSessionCopy.opening`이 승인된 문구 목록(`everyCopyStringIsTheApprovedOne`)에 있다.
 - **Idle 줄의 흐름**
   1. **쥠을 다시 본다**(`ExternalSessionScanner.recheck`: 등록 파일 · argv · 같은 폴더의 claude · 최근 기록 · 이미 이어받음, 그 세션의 기록 시각만 보고 내용은 열지 않는다). 쥔 곳이 있거나 모르면(nil) 띄우지 않는다.
   2. 비어 있으면 `claude --desktop --resume <id>` (아래 실행 방식).

@@ -387,17 +387,20 @@ struct EdgeExternalSessionsTests {
         #expect(rig.app.sessions.map(\.id) == [Self.uuid(20)], "쉬는 데스크톱 줄만 CLI에 닿는다")
     }
 
-    /// 사용자 보고 "느리다": 누르는 순간 줄이 바뀐다 (여는 동안 둘째 줄 "Opening…" · 버튼 비활성 표시), 결과가 오면 풀린다
+    /// 사용자 보고 "느리다": 누르는 순간 버튼이 "Opening…"(비활성)이 되고 줄의 둘째 줄은 그대로다, 결과가 오면 풀린다
     @Test func aClickShowsOpeningAtOnceAndItEndsWithTheResult() async {
         let rig = make()
         rig.app.holds = true
         let row = desktopRow(1)
         let now = Date()
         #expect(!rig.shell.externalLine(row, now: now).isBusy)
+        let plain = rig.shell.externalLine(row, now: now)
+        #expect(plain.actionTitle == "Open in Claude")
         let task = rig.shell.openInClaude(row)
         // 아직 한 번도 양보하지 않았다: 누른 호출 안에서 바뀌어 있다
         let busy = rig.shell.externalLine(row, now: now)
-        #expect(busy.isBusy && busy.metaText == ExternalSessionCopy.opening && busy.action == .openInClaude && !busy.statusIsEmphasis, "누르는 즉시 Opening…")
+        #expect(busy.isBusy && busy.actionTitle == ExternalSessionCopy.opening && busy.action == .openInClaude, "누르는 즉시 버튼이 Opening…")
+        #expect(busy.metaText == plain.metaText && busy.statusIsEmphasis == plain.statusIsEmphasis, "둘째 줄은 그대로")
         #expect(rig.shell.externalLine(desktopRow(2), now: now) == ExternalSessionLineText.make(desktopRow(2), now: now), "다른 줄은 그대로")
         #expect(await until { rig.app.sessions.count == 1 })
         #expect(rig.shell.externalLine(row, now: now).isBusy, "결과가 올 때까지 계속")
@@ -652,9 +655,12 @@ struct EdgeExternalSessionsTests {
     // MARK: 클릭이 눌린다 (비활성 패널)
 
     /// 줄 하나를 실제 패널과 같은 스타일(`EdgeKeyPanel`: borderless · nonactivating)의 380pt 폭에 올린다 (바깥 여백 8)
-    private func panelWithRow(_ content: ExternalSessionLineContent, onAction: @escaping () -> Void, key: Bool) -> (panel: EdgeKeyPanel, hosting: NSHostingView<AnyView>) {
+    /// - disabled: 줄 그림 밖에서 건 `.disabled` (그림이 스스로 비활성이 되는 것과 견주려고)
+    private func panelWithRow(
+        _ content: ExternalSessionLineContent, onAction: @escaping () -> Void, key: Bool, disabled: Bool = false
+    ) -> (panel: EdgeKeyPanel, hosting: NSHostingView<AnyView>) {
         let hosting = NSHostingView(rootView: AnyView(
-            ExternalSessionLineView(content: content) { _ in onAction() }.frame(width: 380).padding(8).background(TFColor.bgPanel)
+            ExternalSessionLineView(content: content) { _ in onAction() }.disabled(disabled).frame(width: 380).padding(8).background(TFColor.bgPanel)
         ))
         hosting.frame = NSRect(x: 0, y: 0, width: 396, height: 80)
         let panel = EdgeKeyPanel(contentRect: hosting.frame, styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView], backing: .buffered, defer: false)
@@ -703,6 +709,40 @@ struct EdgeExternalSessionsTests {
                 #expect(fired == 0, Comment(rawValue: "줄의 다른 곳 \(point) key=\(key): 눌리지 않는다 (\(fired))"))
             }
         }
+    }
+
+    /// 줄 그림 자체가 `isBusy`를 따른다 (부르는 쪽이 따로 `.disabled`를 걸지 않아도): 여는 동안 버튼은 눌리지 않고 글자("Opening…")와 흐림으로 그림이 달라진다
+    @Test func theLineViewDisablesItsOwnButtonWhileBusyWithoutHelpFromTheCaller() throws {
+        let row = desktopRow()
+        let idle = ExternalSessionLineText.make(row, now: Date())
+        let busy = ExternalSessionLineText.make(row, now: Date(), busy: true)
+        #expect(busy.isBusy && !idle.isBusy)
+        func picture(_ hosting: NSHostingView<AnyView>) throws -> Data {
+            let rep = try #require(hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds))
+            hosting.cacheDisplay(in: hosting.bounds, to: rep)
+            return try #require(rep.representation(using: .png, properties: [:]))
+        }
+        var idleFired = 0, busyFired = 0
+        let (idlePanel, idleHosting) = panelWithRow(idle, onAction: { idleFired += 1 }, key: true)
+        let (busyPanel, busyHosting) = panelWithRow(busy, onAction: { busyFired += 1 }, key: true)
+        defer {
+            idlePanel.orderOut(nil)
+            busyPanel.orderOut(nil)
+        }
+        spin(0.2)
+        let idlePicture = try picture(idleHosting)
+        let busyPicture = try picture(busyHosting)
+        click(idlePanel, idleHosting, at: CGPoint(x: 320, y: 31))
+        click(busyPanel, busyHosting, at: CGPoint(x: 320, y: 31))
+        #expect(idleFired == 1, "쉬는 줄의 버튼은 눌린다")
+        #expect(busyFired == 0, "여는 동안의 버튼은 눌리지 않는다")
+        #expect(Self.regionDiffers(idlePicture, busyPicture, x: 262...376, y: 19...43, width: 396), "버튼 글자 · 흐림이 달라 보인다")
+        // 글자가 정말 바뀌었다: 같은 비활성 모양의 "Open in Claude" 버튼(밖에서 `.disabled`)과도 그림이 다르다 — 흐림만이 아니라 글자(와 너비)가 다르다
+        let (dimmedPanel, dimmedHosting) = panelWithRow(idle, onAction: {}, key: true, disabled: true)
+        defer { dimmedPanel.orderOut(nil) }
+        spin(0.2)
+        let dimmedPicture = try picture(dimmedHosting)
+        #expect(Self.regionDiffers(dimmedPicture, busyPicture, x: 262...376, y: 19...43, width: 396), "버튼 글자가 Opening…이다")
     }
 
     /// 실제 패널(`EdgePanelView`: 머리 · 스크롤 · TimelineView · 줄)에 올린 Open in Claude 버튼을 실제 마우스 이벤트로 눌러 본다.
@@ -801,9 +841,9 @@ struct EdgeExternalSessionsTests {
     }
 
     /// 두 그림(PNG)의 같은 점 영역(pt)에서 색이 눈에 띄게 다른 점이 있나
-    static func regionDiffers(_ a: Data, _ b: Data, x: ClosedRange<Int>, y: ClosedRange<Int>) -> Bool {
+    static func regionDiffers(_ a: Data, _ b: Data, x: ClosedRange<Int>, y: ClosedRange<Int>, width: CGFloat = 380) -> Bool {
         guard let first = NSBitmapImageRep(data: a), let second = NSBitmapImageRep(data: b), first.pixelsWide == second.pixelsWide, first.pixelsHigh == second.pixelsHigh else { return true }
-        let scale = CGFloat(first.pixelsWide) / 380
+        let scale = CGFloat(first.pixelsWide) / width
         var differing = 0
         for py in stride(from: Int(CGFloat(y.lowerBound) * scale), to: min(first.pixelsHigh, Int(CGFloat(y.upperBound) * scale)), by: 1) {
             for px in stride(from: Int(CGFloat(x.lowerBound) * scale), to: min(first.pixelsWide, Int(CGFloat(x.upperBound) * scale)), by: 1) {
