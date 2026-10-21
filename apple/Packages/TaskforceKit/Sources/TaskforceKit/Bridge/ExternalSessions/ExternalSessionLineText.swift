@@ -20,6 +20,8 @@ public enum ExternalSessionCopy {
     public static let terminal = "Terminal"
     public static let untitled = "Untitled"
     public static let openInClaude = "Open in Claude"
+    /// 누른 바로 그 순간부터 결과가 올 때까지 줄의 둘째 줄에 보이는 회색 한 줄. **제안 문구: 사용자 승인 전(Debug 상수)** — 승인되면 `everyCopyStringIsTheApprovedOne` 목록으로 옮긴다
+    public static let opening = "Opening…"
     public static let showAll = "Show all"
     public static let showLess = "Show less"
     public static let checking = "Checking…"
@@ -44,6 +46,8 @@ public struct ExternalSessionLineContent: Equatable, Sendable {
     /// 상태 말 뒤에 오는 조각 (이유 · 시각 · 출처), `·`로 이어 쓴다
     public var detail: [String]
     public var action: Action?
+    /// 방금 누른 동작이 아직 도는 중이다: 줄을 그리는 쪽이 버튼을 비활성으로 보인다 (둘째 줄은 `ExternalSessionCopy.opening`)
+    public var isBusy = false
 
     public init(title: String, statusWord: String, statusIsEmphasis: Bool, detail: [String], action: Action?) {
         self.title = title
@@ -64,7 +68,7 @@ public struct ExternalSessionLineContent: Equatable, Sendable {
 }
 
 public enum ExternalSessionLineText {
-    public static func make(_ row: ExternalSessionRow, now: Date, timeZone: TimeZone = .current, notice: String? = nil) -> ExternalSessionLineContent {
+    public static func make(_ row: ExternalSessionRow, now: Date, timeZone: TimeZone = .current, notice: String? = nil, busy: Bool = false) -> ExternalSessionLineContent {
         let time = timeLabel(row.lastActivity, now: now, timeZone: timeZone)
         let source: String? = switch row.client {
         case .claudeDesktop?: ExternalSessionCopy.claudeDesktop
@@ -103,13 +107,22 @@ public enum ExternalSessionLineText {
             emphasis = false
             detail = [time]
         }
-        // 방금 누른 Open in Claude가 "다른 터미널에 열려 있다"고 거절당했다: 버튼이 있는 줄만 둘째 줄을 `notice` 한 줄(회색)로 바꾼다. 버튼은 그대로라 다시 누를 수 있다
-        if let notice, action != nil {
+        // 버튼이 있는 줄만, 둘째 줄을 회색 한 줄로 바꾼다 (버튼은 그대로): 누른 Open in Claude가 아직 도는 중이면 "Opening…"(`busy`, 바쁘다고 표시 — 거절 줄보다 먼저),
+        // "다른 터미널에 열려 있다"고 거절당했으면 `notice`. 거절 뒤에는 터미널을 닫고 다시 누를 수 있다
+        var isBusy = false
+        if busy, action != nil {
+            word = ExternalSessionCopy.opening
+            emphasis = false
+            detail = []
+            isBusy = true
+        } else if let notice, action != nil {
             word = notice
             emphasis = false
             detail = []
         }
-        return ExternalSessionLineContent(title: title(row), statusWord: word, statusIsEmphasis: emphasis, detail: detail, action: action)
+        var content = ExternalSessionLineContent(title: title(row), statusWord: word, statusIsEmphasis: emphasis, detail: detail, action: action)
+        content.isBusy = isBusy
+        return content
     }
 
     public static func reasonText(_ reason: ExternalSessionBlock) -> String {

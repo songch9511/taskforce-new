@@ -69,6 +69,53 @@ struct EdgeExternalSessionsTests {
         func set(_ new: [ExternalSessionRow]) { lock.withLock { rows = new } }
     }
 
+    /// 훑기를 붙잡는다: `holdNext`면 다음 훑기는 **시작할 때의 목록**을 들고 `release()`까지 기다린다 (그 사이 세상이 바뀌면 그 훑기는 옛 값을 돌려준다)
+    final class ScanGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var hold = false
+        private var waiting: [CheckedContinuation<Void, Never>] = []
+        var holdNext: Bool {
+            get { lock.withLock { hold } }
+            set { lock.withLock { hold = newValue } }
+        }
+
+        func scan(_ counter: Counter) async -> ExternalSessionScan {
+            let held = lock.withLock { () -> Bool in
+                defer { hold = false }
+                return hold
+            }
+            let result = counter.scan()
+            if held { await withCheckedContinuation { continuation in lock.withLock { waiting.append(continuation) } } }
+            return result
+        }
+
+        func release() {
+            let pending = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+                defer { waiting = [] }
+                return waiting
+            }
+            for continuation in pending { continuation.resume() }
+        }
+    }
+
+    /// 열기 직전의 다시 확인 (`ExternalSessionsStore.recheck`)의 가짜: 기본은 "쥔 곳 없음"
+    final class Recheck: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _answer: ExternalSessionStatus? = .available
+        private var _asked: [String] = []
+        var answer: ExternalSessionStatus? {
+            get { lock.withLock { _answer } }
+            set { lock.withLock { _answer = newValue } }
+        }
+        var asked: [String] { lock.withLock { _asked } }
+        func ask(_ id: String) -> ExternalSessionStatus? {
+            lock.withLock {
+                _asked.append(id)
+                return _answer
+            }
+        }
+    }
+
     struct Rig {
         let shell: EdgeShellModel
         let store: ExternalSessionsStore
@@ -76,6 +123,8 @@ struct EdgeExternalSessionsTests {
         let seen: InMemoryExternalSessionSeenStore
         let app: FakeClaudeApp
         let scope: AccountScope
+        let recheck: Recheck
+        let gate: ScanGate
     }
 
     static func row(
@@ -89,9 +138,11 @@ struct EdgeExternalSessionsTests {
 
     func make(gated: Bool = true, store: Bool = true, signedIn: Bool = true) -> Rig {
         let counter = Counter()
+        let gate = ScanGate()
+        let recheck = Recheck()
         let scope = AccountScope(currentAccount: { SampleData.userID })
         let seen = InMemoryExternalSessionSeenStore(Date(timeIntervalSinceNow: -10_000))
-        let external = ExternalSessionsStore(scope: scope, scan: { counter.scan() }, seen: seen, pollInterval: 3600)
+        let external = ExternalSessionsStore(scope: scope, scan: { await gate.scan(counter) }, recheck: { recheck.ask($0) }, seen: seen, pollInterval: 3600)
         let issues = IssueRuntime(gateway: IssueSampleGateway(), scope: scope)
         let contexts = WorkContextStore(gateway: IssueSampleContextGateway(), scope: scope)
         let shell = EdgeShellModel(
@@ -100,7 +151,7 @@ struct EdgeExternalSessionsTests {
         let app = FakeClaudeApp()
         shell.claudeApp = app
         if signedIn { shell.accountChanged(SampleData.userID) }
-        return Rig(shell: shell, store: external, counter: counter, seen: seen, app: app, scope: scope)
+        return Rig(shell: shell, store: external, counter: counter, seen: seen, app: app, scope: scope, recheck: recheck, gate: gate)
     }
 
     func until(_ condition: () -> Bool) async -> Bool {
@@ -308,6 +359,162 @@ struct EdgeExternalSessionsTests {
         #expect(rig.app.sessions.map(\.id) == [Self.uuid(1)])
     }
 
+    // MARK: Open in Claude: 모델의 가드 · 즉시 피드백 · 열기 직전 확인 · 열고 난 뒤 (보안 검토 P2-1 · P3, 사용자 보고 "느리다 · 어떤 줄은 안 열린다")
+
+    /// CLI는 쉬는 데스크톱 줄에만 닿는다. 그 밖은 줄을 그리는 쪽이 어떻게 하든 모델이 앱만 앞으로 가져온다
+    @Test func onlyAnIdleDesktopRowReachesTheCLIEverythingElseJustActivatesTheApp() async {
+        let rig = make()
+        let others: [(String, ExternalSessionRow)] = [
+            ("Idle · 터미널 출처", Self.row(1, status: .available, client: .terminal)),
+            ("Idle · 그 밖 출처", Self.row(2, status: .available, client: .other)),
+            ("Idle · 출처 모름", Self.row(3, status: .available, client: nil)),
+            ("터미널이 쥠", Self.row(4, status: .held(.terminal), client: .claudeDesktop)),
+            ("백그라운드가 쥠", Self.row(5, status: .held(.background), client: .claudeDesktop)),
+            ("모르는 곳이 쥠", Self.row(6, status: .held(.unknown), client: .claudeDesktop)),
+            ("확인 못 함", Self.row(7, status: .couldNotCheck, client: .claudeDesktop)),
+            ("이어받을 수 없음", Self.row(8, status: .cannotResume(.worktree), client: .claudeDesktop)),
+            ("Taskforce에 이어받음", Self.row(9, status: .inTaskforce, client: .claudeDesktop)),
+            ("Claude 앱이 쥠", Self.row(10, status: .held(.claudeApp), client: .claudeDesktop)),
+            ("Claude 앱이 쥠 · 터미널 출처", Self.row(11, status: .held(.claudeApp), client: .terminal)),
+        ]
+        for (index, (name, row)) in others.enumerated() {
+            await rig.shell.openInClaude(row).value
+            #expect(rig.app.opened == index + 1, Comment(rawValue: "앱만 앞으로: \(name)"))
+        }
+        #expect(rig.app.sessions.isEmpty, "CLI는 한 번도 닿지 않았다")
+        #expect(rig.recheck.asked.isEmpty && rig.counter.scans == 0, "다시 확인 · 다시 훑기도 없다")
+        await rig.shell.openInClaude(desktopRow(20)).value
+        #expect(rig.app.sessions.map(\.id) == [Self.uuid(20)], "쉬는 데스크톱 줄만 CLI에 닿는다")
+    }
+
+    /// 사용자 보고 "느리다": 누르는 순간 줄이 바뀐다 (여는 동안 둘째 줄 "Opening…" · 버튼 비활성 표시), 결과가 오면 풀린다
+    @Test func aClickShowsOpeningAtOnceAndItEndsWithTheResult() async {
+        let rig = make()
+        rig.app.holds = true
+        let row = desktopRow(1)
+        let now = Date()
+        #expect(!rig.shell.externalLine(row, now: now).isBusy)
+        let task = rig.shell.openInClaude(row)
+        // 아직 한 번도 양보하지 않았다: 누른 호출 안에서 바뀌어 있다
+        let busy = rig.shell.externalLine(row, now: now)
+        #expect(busy.isBusy && busy.metaText == ExternalSessionCopy.opening && busy.action == .openInClaude && !busy.statusIsEmphasis, "누르는 즉시 Opening…")
+        #expect(rig.shell.externalLine(desktopRow(2), now: now) == ExternalSessionLineText.make(desktopRow(2), now: now), "다른 줄은 그대로")
+        #expect(await until { rig.app.sessions.count == 1 })
+        #expect(rig.shell.externalLine(row, now: now).isBusy, "결과가 올 때까지 계속")
+        rig.app.release()
+        await task.value
+        #expect(!rig.shell.externalLine(row, now: now).isBusy, "결과가 오면 풀린다")
+        #expect(rig.shell.openingSessionIDs.isEmpty)
+    }
+
+    @Test func busyEndsOnEveryOutcomeIncludingTheRefusalRescan() async {
+        let rig = make()
+        let row = desktopRow(1)
+        for answer in [ClaudeDesktopOpenResult.opened, .unavailable, .openInAnotherTerminal] {
+            rig.app.answer = answer
+            await rig.shell.openInClaude(row).value
+            #expect(!rig.shell.externalLine(row, now: Date()).isBusy, Comment(rawValue: "\(answer)"))
+        }
+        rig.recheck.answer = .held(.terminal)
+        await rig.shell.openInClaude(row).value
+        #expect(!rig.shell.externalLine(row, now: Date()).isBusy, "다시 확인에서 막혀도")
+        rig.recheck.answer = nil
+        await rig.shell.openInClaude(row).value
+        #expect(!rig.shell.externalLine(row, now: Date()).isBusy, "다시 확인을 못 해도")
+    }
+
+    /// 열기 직전에 그 세션의 쥠을 다시 본다: 쥔 곳이 있으면(또는 모르면) CLI를 띄우지 않는다
+    @Test func theHoldIsCheckedAgainRightBeforeSpawningAndNothingIsSpawnedUnlessItIsFree() async {
+        let rig = make()
+        let row = desktopRow(1)
+        await rig.shell.openInClaude(row).value
+        #expect(rig.recheck.asked == [row.id] && rig.app.sessions.map(\.id) == [row.id], "비어 있으면 띄운다")
+
+        // 터미널이 훑은 뒤에 쥐었다: 띄우지 않고, 그 줄에 승인된 "Running in Terminal"을 보이고, 다시 훑는다
+        #expect(await until { rig.counter.scans == 1 }, "열린 뒤의 다시 훑기(뒤에서)를 기다린다")
+        let before = rig.app.sessions.count
+        let scansBefore = rig.counter.scans
+        rig.recheck.answer = .held(.terminal)
+        await rig.shell.openInClaude(row).value
+        #expect(rig.app.sessions.count == before && rig.app.opened == 0, "쥔 세션은 띄우지 않고 앱도 건드리지 않는다")
+        #expect(rig.counter.scans == scansBefore + 1, "목록을 다시 훑는다")
+        #expect(rig.shell.externalLine(row, now: Date()).metaText == "Running in Terminal")
+
+        // 데스크톱이 쥐었다: 앱만 앞으로 (거절 줄 없음)
+        let rig2 = make()
+        rig2.recheck.answer = .held(.claudeApp)
+        await rig2.shell.openInClaude(row).value
+        #expect(rig2.app.sessions.isEmpty && rig2.app.opened == 1 && rig2.shell.openNoticeSessionID == nil)
+
+        // 다른 쥠 · 확인 못 함 · 이미 이어받음: 띄우지 않고 다시 훑을 뿐 거절 줄은 없다 (줄이 제 상태로 바뀐다)
+        for answer in [ExternalSessionStatus.held(.background), .held(.unknown), .couldNotCheck, .inTaskforce, .cannotResume(.unreadable)] {
+            let r = make()
+            r.recheck.answer = answer
+            await r.shell.openInClaude(row).value
+            #expect(r.app.sessions.isEmpty && r.app.opened == 0 && r.shell.openNoticeSessionID == nil && r.counter.scans == 1, Comment(rawValue: "\(answer)"))
+        }
+
+        // 확인할 길이 없다(nil): 막는다 — 옛 동작(앱만 앞으로)으로 물러난다
+        let rig3 = make()
+        rig3.recheck.answer = nil
+        await rig3.shell.openInClaude(row).value
+        #expect(rig3.app.sessions.isEmpty && rig3.app.opened == 1 && rig3.shell.openNoticeSessionID == nil, "모르면 띄우지 않는다")
+    }
+
+    /// 거절(P2-1): 다시 훑고 **고친 줄**로 정한다. 데스크톱이 쥐었으면 앱만 앞으로, 아니면 "Running in Terminal"
+    @Test func afterARefusalTheRefreshedRowDecidesAppOnlyIfClaudeNowHoldsItOtherwiseRunningInTerminal() async {
+        for (after, expectApp) in [
+            (ExternalSessionStatus.held(.claudeApp), true), (.held(.terminal), false), (.available, false), (.held(.unknown), false), (.couldNotCheck, false),
+        ] {
+            let rig = make()
+            let row = desktopRow(1)
+            rig.counter.set([Self.row(1, status: after, group: "/Users/tester/proj1", client: .claudeDesktop)])
+            rig.app.answer = .openInAnotherTerminal
+            await rig.shell.openInClaude(row).value
+            #expect(rig.app.opened == (expectApp ? 1 : 0), Comment(rawValue: "다시 훑은 줄이 \(after): 앱 \(expectApp)"))
+            #expect((rig.shell.openNoticeSessionID == row.id) == !expectApp, Comment(rawValue: "다시 훑은 줄이 \(after): 거절 줄"))
+            if !expectApp { #expect(rig.shell.externalLine(row, now: Date()).metaText == "Running in Terminal", "승인된 말 한 줄") }
+        }
+    }
+
+    /// 거절 뒤 훑기는 **클릭 뒤에 시작한** 훑기여야 한다 (P2-1): 클릭 전에 시작해 아직 도는 훑기는 옛 줄을 들고 있다
+    @Test func theRescanAfterARefusalWaitsForAScanThatStartsAfterTheClick() async {
+        let rig = make()
+        let row = desktopRow(1)
+        rig.counter.set([row])
+        await rig.store.refresh()
+        #expect(rig.counter.scans == 1)
+        // 클릭 전에 시작한 훑기(옛 줄 · Idle)가 붙잡혀 있다
+        rig.gate.holdNext = true
+        let early = Task { await rig.store.refresh() }
+        #expect(await until { rig.counter.scans == 2 })
+        // 그 사이 데스크톱이 그 세션을 열었다
+        rig.counter.set([Self.row(1, status: .held(.claudeApp), group: "/Users/tester/proj1", client: .claudeDesktop)])
+        rig.app.answer = .openInAnotherTerminal
+        let click = rig.shell.openInClaude(row)
+        try? await Task.sleep(for: .milliseconds(60))
+        #expect(rig.counter.scans == 2 && rig.app.opened == 0 && rig.shell.openNoticeSessionID == nil, "먼저 시작한 훑기가 끝나기 전에는 결정하지 않는다")
+        #expect(rig.shell.externalLine(row, now: Date()).isBusy, "그동안은 Opening…")
+        rig.gate.release()
+        await early.value
+        await click.value
+        #expect(rig.counter.scans == 3, "클릭 뒤에 시작한 훑기가 하나 더 돌았다")
+        #expect(rig.app.opened == 1 && rig.shell.openNoticeSessionID == nil, "그 훑기가 본 줄(데스크톱이 쥠)로 정한다: 앱만 앞으로, 거절 줄 없음")
+    }
+
+    /// 열린 뒤에도 다시 훑는다 (P2-1): 줄이 곧 실제 상태(Running in Claude)로 바뀐다. 결과를 기다리는 동안(Opening…)에는 포함하지 않는다
+    @Test func afterTheSessionOpenedTheListIsRescannedInTheBackgroundAndNoNoticeShows() async {
+        let rig = make()
+        let row = desktopRow(1)
+        rig.counter.set([Self.row(1, status: .held(.claudeApp), group: "/Users/tester/proj1", client: .claudeDesktop)])
+        let scansBefore = rig.counter.scans
+        await rig.shell.openInClaude(row).value
+        #expect(!rig.shell.externalLine(row, now: Date()).isBusy, "결과가 오면 곧바로 풀린다 (다시 훑기를 기다리지 않는다)")
+        #expect(await until { rig.counter.scans == scansBefore + 1 }, "열린 뒤 다시 훑는다")
+        #expect(await until { rig.store.rows.first?.status == .held(.claudeApp) })
+        #expect(rig.shell.openNoticeSessionID == nil && rig.app.opened == 0)
+    }
+
     @Test func anUnavailableAnswerFallsBackToActivatingTheAppOnceWithoutAnyNotice() async {
         let rig = make()
         rig.app.answer = .unavailable
@@ -337,7 +544,7 @@ struct EdgeExternalSessionsTests {
     @Test func theRefusalLineGoesAwayAfterItsTimeAndWhenTheSessionIsAskedAgain() async {
         let time = EdgeShellModelTests.ManualTime()
         let scope = AccountScope(currentAccount: { SampleData.userID })
-        let external = ExternalSessionsStore(scope: scope, scan: { ExternalSessionScan(rows: []) }, seen: InMemoryExternalSessionSeenStore(), pollInterval: 3600)
+        let external = ExternalSessionsStore(scope: scope, scan: { ExternalSessionScan(rows: []) }, recheck: { _ in .available }, seen: InMemoryExternalSessionSeenStore(), pollInterval: 3600)
         let shell = EdgeShellModel(
             schedule: time.schedule, clock: time.clock, chatsEnabled: true, windowsEnabled: true, issues: IssueRuntime(gateway: IssueSampleGateway(), scope: scope), externalSessions: external
         )
@@ -371,7 +578,7 @@ struct EdgeExternalSessionsTests {
     @Test func anEarlierRefusalsTimerNeverClearsALaterRefusalOnAnotherRow() async {
         let time = EdgeShellModelTests.ManualTime()
         let scope = AccountScope(currentAccount: { SampleData.userID })
-        let external = ExternalSessionsStore(scope: scope, scan: { ExternalSessionScan(rows: []) }, seen: InMemoryExternalSessionSeenStore(), pollInterval: 3600)
+        let external = ExternalSessionsStore(scope: scope, scan: { ExternalSessionScan(rows: []) }, recheck: { _ in .available }, seen: InMemoryExternalSessionSeenStore(), pollInterval: 3600)
         let shell = EdgeShellModel(
             schedule: time.schedule, clock: time.clock, chatsEnabled: true, windowsEnabled: true, issues: IssueRuntime(gateway: IssueSampleGateway(), scope: scope), externalSessions: external
         )
@@ -429,6 +636,7 @@ struct EdgeExternalSessionsTests {
         let live = LiveClaudeAppOpener(makeOpener: {
             ClaudeDesktopSessionOpener(
                 locator: ClaudeCodeLocator(candidates: ["/usr/bin/true"]), folderRules: WorkspaceFolderRules(home: GateFileSystem.realpath(home) ?? home, systemRoots: []),
+                desktopInstalled: { true },
                 run: { _, arguments, _, cwd, timeout in
                     seen.add(arguments, cwd)
                     return timeout == 15 ? .openInAnotherTerminal : .unavailable
@@ -590,6 +798,92 @@ struct EdgeExternalSessionsTests {
         spin(0.3)
         #expect(rig.shell.openNoticeSessionID == Self.uuid(1))
         #expect(try picture() != before, "거절당하면 둘째 줄이 회색 한 줄로 다시 그려진다")
+    }
+
+    /// 두 그림(PNG)의 같은 점 영역(pt)에서 색이 눈에 띄게 다른 점이 있나
+    static func regionDiffers(_ a: Data, _ b: Data, x: ClosedRange<Int>, y: ClosedRange<Int>) -> Bool {
+        guard let first = NSBitmapImageRep(data: a), let second = NSBitmapImageRep(data: b), first.pixelsWide == second.pixelsWide, first.pixelsHigh == second.pixelsHigh else { return true }
+        let scale = CGFloat(first.pixelsWide) / 380
+        var differing = 0
+        for py in stride(from: Int(CGFloat(y.lowerBound) * scale), to: min(first.pixelsHigh, Int(CGFloat(y.upperBound) * scale)), by: 1) {
+            for px in stride(from: Int(CGFloat(x.lowerBound) * scale), to: min(first.pixelsWide, Int(CGFloat(x.upperBound) * scale)), by: 1) {
+                guard let c1 = first.colorAt(x: px, y: py)?.usingColorSpace(.sRGB), let c2 = second.colorAt(x: px, y: py)?.usingColorSpace(.sRGB) else { continue }
+                if abs(c1.redComponent - c2.redComponent) + abs(c1.greenComponent - c2.greenComponent) + abs(c1.blueComponent - c2.blueComponent) > 0.06 { differing += 1 }
+            }
+        }
+        return differing > 20
+    }
+
+    /// 누른 바로 그 순간의 피드백이 실제 패널에 그려지는지 (그림 바이트): 여는 동안 줄이 달라지고 버튼은 눌리지 않으며, 결과가 오면 처음 모습으로 돌아온다
+    @Test func theOpeningLineIsDrawnInTheRealPanelWhileTheOpenIsPendingAndTheButtonDoesNotTakeASecondClick() async throws {
+        let rig = make()
+        rig.counter.set([Self.row(1, status: .available, group: "/Users/tester/proj1", client: .claudeDesktop)])
+        await rig.store.refresh()
+        rig.shell.openOnThisMac()
+        let presentation = EdgePanelPresentation()
+        presentation.shown = true
+        let hosting = NSHostingView(rootView: EdgePanelView(shell: rig.shell, presentation: presentation, chat: nil))
+        hosting.frame = NSRect(x: 0, y: 0, width: 380, height: 300)
+        let panel = EdgeKeyPanel(contentRect: hosting.frame, styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView], backing: .buffered, defer: false)
+        panel.isFloatingPanel = true
+        panel.contentView = hosting
+        panel.makeKeyAndOrderFront(nil)
+        defer { panel.orderOut(nil) }
+        hosting.layoutSubtreeIfNeeded()
+        spin(0.4)
+        func picture() throws -> Data {
+            let rep = try #require(hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds))
+            hosting.cacheDisplay(in: hosting.bounds, to: rep)
+            return try #require(rep.representation(using: .png, properties: [:]))
+        }
+        let before = try picture()
+        // 버튼 자리를 찾는다 (열렸다고 답하는 가짜로 한 번 눌리는 곳)
+        var buttonY: Int?
+        for y in stride(from: 70, to: 200, by: 4) {
+            click(panel, hosting, at: CGPoint(x: 306, y: y))
+            try? await Task.sleep(for: .milliseconds(15))
+            if !rig.app.sessions.isEmpty {
+                buttonY = y
+                break
+            }
+        }
+        let y = try #require(buttonY, "버튼을 찾았다")
+        #expect(await until { rig.counter.scans >= 2 }, "열린 뒤의 다시 훑기")
+        try? await Task.sleep(for: .milliseconds(50))
+        spin(0.3)
+        #expect(try picture() == before, "열렸다는 답이 온 뒤에는 줄이 그대로다")
+        // 이번에는 결과를 붙잡는다
+        rig.app.holds = true
+        let sessionsBefore = rig.app.sessions.count
+        click(panel, hosting, at: CGPoint(x: 306, y: y))
+        #expect(await until { rig.app.sessions.count == sessionsBefore + 1 })
+        spin(0.3)
+        #expect(rig.shell.openingSessionIDs == [Self.uuid(1)])
+        let pending = try picture()
+        #expect(pending != before, "여는 동안 줄이 달라 보인다 (Opening… · 비활성 버튼)")
+        // 버튼 캡슐 자리(x 262–356pt, 클릭한 y 둘레)의 그림이 달라진다: 비활성 버튼은 흐려진다 (글자가 안 바뀌어도 눈에 보인다)
+        #expect(Self.regionDiffers(before, pending, x: 262...356, y: (y - 10)...(y + 10)), "비활성이라 버튼이 흐려 보인다")
+        click(panel, hosting, at: CGPoint(x: 306, y: y))
+        try? await Task.sleep(for: .milliseconds(40))
+        #expect(rig.app.sessions.count == sessionsBefore + 1, "여는 동안 같은 줄의 두 번째 클릭은 아무 일도 하지 않는다")
+        rig.app.release()
+        #expect(await until { rig.shell.openingSessionIDs.isEmpty })
+        try? await Task.sleep(for: .milliseconds(50))
+        spin(0.3)
+        #expect(try picture() == before, "결과가 오면 처음 모습으로 돌아온다")
+    }
+
+    @Test func aLiveOpenerWithoutAnOpenerFailsClosedAndTheStandardOneNeedsABridgeHost() async {
+        let live = LiveClaudeAppOpener(makeOpener: { nil })
+        #expect(await live.openSession(id: Self.uuid(9), folder: NSHomeDirectory()) == .unavailable, "보호 폴더 목록을 모르면(opener가 없으면) 열지 않는다")
+        if BridgeHost.shared == nil {
+            #expect(LiveClaudeAppOpener.standardOpener() == nil, "이 계정의 bridge가 없으면 폴더 규칙을 세울 수 없다: 열지 않는다")
+        }
+    }
+
+    @Test func recheckWithoutABridgeHostOrAScanIsUnknown() async {
+        let environment = ExternalSessionsEnvironment(host: { nil })
+        #expect(await environment.recheck(Self.uuid(1)) == nil)
     }
 
     // MARK: 묶음 머리의 프로젝트 이름

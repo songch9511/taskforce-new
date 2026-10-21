@@ -444,16 +444,36 @@ Taskforce 밖에서 시작한 Claude Code 세션을 이 Mac의 레일 "On this M
 - 실행 중 판정(5.4): 등록 파일(pid 살아 있음 · 같은 사용자 · 시작 시각 1초 안 — pid 재사용은 stale. `procStart`가 2015년 이전이거나 지금보다 하루 넘게 앞이면 단위를 잘못 읽은 값이라 믿지 않고(nil) 살아 있으면 쥔 것으로 본다. `lstart` 글(`Wed Oct 21 04:57:32 2026`)에는 시간대가 없다: 데스크톱 번들 `claude` 2.1.304는 **UTC**로 적는다(KST Mac의 `ps lstart`와 9시간 차이). 그래서 이 Mac의 시간대와 UTC 두 가지로 읽어 어느 쪽이든 1초 안이면 같은 프로세스로 본다 — 이 Mac의 시간대로만 읽으면 살아 있는 데스크톱 세션이 stale로 보여 "Running in Terminal"(argv의 `--resume=`)이나 비어 있음으로 잘못 나왔다) · argv(`--resume` · `-r` · `--session-id`) · 같은 폴더의 등록 안 된 `claude`(`PROC_PIDVNODEPATHINFO`) · 기록이 60초 안에 쓰임. 신호를 읽지 못하고 주인도 못 찾으면 `couldNotCheck`(fail-closed).
 - 한계: 이어받기 전이라 두 writer 경합(TOCTOU)은 PR2의 몫이다. 데스크톱이 열린 세션마다 `claude`를 띄워 둔다는 관찰(OB-3)은 실측 전이다. `procStart` 형식(R4)은 데스크톱 쪽만 실측했다(UTC `lstart`, 위); 터미널 CLI 쪽은 실측 전이라 두 시간대로 읽는다.
 
-### 17-6. Open in Claude (F4, 사용자 결정 2026-10-21)
+### 17-6. Open in Claude (F4, 사용자 결정 2026-10-21 · 보안 검토 반영 2026-10-22)
 
 - **줄**: Claude 데스크톱에서 시작한 줄(`entrypoint claude-desktop`)은 돌고 있어도(`Running in Claude`) 쉬고 있어도(`Idle`) 오른쪽에 **Open in Claude**가 있다. 터미널 · 그 밖 출처의 줄은 그대로다(Claude 앱이 쥔 줄은 출처와 상관없이 지금처럼 버튼이 있다). `Running in Terminal` · `Running elsewhere` · `Couldn't check` · `Can't resume here` · `In Taskforce`에는 버튼이 없다.
-- **무엇을 하나 — 줄 상태로 갈린다**
-  - **`Running in Claude`(데스크톱 앱이 이미 쥔 줄)**: CLI를 돌리지 않고 앱만 앞으로 가져온다(`NSWorkspace`, 옛 동작 그대로). **실측(2026-10-22, CLI 2.1.306, 일회용 세션)**: 이미 데스크톱 앱이 쥔 세션에 `claude --desktop --resume <id>`를 하면 CLI가 `Session … is open in another terminal. Run /desktop there instead.`를 찍고 **종료 코드 1**로 거절한다. 앱 쪽에서는 터미널이 아닌데도 같은 글이라 이 줄에서는 거절 판정을 쓸 수 없다.
-  - **`Idle`(쉬는 데스크톱 줄)**: 그 세션을 데스크톱 앱에서 연다. 아래 실행 방식.
-- **실행 방식** (Kit `ClaudeDesktopSessionOpener`): 사용자의 `claude`(`ClaudeCodeLocator.standard`, 어댑터 · probe와 같은 찾기)를 정확히 `--desktop --resume <소문자 정규 UUID>` 인자 둘로, **그 줄의 폴더를 cwd로**, **터미널(pty) 아래에서** 띄운다. pty는 `openpty` + `posix_spawn`(슬레이브를 0 · 1 · 2로, 제어 터미널 없음)이다. 실측(2026-10-22, 쉬는 세션): 종료 0, 1.5초, 데스크톱 앱이 그 세션의 `claude`(entrypoint `claude-desktop`, 쉬는 상태)를 바로 띄웠다. `TERM` 없이도 돈다. 터미널이 아니면 CLI가 "--desktop … can't run non-interactively"로 거절한다. 프롬프트 · stdin 입력은 CLI가 허용하지 않고 이 코드도 쓰지 않는다.
-- **지키는 것**: id는 소문자 정규 UUID만(그 밖이면 아무것도 띄우지 않는다). cwd는 사용자가 폴더를 고를 때와 같은 실제 규칙(`WorkspaceFolderRules.standard`: realpath · 디렉터리 · 내 소유 · 홈 아래 · `.claude` 같은 민감 이름 거절)을 통과한 realpath만 — 클릭은 사용자 행동이라 이때는 stat을 해도 된다(목록을 훑을 때는 하지 않는다, 17-5. Documents · Desktop 같은 보호 폴더면 이 클릭이 앱 이름으로 접근 동의 창을 띄울 수 있다). 못 지나면(워크트리 · 지워진 폴더 · 폴더 모름) 띄우지 않고 앱만 앞으로 가져온다. 자식 환경은 어댑터와 같은 넷(`HOME` · `USER` · `LANG` · `PATH`), 기한 15초(넘으면 프로세스 그룹을 SIGKILL; 정상으로 끝난 `claude`가 띄운 앱은 건드리지 않는다), 출력은 앞 16 KiB만 메모리에 잠깐 두고 고정 결과 코드 하나로만 바꾼 뒤 버린다. 끝난 `claude`는 터미널을 붙든 자손을 기다리지 않는다.
-- **결과 셋** (쉬는 줄): `opened`(0으로 끝남: 앱이 앞으로 온다, 더 하지 않는다) · `openInAnotherTerminal`(출력에 "open in another terminal"이 있음 — 종료 코드와 상관없이, 색 코드 · 줄 접힘을 접어서 본다) · `unavailable`(그 밖 모두 — id · 폴더 · `claude` 없음, `--desktop`을 모르는 옛 버전, 로그인 필요, 시간 초과, 다른 거절: 앱만 앞으로).
-- **거절 줄**: 쉬는 줄이 `openInAnotherTerminal`로 거절당했다는 것은 스캔과 클릭 사이에 누가 그 세션을 쥐었다는 뜻이다(터미널에서 열었거나 데스크톱이 열었다). 그 줄의 둘째 줄이 **이미 승인된 말 `Running in Terminal`**을 회색 한 줄로 8초 보이고(앱은 앞으로 가져오지 않는다, 버튼은 그대로) 목록을 다시 훑는다 — 다시 훑은 줄이 실제 상태(`Running in Terminal` · `Running in Claude`)로 바뀐다. 새 문구는 없다. 같은 세션을 여는 중에 다시 누른 클릭은 무시한다.
-- **로그(OSLog)**: `claude_desktop_open {result: opened|another_terminal|unavailable, cause?: bad_id|folder|no_claude}` — 고정 코드뿐이다. id · 경로 · 출력 글 없음.
-- **"버튼이 아무 일도 안 한다"** (사용자 보고): 비활성 패널(`EdgeKeyPanel`)에서 첫 클릭이 먹히지 않는 문제가 아니다 — 시험이 실제 마우스 이벤트로, 키가 아닌 패널에서도 첫 클릭이 버튼 캡슐 안 어디서나 한 번 눌리고 줄의 다른 곳은 눌리지 않음을 본다. 원인은 앱만 앞으로 가져오던 옛 동작이다(Claude가 이미 맨 앞이면 눈에 보이는 일이 없다). 지금 쉬는 줄은 그 세션을 연다. `Running in Claude` 줄은 여전히 앱만 앞으로라 Claude가 이미 맨 앞이면 눈에 보이는 일이 없다(CLI가 그 세션을 못 연다).
+- **무엇을 하나 — 줄 상태로 갈린다 (모델의 가드, `EdgeShellModel.openInClaude`)**: CLI는 **`Idle`인 데스크톱 출처 줄(`.available` + `claudeDesktop`)에만** 닿는다. 그 밖은 줄을 그리는 쪽이 어떻게 하든 앱만 앞으로 가져온다(`NSWorkspace`, 옛 동작).
+  - **`Running in Claude`(데스크톱 앱이 이미 쥔 줄)**: **실측(2026-10-22, CLI 2.1.306, 일회용 세션)**: 이미 데스크톱 앱이 쥔 세션에 `claude --desktop --resume <id>`를 하면 CLI가 `Session … is open in another terminal. Run /desktop there instead.`를 찍고 **종료 코드 1**로 거절한다. 그래서 이 줄에서는 CLI를 쓰지 않는다. (Claude가 이미 맨 앞이면 이 줄의 버튼은 눈에 보이는 일이 없다.)
+  - **`Idle`**: 그 세션을 데스크톱 앱에서 연다. 아래.
+- **누르는 즉시 피드백**: 누른 호출 안에서 그 줄의 둘째 줄이 회색 **`Opening…`**으로 바뀌고 버튼은 눌리지 않는다(`.disabled`, 버튼 스타일이 흐리게 그린다). 결과가 오면 풀린다. `Opening…`은 **승인 전 Debug 상수**(`ExternalSessionCopy.opening`)다. 버튼 글자 자체를 "Opening…"으로 바꾸는 것은 `TaskforceUI/ExternalSessionLineView.swift`의 두 줄(`Button(content.actionTitle)` + `.disabled(content.isBusy)`)이 필요한데 그 파일은 이 작업의 범위 밖이다.
+- **Idle 줄의 흐름**
+  1. **쥠을 다시 본다**(`ExternalSessionScanner.recheck`: 등록 파일 · argv · 같은 폴더의 claude · 최근 기록 · 이미 이어받음, 그 세션의 기록 시각만 보고 내용은 열지 않는다). 쥔 곳이 있거나 모르면(nil) 띄우지 않는다.
+  2. 비어 있으면 `claude --desktop --resume <id>` (아래 실행 방식).
+  3. **`opened`**: 앱이 앞으로 오는 것은 `claude`가 한다. Opening…은 여기서 끝나고, 목록은 뒤에서 다시 훑는다(줄이 곧 `Running in Claude`가 된다).
+  4. **`openInAnotherTerminal`**(출력에 "open in another terminal"): 스캔과 클릭 사이에 누가 쥐었다는 뜻이다. **클릭 뒤에 시작하는 훑기**(`ExternalSessionsStore.refreshFresh`: 도는 훑기가 있으면 그것이 끝나기를 기다린 뒤 새로 시작 — `refresh()`는 도는 훑기를 그대로 쓰는데 그것은 클릭 전 모습이다)가 끝나면 고친 줄로 정한다. 이제 `Running in Claude`면 앱만 앞으로(거절 줄 없음), 아니면 이미 승인된 **`Running in Terminal`**을 회색 한 줄로 8초 보인다(앱은 앞으로 가져오지 않는다, 버튼은 그대로). 새 문구는 없다.
+  5. **`unavailable`**: 앱만 앞으로.
+  - 확인에서 쥔 곳이 나온 경우: `Running in Claude`면 앱만 앞으로, 터미널이면 3-4와 같은 "다시 훑고 Running in Terminal", 그 밖의 쥠 · 확인 못 함 · 이미 이어받음은 띄우지 않고 다시 훑을 뿐이다(줄이 제 상태로 바뀐다). 같은 세션을 여는 중에 다시 누른 클릭은 무시한다.
+- **실행 방식** (Kit `ClaudeDesktopSessionOpener`): 사용자의 `claude`(`ClaudeCodeLocator.standard`, 어댑터 · probe와 같은 찾기)를 정확히 `--desktop --resume <소문자 정규 UUID>` 인자 둘로, **그 줄의 폴더를 cwd로**, **터미널(pty) 아래에서** 띄운다. 띄우는 파일은 **locator가 검사한 realpath**(자식이 보는 이름만 후보 경로)다. pty는 `posix_openpt(O_CLOEXEC)` + `grantpt` · `unlockpt` · `ptsname_r` + 슬레이브 `open(O_NOCTTY | O_CLOEXEC)`(제어 터미널 없음, 200열)이고 슬레이브를 0 · 1 · 2로 준다. `TERM` 없이도 돈다. 터미널이 아니면 CLI가 "--desktop … can't run non-interactively"로 거절한다. 프롬프트 · stdin 입력은 CLI가 허용하지 않고 이 코드도 쓰지 않는다.
+- **지키는 것**
+  - id는 소문자 정규 UUID만(그 밖이면 아무것도 띄우지 않는다).
+  - **Claude 데스크톱 앱이 설치돼 있어야 한다**(`urlForApplication(withBundleIdentifier:)`, 보안 검토 P2-2). 없으면 아무것도 띄우지 않고 사용자 폴더도 만지지 않는다.
+  - cwd는 사용자가 폴더를 고를 때와 같은 실제 규칙(`WorkspaceFolderRules.standard`: realpath · 디렉터리 · 내 소유 · 홈 아래 · `.claude` 같은 민감 이름 거절)을 통과한 realpath만 — 클릭은 사용자 행동이라 이때는 stat을 해도 된다(목록을 훑을 때는 하지 않는다, 17-5. Documents · Desktop 같은 보호 폴더면 이 클릭이 앱 이름으로 접근 동의 창을 띄울 수 있다). 앱 데이터 · bridge 보호 폴더 목록을 모르면(이 계정의 bridge가 없다) 규칙을 세울 수 없다: **열지 않는다(fail-closed)**.
+  - 설치 확인 · 폴더 검사 · `claude` 찾기는 막힐 수 있는 호출이라 **협력 스레드가 아니라 GCD 스레드**에서 한다. 못 지나면(워크트리 · 지워진 폴더 · 폴더 모름) 띄우지 않고 앱만 앞으로 가져온다.
+  - 자식 환경은 어댑터와 같은 넷(`HOME` · `USER` · `LANG` · `PATH`), 기한 15초. 넘으면 프로세스 그룹을 SIGKILL하고 **호출은 거두는 일을 기다리지 않고 돌아간다**(뒤에서 거둔다, 좀비 없음). 정상으로 끝난 `claude`가 띄운 앱은 건드리지 않는다. 출력은 앞 16 KiB만 메모리에 잠깐 두고 고정 결과 코드 하나로만 바꾼 뒤 버린다. 끝난 `claude`는 터미널을 붙든 자손을 기다리지 않는다. 마스터의 오류(`POLLERR`) · 잘못된 fd(`POLLNVAL`) · 읽을 것이 없는 끊김은 끝으로 본다.
+- **결과 셋** (Idle 줄): `opened`(0으로 끝남) · `openInAnotherTerminal`(출력에 "open in another terminal"이 있음 — 종료 코드와 상관없이, 색 코드 · 줄 접힘을 접어서 본다) · `unavailable`(그 밖 모두 — id · 폴더 · `claude` · 앱 없음, `--desktop`을 모르는 옛 버전, 로그인 필요, 시간 초과, 다른 거절).
+- **`--desktop`이 넘길 수 없을 때 TUI가 뜨지 않는다 — 실측(2026-10-22, 일회용 세션 · 존재하지 않는 id, pty, 제어 터미널 있음)**: 어느 경우도 종료 1로 즉시 끝나고 대화형 화면(TUI)을 띄우지 않았다.
+  | 경우 | 출력 | 종료 | 시간 |
+  |---|---|---|---|
+  | `--desktop`을 모르는 CLI 2.1.241 | `error: unknown option '--desktop'` | 1 | 0.19초 |
+  | 2.1.299 · 2.1.304 · 2.1.306, 없는 세션 id | `No session found with ID …` | 1 | 0.7초 |
+  | 2.1.306, 데스크톱 앱이 없는 것처럼 만든 샌드박스(`sandbox-exec`로 LaunchServices lookup · 앱 번들 읽기 거부), 쉬는 일회용 세션 | `Claude Desktop is not installed. Install it from https://claude.ai/download` | 1 | 0.27초 |
+  `--help`에 `--desktop`이 있는 가장 낮은 버전은 2.1.299(2.1.241 · 2.1.234에는 없다; 그 사이는 확인하지 않았다). 그래서 **버전 하한(`minimumDesktopOpenVersion`)은 두지 않는다**(재현한 모든 경우가 비 0 종료 · TUI 없음): 설치 확인과 모델의 가드로 충분하다고 보았다.
+- **지연 실측(2026-10-22, 이 Mac, CLI 2.1.306, 프로세스 464개)**: 폴더 검사 0.02 ms · `claude` 찾기 0.02 ms · 환경 0.06 ms · **쥠 다시 확인 약 28–30 ms**(프로세스 목록의 argv가 대부분) · 훑기 한 번 약 37–45 ms · `claude --desktop --resume`이 도는 시간 **약 0.7–0.8초**(쉬는 세션을 연 `open()` 전체 0.79초, 이미 쥔 세션의 거절 0.70초; 처음 한 번은 바이너리 첫 실행이라 1.5초) — CLI 자체가 `--desktop` 경로를 시작하는 데 드는 값이고 `--version`은 즉시(0.00초)라 Taskforce 쪽에서 줄일 수 있는 것은 없다. 클릭 → 결과 ≈ 쥠 확인 0.03 + CLI 0.7–0.8초(처음 한 번 1.5초). 거절 뒤에는 도는 훑기를 기다리고(≤0.04초) 새 훑기(0.04초)가 더 든다.
+- **로그(OSLog)**: `claude_desktop_open {result: opened|another_terminal|unavailable, cause?: bad_id|folder|no_claude|no_app}` — 고정 코드뿐이다. id · 경로 · 출력 글 없음.
+- **"버튼이 아무 일도 안 한다"** (사용자 보고): 비활성 패널(`EdgeKeyPanel`)에서 첫 클릭이 먹히지 않는 문제가 아니다 — 시험이 실제 마우스 이벤트로, 키가 아닌 패널에서도 첫 클릭이 버튼 캡슐 안 어디서나 한 번 눌리고 줄의 다른 곳은 눌리지 않음을 본다. 쉬는 줄은 이제 그 세션을 연다. `Running in Claude` 줄은 CLI가 그 세션을 못 열어서 여전히 앱만 앞으로라 Claude가 이미 맨 앞이면 눈에 보이는 일이 없다.
 - 한계: 터미널이 쥔 세션의 거절은 실제 글(위 실측과 같은 글) 외에 직접 재현하지 않았다. 데스크톱 앱이 앞으로 오는지는 앱 쪽 동작이다(실측 때는 Claude가 이미 맨 앞이어서 앞으로 오는 것은 못 봤다).

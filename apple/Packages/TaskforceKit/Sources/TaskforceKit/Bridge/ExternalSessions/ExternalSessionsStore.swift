@@ -76,6 +76,7 @@ public final class ExternalSessionsStore {
     @ObservationIgnored private let report: @Sendable (_ rows: [ExternalSessionRow], _ origin: ExternalSessionOrigin?) async -> Void
     /// 서버에 닿았으면 true (같은 날 두 번째라 서버가 조용히 넘긴 것도 닿은 것)
     @ObservationIgnored private let shown: @Sendable (_ rowsBucket: String, _ heldBucket: String) async -> Bool
+    @ObservationIgnored private let recheckHold: @Sendable (String) async -> ExternalSessionStatus?
     @ObservationIgnored private let log: any BridgeLogSink
     @ObservationIgnored private let seen: any ExternalSessionSeenStore
     @ObservationIgnored private let now: @Sendable () -> Date
@@ -96,6 +97,7 @@ public final class ExternalSessionsStore {
     public init(
         scope: AccountScope, scan: @escaping @Sendable () async -> ExternalSessionScan, isInstalled: @escaping @Sendable () async -> Bool? = { nil },
         report: @escaping @Sendable ([ExternalSessionRow], ExternalSessionOrigin?) async -> Void = { _, _ in }, shown: @escaping @Sendable (String, String) async -> Bool = { _, _ in true },
+        recheck: @escaping @Sendable (String) async -> ExternalSessionStatus? = { _ in nil },
         seen: any ExternalSessionSeenStore, now: @escaping @Sendable () -> Date = { Date() }, pollInterval: TimeInterval = 10, log: any BridgeLogSink = NoBridgeLog()
     ) {
         self.scope = scope
@@ -103,6 +105,7 @@ public final class ExternalSessionsStore {
         self.isInstalled = isInstalled
         self.report = report
         self.shown = shown
+        self.recheckHold = recheck
         self.seen = seen
         self.now = now
         self.pollInterval = pollInterval
@@ -163,6 +166,22 @@ public final class ExternalSessionsStore {
     public func retry() {
         if phase == .failed { phase = .checking }
         Task { await refresh() }
+    }
+
+    /// 열기 직전(F4): 훑은 뒤 누가 그 세션을 쥐었는지 그 세션 하나만 다시 본다. 확인할 길이 없거나 모르면 nil — 부른 쪽이 막는다 (fail-closed)
+    public func recheck(_ id: String) async -> ExternalSessionStatus? {
+        await recheckHold(id)
+    }
+
+    /// 클릭 뒤(F4 · 보안 검토 P2-1): **호출 뒤에 시작하는** 훑기가 끝나기를 기다린다. `refresh()`는 이미 훑는 중이면 그 훑기를 그대로 쓰는데, 그 훑기는 클릭 전에 시작해서
+    /// 클릭 뒤의 일(터미널이 쥠 · 데스크톱이 쥠)을 못 볼 수 있다. 도는 훑기가 있으면 그것이 끝나기를 기다린 뒤 새로 시작한다
+    public func refreshFresh() async {
+        if let stale = inFlight {
+            await stale.value
+            // 끝난 훑기가 아직 치워지지 않았을 수 있다 (`refresh()`가 마저 정리하기 전): 그대로 두면 `refresh()`가 끝난 훑기를 다시 쓴다
+            if inFlight == stale { inFlight = nil }
+        }
+        await refresh()
     }
 
     /// 한 번 훑는다. 이미 훑는 중이면 그것이 끝나기를 기다린다

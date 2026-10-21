@@ -80,6 +80,34 @@ extension ExternalSessionSuites {
             #expect(ExternalSessionLineText.make(row, now: Self.now, timeZone: Self.utc, notice: nil) == plain, "notice가 없으면 그대로")
         }
 
+        /// 누른 바로 그 순간의 피드백 (F4): 여는 동안 줄은 "Opening…"을 회색 한 줄로 말하고 버튼은 그대로 있되 눌리지 않는다 (줄을 그리는 쪽이 `isBusy`로 비활성)
+        @Test func aBusyRowSaysOpeningInGrayKeepsItsActionAndMarksItselfBusy() {
+            let row = Self.row(status: .available, client: .claudeDesktop, ageMinutes: 40)
+            let plain = line(row)
+            let busy = ExternalSessionLineText.make(row, now: Self.now, timeZone: Self.utc, busy: true)
+            #expect(plain.isBusy == false)
+            #expect(busy.isBusy && busy.metaText == "Opening…" && !busy.statusIsEmphasis && busy.detail.isEmpty, "둘째 줄은 이 한 줄뿐 (회색)")
+            #expect(busy.action == .openInClaude && busy.title == plain.title, "버튼 자리는 그대로")
+            // 굵던 줄도 회색
+            let running = Self.row(status: .held(.claudeApp), client: .claudeDesktop)
+            #expect(ExternalSessionLineText.make(running, now: Self.now, timeZone: Self.utc, busy: true).statusIsEmphasis == false)
+            // 거절 줄과 겹치면 여는 중이 이긴다
+            let both = ExternalSessionLineText.make(row, now: Self.now, timeZone: Self.utc, notice: ExternalSessionCopy.runningInTerminal, busy: true)
+            #expect(both.metaText == "Opening…" && both.isBusy)
+            // 버튼이 없는 줄은 바쁠 수 없다
+            let terminal = Self.row(status: .held(.terminal), client: .claudeDesktop)
+            let idleTerminalOrigin = Self.row(status: .available, client: .terminal)
+            for quiet in [terminal, idleTerminalOrigin] {
+                let content = ExternalSessionLineText.make(quiet, now: Self.now, timeZone: Self.utc, busy: true)
+                #expect(content == line(quiet) && !content.isBusy, "버튼이 없는 줄에는 여는 중이 없다")
+            }
+        }
+
+        @Test func theOpeningLineIsAProposalNotYetInTheApprovedList() {
+            // 사용자 승인 전 문구 (노트에 제안): 승인되면 `everyCopyStringIsTheApprovedOne`의 목록으로 옮긴다
+            #expect(ExternalSessionCopy.opening == "Opening…")
+        }
+
         @Test func anIdleRowSaysIdleTimeAndSourceWithoutEmphasis() {
             let desktop = line(Self.row(status: .available, client: .claudeDesktop, ageMinutes: 40))
             #expect(desktop.metaText == "Idle · 40 min ago · Claude desktop" && !desktop.statusIsEmphasis && desktop.action == .openInClaude, "데스크톱 줄은 Open in Claude")

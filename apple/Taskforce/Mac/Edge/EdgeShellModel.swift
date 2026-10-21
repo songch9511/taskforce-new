@@ -694,36 +694,66 @@ final class EdgeShellModel {
 
     /// 지금 거절 줄을 보이는 세션 (한 줄만). 사용자가 터미널을 닫고 다시 누르거나 시간이 지나면 사라진다
     private(set) var openNoticeSessionID: String?
-    @ObservationIgnored private var openingSessionIDs: Set<String> = []
+    /// 열기(다시 확인 · 띄우기 · 거절 뒤 다시 훑기)가 도는 세션: 줄이 누르는 즉시 "Opening…" · 비활성으로 보인다 (`externalLine`)
+    private(set) var openingSessionIDs: Set<String> = []
     @ObservationIgnored private var openNoticeTimer: EdgeTimer?
 
     /// 줄의 Open in Claude.
-    /// - **Claude 앱이 이미 쥔 줄(Running in Claude)**: CLI를 돌리지 않고 앱만 앞으로 가져온다. 실측(2026-10-22): 이미 데스크톱 앱이 쥔 세션에 `--desktop --resume`을 하면 CLI가 "open in another terminal"로 거절하고 1로 끝난다.
-    /// - **쉬는 데스크톱 줄**: 그 세션을 데스크톱 앱에서 연다. 성공이면 앱이 앞으로 오는 것은 `claude`가 하고 더 하지 않는다. "다른 터미널에 열려 있다"는 거절은 스캔과 클릭 사이에 누가 그 세션을 쥐었다는 뜻이다:
-    ///   그 줄에 이미 승인된 말 "Running in Terminal"을 회색 한 줄로 8초 보이고(앱은 보여 줄 것이 없다) 목록을 다시 훑는다. 그 밖의 실패(`claude` 없음 · 옛 버전 · 폴더 규칙 · 시간 초과 …)는 앱만 앞으로 가져온다.
+    /// - **모델의 가드 (보안 검토 P3)**: CLI는 `Idle`인 데스크톱 출처 줄(`.available` + `claudeDesktop`)에만 닿는다. 그 밖은 — Running in Claude 줄(실측 2026-10-22: 이미 데스크톱 앱이 쥔 세션에 `--desktop --resume`을 하면
+    ///   CLI가 "open in another terminal"로 거절하고 1로 끝난다) · 다른 상태 · 터미널 출처 줄 모두 — 줄을 그리는 쪽이 어떻게 하든 앱만 앞으로 가져온다.
+    /// - **Idle 데스크톱 줄**: 누르는 즉시 줄이 "Opening…"이 된다(비활성). 띄우기 **직전에** 그 세션의 쥠을 다시 보고(`recheck`) 쥔 곳이 있으면(또는 모르면) 띄우지 않는다. 비어 있으면 `claude --desktop --resume`:
+    ///   `.opened`면 앱이 앞으로 오는 것은 `claude`가 하고, 목록은 뒤에서 다시 훑는다(줄이 곧 Running in Claude가 된다).
+    ///   "다른 터미널에 열려 있다"는 거절은 스캔과 클릭 사이에 누가 쥐었다는 뜻이다: **클릭 뒤에 시작하는 훑기**가 끝나면 고친 줄로 정한다 — 이제 Claude 앱이 쥔 줄이면 앱만 앞으로(거절 줄 없음),
+    ///   아니면 이미 승인된 "Running in Terminal"을 회색 한 줄로 8초 보인다. 그 밖의 실패(`claude` 없음 · 앱 없음 · 폴더 규칙 · 옛 버전 · 시간 초과 …)는 앱만 앞으로 가져온다.
     /// 같은 세션을 여는 중에 다시 누르면 무시한다 (끝나기를 기다릴 수 있게 Task를 돌려준다)
     @discardableResult
     func openInClaude(_ row: ExternalSessionRow) -> Task<Void, Never> {
-        if row.status == .held(.claudeApp) {
+        guard row.status == .available, row.client == .claudeDesktop else {
             _ = claudeApp.openClaudeApp()
             return Task {}
         }
         let id = row.id
-        guard openingSessionIDs.insert(id).inserted else { return Task {} }
+        guard !openingSessionIDs.contains(id) else { return Task {} }
+        openingSessionIDs.insert(id)
         clearOpenNotice()
         let folder = row.folderPath
         return Task { [weak self] in
-            guard let self else { return }
-            let result = await claudeApp.openSession(id: id, folder: folder)
-            openingSessionIDs.remove(id)
-            switch result {
-            case .opened: break
-            case .openInAnotherTerminal:
-                showOpenNotice(for: id)
-                await externalSessions?.refresh()
-            case .unavailable: _ = claudeApp.openClaudeApp()
-            }
+            await self?.openIdleSession(id: id, folder: folder)
         }
+    }
+
+    private func openIdleSession(id: String, folder: String?) async {
+        defer { openingSessionIDs.remove(id) }
+        // 쥠을 다시 본다: 모르면(nil) 띄우지 않는다 (옛 동작으로 물러난다)
+        guard let hold = await externalSessions?.recheck(id) else {
+            _ = claudeApp.openClaudeApp()
+            return
+        }
+        guard hold == .available else {
+            await settleAfterHeld(id: id, hold: hold)
+            return
+        }
+        switch await claudeApp.openSession(id: id, folder: folder) {
+        case .opened:
+            // 열렸다: 줄은 곧 실제 상태가 된다. 다시 훑기는 뒤에서 (Opening…은 결과에서 끝난다)
+            Task { [weak self] in await self?.externalSessions?.refreshFresh() }
+        case .openInAnotherTerminal:
+            await settleAfterHeld(id: id, hold: .held(.terminal))
+        case .unavailable:
+            _ = claudeApp.openClaudeApp()
+        }
+    }
+
+    /// 열기 직전의 확인이 쥔 곳을 찾았거나 CLI가 "다른 터미널"로 거절했다: 클릭 뒤에 시작하는 훑기가 끝나기를 기다려 고친 줄로 정한다 (이미 도는 훑기는 클릭 전 모습이다)
+    private func settleAfterHeld(id: String, hold: ExternalSessionStatus) async {
+        await externalSessions?.refreshFresh()
+        // 데스크톱 앱이 쥐었다(확인이 말했거나 다시 훑은 줄이 말한다): 앱만 앞으로
+        if hold == .held(.claudeApp) || externalSessions?.rows.first(where: { $0.id == id })?.status == .held(.claudeApp) {
+            _ = claudeApp.openClaudeApp()
+            return
+        }
+        // 터미널이 쥐었다: 줄에 승인된 말을 잠깐. 그 밖의 쥠 · 확인 못 함은 다시 훑은 줄이 제 상태로 바뀌어 말한다
+        if hold == .held(.terminal) { showOpenNotice(for: id) }
     }
 
     private func showOpenNotice(for id: String) {
@@ -738,9 +768,11 @@ final class EdgeShellModel {
         openNoticeSessionID = nil
     }
 
-    /// 패널의 줄 글: 방금 Open in Claude가 "다른 터미널에 열려 있다"고 거절당한 쉬는 줄은 둘째 줄이 회색 "Running in Terminal" 한 줄로 바뀐다
+    /// 패널의 줄 글: 여는 중인 줄은 둘째 줄이 회색 "Opening…"(그리는 쪽이 버튼을 비활성으로 보인다), 방금 "다른 터미널에 열려 있다"고 막힌 쉬는 줄은 회색 "Running in Terminal" 한 줄
     func externalLine(_ row: ExternalSessionRow, now: Date) -> ExternalSessionLineContent {
-        ExternalSessionLineText.make(row, now: now, notice: openNoticeSessionID == row.id ? ExternalSessionCopy.runningInTerminal : nil)
+        ExternalSessionLineText.make(
+            row, now: now, notice: openNoticeSessionID == row.id ? ExternalSessionCopy.runningInTerminal : nil, busy: openingSessionIDs.contains(row.id)
+        )
     }
 
     /// 레일의 On this Mac: 패널에 이 Mac의 세션 목록을 연다 (게이트가 꺼진 셸은 아무 일도 없다)

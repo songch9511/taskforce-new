@@ -21,6 +21,8 @@ extension ExternalSessionSuites {
             private var _shownScript: [Bool] = []
             private var _gate: CheckedContinuation<Void, Never>?
             var holdScans = false
+            /// true면 훑기가 시작할 때의 값을 돌려준다 (훑는 중에 세상이 바뀌어도 그 훑기는 옛 값을 본다)
+            var freezeAtStart = false
 
             var scan: ExternalSessionScan {
                 get { lock.withLock { _scan } }
@@ -40,9 +42,12 @@ extension ExternalSessionSuites {
             }
 
             func doScan() async -> ExternalSessionScan {
-                lock.withLock { _scans += 1 }
+                let atStart = lock.withLock { () -> ExternalSessionScan in
+                    _scans += 1
+                    return _scan
+                }
                 if holdScans { await withCheckedContinuation { continuation in lock.withLock { _gate = continuation } } }
-                return scan
+                return freezeAtStart ? atStart : scan
             }
 
             func release() {
@@ -85,7 +90,7 @@ extension ExternalSessionSuites {
             func advance(_ seconds: TimeInterval) { lock.withLock { date = date.addingTimeInterval(seconds) } }
         }
 
-        func make(seen: Date? = nil, poll: TimeInterval = 10) -> Setup {
+        func make(seen: Date? = nil, poll: TimeInterval = 10, recheck: @escaping @Sendable (String) async -> ExternalSessionStatus? = { _ in nil }) -> Setup {
             let log = RecordingLog()
             let fake = Fake()
             let user = UUID()
@@ -93,8 +98,8 @@ extension ExternalSessionSuites {
             let seenStore = InMemoryExternalSessionSeenStore(seen)
             let clock = Clock()
             let store = ExternalSessionsStore(
-                scope: scope, scan: { await fake.doScan() }, isInstalled: { fake.installed }, report: { fake.recordReport($0, $1) }, shown: { fake.recordShown($0, $1) }, seen: seenStore,
-                now: { clock.now }, pollInterval: poll, log: log
+                scope: scope, scan: { await fake.doScan() }, isInstalled: { fake.installed }, report: { fake.recordReport($0, $1) }, shown: { fake.recordShown($0, $1) }, recheck: recheck,
+                seen: seenStore, now: { clock.now }, pollInterval: poll, log: log
             )
             return Setup(store: store, fake: fake, seen: seenStore, scope: scope, clock: clock, log: log)
         }
@@ -106,6 +111,72 @@ extension ExternalSessionSuites {
                 try? await Task.sleep(for: .milliseconds(10))
             }
             return condition()
+        }
+
+        // MARK: 클릭 뒤의 다시 훑기 (F4 · 보안 검토 P2-1)
+
+        /// `refresh()`는 이미 훑는 중이면 그 훑기를 기다리고 끝난다. 클릭 **전에** 시작한 훑기는 클릭 뒤의 일(터미널이 쥠)을 못 본다:
+        /// `refreshFresh()`는 그것을 기다린 뒤 **호출 뒤에 시작하는** 훑기 하나를 더 돌린다
+        @Test func aFreshRefreshWaitsOutAScanThatStartedBeforeAndRunsOneThatStartsAfterTheCall() async {
+            let s = make()
+            s.fake.holdScans = true
+            s.fake.freezeAtStart = true
+            s.fake.scan = ExternalSessionScan(rows: [R.row(1)])
+            let early = Task { await s.store.refresh() }
+            #expect(await until { s.fake.scans == 1 })
+            // 대조: 그냥 refresh는 도는 훑기를 그대로 쓴다
+            let plain = Task { await s.store.refresh() }
+            try? await Task.sleep(for: .milliseconds(40))
+            #expect(s.fake.scans == 1, "그냥 refresh는 새 훑기를 시작하지 않는다")
+            // 세상이 바뀌었다 (클릭 뒤): 먼저 시작한 훑기는 이것을 못 본다
+            s.fake.scan = ExternalSessionScan(rows: [R.row(1, status: .held(.terminal))])
+            let fresh = Task { await s.store.refreshFresh() }
+            try? await Task.sleep(for: .milliseconds(40))
+            #expect(s.fake.scans == 1, "먼저 시작한 훑기가 끝나기 전에는 새 훑기를 시작하지도, 끝나지도 않는다")
+            s.fake.release()
+            await early.value
+            await plain.value
+            await fresh.value
+            #expect(s.fake.scans == 2, "호출 뒤에 시작한 훑기가 하나 더 돌았다")
+            #expect(s.store.rows.first?.status == .held(.terminal), "남은 목록은 그 뒤의 훑기 결과다 (먼저 시작한 훑기의 옛 값이 아니다)")
+        }
+
+        @Test func aFreshRefreshWithNothingInFlightRunsExactlyOneScan() async {
+            let s = make()
+            s.fake.scan = ExternalSessionScan(rows: [R.row(1)])
+            await s.store.refreshFresh()
+            #expect(s.fake.scans == 1)
+            #expect(s.store.rows.count == 1)
+            await s.store.refreshFresh()
+            #expect(s.fake.scans == 2)
+        }
+
+        @Test func twoFreshRefreshesDuringOneScanBothEndAfterAScanThatStartedAfterThem() async {
+            let s = make()
+            s.fake.holdScans = true
+            s.fake.freezeAtStart = true
+            s.fake.scan = ExternalSessionScan(rows: [R.row(1)])
+            let early = Task { await s.store.refresh() }
+            #expect(await until { s.fake.scans == 1 })
+            s.fake.scan = ExternalSessionScan(rows: [R.row(1), R.row(2)])
+            let first = Task { await s.store.refreshFresh() }
+            let second = Task { await s.store.refreshFresh() }
+            try? await Task.sleep(for: .milliseconds(40))
+            s.fake.release()
+            await early.value
+            await first.value
+            await second.value
+            #expect(s.store.rows.count == 2, "둘 다 먼저 시작한 훑기가 아니라 그 뒤의 훑기를 보고 끝난다")
+            #expect(s.fake.scans >= 2 && s.fake.scans <= 3)
+        }
+
+        // MARK: 열기 직전의 다시 확인 (F4 · 보안 검토 P3)
+
+        @Test func recheckAsksTheClosureAndFailsClosedWithoutOne() async {
+            let held = make(recheck: { id in id == R.row(1).id ? .held(.terminal) : .available })
+            #expect(await held.store.recheck(R.row(1).id) == .held(.terminal))
+            #expect(await held.store.recheck(R.row(2).id) == .available)
+            #expect(await make().store.recheck(R.row(1).id) == nil, "확인할 길이 없으면 모른다(nil): 부른 쪽이 막는다")
         }
 
         // MARK: 상태

@@ -75,15 +75,11 @@ public enum ClaudeDesktopOpen {
     /// 진짜 실행 (막는다): `claude`를 pty 슬레이브를 0 · 1 · 2로 해서 띄우고 `timeout`까지 기다린다. 출력은 결과로만 바뀐다.
     /// 끝난 `claude`는 터미널을 붙든 자손을 기다리지 않는다. 기한이 되면 프로세스 그룹을 정리한다
     public static func runUnderPTY(executable: ClaudeCodeExecutable, arguments: [String], environment: [String: String], cwd: String, timeout: TimeInterval) -> ClaudeDesktopOpenResult {
-        var master: Int32 = -1
-        var slave: Int32 = -1
-        // 줄 접힘을 줄이려고 넓게 (거절 글은 접혀도 읽는다)
-        var size = winsize(ws_row: 24, ws_col: 200, ws_xpixel: 0, ws_ypixel: 0)
-        guard openpty(&master, &slave, nil, nil, &size) == 0 else { return .unavailable }
-        for fd in [master, slave] { _ = fcntl(fd, F_SETFD, FD_CLOEXEC) }
+        guard let (master, slave) = openPTY() else { return .unavailable }
         _ = fcntl(master, F_SETFL, fcntl(master, F_GETFL) | O_NONBLOCK)
+        // 검사한 실제 파일로 띄운다 (보안 검토 P3): 후보 링크가 검사 뒤에 바뀌어도 다른 파일이 돌지 않는다. 자식이 보는 이름은 후보 경로다 (어댑터의 지킴이와 같다)
         let spawned = AgentSpawn.spawn(
-            executable: executable.path, arguments: arguments, environment: environment, cwd: cwd, fds: [(0, slave), (1, slave), (2, slave)], disclaim: false
+            executable: executable.realPath, argv0: executable.path, arguments: arguments, environment: environment, cwd: cwd, fds: [(0, slave), (1, slave), (2, slave)], disclaim: false
         )
         close(slave)
         guard let spawned else {
@@ -130,20 +126,55 @@ public enum ClaudeDesktopOpen {
             }
             var item = pollfd(fd: master, events: Int16(POLLIN), revents: 0)
             let waitMilliseconds = Int32(max(1, min(100, (deadline - now) / 1_000_000)))
-            if poll(&item, 1, waitMilliseconds) > 0, item.revents & Int16(POLLIN | POLLHUP) != 0 { _ = readOnce() }
+            guard poll(&item, 1, waitMilliseconds) > 0 else { continue }
+            if endsPolling(revents: item.revents) {
+                // 오류 · 끊김 · 잘못된 fd: 더 기다리지 않는다 (남은 것만 가져온다). 끝난 뒤에는 위의 waitpid · 기한이 마친다
+                var rounds = 0
+                while rounds < 64, readOnce() { rounds += 1 }
+                terminalClosed = true
+            } else if item.revents & Int16(POLLIN) != 0 {
+                _ = readOnce()
+            }
         }
         if timedOut {
             // 하위 프로세스까지 (그룹 = spawn이 만든 새 그룹). 끝난 claude가 띄운 앱은 그룹이 아니라 건드리지 않는다
             killpg(pid, SIGKILL)
             kill(pid, SIGKILL)
-            for _ in 0..<100 where !exited {
-                if waitpid(pid, &status, WNOHANG) == pid { exited = true }
-                if !exited { usleep(20_000) }
+            // 거두는 일은 기다리지 않는다 (보안 검토 P3): SIGKILL이면 곧 끝나지만 호출은 기한에서 돌아가고, 좀비가 남지 않게 뒤에서 거둔다
+            DispatchQueue.global(qos: .utility).async {
+                var reaped: Int32 = 0
+                while waitpid(pid, &reaped, 0) < 0, errno == EINTR {}
             }
         }
         close(master)
         let code: Int32? = exited && (status & 0x7f) == 0 ? (status >> 8) & 0xff : nil
         return classify(exitCode: code, timedOut: timedOut, output: output)
+    }
+
+    /// pty 한 쌍 (보안 검토 P3): 만들 때부터 `O_CLOEXEC`다. `openpty`는 만든 뒤에 `fcntl`로 걸어서 그 사이 다른 스레드의 spawn이 물려받을 수 있다.
+    /// 슬레이브는 `TIOCPTYGNAME`이 준 이름으로 열고 제어 터미널로 삼지 않는다 (`O_NOCTTY`). 줄 접힘을 줄이려고 넓게 (거절 글은 접혀도 읽는다)
+    static func openPTY() -> (master: Int32, slave: Int32)? {
+        let master = posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC)
+        guard master >= 0 else { return nil }
+        var name = [CChar](repeating: 0, count: 128)
+        guard grantpt(master) == 0, unlockpt(master) == 0, ptsname_r(master, &name, name.count) == 0 else {
+            close(master)
+            return nil
+        }
+        let slave = open(name, O_RDWR | O_NOCTTY | O_CLOEXEC)
+        guard slave >= 0 else {
+            close(master)
+            return nil
+        }
+        var size = winsize(ws_row: 24, ws_col: 200, ws_xpixel: 0, ws_ypixel: 0)
+        _ = ioctl(master, TIOCSWINSZ, &size)
+        return (master, slave)
+    }
+
+    /// 마스터를 더 기다릴 필요가 없다: 오류 · 잘못된 fd는 언제나, 끊김은 읽을 것이 없을 때만 (읽을 것이 남은 끊김은 마저 읽는다)
+    static func endsPolling(revents: Int16) -> Bool {
+        if revents & Int16(POLLERR | POLLNVAL) != 0 { return true }
+        return revents & Int16(POLLHUP) != 0 && revents & Int16(POLLIN) == 0
     }
 
     /// 실제 실행기: 막는 `runUnderPTY`를 GCD 스레드에서
@@ -162,32 +193,54 @@ public struct ClaudeDesktopSessionOpener: Sendable {
 
     let locator: ClaudeCodeLocator
     let folderRules: WorkspaceFolderRules
+    let desktopInstalled: @Sendable () -> Bool
     let appEnvironment: [String: String]
     let timeout: TimeInterval
     let log: any BridgeLogSink
     let run: Runner
 
     /// - folderRules: 사용자가 폴더를 고를 때와 같은 실제 규칙 (`WorkspaceFolderRules.standard`)
+    /// - desktopInstalled: Claude 데스크톱 앱이 이 Mac에 있나 (보안 검토 P2-2). 없으면 `claude`를 띄우지 않는다
     /// - appEnvironment: 앱의 환경. 자식에는 `ClaudeCodeEnvironment.child`가 고른 넷만 간다
     public init(
-        locator: ClaudeCodeLocator, folderRules: WorkspaceFolderRules, appEnvironment: [String: String] = ProcessInfo.processInfo.environment,
-        timeout: TimeInterval = ClaudeDesktopOpen.timeout, log: any BridgeLogSink = NoBridgeLog(), run: @escaping Runner = ClaudeDesktopOpen.livePTY
+        locator: ClaudeCodeLocator, folderRules: WorkspaceFolderRules, desktopInstalled: @escaping @Sendable () -> Bool,
+        appEnvironment: [String: String] = ProcessInfo.processInfo.environment, timeout: TimeInterval = ClaudeDesktopOpen.timeout, log: any BridgeLogSink = NoBridgeLog(),
+        run: @escaping Runner = ClaudeDesktopOpen.livePTY
     ) {
         self.locator = locator
         self.folderRules = folderRules
+        self.desktopInstalled = desktopInstalled
         self.appEnvironment = appEnvironment
         self.timeout = timeout
         self.log = log
         self.run = run
     }
 
+    private enum Preparation: Sendable {
+        case ready(executable: ClaudeCodeExecutable, environment: [String: String], cwd: String)
+        case refused(cause: String)
+    }
+
+    /// 막을 수 있는 파일 시스템 호출(폴더 검사의 stat · realpath는 보호 폴더면 접근 동의 창을 띄운다, `claude` 찾기)은 협력 스레드가 아니라 GCD 스레드에서 한다 (보안 검토 P3).
+    /// 앱 설치 확인이 먼저다: 앱이 없으면 사용자의 폴더를 만지지도 않는다
+    private func prepare(folder: String) -> Preparation {
+        guard desktopInstalled() else { return .refused(cause: "no_app") }
+        guard case .success(let real) = folderRules.validate(folder) else { return .refused(cause: "folder") }
+        guard let executable = locator.locate() else { return .refused(cause: "no_claude") }
+        return .ready(executable: executable, environment: ClaudeCodeEnvironment.child(app: appEnvironment, executable: executable), cwd: real)
+    }
+
     /// `.unavailable`이면 아무것도 띄우지 않았거나 `claude`가 거절했다: 부른 쪽이 앱만 앞으로 가져온다
     public func open(sessionID: String, folder: String?) async -> ClaudeDesktopOpenResult {
         guard let arguments = ClaudeDesktopOpen.arguments(sessionID: sessionID) else { return finish(.unavailable, cause: "bad_id") }
-        guard let folder, case .success(let real) = folderRules.validate(folder) else { return finish(.unavailable, cause: "folder") }
-        guard let executable = locator.locate() else { return finish(.unavailable, cause: "no_claude") }
-        let environment = ClaudeCodeEnvironment.child(app: appEnvironment, executable: executable)
-        return finish(await run(executable, arguments, environment, real, timeout), cause: nil)
+        guard let folder else { return finish(.unavailable, cause: "folder") }
+        let preparation: Preparation = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async { continuation.resume(returning: prepare(folder: folder)) }
+        }
+        switch preparation {
+        case .refused(let cause): return finish(.unavailable, cause: cause)
+        case .ready(let executable, let environment, let cwd): return finish(await run(executable, arguments, environment, cwd, timeout), cause: nil)
+        }
     }
 
     private func finish(_ result: ClaudeDesktopOpenResult, cause: String?) -> ClaudeDesktopOpenResult {
