@@ -21,6 +21,10 @@ enum ExternalSessionRegistry {
         var procStartAlternate: Date? = nil
         var entrypoint: String?
         var kind: String?
+        /// `status` · `waitingFor` (DR-2, PR-D1). 키가 없거나 모르는 값이면 `.unknown`: 줄은 그대로 읽고 상태만 모른다
+        var state: ClaudeAppSessionState = .unknown
+        /// `statusUpdatedAt` (밀리초 · 초 · 글). 없거나 믿을 범위 밖이면 nil
+        var statusUpdatedAt: Date? = nil
     }
 
     enum Read: Equatable, Sendable {
@@ -36,8 +40,11 @@ enum ExternalSessionRegistry {
         var procStart: Scalar?
         var entrypoint: String?
         var kind: String?
+        var status: String?
+        var waitingFor: String?
+        var statusUpdatedAt: Scalar?
 
-        enum CodingKeys: String, CodingKey { case pid, sessionId, cwd, procStart, entrypoint, kind }
+        enum CodingKeys: String, CodingKey { case pid, sessionId, cwd, procStart, entrypoint, kind, status, waitingFor, statusUpdatedAt }
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -51,6 +58,9 @@ enum ExternalSessionRegistry {
             procStart = try? container.decodeIfPresent(Scalar.self, forKey: .procStart)
             entrypoint = try? container.decodeIfPresent(String.self, forKey: .entrypoint)
             kind = try? container.decodeIfPresent(String.self, forKey: .kind)
+            status = try? container.decodeIfPresent(String.self, forKey: .status)
+            waitingFor = try? container.decodeIfPresent(String.self, forKey: .waitingFor)
+            statusUpdatedAt = try? container.decodeIfPresent(Scalar.self, forKey: .statusUpdatedAt)
         }
     }
 
@@ -90,7 +100,9 @@ enum ExternalSessionRegistry {
             let starts = file.procStart.map { parseProcStart($0, now: now, localZone: localZone) } ?? []
             entries.append(Entry(
                 pid: Int32(pid), sessionID: id, cwd: file.cwd.flatMap { $0.utf8.count <= 4096 ? $0 : nil }, procStart: starts.first, procStartAlternate: starts.dropFirst().first,
-                entrypoint: file.entrypoint.flatMap { $0.utf8.count <= 64 ? $0 : nil }, kind: file.kind.flatMap { $0.utf8.count <= 64 ? $0 : nil }
+                entrypoint: file.entrypoint.flatMap { $0.utf8.count <= 64 ? $0 : nil }, kind: file.kind.flatMap { $0.utf8.count <= 64 ? $0 : nil },
+                state: ClaudeAppSessionState.parse(status: file.status, waitingFor: file.waitingFor),
+                statusUpdatedAt: file.statusUpdatedAt.flatMap { parseProcStart($0, now: now, localZone: localZone).first }
             ))
         }
         if entries.isEmpty, undecodable > 0 { return .unavailable }
