@@ -521,3 +521,36 @@ Taskforce 밖에서 시작한 Claude Code 세션(터미널 · Claude 데스크�
 - `session_attach_refused`(앱이 남기는 거절 지표)와 앱 insert 정책 확장은 PR2m의 몫이다.
 - 처리방침에는 아직 이어받기 문장이 없다(9.4, 법률 PR 몫). 플래그는 그 게시 전에는 사용자에게 켜지 않는다.
 - 실제 Postgres 시험: `tests/pg/agent-session-attach.test.ts`(같은 시나리오 + 연결 둘 경합: 같은 id 동시 요청 · 서로 다른 Mac 동시 요청 · bridge 해제와 겹침 · 가상 루트 고치기와 턴 시작이 겹치는 두 순서 · `agent_attach` 한도 경합).
+
+## 19. 데스크톱 세션 레일 · 대화 읽기 (OA 데스크톱 레일 PR-D1 Kit, 사용자 결정 2026-10-22)
+
+Claude 데스크톱 앱에 열린 Claude Code 세션을 이 Mac의 레일에 실시간 상태로 보이고, 사용자가 연 그 세션의 대화를 Taskforce 창에서 읽는 일의 **Kit 몫**이다(화면 · 서버 0). 계약 `handoffs/oa-external-sessions-contract.md` 21 · 22장(DR-1 ~ DR-15 · DR-S1a/b · 21.4 · DT1 ~ DT9). 보내기(S2)는 PR-D3다.
+
+### 19-1. 상태 읽기 (`ClaudeAppSessionState` · `ExternalSessionRegistry` · `ClaudeAgentsListing`/`ClaudeAgentsLister` · `ClaudeAppStatusPoller`)
+
+- 값은 `busy` · `waiting` · `idle`이고 정확히 이 글자만 읽는다(대소문자 · 공백이 다르거나 키가 없거나 틀린 모양이면 `unknown`, 죽지 않는다). `waiting`이면 `waitingFor`가 둘로 갈린다: `permission prompt` · `sandbox request` → `approval`("Needs approval in Claude"), 그 밖(`input needed` · `dialog open` · `worker request` · 모르는 값 · 값 없음) → `answer`("Needs your answer in Claude").
+- 원천 A = 등록 파일 `~/.claude/sessions/<pid>.json`의 `status` · `waitingFor` · `statusUpdatedAt`(같은 하드닝 읽기: 이름 `^[0-9]{1,10}\.json$`, 64 KiB, `O_NOFOLLOW` · 이 uid · 일반 파일). 내부 형식이다(OB-1).
+- 문서화된 원천 = `claude agents --json`. 모델을 부르지 않는다(실측: 2.1.306, 최상위 배열, 항목 키 `pid cwd kind startedAt sessionId name status` + 멈춘 세션은 `waitingFor`, 8세션에 0.2초). **필요한 키만** 읽는다(`pid` · `sessionId` · `status` · `waitingFor`): `cwd` · `name`은 선언하지 않아 값으로 남지 않는다. `ClaudeAgentsLister`는 다른 짧은 명령과 같은 길이다(`ClaudeCodeLocator` 고정 찾기 · `ClaudeCodeProbe.liveRunner`의 자식 환경 넷 · 기한 5초 · 출력 64 KiB). 인자는 정확히 `agents --json`이고 0이 아닌 종료 · 모르는 모양은 nil이다. 로그는 `claude_app_agents {result: ok|unavailable}` 코드 하나뿐.
+- `ClaudeAppStatusPoller`(actor, 시계 · 실행기 주입): 부르는 쪽이 1초마다 `poll()` → 등록 파일을 읽어 **줄**을 정하고, 시작 때와 60초마다 `claude agents --json`과 세션마다 맞춰 본다. 실행 **전 · 후** 두 번 읽은 등록 값 중 하나와 같으면 같다(실행하는 사이 바뀐 것은 어긋남이 아니다). 어긋나거나(등록의 키가 없는 경우 포함) 하나라도 다르면 B로 간다: `claude agents --json`을 3초마다 부르고 그 값을 상태로 쓴다. 다시 맞으면 A로 돌아온다. 맞춰 볼 수 없으면(agents를 못 읽음 · agents가 모르는 세션 · 상태 없는 항목 · 같은 id가 둘) 원천을 바꾸지 않고 `verified = false`다. 한 번에 하나만 돌고, 살아 있는 데스크톱 세션이 없으면 띄우지 않는다. B에서 agents의 같은 id · 같은 pid 항목이 정확히 하나가 아니면 그 세션의 상태는 `unknown`이다. **agents 목록은 줄을 만들지 못한다**(등록 파일 + 살아 있음이 정한다). 로그는 `claude_app_status {source: registry|agents, mismatch: 0|1}`뿐.
+- 레일에 오를 수 있는 세션(`ClaudeAppLiveSessions.read`): `entrypoint claude-desktop`(쥠 판정의 `held(.claudeApp)`과 같은 규칙: `background` 종류 아님) · 우리 혈통 아님 · 살아 있음(`ExternalSessionHold.isAlive`: pid · 같은 사용자 · 시작 시각 1초 안, pid 재사용은 stale) · **그 id의 살아 있는 등록이 하나뿐**. 둘 이상이면(다른 출처의 등록 포함, DT1) 어느 쪽도 믿지 않고 `doubled`에 담아 알린다("Running in two places"). 끝난 프로세스의 남은 파일은 세지 않는다.
+
+### 19-2. 레일 판정 (`ClaudeAppRail.evaluate`, 순수 함수)
+
+- 입력 = 믿는 세션들(상태 포함) + 기억(`ClaudeAppRailMemory`, 값) + 지금 + `opened`(사용자가 Taskforce에서 열어 둔 세션 id). 출력 = 레일 줄 + 새 기억. 파일 · 시계 · 프로세스를 만지지 않는다.
+- `busy` → running, `waiting` → needsYou(approval · answer). **일하던(busy · waiting) 세션이 쉬게 된 것을 Taskforce가 본 뒤** `doneHold`(3초, Taskforce 세션 Done 링과 같다) 동안 done. 열어 보면(`opened`) 바로 내리고 다시 오르지 않는다. 처음부터 쉬던 세션 · 프로세스가 끝난 세션은 레일에 없다(기억에서도 지운다). `unknown`은 기억을 건드리지 않는다(읽기가 잠깐 흔들려도 끝을 놓치지 않는다). `waiting → idle`도 done이다(계약은 busy → idle만 말했다: 사용자가 거절해 턴이 끝난 경우도 "끝났다"로 본다).
+- 순서: needs-you → running → done, 같은 종류 안에서는 새것(상태가 바뀐 시각, done은 본 시각) 먼저, 같으면 id. 칸 수 · 캡슐 나눔(`RailOrdering`)은 Mac(PR-D2)의 일이다.
+
+### 19-3. 대화 읽기 (`ClaudeAppTranscriptReader`)
+
+- ES-01의 "머리 · 꼬리 메타데이터만"은 목록 · 레일의 약속이고, 대화 보기만 이 예외를 갖는다. **사용자가 연 그 세션 하나**의 `projects/<디렉터리>/<소문자 UUID>.jsonl`만 읽고(폴더를 알면 바로, 모르거나 맞지 않으면 `projects` 아래 디렉터리 이름만 나열해 그 id의 파일 이름을 확인 · 같은 id가 둘이면 더 최근 것), 다른 기록 · 등록 파일 · 자격 파일은 열지도 나열하지도 않는다. `~/.claude` · `projects` · 프로젝트 디렉터리 · 기록 파일 모두 기호 링크 아님 · 이 uid, 파일은 일반 파일이고 읽기는 `O_NOFOLLOW`(5.1과 같다). 이 검사에 걸리면 **읽기 전에** `unreadable`이다.
+- 해석하는 줄은 셋뿐이다: `user`(텍스트 블록만: 이미지 · `tool_result`는 대화가 아니다), `assistant`(텍스트 블록 · `tool_use`의 **도구 이름과 `description`만**), `attachment.type == queued_command` 중 `origin.kind == "peer"`(DR-7: `user` 줄의 peer와 같은 `ClaudeAppTurn.Kind.peer`, 글은 받는 쪽이 감싼 `message.content`가 아니라 보낸 글 `origin.body`, `ClaudeAppPeer.isTaskforceRelay`는 `plugin == "tf-relay"`). 그 밖은 열지 않는다: `attachment`의 다른 종류(`session_context`의 계정 이메일 · `credential_org` · `prompt_snapshot`) · `api-request*`(시스템 프롬프트) · `thinking` · 시스템 · 계정 줄 — `"user"` · `"assistant"` · `"queued_command"` 글자가 없는 줄은 **디코딩하지 않고**(끊긴 줄이어도 건너뛴 줄로도 세지 않는다), 디코딩해도 선언한 칸만 꺼낸다. 건너뛰는 줄: 서브에이전트(`isSidechain`) · 다른 세션 id · 메타(`isMeta`, peer가 아니면) · peer가 아닌 `queued_command`(작업 알림 등).
+- 상한: 한 줄 1 MiB(넘으면 그 줄을 통째로 건너뛴다, UTF-8이 아닌 줄도) · 한 번에 읽는 창 2 MiB · 처음 열기와 이전 쪽의 총량 16 MiB · 처음 열면 **꼬리 2 MiB**에서 마지막 200개 · 글 한 칸 32 KiB(글자 경계에서 자른다, `truncated`). 줄 가운데서 시작하는 창의 조각은 줄이 아니다. 창보다 긴 줄은 건너뛰고 이전 쪽 · 이어 읽기가 끝없이 돌지 않는다.
+- 값 = `ClaudeAppTurn`(`user` · `assistant` · `peer` · `tool(name, description)`, id = 줄 위치 + 칸 번호라 쪽을 넘어도 같은 줄은 같은 id), 평문만이다(DT8): 링크 · 태그 · 마크다운은 글자 그대로, 제어 글자 · 방향 바꿈 글자는 지운다. 도구 줄의 입력 · 결과는 `detail(of:cursor:)`로 **펼칠 때만** 그 줄을 다시 읽어 16 KiB까지(같은 도구 id의 결과는 그 줄 뒤 창 하나에서 찾는다). 파일이 바뀌었으면(만든 시각이 다름) 옛 위치를 믿지 않는다.
+- 이어 읽기 `newer(cursor)`: 지난 끝 자리부터 새로 붙은 **완성된** 줄만(개행이 오지 않은 줄은 기다린다), 한 번에 창 하나(`hasMore`). 파일이 줄었거나 만든 시각이 달라지면 `reset`(다시 `open`), 사라졌으면 `unreadable`. 메모리에만 둔다(디스크 캐시 0). 로그는 `claude_app_transcript {result: ok|unreadable|reset}` 코드 하나뿐이고 값(`ClaudeAppTurn` · 커서 · 세션)의 `description`은 글 · 경로 · id를 찍지 않는다.
+
+### 19-4. PR-D2가 쓰는 공개 API
+
+- 상태: `ClaudeAppStatusPoller(sessionsDirectory:agents:…).poll() -> Poll { sessions, doubled, source, mismatch, verified, registryUnavailable }`, `ClaudeAgentsLister(locator:runner:).list`(실제 앱: `ClaudeCodeLocator.standard(home:)` + `ClaudeCodeProbe.liveRunner(environment:cwd:)`).
+- 레일: `ClaudeAppRail.evaluate(sessions:memory:now:opened:) -> Result { entries, memory }`, `ClaudeAppRailEntry.Kind { running, needsYou(ClaudeAppWait), done }`.
+- 대화: `ClaudeAppTranscriptReader(claudeDirectory:).open(sessionID:cwd:) / earlier(_:) / newer(_:) / detail(of:cursor:)`.
+- 한계: 등록 파일의 형식 · `claude agents --json`의 모양은 Claude Code 버전에 달렸다(맞춰 보기가 형식 변화를 잡아 B로 간다). 같은 uid의 악성 코드는 가짜 등록 파일로 상태를 속일 수 있다(이미 사용자 파일을 다 볼 수 있는 상대다, 계약 DT1): 줄은 살아 있는 pid · 시작 시각 · 하나뿐인 id가 맞아야 오르고 보내기는 PR-D3의 몫이다.
