@@ -28,7 +28,7 @@ beforeEach(() => {
   mocks.createCookieClient.mockResolvedValue({ auth: { getClaims: claims() } } as unknown as SupabaseClient);
   mocks.createSupabaseClient.mockReturnValue({ auth: { getClaims: claims() } } as unknown as SupabaseClient);
   // 함수가 not_found를 돌려주면 handler가 돌았다는 뜻이다 (세션을 읽지 않는다)
-  mocks.rpc.mockReturnValue({ throwOnError: () => Promise.resolve({ data: { status: "not_found" }, error: null }) });
+  mocks.rpc.mockImplementation((name: string) => ({ throwOnError: () => Promise.resolve({ data: name === "take_rate_limit" ? null : { status: "not_found" }, error: null }) }));
   mocks.admin.mockReturnValue({ rpc: mocks.rpc });
 });
 afterEach(() => {
@@ -43,15 +43,15 @@ describe("POST agent-sessions/attach: 쿠키 CSRF · 인증", () => {
     expect(mocks.rpc).not.toHaveBeenCalled();
   });
 
-  it("같은 출처의 쿠키 쓰기는 통과한다 (handler가 돈다: 함수가 not_found라 404)", async () => {
+  it("같은 출처의 쿠키 쓰기는 통과한다 (handler가 돈다: 속도 제한 확인 뒤 함수가 not_found라 404)", async () => {
     expect((await POST(request({ "sec-fetch-site": "same-origin" }))).status).toBe(404);
-    expect(mocks.rpc).toHaveBeenCalledTimes(1);
+    expect(mocks.rpc.mock.calls.map((call) => call[0])).toEqual(["take_rate_limit", "attach_agent_session"]);
   });
 
   it("Bearer는 쿠키 CSRF 검사 대상이 아니다", async () => {
     expect((await POST(request({ authorization: "Bearer token-123", "sec-fetch-site": "cross-site" }))).status).toBe(404);
     expect(mocks.createCookieClient).not.toHaveBeenCalled();
-    expect(mocks.rpc).toHaveBeenCalledTimes(1);
+    expect(mocks.rpc.mock.calls.map((call) => call[0])).toEqual(["take_rate_limit", "attach_agent_session"]);
   });
 
   it("로그인하지 않은 요청(쿠키 클레임 없음)은 401이다", async () => {

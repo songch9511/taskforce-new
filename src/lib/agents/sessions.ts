@@ -3,6 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 
 import { agentSessionSchema, type AgentSession } from "@/lib/api/contract";
+import type { RateLimit } from "@/lib/api/rate-limit";
 
 import { adapterEnabled, AGENT_REGISTRY } from "./registry";
 import { startNextAgentMessage } from "./next-turn";
@@ -93,15 +94,29 @@ export async function resumeAgentSessionHere(admin: SupabaseClient, userId: stri
 }
 
 const attachSchema = z.union([
-  z.strictObject({ status: z.enum(["created", "existing"]), session_id: z.guid(), conversation_id: z.guid() }),
-  z.strictObject({ status: z.enum(["not_found", "session_in_use"]) }),
+  z.strictObject({ status: z.enum(["created", "existing"]), session_id: z.guid(), conversation_id: z.guid(), workspace_ref: z.string().min(1).max(500) }),
+  z.strictObject({ status: z.enum(["not_found", "session_in_use", "workspace_mismatch"]) }),
 ]);
-export type AttachAgentSessionResult = { status: "created" | "existing"; conversationId: string; session: AgentSession } | { status: "not_found" | "session_in_use" };
+export type AttachAgentSessionResult =
+  | { status: "created" | "existing"; conversationId: string; workspaceRef: string; session: AgentSession }
+  | { status: "not_found" | "session_in_use" | "workspace_mismatch" };
+
+/** 이어받기 속도 제한: 사용자별 10분에 30번 (take_rate_limit 종류 agent_attach, 20261204000000). 멱등 재시도도 센다 */
+export const AGENT_ATTACH_LIMIT: RateLimit = { max: 30, windowMs: 10 * 60_000 };
+
+/** 한도에 찼으면 다시 할 수 있는 시각, 아니면 시도를 한 번 남기고 null. 저장 함수를 부르기 전에 부른다 */
+export async function takeAgentAttachLimit(admin: SupabaseClient, userId: string): Promise<Date | null> {
+  const { data } = await admin
+    .rpc("take_rate_limit", { p_user_id: userId, p_kind: "agent_attach", p_max: AGENT_ATTACH_LIMIT.max, p_window_seconds: AGENT_ATTACH_LIMIT.windowMs / 1000 })
+    .throwOnError();
+  return data ? new Date(String(data)) : null;
+}
 
 /**
  * POST /api/v2/agent-sessions/attach (ES-17 · ES-18): Taskforce 밖에서 시작한 Claude Code 세션을 이 사용자의 세션 + 대화로 묶는다.
  * 검사 · 저장 · 지표(session_attached)는 모두 SQL(attach_agent_session)이 한 트랜잭션에서 한다 — 여기는 부르고, 모르는 모양이면 던지고, 묶인 세션 한 줄을 다시 읽을 뿐이다.
  * not_found = 없는 · 남의 · 해제된 bridge, 또는 그 bridge에 이 adapter의 active 연결이 없음 (구별해서 알리지 않는다). session_in_use = 다른 연결(다른 Mac)이나 닫힌 세션에 이미 묶인 Claude id.
+ * workspace_mismatch = 이미 묶인 세션의 가상 루트가 보낸 값과 다른데 고칠 수 없다 (bound가 아니거나 열린 작업이 있다; 고칠 수 있으면 SQL이 고치고 existing).
  * Claude id · 가상 루트는 로그에 남기지 않는다.
  */
 export async function attachAgentSession(
@@ -124,5 +139,5 @@ export async function attachAgentSession(
   const result = attachSchema.parse(data);
   if (!("session_id" in result)) return { status: result.status };
   const session = await loadAgentSession(admin, userId, result.session_id);
-  return session ? { status: result.status, conversationId: result.conversation_id, session } : { status: "not_found" };
+  return session ? { status: result.status, conversationId: result.conversation_id, workspaceRef: result.workspace_ref, session } : { status: "not_found" };
 }

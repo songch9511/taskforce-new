@@ -1931,10 +1931,15 @@ export const attachAgentSessionRequestSchema = z.strictObject({
   workspace_ref: z.string().regex(/^\/taskforce\/ws_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
 });
 export type AttachAgentSessionRequest = z.infer<typeof attachAgentSessionRequestSchema>;
-/** created = 이 요청이 세션(과 대화)을 새로 묶었다 (201), existing = 같은 Claude id가 이미 묶여 있어 그 행을 돌려준다 (200, 멱등) */
+/**
+ * created = 이 요청이 세션 또는 대화를 새로 만들었다 (201), existing = 같은 Claude id가 이미 묶여 있어 그 행을 돌려준다 (200, 멱등).
+ * workspace_ref = 서버에 저장된 가상 루트 (앱은 자기 핀과 맞춘다). existing인데 보낸 값과 다르면 서버가 bound · 열린 작업 없음일 때 보낸 값으로 고친 것이다 —
+ * 고칠 수 없으면 409 workspace_mismatch. 이미 있던 세션의 값은 가상 루트 모양이 아닐 수 있어 응답은 비어 있지 않은 글만 본다.
+ */
 export const attachAgentSessionResponseSchema = z.strictObject({
   status: z.enum(["created", "existing"]),
   conversation_id: z.guid(),
+  workspace_ref: z.string().min(1).max(500),
   session: agentSessionSchema,
 });
 export type AttachAgentSessionResponse = z.infer<typeof attachAgentSessionResponseSchema>;
@@ -1974,8 +1979,11 @@ export type AnswerAgentQuestionResponse = z.infer<typeof answerAgentQuestionResp
 /** busy_retry: 잠금 경합(55P03 · 40001)이 재시도를 넘겼다 — 쓰기 0이고 같은 요청을 다시 보내도 된다 (코디네이터 결정 5.1). 나머지는 계약 OD-26 */
 export const agentConversationErrorCodeSchema = z.enum(["target_mismatch", "question_stale", "secret_requires_local", "session_busy", "approval_via_review", "busy_retry"]);
 export type AgentConversationErrorCode = z.infer<typeof agentConversationErrorCodeSchema>;
-/** 이어받기(POST /api/v2/agent-sessions/attach)가 더하는 코드. session_in_use = 409 (다른 연결 · 닫힌 세션에 이미 묶임), forbidden = 403 (플래그 · 명단 · registry grade). 위 여섯 목록은 그대로다 */
-export const agentAttachErrorCodeSchema = z.enum(["session_in_use", "forbidden"]);
+/**
+ * 이어받기(POST /api/v2/agent-sessions/attach)가 더하는 코드. session_in_use = 409 (다른 연결 · 닫힌 세션에 이미 묶임), forbidden = 403 (registry grade),
+ * workspace_mismatch = 409 (이미 묶인 세션의 가상 루트가 보낸 값과 다른데 고칠 수 없다: bound가 아니거나 열린 작업이 있다). 위 여섯 목록은 그대로다
+ */
+export const agentAttachErrorCodeSchema = z.enum(["session_in_use", "forbidden", "workspace_mismatch"]);
 export type AgentAttachErrorCode = z.infer<typeof agentAttachErrorCodeSchema>;
 export const apiErrorV2AgentCodeSchema = z.enum([...apiErrorV2CodeSchema.options, ...agentConversationErrorCodeSchema.options, ...agentAttachErrorCodeSchema.options]);
 export type ApiErrorV2AgentCode = z.infer<typeof apiErrorV2AgentCodeSchema>;

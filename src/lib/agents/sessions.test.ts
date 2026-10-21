@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { agentSessionSchema } from "@/lib/api/contract";
 
 import { fakeAdmin } from "./fake-admin";
-import { attachAgentSession, loadAgentSession, loadSessionAdapter, openAgentSessionExternal, renameAgentSession, resumeAgentSessionHere } from "./sessions";
+import { AGENT_ATTACH_LIMIT, attachAgentSession, loadAgentSession, loadSessionAdapter, openAgentSessionExternal, renameAgentSession, resumeAgentSessionHere, takeAgentAttachLimit } from "./sessions";
 
 const USER = "10000000-0000-4000-8000-000000000001";
 const OTHER = "20000000-0000-4000-8000-000000000002";
@@ -222,12 +222,12 @@ describe("attachAgentSession (외부 세션 이어받기, ES-18)", () => {
   const EXTERNAL = "e0000000-0000-4000-8000-000000000001";
   const WORKSPACE = "/taskforce/ws_0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f";
   const INPUT = { bridgeId: BRIDGE, adapter: "agent:claude-code", externalSessionId: EXTERNAL, workspaceRef: WORKSPACE };
-  const attached = (status: string) => ({ attach_agent_session: () => ({ status, session_id: SESSION, conversation_id: CONVERSATION }) });
+  const attached = (status: string) => ({ attach_agent_session: () => ({ status, session_id: SESSION, conversation_id: CONVERSATION, workspace_ref: WORKSPACE }) });
 
   it("SQL 함수 한 번만 부른다: 사용자 id는 인자로, 칸은 받은 그대로. 이벤트 · 행 쓰기는 SQL의 같은 트랜잭션 몫이라 TS는 insert · update 0", async () => {
     const fake = fakeAdmin({ tables: world(), rpc: attached("created") });
     const result = await attachAgentSession(fake.admin, USER, INPUT);
-    expect(result).toMatchObject({ status: "created", conversationId: CONVERSATION, session: { id: SESSION, connection_id: CONN } });
+    expect(result).toMatchObject({ status: "created", conversationId: CONVERSATION, workspaceRef: WORKSPACE, session: { id: SESSION, connection_id: CONN } });
     expect(fake.rpcCalls("attach_agent_session")).toHaveLength(1);
     expect(fake.rpcCalls("attach_agent_session")[0].args).toEqual({
       p_user_id: USER, p_bridge_id: BRIDGE, p_adapter: "agent:claude-code", p_external_session_id: EXTERNAL, p_workspace_ref: WORKSPACE,
@@ -241,7 +241,7 @@ describe("attachAgentSession (외부 세션 이어받기, ES-18)", () => {
     expect(fake.calls.filter((call) => call.kind === "select").every((call) => call.filters?.some(([column, , value]) => column === "user_id" && value === USER))).toBe(true);
   });
 
-  it.each(["not_found", "session_in_use"])("%s는 세션을 읽지 않는다", async (status) => {
+  it.each(["not_found", "session_in_use", "workspace_mismatch"])("%s는 세션을 읽지 않는다", async (status) => {
     const fake = fakeAdmin({ tables: world(), rpc: { attach_agent_session: () => ({ status }) } });
     expect(await attachAgentSession(fake.admin, USER, INPUT)).toEqual({ status });
     expect(fake.calls.filter((call) => call.kind === "select")).toEqual([]);
@@ -253,10 +253,13 @@ describe("attachAgentSession (외부 세션 이어받기, ES-18)", () => {
   });
 
   it.each([
-    ["모르는 status", { status: "attached", session_id: SESSION, conversation_id: CONVERSATION }],
+    ["모르는 status", { status: "attached", session_id: SESSION, conversation_id: CONVERSATION, workspace_ref: WORKSPACE }],
     ["id 없음", { status: "created" }],
-    ["추가 칸", { status: "created", session_id: SESSION, conversation_id: CONVERSATION, extra: 1 }],
+    ["workspace_ref 없음", { status: "created", session_id: SESSION, conversation_id: CONVERSATION }],
+    ["빈 workspace_ref", { status: "existing", session_id: SESSION, conversation_id: CONVERSATION, workspace_ref: "" }],
+    ["추가 칸", { status: "created", session_id: SESSION, conversation_id: CONVERSATION, workspace_ref: WORKSPACE, extra: 1 }],
     ["not_found에 id", { status: "not_found", session_id: SESSION }],
+    ["workspace_mismatch에 ref", { status: "workspace_mismatch", workspace_ref: WORKSPACE }],
     ["null", null],
   ])("모르는 모양(%s)은 던진다", async (_name, data) => {
     const fake = fakeAdmin({ tables: world(), rpc: { attach_agent_session: () => data } });
@@ -267,7 +270,7 @@ describe("attachAgentSession (외부 세션 이어받기, ES-18)", () => {
     let attempts = 0;
     const flaky = fakeAdmin({
       tables: world(),
-      rpc: { attach_agent_session: () => { attempts += 1; if (attempts < 3) throw Object.assign(new Error("lock"), { code: "55P03" }); return { status: "created", session_id: SESSION, conversation_id: CONVERSATION }; } },
+      rpc: { attach_agent_session: () => { attempts += 1; if (attempts < 3) throw Object.assign(new Error("lock"), { code: "55P03" }); return { status: "created", session_id: SESSION, conversation_id: CONVERSATION, workspace_ref: WORKSPACE }; } },
     });
     expect(await attachAgentSession(flaky.admin, USER, INPUT)).toMatchObject({ status: "created" });
     expect(attempts).toBe(3);
@@ -275,5 +278,26 @@ describe("attachAgentSession (외부 세션 이어받기, ES-18)", () => {
     const broken = fakeAdmin({ tables: world(), rpc: { attach_agent_session: () => { hard += 1; throw Object.assign(new Error("boom"), { code: "XX000" }); } } });
     await expect(attachAgentSession(broken.admin, USER, INPUT)).rejects.toMatchObject({ code: "XX000" });
     expect(hard).toBe(1);
+  });
+});
+
+describe("takeAgentAttachLimit (agent_attach, 30번 · 10분)", () => {
+  it("한도는 30번 · 10분이고 take_rate_limit을 사용자 id · 종류 agent_attach로 한 번 부른다", async () => {
+    expect(AGENT_ATTACH_LIMIT).toEqual({ max: 30, windowMs: 10 * 60_000 });
+    const fake = fakeAdmin({ rpc: { take_rate_limit: () => null } });
+    expect(await takeAgentAttachLimit(fake.admin, USER)).toBeNull();
+    expect(fake.rpcCalls()).toHaveLength(1);
+    expect(fake.rpcCalls("take_rate_limit")[0].args).toEqual({ p_user_id: USER, p_kind: "agent_attach", p_max: 30, p_window_seconds: 600 });
+  });
+
+  it("한도에 찼으면 다시 할 수 있는 시각(Date)을 돌려준다", async () => {
+    const at = "2026-10-22T01:02:03.000Z";
+    const fake = fakeAdmin({ rpc: { take_rate_limit: () => at } });
+    expect(await takeAgentAttachLimit(fake.admin, USER)).toEqual(new Date(at));
+  });
+
+  it("DB 오류는 그대로 던진다 (조용히 통과시키지 않는다)", async () => {
+    const fake = fakeAdmin({ rpc: { take_rate_limit: () => { throw Object.assign(new Error("boom"), { code: "XX000" }); } } });
+    await expect(takeAgentAttachLimit(fake.admin, USER)).rejects.toMatchObject({ code: "XX000" });
   });
 });

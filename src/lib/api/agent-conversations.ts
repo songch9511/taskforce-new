@@ -26,6 +26,7 @@ import {
   openAgentSessionExternal,
   renameAgentSession,
   resumeAgentSessionHere,
+  takeAgentAttachLimit,
   type AttachAgentSessionResult,
   type OpenAgentSessionExternalResult,
   type RenameAgentSessionResult,
@@ -63,6 +64,7 @@ import {
 } from "./contract";
 import type { AgentConversationRef, AgentCreateDelegate, AgentPostDelegate, PostMessageDeps, PreparedAttachments } from "./conversations";
 import { hasAiConsent } from "./profile-store";
+import { retryAfterSeconds } from "./rate-limit";
 import { errorResponse, parseBody, unauthorized } from "./respond";
 
 // 에이전트 대상 대화 route 처리 (OA D1d-s, Assistant 계약 v3 2–5장). 인증 · gate · 저장 · 에이전트 호출을 인자로 받아 Route Handler 밖에서 테스트한다 (conversations.ts와 같은 방식).
@@ -454,45 +456,58 @@ export async function handleResumeHere<User extends AppUser>(request: Request, s
 // ─────────────────────────── 외부 세션 이어받기 ───────────────────────────
 
 export type AttachSessionDeps<User> = {
-  /** 대화 v2 ∧ AGENT_ATTACH_EXISTING_ENABLED. 꺼져 있으면 인증 · DB 전에 403 */
+  /** 대화 v2 ∧ AGENT_ATTACH_EXISTING_ENABLED. 꺼져 있으면 인증 · DB 전에 404 (다른 v2 에이전트 route와 같다) */
   enabled: () => boolean;
   authenticate: (request: Request) => Promise<User | null>;
   betaAllowed: (userId: string) => boolean;
   /** 본문의 adapter가 registry에서 이어받기를 지원하고 그 adapter 플래그가 켜져 있는가 (grade) */
   adapterAllowed: (adapter: string) => boolean;
+  /** 속도 제한(agent_attach, 10분에 30번): 한도에 찼으면 다시 할 수 있는 시각, 아니면 시도를 한 번 남기고 null. 저장 함수보다 먼저 부른다 */
+  takeLimit: (user: User) => Promise<Date | null>;
   attach: (user: User, input: AttachAgentSessionRequest) => Promise<AttachAgentSessionResult>;
 };
 
 const forbidden = () => errorResponse(403, "forbidden", "이어받을 수 없습니다.");
+const NO_ROUTE = "없는 경로입니다.";
 
 /**
  * POST /api/v2/agent-sessions/attach (ES-16 · ES-17): Taskforce 밖에서 시작한 Claude Code 세션을 이 Mac의 세션 + 대화로 묶는다 (created 201, 같은 Claude id가 이미 묶여 있으면 existing 200).
- * 순서: gate 403(인증 · DB 0) → 인증 401(Bearer · 쿠키 + CSRF) → 베타 명단 403 → 본문 400(정규 소문자 UUID · 가상 루트 모양) → registry grade 403 → 저장.
- * 404 = 없는 · 남의 · 해제된 bridge 또는 active 연결 없음(구별해서 알리지 않는다), 409 session_in_use = 다른 연결이나 닫힌 세션에 이미 묶임, 잠금 경합은 409 busy_retry.
+ * 순서: gate 404(인증 · DB 0) → 인증 401(Bearer · 쿠키 + CSRF) → 베타 명단 404 → 본문 400(정규 소문자 UUID · 가상 루트 모양, strict) → registry grade 403 → 속도 제한 429 → 저장.
+ * 플래그 꺼짐 · 명단 밖은 다른 v2 에이전트 route와 같이 404, 이 adapter가 이어받기를 지원하지 않는 것(grade)만 403 forbidden이다.
+ * 404 = 없는 · 남의 · 해제된 bridge 또는 active 연결 없음(구별해서 알리지 않는다), 409 session_in_use = 다른 연결이나 닫힌 세션에 이미 묶임,
+ * 409 workspace_mismatch = 이미 묶인 세션의 가상 루트가 다르고 고칠 수 없음, 잠금 경합은 409 busy_retry. 이미 묶인 세션이 bound이고 열린 작업이 없으면 SQL이 가상 루트를 고치고 existing이다.
  * 로그는 결과 코드뿐이다: Claude 세션 id · 가상 루트 · bridge id · 사용자 id는 남기지 않는다.
  */
 export async function handleAttachSession<User extends AppUser>(request: Request, deps: AttachSessionDeps<User>): Promise<Response> {
-  if (!deps.enabled()) return forbidden();
+  if (!deps.enabled()) return errorResponse(404, "not_found", NO_ROUTE);
   const user = await deps.authenticate(request);
   if (!user) return unauthorized();
-  if (!deps.betaAllowed(user.user.id)) return forbidden();
+  if (!deps.betaAllowed(user.user.id)) return errorResponse(404, "not_found", NO_ROUTE);
   const body = await parseBody(request, attachAgentSessionRequestSchema);
   if ("error" in body) return body.error;
   if (!deps.adapterAllowed(body.data.adapter)) return forbidden();
   try {
+    const retryAt = await deps.takeLimit(user);
+    if (retryAt) {
+      const response = errorResponse(429, "rate_limited", "이어받기가 너무 잦습니다. 잠시 뒤 다시 시도해 주세요.");
+      response.headers.set("Retry-After", String(retryAfterSeconds(retryAt, new Date())));
+      return response;
+    }
     const result = await deps.attach(user, body.data);
     console.info(JSON.stringify({ event: "agent_session_attach", result: result.status }));
     switch (result.status) {
       case "created":
       case "existing":
         return Response.json(
-          attachAgentSessionResponseSchema.parse({ status: result.status, conversation_id: result.conversationId, session: result.session }),
+          attachAgentSessionResponseSchema.parse({ status: result.status, conversation_id: result.conversationId, workspace_ref: result.workspaceRef, session: result.session }),
           { status: result.status === "created" ? 201 : 200 },
         );
       case "not_found":
         return notFound("이 Mac을 찾지 못했습니다.");
       case "session_in_use":
         return errorResponse(409, "session_in_use", "이미 다른 곳에서 이어받은 세션입니다.");
+      case "workspace_mismatch":
+        return errorResponse(409, "workspace_mismatch", "이 세션은 다른 작업 폴더에 묶여 있습니다.");
     }
   } catch (error) {
     return failed(error, "agent_session_attach_failed", "세션을 이어받지 못했습니다.");
@@ -704,6 +719,7 @@ export const realAttachDeps = (): AttachSessionDeps<ApiContext> => ({
   authenticate: authenticateRequest,
   betaAllowed: agentBetaUserAllowed,
   adapterAllowed: (adapter) => attachExistingAllowed(adapter),
+  takeLimit: ({ user }) => takeAgentAttachLimit(admin(), user.id),
   attach: ({ user }, input) => attachAgentSession(admin(), user.id, { bridgeId: input.bridge_id, adapter: input.adapter, externalSessionId: input.external_session_id, workspaceRef: input.workspace_ref }),
 });
 
