@@ -680,7 +680,14 @@ public actor ClaudeCodeProcess: AgentProcess {
         switch started {
         case .success(let value): kept = value
         case .failure(.notRun): throw launchFailed(spawn, ended: true, claude: nil, reason: "keeper_spawn")
-        case .failure(.stopped(let ended)): throw launchFailed(spawn, ended: ended, claude: nil, reason: "root_id")
+        case .failure(.stopped(let ended, let diagnostic)):
+            log.log("claude_start_diagnostic", [
+                "cause": .code(diagnostic.cause.rawValue), "ended": .count(ended ? 1 : 0),
+                "ended_report": .count(diagnostic.abort.sawEnded ? 1 : 0), "forced_kill": .count(diagnostic.abort.forcedKill ? 1 : 0),
+                "exit_code": diagnostic.abort.code.map { .count(Int($0)) } ?? .code("none"), "signal": diagnostic.abort.signal.map { .count(Int($0)) } ?? .code("none"),
+                "wait": .millis(diagnostic.waitMilliseconds), "abort": .millis(diagnostic.abortMilliseconds),
+            ])
+            throw launchFailed(spawn, ended: ended, claude: nil, reason: diagnostic.cause.launchReason)
         }
         spawn.process = kept.keeper
         // 지킴이 · 뿌리를 바로 파일에 적는다 (13장 2). 적지 못했으면 이 spawn의 끝을 나중에 증명할 수 없다: 정체 commit · stdin 전에 멈춘다 (11장 2 · 14장 1)
@@ -1030,6 +1037,8 @@ public actor ClaudeCodeProcess: AgentProcess {
                 // 멈추기로 한 spawn의 훅은 모두 deny (8장 9)
                 spawn.stopped = true
                 sendInterrupt(spawn)
+            case .toolRefusedBeforeHook(let refusal, let hookStarted):
+                log.log("claude_tool_refused_before_hook", ["reason": .code(refusal.rawValue), "hook_started": .count(hookStarted ? 1 : 0)])
             case .confirmQuestion(let pending):
                 // 보고된 보류만 열린 요청이다: id · 종류 · digest · 대상 지문만 적는다 (글 · 경로 0)
                 var state = ClaudeSessionState.load(from: spawn.folder.root)

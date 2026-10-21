@@ -18,9 +18,21 @@ export const AGENT_REGISTRY: Record<"agent:claude-code" | "agent:codex", AgentCa
     resume: "supported",
     enforcement: {
       approval_gate: { channel: "PreToolUse", verified: true, evidence: "S0 CC-3 CC-9 CC-10 CC-12; manual" },
-      target_scope: { channel: null, verified: false },
-      revocation: { channel: null, verified: false },
-      read_only: { channel: null, verified: false },
+      target_scope: {
+        channel: "PreToolUse",
+        verified: true,
+        evidence: "R1-03 R1-03b R1-03c 2026-10-21, real claude 2.1.241, see docs/rollouts/claude-code-r1-evidence.md: Read outside the workspace denied at the hook (R1-03); Write and Edit creating a new outside file denied at the hook with no server call (R1-03b, R1-03c); Edit and Write on an existing outside file refused by the CLI before the hook; outside files unchanged; Bash scope not claimed",
+      },
+      revocation: {
+        channel: "PreToolUse",
+        verified: true,
+        evidence: "R1-04 2026-10-21, real claude 2.1.241, see docs/rollouts/claude-code-r1-evidence.md: Write allowed and file created, scripted decider switched to deny, next Write denied (write_gate_closed), file hash unchanged; scripted decider between two turns, not live server revocation",
+      },
+      read_only: {
+        channel: "--tools Read,Glob,Grep + PreToolUse",
+        verified: true,
+        evidence: "R1-02 R1-02b 2026-10-21, real claude 2.1.241, see docs/rollouts/claude-code-r1-evidence.md: init tools exactly Read Glob Grep + ask_user (self-check); Read allowed at the hook; Edit refused by the CLI as not available (disabled for the session in the first R1-02 run, not_advertised in R1-02b); file hash unchanged; Write and Bash absence rests on the exact init tool set",
+      },
       budget: { channel: null, verified: false },
     },
     cost: "unknown",

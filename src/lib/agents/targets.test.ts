@@ -74,18 +74,36 @@ describe("listAssistantTargets (R15, OD-20)", () => {
     const fake = world();
     expect(await list(fake, BOTH)).toEqual([
       { kind: "taskforce" },
-      { kind: "agent", adapter: "agent:claude-code", display_name: "Claude Code", connection_id: null, state: "not_connected", access: null, device_name: null, bridge_id: null },
+      { kind: "agent", adapter: "agent:claude-code", display_name: "Claude Code", connection_id: null, state: "not_connected", access: "write", device_name: null, bridge_id: null },
       { kind: "agent", adapter: "agent:codex", display_name: "Codex", connection_id: null, state: "not_connected", access: "read_only", device_name: null, bridge_id: null },
     ]);
   });
 
-  it("Codex(플래그 켬 · 연결 active · heartbeat 새것)는 ready/read_only, Claude Code는 unsupported/null (초기 registry)", async () => {
+  it("Codex(플래그 켬 · 연결 active · heartbeat 새것)는 ready/read_only, Claude Code는 ready/write (R1 증거로 승격된 registry, 정책 mode 기본 manual)", async () => {
     const fake = world({ connections: [connection(1, "agent:codex"), connection(2, "agent:claude-code")], bridges: [bridge(1), bridge(2)] });
     expect(await list(fake, BOTH)).toEqual([
       { kind: "taskforce" },
-      { kind: "agent", adapter: "agent:claude-code", display_name: "Claude Code", connection_id: id(2), state: "unsupported", access: null, device_name: null, bridge_id: id(102) },
+      { kind: "agent", adapter: "agent:claude-code", display_name: "Claude Code", connection_id: id(2), state: "ready", access: "write", device_name: null, bridge_id: id(102) },
       { kind: "agent", adapter: "agent:codex", display_name: "Codex", connection_id: id(1), state: "ready", access: "read_only", device_name: null, bridge_id: id(101) },
     ]);
+  });
+
+  it("Claude Code의 등급은 정책 mode와 registry 증거를 따른다: manual · auto · full 모두 write이고, 증거 하나가 빠지면 그 등급만 닫힌다", async () => {
+    for (const policy of ["manual", "auto", "full"]) {
+      const fake = world({ connections: [connection(2, "agent:claude-code")], bridges: [bridge(2)], policy });
+      expect(agentRows(await list(fake, BOTH)).find((row) => row.adapter === "agent:claude-code")).toMatchObject({ state: "ready", access: "write" });
+    }
+    const claude = AGENT_REGISTRY["agent:claude-code"];
+    const saved = claude.enforcement.target_scope.verified;
+    claude.enforcement.target_scope.verified = false;
+    try {
+      const rows = async (policy: string) => agentRows(await list(world({ connections: [connection(2, "agent:claude-code")], bridges: [bridge(2)], policy }), BOTH)).find((row) => row.adapter === "agent:claude-code");
+      expect(await rows("manual")).toMatchObject({ state: "ready", access: "write" });
+      expect(await rows("auto")).toMatchObject({ state: "ready", access: "read_only" });
+      expect(await rows("full")).toMatchObject({ state: "ready", access: "read_only" });
+    } finally {
+      claude.enforcement.target_scope.verified = saved;
+    }
   });
 
   it("응답은 assistantTargetsWithDeviceResponseSchema를 지킨다 (F1s 전 스키마는 새 키를 strict로 거절한다)", async () => {

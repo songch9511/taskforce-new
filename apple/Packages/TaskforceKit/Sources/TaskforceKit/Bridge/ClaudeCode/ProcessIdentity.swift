@@ -141,7 +141,47 @@ enum ClaudeKeptFailure: Error, Equatable {
     /// 지킴이 spawn 자체가 실패했다: 프로세스 0 (잠금 없이 `spawnFailed`)
     case notRun
     /// 지킴이를 띄운 뒤 멈췄다. `ended`: 지킴이가 0으로 끝났다(구성원 0을 증명했다). 아니면 끝을 모른다 (잠금이 남는다)
-    case stopped(ended: Bool)
+    case stopped(ended: Bool, diagnostic: ClaudeStartDiagnostic)
+}
+
+/// 고정 코드와 숫자만 남긴다. 보고 원문 · stderr · 경로 · 환경 · 입력은 진단에 넣지 않는다.
+enum ClaudeStartFailureCause: String, Error, Equatable {
+    case reportTimeout = "report_timeout", reportEOF = "report_eof", reportReadError = "report_read_error"
+    case reportTooLong = "report_too_long", reportMalformed = "report_malformed", keeperFailed = "keeper_failed", unexpectedReport = "unexpected_report"
+    case keeperGeneration = "keeper_generation", keeperID = "keeper_id", keeperZombie = "keeper_zombie"
+    case rootGeneration = "root_generation", rootID = "root_id", rootParent = "root_parent", rootZombie = "root_zombie"
+}
+
+struct ClaudeAbortDiagnostic: Equatable {
+    let sawEnded: Bool
+    let code: Int32?
+    let signal: Int32?
+    let forcedKill: Bool
+    var ended: Bool { !forcedKill && sawEnded && code == KeeperMain.Exit.ended.rawValue && signal == nil }
+}
+
+struct ClaudeStartDiagnostic: Equatable {
+    let cause: ClaudeStartFailureCause
+    let abort: ClaudeAbortDiagnostic
+    /// 첫 보고를 읽고 대조하는 데 걸린 시간 (보고를 받지 못했으면 기한 근처, 즉 `report_timeout`은 `reportTimeout`만큼)
+    let waitMilliseconds: Int
+    /// 그 spawn을 거두는 데 걸린 시간
+    let abortMilliseconds: Int
+}
+
+extension ClaudeStartFailureCause {
+    /// 로그 `claude_start_unproven` · `claude_lineage_unrecorded`의 reason. 지킴이가 알린 뿌리를 앱이 대조하지 못한 것은 문서대로 `root_id`(agent-gateway 재검토 4),
+    /// 보고 자체를 받지 못한 것은 그 원인 코드다 (R1-01: 보고를 못 받은 시작이 `root_id`로 적혀 원인을 가렸다)
+    var launchReason: String {
+        switch self {
+        case .keeperGeneration, .keeperID, .keeperZombie, .rootGeneration, .rootID, .rootParent, .rootZombie: "root_id"
+        case .reportTimeout, .reportEOF, .reportReadError, .reportTooLong, .reportMalformed, .keeperFailed, .unexpectedReport: rawValue
+        }
+    }
+}
+
+enum ClaudeReportRead: Equatable {
+    case line(String), timeout, eof, readError, tooLong
 }
 
 public enum ClaudeSpawner {
@@ -211,24 +251,66 @@ public enum ClaudeSpawner {
             return .failure(.notRun)
         }
         close(report[1])
-        let line = readReportLine(report[0], timeout: reportTimeout)
-        if case .started(let claudePID, let claudeID, let keeperID, let attributable)? = line.flatMap(KeeperReport.init(line:)) {
-            if case .present(let keeperNow) = lookups.generation(process.pid), keeperNow.own == keeperID, !keeperNow.zombie {
-                if case .present(let claudeNow) = lookups.generation(claudePID), claudeNow.own == claudeID, claudeNow.parentPID == process.pid, !claudeNow.zombie {
+        let began = Date()
+        let first = firstReport(readReport(report[0], timeout: reportTimeout))
+        let cause: ClaudeStartFailureCause
+        switch first {
+        case .failure(let failure): cause = failure
+        case .success(let started):
+            if case .started(let claudePID, let claudeID, let keeperID, let attributable) = started {
+                switch verifiedRootStart(keeperPID: process.pid, keeperID: keeperID, rootPID: claudePID, rootID: claudeID, lookups: lookups) {
+                case .failure(let failure): cause = failure
+                case .success(let startedAt):
                     return .success(ClaudeKeptSpawn(
-                        keeper: process, keeperID: keeperID, claudePID: claudePID, claudeID: claudeID, claudeStartedAt: claudeNow.start, attributable: attributable,
+                        keeper: process, keeperID: keeperID, claudePID: claudePID, claudeID: claudeID, claudeStartedAt: startedAt, attributable: attributable,
                         reportFD: report[0]
                     ))
                 }
+            } else { cause = .unexpectedReport }
+        }
+        let waited = Date()
+        let stopped = abortWithDiagnostic(process, reportFD: report[0], timeout: abortTimeout)
+        let diagnostic = ClaudeStartDiagnostic(
+            cause: cause, abort: stopped, waitMilliseconds: Int(waited.timeIntervalSince(began) * 1000), abortMilliseconds: Int(Date().timeIntervalSince(waited) * 1000)
+        )
+        return .failure(.stopped(ended: stopped.ended, diagnostic: diagnostic))
+    }
+
+    static func firstReport(_ read: ClaudeReportRead) -> Result<KeeperReport, ClaudeStartFailureCause> {
+        switch read {
+        case .timeout: return .failure(.reportTimeout)
+        case .eof: return .failure(.reportEOF)
+        case .readError: return .failure(.reportReadError)
+        case .tooLong: return .failure(.reportTooLong)
+        case .line(let line):
+            guard let report = KeeperReport(line: line) else { return .failure(.reportMalformed) }
+            switch report {
+            case .started: return .success(report)
+            case .failed: return .failure(.keeperFailed)
+            default: return .failure(.unexpectedReport)
             }
         }
-        return .failure(.stopped(ended: abort(process, reportFD: report[0], timeout: abortTimeout)))
+    }
+
+    static func verifiedRootStart(keeperPID: pid_t, keeperID: UInt64, rootPID: pid_t, rootID: UInt64, lookups: KeeperMembers.Lookups) -> Result<Date, ClaudeStartFailureCause> {
+        guard case .present(let keeper) = lookups.generation(keeperPID) else { return .failure(.keeperGeneration) }
+        guard keeper.own == keeperID else { return .failure(.keeperID) }
+        guard !keeper.zombie else { return .failure(.keeperZombie) }
+        guard case .present(let root) = lookups.generation(rootPID) else { return .failure(.rootGeneration) }
+        guard root.own == rootID else { return .failure(.rootID) }
+        guard root.parentPID == keeperPID else { return .failure(.rootParent) }
+        guard !root.zombie else { return .failure(.rootZombie) }
+        return .success(root.start)
     }
 
     /// 정체를 적기 전에 그 spawn을 거둔다: stdin을 닫고(EOF), 지킴이에 SIGTERM(지킴이가 아직 거두지 않은 `claude`를 SIGKILL하고 구성원 0을 증명하고 끝난다),
     /// 보고 pipe를 닫힐 때까지 읽고, 기한 안에 끝나지 않으면 지킴이를 SIGKILL하고 거둔다. 지킴이는 앱의 자식이라 거두기 전에는 그 pid를 다른 프로세스가 쓸 수 없다.
     /// 지킴이가 기한 안에 보고 `ended`를 쓰고 0으로 끝났을 때만 true (구성원 0 증명, 14장 1 · 3 · 15장 4). 그 밖(시간 초과 · 다른 코드 · 신호 · `ended` 없음)은 끝을 모른다
     static func abort(_ keeper: ClaudeSpawnedProcess, reportFD: Int32, timeout: TimeInterval) -> Bool {
+        abortWithDiagnostic(keeper, reportFD: reportFD, timeout: timeout).ended
+    }
+
+    static func abortWithDiagnostic(_ keeper: ClaudeSpawnedProcess, reportFD: Int32, timeout: TimeInterval) -> ClaudeAbortDiagnostic {
         keeper.closeStandardStreams()
         kill(keeper.pid, SIGTERM)
         let deadline = Date().addingTimeInterval(timeout)
@@ -238,32 +320,37 @@ public enum ClaudeSpawner {
         }
         close(reportFD)
         if let status = keeper.waitForExit(timeout: max(0.01, deadline.timeIntervalSinceNow)) {
-            return sawEnded && status.code == KeeperMain.Exit.ended.rawValue && status.signal == nil
+            return ClaudeAbortDiagnostic(sawEnded: sawEnded, code: status.code, signal: status.signal, forcedKill: false)
         }
         kill(keeper.pid, SIGKILL)
-        _ = keeper.waitForExit()
-        return false
+        let status = keeper.waitForExit()
+        return ClaudeAbortDiagnostic(sawEnded: sawEnded, code: status.code, signal: status.signal, forcedKill: true)
     }
 
     /// 보고 한 줄 (기한 안에서, 줄바꿈 전까지). 기한 · EOF · 너무 긴 줄이면 nil
     static func readReportLine(_ fd: Int32, timeout: TimeInterval) -> String? {
+        if case .line(let line) = readReport(fd, timeout: timeout) { return line }
+        return nil
+    }
+
+    static func readReport(_ fd: Int32, timeout: TimeInterval) -> ClaudeReportRead {
         var line = Data()
         let deadline = Date().addingTimeInterval(timeout)
         var byte: UInt8 = 0
         while line.count < 256 {
             let left = deadline.timeIntervalSinceNow
-            guard left > 0 else { return nil }
+            guard left > 0 else { return .timeout }
             var item = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
             let ready = poll(&item, 1, Int32(max(1, (left * 1000).rounded(.up))))
             if ready < 0, errno == EINTR { continue }
-            guard ready > 0 else { return nil }
+            guard ready > 0 else { return ready == 0 ? .timeout : .readError }
             let count = read(fd, &byte, 1)
             if count < 0, errno == EINTR || errno == EAGAIN { continue }
-            guard count == 1 else { return nil }
-            if byte == 0x0A { return String(decoding: line, as: UTF8.self) }
+            guard count == 1 else { return count == 0 ? .eof : .readError }
+            if byte == 0x0A { return .line(String(decoding: line, as: UTF8.self)) }
             line.append(byte)
         }
-        return nil
+        return .tooLong
     }
 }
 

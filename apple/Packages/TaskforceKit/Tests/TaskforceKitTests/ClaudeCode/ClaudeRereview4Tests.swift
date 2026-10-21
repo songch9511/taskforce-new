@@ -158,6 +158,7 @@ struct ClaudeRereview4Tests {
             try await ClaudeProcessInspector.$lookups.withValue(failing) { _ = try await fake.turn(events: EventLog()) }
         }
         #expect(fake.log.lines.contains { $0.hasPrefix("claude_lineage_unrecorded") && $0.contains("root_id") })
+        #expect(fake.log.lines.contains { $0.hasPrefix("claude_start_diagnostic") && $0.contains("cause=code(\"keeper_generation\")") && $0.contains("ended=count(1)") })
         #expect(!fake.log.events.contains("claude_spawn"))
         if let pid = fake.report(0)?["pid"] as? Int {
             #expect(await ClaudeProcessIdentityTests.within { ClaudeRereviewProcessTests.gone(pid) }, "띄운 프로세스는 멈췄다")
