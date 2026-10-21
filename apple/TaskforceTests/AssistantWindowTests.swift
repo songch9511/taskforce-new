@@ -7,7 +7,7 @@ import Testing
 @testable import TaskforceUI
 
 /// 최소 가짜 서버 (창 시험용): 대화 행만 정한다
-private final class WindowTestGateway: ChatGateway, @unchecked Sendable {
+final class WindowTestGateway: ChatGateway, @unchecked Sendable {
     nonisolated(unsafe) var rows: [ChatConversation] = []
 
     func conversations() async throws -> [ChatConversation] { rows }

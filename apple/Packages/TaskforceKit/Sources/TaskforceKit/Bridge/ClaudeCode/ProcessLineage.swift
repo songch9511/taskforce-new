@@ -279,6 +279,34 @@ public final class ClaudeLineage: Sendable {
             if ClaudeSessionLock.read(file, boot: boot) == .otherBoot { try? FileManager.default.removeItem(at: file) }
         }
     }
+
+    /// 앱이 뜰 때, `purge` 다음에: 끝이 증명된 spawn(끝 기록 `<id>.ended`이 있다 — 방금 `purge`가 바꾼 것과 이전 버전이 남긴 것 모두)의 설정 파일 셋
+    /// `config/<id>.*`를 모든 세션 폴더에서 지운다. 앱이 도중에 죽으면 남는데, settings에는 훅 nonce가, prompt에는 프로젝트 지침 글이 있다.
+    /// 끝이 증명되지 않은 spawn · 끝 기록이 없는 파일 · 이름이 `<spawn id>.`로 시작하지 않는 파일은 건드리지 않는다. 지운 파일 수를 돌려준다
+    @discardableResult
+    static func removeConfigLeftovers(sessionsRoot: URL) -> Int {
+        let lineageDirectory = sessionsRoot.appending(path: "lineage", directoryHint: .isDirectory)
+        guard let records = try? FileManager.default.contentsOfDirectory(atPath: lineageDirectory.path) else { return 0 }
+        var ended = Set<String>()
+        for name in records where name.hasSuffix(".ended") {
+            let id = String(name.dropLast(".ended".count))
+            guard UUID(uuidString: id) != nil else { continue }
+            switch load(lineageDirectory.appending(path: "\(id).lineage")) {
+            case .ended, .otherBoot: ended.insert(id.lowercased())
+            default: break
+            }
+        }
+        guard !ended.isEmpty, let sessions = try? FileManager.default.contentsOfDirectory(atPath: sessionsRoot.path) else { return 0 }
+        var removed = 0
+        for session in sessions where UUID(uuidString: session) != nil {
+            let config = sessionsRoot.appending(path: session, directoryHint: .isDirectory).appending(path: "config", directoryHint: .isDirectory)
+            for name in (try? FileManager.default.contentsOfDirectory(atPath: config.path)) ?? [] {
+                guard let dot = name.firstIndex(of: "."), ended.contains(name[..<dot].lowercased()) else { continue }
+                if (try? FileManager.default.removeItem(at: config.appending(path: name))) != nil { removed += 1 }
+            }
+        }
+        return removed
+    }
 }
 
 /// 세션 잠금 (OA D3a 14장 1–2, 원칙: 띄우기 전에 디스크 잠금, 끝을 증명할 때만 해제). 모든 spawn(턴 · 답 · 닫기)은 지킴이를 띄우기 전에

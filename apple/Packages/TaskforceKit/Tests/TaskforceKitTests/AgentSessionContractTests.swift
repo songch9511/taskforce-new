@@ -15,7 +15,7 @@ struct AgentSessionContractTests {
 
     @Test func theColumnListsAreExactlyWhatTheScreensNeed() {
         #expect(AgentSessionRecord.columns == "id, connection_id, display_name, status, external_session_id, last_turn_seq, created_at, updated_at")
-        #expect(AgentTaskRecord.columns == "agent_session_id, run_id, turn_seq, state, last_live_state, cancel_requested_at")
+        #expect(AgentTaskRecord.columns == "agent_session_id, run_id, turn_seq, state, last_live_state, cancel_requested_at, last_event_seq", "대화 글을 다시 읽을 때를 정하는 값싼 신호: 마지막 반영 사건 순서 하나를 더 읽는다")
         #expect(AgentSessionRunRecord.columns == "id, kind, agent_session_id, action_id")
         #expect(AgentConnectionRecord.columns == "id, adapter, bridge_id", "D4a-03: 알약은 그 세션 연결의 bridge가 이 Mac일 때만 — `bridge_id` 열 하나를 더 읽는다")
         #expect(AgentSessionConversationRecord.columns == "id, agent_session_id")
@@ -57,14 +57,14 @@ struct AgentSessionContractTests {
     @Test func aTaskRowDecodesItsStatesAndTheStopRequest() throws {
         let json = """
         {"agent_session_id":"5e5e5e5e-0000-4000-8000-000000000001","run_id":"7a7a7a7a-0000-4000-8000-000000000001","turn_seq":2,"state":"unreachable",
-         "last_live_state":"running","cancel_requested_at":"2026-10-14T02:00:00.000000+00:00"}
+         "last_live_state":"running","cancel_requested_at":"2026-10-14T02:00:00.000000+00:00","last_event_seq":17}
         """
         let task = try decode(AgentTaskRecord.self, json)
-        #expect(task.state == .unreachable && task.lastLiveState == .running && task.cancelRequestedAt != nil && task.turnSeq == 2 && task.isOpen)
+        #expect(task.state == .unreachable && task.lastLiveState == .running && task.cancelRequestedAt != nil && task.turnSeq == 2 && task.isOpen && task.lastEventSeq == 17)
         let future = try decode(AgentTaskRecord.self, json.replacingOccurrences(of: #""state":"unreachable""#, with: #""state":"teleporting""#))
         #expect(future.state == .unknown("teleporting") && !future.isOpen)
         let plain = try decode(AgentTaskRecord.self, #"{"agent_session_id":"5e5e5e5e-0000-4000-8000-000000000001","run_id":"7a7a7a7a-0000-4000-8000-000000000001","turn_seq":null,"state":"idle","last_live_state":null,"cancel_requested_at":null}"#)
-        #expect(plain.turnSeq == nil && plain.state == .idle && plain.cancelRequestedAt == nil && !plain.isOpen)
+        #expect(plain.turnSeq == nil && plain.state == .idle && plain.cancelRequestedAt == nil && !plain.isOpen && plain.lastEventSeq == nil, "열이 없는 읽기(옛 픽스처)는 nil")
     }
 
     @Test func aRunRowTiesASessionToAnIssueAndTheOtherRowsDecode() throws {

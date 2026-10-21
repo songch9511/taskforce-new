@@ -226,6 +226,8 @@ public final class ChatStore {
     @ObservationIgnored var deliveryPoll: Task<Void, Never>?
     /// 첫 전달 때 서버가 만든 세션 (대화 id → 세션 id): 대화 행(`agent_session_id`)을 다시 읽기 전에도 Stop · 세션 읽기가 그 세션을 안다 (보낸 응답의 `agent_task`)
     var learnedSessions: [UUID: UUID] = [:]
+    /// 에이전트 글 따라 읽기의 상태: 세션 표식 · 읽는 중 · 4초 안에 한 번으로 합치는 예약 · 대화 글을 마지막으로 읽은 때 (`AgentThreadFollow.swift`)
+    @ObservationIgnored var follow = AgentThreadFollow.State()
     /// 앱(Mac)이 잠잔다: 5초 전달 읽기가 멈춘다. 깨면 한 번 읽는다
     public internal(set) var isAsleep = false
     /// 에이전트 대화의 쓰기 · 읽기 넷 (Send again · 후보 고르기 · Stop · 전달 읽기, OA D4a-20b). 없으면 그 동작이 없다 (실제 연결만 가진다)
@@ -245,7 +247,7 @@ public final class ChatStore {
     @ObservationIgnored public var assistant: (any AssistantGateway)?
     @ObservationIgnored let scope: AccountScope
     @ObservationIgnored private let memory: MemoryStore?
-    @ObservationIgnored private let now: @Sendable () -> Date
+    @ObservationIgnored let now: @Sendable () -> Date
     /// 다음 전달 읽기까지 기다리는 함수 (시험은 손으로 돌린다)
     @ObservationIgnored let sleep: @Sendable (TimeInterval) async -> Void
     @ObservationIgnored private var listSequence = 0
@@ -306,6 +308,8 @@ public final class ChatStore {
         deliveryPoll?.cancel()
         deliveryPoll = nil
         learnedSessions = [:]
+        follow.cancelAll()
+        follow = AgentThreadFollow.State()
         fullTexts = [:]
         fullTextExpanded = []
         sentChips = [:]
@@ -317,8 +321,11 @@ public final class ChatStore {
     public func pathChanged(online: Bool) {
         let cameBack = online && !isOnline
         isOnline = online
-        // 온라인 복귀: 보이는 에이전트 대화의 전달 표시를 한 번 읽는다 (그 사이 다른 기기 · 서버가 바꿨을 수 있다)
-        if cameBack { spawn { await self.refreshShownDeliveries() } }
+        // 온라인 복귀: 보이는 에이전트 대화의 전달 표시를 한 번 읽는다 (그 사이 다른 기기 · 서버가 바꿨을 수 있다). 대화 글도 한 번 더 읽는다 (놓친 마지막 답, `AgentThreadFollow`)
+        if cameBack {
+            spawn { await self.refreshShownDeliveries() }
+            refollowShownAgentThreads()
+        }
     }
 
     // MARK: 보이는 것
@@ -918,7 +925,24 @@ public final class ChatStore {
     /// - 같은 대화의 읽기가 겹치면 **마지막에 시작한 읽기만** 반영한다 (`threadReadSeq`): 늦게 끝난 옛 읽기가 새 읽기를 되돌리지 않는다.
     ///   다른 대화의 읽기는 서로 막지 않는다. 계정이 바뀌었으면 어느 쪽도 반영하지 않는다
     public func loadThread(_ id: UUID) async {
-        guard let token = scope.token, conversations.contains(where: { $0.id == id }) else { return }
+        _ = await readThread(id, refreshesDeliveries: true)
+    }
+
+    /// 글 읽기 한 번의 끝 (`readThread`): 따라 읽기(`AgentThreadFollow`)가 표식을 적어도 되는지 가른다
+    enum ThreadRead: Equatable {
+        /// 서버의 글을 반영했다
+        case applied
+        /// 더 나중에 시작한 읽기가 이 읽기를 대신했다 · 읽는 사이 로컬 반영이 계속 겹쳤다 (반영하지 못했다)
+        case superseded
+        /// 읽지 못했다 (오프라인 · 실패 · 기능 꺼짐)
+        case failed
+        /// 계정이 떠났거나 대화가 사라졌다: 아무것도 하지 않는다
+        case dropped
+    }
+
+    /// - refreshesDeliveries: 읽을 때마다 에이전트 대화의 전달 표시를 처음부터 다시 읽는다 (대화를 열 때 · 질문에 답했을 때). 5초 따라 읽기는 끈다: 전달 표시 전체를 5초마다 읽지 않는다 (검토 P2)
+    func readThread(_ id: UUID, refreshesDeliveries: Bool) async -> ThreadRead {
+        guard let token = scope.token, conversations.contains(where: { $0.id == id }) else { return .dropped }
         let started = tombstoneClock
         let seq = (threadReadSeq[id] ?? 0) + 1
         threadReadSeq[id] = seq
@@ -928,30 +952,34 @@ public final class ChatStore {
             let revision = threads[id]?.revision ?? 0
             do {
                 let messages = try await gateway.messages(conversationID: id)
-                guard scope.isCurrent(token), threads[id] != nil, threadReadSeq[id] == seq, !isStale(id, since: started) else { return }
+                guard scope.isCurrent(token), threads[id] != nil, !isStale(id, since: started) else { return .dropped }
+                guard threadReadSeq[id] == seq else { return .superseded }
                 guard threads[id]?.revision == revision else { continue }
                 applyServerMessages(messages, to: id)
                 threads[id]?.load = .loaded(problem: nil)
                 // 대화를 열 때(읽을 때)마다 에이전트 대화의 전달 표시를 서버에서 다시 읽는다: 줄은 메모리뿐이라 앱을 다시 켜면 비어 있다 (D4a-10)
                 if conversationTarget(for: id).isAgent {
-                    spawn { await self.refreshDeliveries(id) }
+                    if refreshesDeliveries { spawn { await self.refreshDeliveries(id) } }
                     if fullTextLookup != nil { spawn { await self.lookupFullTexts(in: id) } }
                 }
                 if let memory { await memory.loadReferenced(ids: messages.flatMap(\.rememberedIDs)) }
-                return
+                return .applied
             } catch {
-                guard scope.isCurrent(token), threadReadSeq[id] == seq, !isStale(id, since: started), let failure = ReadFailure.from(error, online: isOnline), threads[id] != nil else { return }
+                guard scope.isCurrent(token), !isStale(id, since: started), threads[id] != nil else { return .dropped }
+                guard threadReadSeq[id] == seq else { return .superseded }
+                guard let failure = ReadFailure.from(error, online: isOnline) else { return .dropped }
                 if failure == .unavailable {
                     isUnavailable = true
                     threads[id]?.load = .loaded(problem: nil)
-                    return
+                    return .failed
                 }
                 let hasContent = !(threads[id]?.messages.isEmpty ?? true)
                 let problem: WorkLoad.Problem = failure == .offline ? .offline : .failed
                 threads[id]?.load = hasContent ? .loaded(problem: problem) : (failure == .offline ? .offline : .failed)
-                return
+                return .failed
             }
         }
+        return .superseded
     }
 
     /// 서버가 사실이다: 읽은 메시지로 바꾼다. 서버에 저장된 글의 보내기 기록은 지운다 (답이 없으면 줄이 Try again을 준다)

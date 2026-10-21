@@ -872,7 +872,7 @@ enum AgentChatSampleData {
     /// 대화 하나와 그 세션. `task`가 nil이면 task 없음
     static func state(
         _ thread: Thread, status: AgentSessionStatus = .bound, task: AgentTaskState? = .idle, cancelRequested: Bool = false, bridge: UUID? = thisMacBridge,
-        targetState: AgentTargetState = .ready, name: String = "Pricing copy draft", agentName: String = "Claude Code"
+        targetState: AgentTargetState = .ready, name: String = "Pricing copy draft", agentName: String = "Claude Code", lastEventSeq: Int? = nil
     ) -> AgentChatSampleGateway.State {
         let now = Date()
         let row = ChatConversation(
@@ -890,7 +890,7 @@ enum AgentChatSampleData {
                 id: sessionID, connectionID: IssueSnapshotData.claude, displayName: name, status: status, lastTurnSeq: task == nil ? 0 : 1,
                 createdAt: now.addingTimeInterval(-3_600), updatedAt: now.addingTimeInterval(-30)
             )],
-            tasks: task.map { [AgentTaskRecord(agentSessionID: sessionID, runID: IssueSnapshotData.task(1), turnSeq: 1, state: $0, lastLiveState: nil, cancelRequestedAt: cancelRequested ? now : nil)] } ?? [],
+            tasks: task.map { [AgentTaskRecord(agentSessionID: sessionID, runID: IssueSnapshotData.task(1), turnSeq: 1, state: $0, lastLiveState: nil, cancelRequestedAt: cancelRequested ? now : nil, lastEventSeq: lastEventSeq)] } ?? [],
             runs: [AgentSessionRunRecord(id: IssueSnapshotData.task(1), agentSessionID: sessionID, actionID: IssueSnapshotData.issue(139))],
             connections: [
                 AgentConnectionRecord(id: IssueSnapshotData.claude, adapter: "agent:claude-code", bridgeID: bridge),

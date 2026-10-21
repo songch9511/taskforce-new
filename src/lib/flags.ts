@@ -20,6 +20,9 @@
  * EXTERNAL_SESSIONS_REPORT_ENABLED: Mac이 Taskforce 밖에서 시작한 Claude Code 세션의 **제목을 서버에 올리는** PUT /api/v2/external-sessions만 연다 (끄면 404, 인증 · DB 호출 없음, 저장 0).
  *   이 route는 CONVERSATIONS_V2_ENABLED · AGENT_ADAPTER_CLAUDE_CODE_ENABLED · 베타 명단도 함께 통과해야 한다. 처리방침(#169)이 "제목을 서버에 보낸다"고 게시되기 전에는 켜지 않는다.
  *   Mac 레일 목록 자체는 서버 없이 로컬에서 만든다: 이 gate를 끄면 올리기만 멈춘다. 구간 값만 받는 POST …/shown 지표는 이 gate를 보지 않는다.
+ * AGENT_ATTACH_EXISTING_ENABLED: Taskforce 밖에서 시작한 Claude Code 세션을 Taskforce 세션으로 **이어받는** POST /api/v2/agent-sessions/attach만 연다 (끄면 403, 인증 · DB 호출 없음, 저장 0).
+ *   이 route는 CONVERSATIONS_V2_ENABLED · 그 adapter 플래그(AGENT_ADAPTER_CLAUDE_CODE_ENABLED) · 베타 명단 · registry의 session.attach_existing(Claude Code만 true)도 함께 통과해야 한다.
+ *   이 gate는 새로 이어받는 입구만 닫는다: 이미 이어받은 세션의 대화 · Stop은 다른 gate가 정한다.
  */
 export const SERVER_FLAGS = [
   "CONVERSATIONS_V2_ENABLED",
@@ -33,6 +36,7 @@ export const SERVER_FLAGS = [
   "REVIEW_V2_ENABLED",
   "RETURN_SUMMARY_ENABLED",
   "EXTERNAL_SESSIONS_REPORT_ENABLED",
+  "AGENT_ATTACH_EXISTING_ENABLED",
 ] as const;
 export type ServerFlag = (typeof SERVER_FLAGS)[number];
 
