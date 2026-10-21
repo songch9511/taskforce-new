@@ -63,7 +63,7 @@ export const AGENT_EVENTS: readonly AgentEventSpec[] = [
   { type: "assistant_opened", sources: [], dims: [], activity: true, gap: "남기는 곳 없음 (Mac 후속: 앱이 Supabase로 직접 insert)" },
   // 레일의 외부 세션 목록(On this Mac)이 행 1개 이상으로 보인 날 (하루 한 번). 앱이 POST /api/v2/external-sessions/shown으로 알리고 route가 서버 권한으로 남긴다. props는 구간 문자열뿐(rows_bucket · held_bucket)이라 dims로 가르지 않는다
   { type: "external_sessions_shown", sources: [{ kind: "ts", file: "src/lib/api/external-sessions.ts" }], dims: [], activity: true },
-  // 외부 세션 이어받기 성공(created, OA 외부 세션 PR2s): 사용자가 Resume here를 확인한 일이라 활동이다. attach_agent_session이 세션 · 대화와 같은 트랜잭션에서 남기고 props는 adapter뿐이다
+  // 외부 세션 이어받기로 세션 행이 새로 생겼을 때(OA 외부 세션 PR2s): 사용자가 Resume here를 확인한 일이라 활동이다. attach_agent_session이 세션 · 대화와 같은 트랜잭션에서 남기고(대화만 다시 만든 호출은 세지 않는다) props는 adapter뿐이다
   { type: "session_attached", sources: [sql("attach_agent_session")], dims: [], activity: true },
 ];
 

@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
+import { MAX_LIVE_EXTERNAL_TASKS } from "../../src/lib/execution/limits";
 import { attachAgentSessionTests, attachFixtures, wsRef, type AttachResult } from "../db/agent-session-attach.scenarios";
 import type { ConversationAgentDb } from "../db/conversation-agent-target.scenarios";
 import { supabaseSchemaScripts } from "../db/local-supabase";
@@ -190,5 +191,99 @@ describe("동시에 온 두 요청 (연결 둘)", () => {
     await b.query("commit");
     expect(attached.status).toBe("created");
     expect(await f.one("select status from public.agent_sessions where id = $1", [attached.session_id])).toEqual({ status: "closed" });
+  });
+});
+
+describe("workspace_ref 고치기와 겹치는 턴 시작 (연결 둘)", () => {
+  const startTurn = (client: pg.Client, user: string, message: string) =>
+    client.query("select public.start_agent_turn($1, $2, '{}'::uuid[], '{}'::uuid[], 'write', $3) as result", [user, message, MAX_LIVE_EXTERNAL_TASKS]);
+
+  it("턴 시작이 세션 잠금을 먼저 쥐면: 이어받기는 기다렸다가 열린 작업을 보고 workspace_mismatch, 값은 그대로", async () => {
+    const w = await f.world();
+    const external = randomUUID();
+    const ref = wsRef();
+    const attached = await attachOn(setup, w.user, w.bridge, external, ref);
+    const message = String((await f.post(w.user, attached.conversation_id!, randomUUID(), "이어서 해 줘")).message_id);
+    await a.query("begin");
+    await startTurn(a, w.user, message);
+    await b.query("begin");
+    const waiting = attachOn(b, w.user, w.bridge, external, wsRef());
+    await waitForLockWait();
+    await a.query("commit");
+    expect(await waiting).toEqual({ status: "workspace_mismatch" });
+    await b.query("commit");
+    expect(await f.one("select workspace_ref from public.agent_sessions where id = $1", [attached.session_id])).toEqual({ workspace_ref: ref });
+    expect(await f.count("select 1 from public.agent_tasks where agent_session_id = $1 and state = 'dispatched'", [attached.session_id])).toBe(1);
+  });
+
+  it("고치는 이어받기가 세션 잠금을 먼저 쥐면: 턴 시작은 기다렸다가 고친 가상 루트의 세션에 턴을 붙인다 (옛 값으로 명령이 나가지 않는다)", async () => {
+    const w = await f.world();
+    const external = randomUUID();
+    const attached = await attachOn(setup, w.user, w.bridge, external, wsRef());
+    const message = String((await f.post(w.user, attached.conversation_id!, randomUUID(), "이어서 해 줘")).message_id);
+    const fresh = wsRef();
+    await a.query("begin");
+    expect(await attachOn(a, w.user, w.bridge, external, fresh)).toMatchObject({ status: "existing", workspace_ref: fresh });
+    await b.query("begin");
+    const waiting = startTurn(b, w.user, message);
+    await waitForLockWait();
+    await a.query("commit");
+    const started = (await waiting).rows[0].result as { status: string; step_id: string };
+    await b.query("commit");
+    expect(started.status).toBe("started");
+    expect(await f.one("select workspace_ref from public.agent_sessions where id = $1", [attached.session_id])).toEqual({ workspace_ref: fresh });
+    await f.q("insert into public.execution_actors (user_id) values ($1) on conflict do nothing", [w.user]);
+    await f.q("update public.execution_controls set blocked = false");
+    const command = String((await f.one("select id from public.bridge_commands where step_id = $1", [started.step_id])).id);
+    const mode = String((await f.one("select mode from public.execution_policies where user_id = $1", [w.user])).mode);
+    const leased = (await f.one("select public.lease_bridge_command($1, $2, $3, 'write', $4) as result", [w.user, w.bridge, command, mode])).result as { command: { session: unknown } };
+    expect(leased.command.session).toEqual({ external_session_id: external, workspace_ref: fresh, resume: true });
+  });
+
+  it("세션 잠금만 쥐고 아직 행을 갱신하지 않은 쪽이 열린 작업을 만드는 사이에 온 이어받기는 잠금이 풀린 뒤 다시 읽어 workspace_mismatch (먼저 읽은 '열린 작업 없음'을 믿지 않는다)", async () => {
+    const w = await f.world();
+    const external = randomUUID();
+    const ref = wsRef();
+    const attached = await attachOn(setup, w.user, w.bridge, external, ref);
+    const message = String((await f.post(w.user, attached.conversation_id!, randomUUID(), "이어서 해 줘")).message_id);
+    const started = (await startTurn(setup, w.user, message)).rows[0].result as { agent_task_id: string };
+    await f.updateRow("agent_tasks", started.agent_task_id, { state: "idle" });
+    await a.query("begin");
+    await a.query("select 1 from public.agent_sessions where id = $1 for update", [attached.session_id]);
+    await b.query("begin");
+    const waiting = attachOn(b, w.user, w.bridge, external, wsRef());
+    await waitForLockWait();
+    // 잠금을 쥔 쪽이 이제 작업을 연다 (idle → running); 이어받기는 이 변경이 커밋된 뒤의 작업을 봐야 한다
+    await a.query("update public.agent_tasks set state = 'running' where id = $1", [started.agent_task_id]);
+    await a.query("commit");
+    expect(await waiting).toEqual({ status: "workspace_mismatch" });
+    await b.query("commit");
+    expect(await f.one("select workspace_ref from public.agent_sessions where id = $1", [attached.session_id])).toEqual({ workspace_ref: ref });
+  });
+});
+
+describe("속도 제한 agent_attach (연결 여럿)", () => {
+  it("연결 여덟이 동시에 열 번씩 80번을 불러도 정확히 30번만 통과한다 (사용자 · 종류별 잠금)", async () => {
+    const user = await f.user();
+    const clients = await Promise.all(Array.from({ length: 8 }, () => connect(DB_NAME)));
+    try {
+      const take = async (client: pg.Client) => (await client.query<{ at: string | null }>("select public.take_rate_limit($1, 'agent_attach', 30, 600) as at", [user])).rows[0].at;
+      // 한 연결에는 한 번에 한 질의만 보낸다(pg 클라이언트 규칙). 연결끼리는 서로 동시에 던진다
+      const results = (
+        await Promise.all(
+          clients.map(async (client) => {
+            const own: (string | null)[] = [];
+            for (let i = 0; i < 10; i++) own.push(await take(client));
+            return own;
+          }),
+        )
+      ).flat();
+      expect(results).toHaveLength(80);
+      expect(results.filter((at) => at === null)).toHaveLength(30);
+      expect(results.filter((at) => at !== null)).toHaveLength(50);
+      expect(await f.count("select 1 from public.rate_limit_events where user_id = $1 and kind = 'agent_attach'", [user])).toBe(30);
+    } finally {
+      await Promise.allSettled(clients.map((client) => client.end()));
+    }
   });
 });

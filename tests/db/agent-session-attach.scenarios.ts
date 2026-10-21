@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
+import { AGENT_QUESTION } from "./agent-gateway-core.scenarios";
 import { agentTurnFixtures } from "./agent-turn-start.scenarios";
 import type { ConversationAgentDb } from "./conversation-agent-target.scenarios";
 
@@ -14,10 +15,13 @@ export const CLAUDE = "agent:claude-code";
 export const CODEX = "agent:codex";
 const NOTHING = { status: "not_found" };
 const IN_USE = { status: "session_in_use" };
+const MISMATCH = { status: "workspace_mismatch" };
+/** 열린 작업: 이 상태의 작업이 있는 세션의 workspace_ref는 고치지 않는다 (start_agent_turn의 세션당 진행 중 턴과 같은 목록) */
+const OPEN_TASK_STATES = ["dispatched", "accepted", "running", "unreachable"];
 
 export const wsRef = () => `/taskforce/ws_${randomUUID()}`;
 
-export type AttachResult = { status: string; session_id?: string; conversation_id?: string };
+export type AttachResult = { status: string; session_id?: string; conversation_id?: string; workspace_ref?: string };
 
 export function attachFixtures(db: () => ConversationAgentDb) {
   const base = agentTurnFixtures(db);
@@ -64,8 +68,26 @@ export function attachAgentSessionTests(db: () => ConversationAgentDb) {
   const rejects = (promise: Promise<unknown>, pattern: RegExp) => expect(promise).rejects.toThrow(pattern);
   const NO_WRITES = { sessions: 0, conversations: 0, events: 0, actions: 0, runs: 0, tasks: 0, messages: 0, steps: 0 };
 
+  /** 이어받은 세션에 첫 메시지를 보내 열린 작업(dispatched)을 만든다 */
+  async function openTurn(user: string, attached: AttachResult) {
+    const message = String((await f.post(user, attached.conversation_id!, randomUUID(), "이어서 해 줘")).message_id);
+    const started = await f.start(user, message, [], [], "write");
+    expect(started.status).toBe("started");
+    return started;
+  }
+  /** 그 턴의 명령을 lease해 Mac이 받는 세션 칸을 읽는다 */
+  async function leasedSession(user: string, bridge: string, step: string) {
+    await f.q("insert into public.execution_actors (user_id) values ($1) on conflict do nothing", [user]);
+    await f.q("update public.execution_controls set blocked = false");
+    const command = String((await f.one("select id from public.bridge_commands where step_id = $1", [step])).id);
+    const mode = String((await f.one("select mode from public.execution_policies where user_id = $1", [user])).mode);
+    const leased = (await f.one("select public.lease_bridge_command($1, $2, $3, 'write', $4) as result", [user, bridge, command, mode])).result as { status: string; command: { session: Record<string, unknown> } };
+    expect(leased.status).toBe("leased");
+    return leased.command.session;
+  }
+
   describe("함수 권한 · 모양", () => {
-    it("security definer + search_path 빈 값, 하나뿐, public · anon · authenticated 실행 권한 0, service_role만", async () => {
+    it("invoker(security definer 아님) + search_path 빈 값, 하나뿐, public · anon · authenticated 실행 권한 0, service_role만", async () => {
       const rows = await f.q(
         `select p.prosecdef, p.proconfig, p.proacl::text as acl, pg_get_function_result(p.oid) as result,
                 has_function_privilege('anon', p.oid, 'execute') as anon,
@@ -74,7 +96,7 @@ export function attachAgentSessionTests(db: () => ConversationAgentDb) {
            from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'attach_agent_session'`,
       );
       expect(rows).toHaveLength(1);
-      expect(rows[0]).toMatchObject({ prosecdef: true, proconfig: ['search_path=""'], result: "jsonb", anon: false, app: false, server: true });
+      expect(rows[0]).toMatchObject({ prosecdef: false, proconfig: ['search_path=""'], result: "jsonb", anon: false, app: false, server: true });
       // PUBLIC에 준 권한은 acl에 `=X/…`로 남는다
       expect(String(rows[0].acl)).not.toMatch(/(^|[{,])=X\//);
     });
@@ -98,7 +120,8 @@ export function attachAgentSessionTests(db: () => ConversationAgentDb) {
       const ref = wsRef();
       const result = await f.attach(w.user, w.bridge, external, ref);
       expect(result).toMatchObject({ status: "created" });
-      expect(Object.keys(result).sort()).toEqual(["conversation_id", "session_id", "status"]);
+      expect(Object.keys(result).sort()).toEqual(["conversation_id", "session_id", "status", "workspace_ref"]);
+      expect(result.workspace_ref).toBe(ref);
       expect(await f.one("select * from public.agent_sessions where id = $1", [result.session_id])).toMatchObject({
         user_id: w.user, connection_id: w.connection, external_session_id: external, workspace_ref: ref,
         status: "bound", display_name: "", last_turn_seq: 0, bound_action_id: null,
@@ -169,50 +192,57 @@ export function attachAgentSessionTests(db: () => ConversationAgentDb) {
       expect(await f.rows(w.user)).toEqual({ ...NO_WRITES, sessions: 1, conversations: 1, events: 1 });
     });
 
-    it("다른 가상 루트로 다시 불러도 이미 묶인 값을 고치지 않는다 (existing, workspace_ref 그대로)", async () => {
+    it("같은 가상 루트면 열린 작업이 있어도 existing이다 (고칠 것이 없다)", async () => {
       const w = await f.world();
       const external = randomUUID();
       const ref = wsRef();
       const first = await f.attach(w.user, w.bridge, external, ref);
-      expect(await f.attach(w.user, w.bridge, external, wsRef())).toEqual({ ...first, status: "existing" });
-      expect(await f.one("select workspace_ref from public.agent_sessions where id = $1", [first.session_id])).toEqual({ workspace_ref: ref });
+      await openTurn(w.user, first);
+      expect(await f.attach(w.user, w.bridge, external, ref)).toEqual({ ...first, status: "existing" });
     });
 
     it("Taskforce가 시작한 세션이든 이어받은 세션이든 같은 id면 기존 대화를 돌려준다 (이미 열려 있다)", async () => {
       const w = await f.world();
       const external = randomUUID();
-      const session = await f.session(w.user, w.connection, { external_session_id: external, workspace_ref: "/taskforce/ws_x" });
+      const ref = wsRef();
+      const session = await f.session(w.user, w.connection, { external_session_id: external, workspace_ref: ref });
       const conversation = await f.agentConversation(w.user, w.connection, session);
-      expect(await f.attach(w.user, w.bridge, external)).toEqual({ status: "existing", session_id: session, conversation_id: conversation });
+      expect(await f.attach(w.user, w.bridge, external, ref)).toEqual({ status: "existing", session_id: session, conversation_id: conversation, workspace_ref: ref });
       expect(await f.rows(w.user)).toMatchObject({ sessions: 1, conversations: 1, events: 0 });
     });
 
-    it("세션은 있고 대화가 없으면 대화만 새로 만든다 (created, 이벤트 1)", async () => {
+    it("세션은 있고 대화가 없으면 대화만 새로 만든다 (created지만 session_attached는 0: 세션 행이 새로 생긴 것이 아니다)", async () => {
       const w = await f.world();
       const external = randomUUID();
-      const session = await f.session(w.user, w.connection, { external_session_id: external });
-      const result = await f.attach(w.user, w.bridge, external);
+      const ref = wsRef();
+      const session = await f.session(w.user, w.connection, { external_session_id: external, workspace_ref: ref });
+      const result = await f.attach(w.user, w.bridge, external, ref);
       expect(result).toMatchObject({ status: "created", session_id: session });
-      expect(await f.rows(w.user)).toMatchObject({ sessions: 1, conversations: 1, events: 1 });
+      expect(await f.rows(w.user)).toMatchObject({ sessions: 1, conversations: 1, events: 0 });
+      // 같은 요청을 다시 해도 이벤트는 늘지 않고 existing이다
+      expect(await f.attach(w.user, w.bridge, external, ref)).toEqual({ ...result, status: "existing" });
+      expect(await f.rows(w.user)).toMatchObject({ sessions: 1, conversations: 1, events: 0 });
     });
 
     it("대화가 보관돼 있어도 새 대화를 만들지 않는다 (둘째 대화 0)", async () => {
       const w = await f.world();
-      const first = await f.attach(w.user, w.bridge, randomUUID());
+      const external = randomUUID();
+      const ref = wsRef();
+      const first = await f.attach(w.user, w.bridge, external, ref);
       await f.q("update public.conversations set archived_at = now() where id = $1", [first.conversation_id]);
-      const external = String((await f.one("select external_session_id from public.agent_sessions where id = $1", [first.session_id])).external_session_id);
-      expect(await f.attach(w.user, w.bridge, external)).toEqual({ ...first, status: "existing" });
+      expect(await f.attach(w.user, w.bridge, external, ref)).toEqual({ ...first, status: "existing" });
       expect(await f.rows(w.user)).toMatchObject({ sessions: 1, conversations: 1 });
     });
 
     it("세션에 대화가 둘이면 보관한 대화보다 열린 대화를 돌려준다 (나중에 만든 것이어도)", async () => {
       const w = await f.world();
       const external = randomUUID();
-      const session = await f.session(w.user, w.connection, { external_session_id: external });
+      const ref = wsRef();
+      const session = await f.session(w.user, w.connection, { external_session_id: external, workspace_ref: ref });
       const archived = await f.agentConversation(w.user, w.connection, session);
       await f.q("update public.conversations set archived_at = now(), created_at = now() - interval '1 day' where id = $1", [archived]);
       const open = await f.agentConversation(w.user, w.connection, session);
-      expect(await f.attach(w.user, w.bridge, external)).toEqual({ status: "existing", session_id: session, conversation_id: open });
+      expect(await f.attach(w.user, w.bridge, external, ref)).toEqual({ status: "existing", session_id: session, conversation_id: open, workspace_ref: ref });
     });
 
     it("동시에 온 두 요청 → 세션 1 · 대화 1 · created 하나 + existing 하나 · 이벤트 1", async () => {
@@ -224,6 +254,82 @@ export function attachAgentSessionTests(db: () => ConversationAgentDb) {
       expect(results[0].session_id).toBe(results[1].session_id);
       expect(results[0].conversation_id).toBe(results[1].conversation_id);
       expect(await f.rows(w.user)).toEqual({ ...NO_WRITES, sessions: 1, conversations: 1, events: 1 });
+    });
+  });
+
+  describe("workspace_ref 고치기 (existing + 다른 가상 루트)", () => {
+    it("bound이고 열린 작업이 없으면 보낸 가상 루트로 고치고 existing: 응답 · 저장이 새 값, 같은 세션 · 대화, 새 행 · 이벤트 0", async () => {
+      const w = await f.world();
+      const external = randomUUID();
+      const first = await f.attach(w.user, w.bridge, external, wsRef());
+      const before = await f.rows(w.user);
+      const fresh = wsRef();
+      const second = await f.attach(w.user, w.bridge, external, fresh);
+      expect(second).toEqual({ status: "existing", session_id: first.session_id, conversation_id: first.conversation_id, workspace_ref: fresh });
+      expect(await f.one("select workspace_ref, status from public.agent_sessions where id = $1", [first.session_id])).toEqual({ workspace_ref: fresh, status: "bound" });
+      expect(await f.rows(w.user)).toEqual(before);
+      // 다시 같은 값으로 불러도 그대로
+      expect(await f.attach(w.user, w.bridge, external, fresh)).toEqual(second);
+    });
+
+    it("끝난 턴(idle)은 열린 작업이 아니다: 고친다. 고친 뒤의 턴 명령은 새 가상 루트로 나간다", async () => {
+      const w = await f.world();
+      const external = randomUUID();
+      const first = await f.attach(w.user, w.bridge, external, wsRef());
+      const turn = await openTurn(w.user, first);
+      await f.updateRow("agent_tasks", turn.agent_task_id!, { state: "idle" });
+      const fresh = wsRef();
+      expect(await f.attach(w.user, w.bridge, external, fresh)).toMatchObject({ status: "existing", workspace_ref: fresh });
+      const next = String((await f.post(w.user, first.conversation_id!, randomUUID(), "또 해 줘")).message_id);
+      const started = await f.start(w.user, next, [], [], "write");
+      expect(started.status).toBe("started");
+      expect(await leasedSession(w.user, w.bridge, started.step_id!)).toEqual({ external_session_id: external, workspace_ref: fresh, resume: true });
+    });
+
+    it.each([...OPEN_TASK_STATES, "awaiting_answer"])("열린 작업(%s)이 있으면 workspace_mismatch이고 아무것도 고치지 않는다", async (state) => {
+      const w = await f.world();
+      const external = randomUUID();
+      const ref = wsRef();
+      const first = await f.attach(w.user, w.bridge, external, ref);
+      const turn = await openTurn(w.user, first);
+      const patch: Record<string, unknown> =
+        state === "unreachable" ? { state, last_live_state: "running" }
+        : state === "awaiting_answer" ? { state, pending_question: { ...AGENT_QUESTION, question_key: [turn.agent_task_id, AGENT_QUESTION.provider_request_id] } }
+        : { state };
+      await f.updateRow("agent_tasks", turn.agent_task_id!, patch);
+      const before = await f.one("select workspace_ref, status, updated_at from public.agent_sessions where id = $1", [first.session_id]);
+      const rows = await f.rows(w.user);
+      expect(await f.attach(w.user, w.bridge, external, wsRef())).toEqual(MISMATCH);
+      expect(await f.one("select workspace_ref, status, updated_at from public.agent_sessions where id = $1", [first.session_id])).toEqual(before);
+      expect(await f.rows(w.user)).toEqual(rows);
+      // 같은 가상 루트로 다시 부르면 열린 작업이 있어도 existing이다
+      expect(await f.attach(w.user, w.bridge, external, ref)).toEqual({ ...first, status: "existing" });
+    });
+
+    it.each(["external", "unreachable"])("세션이 %s이면 열린 작업이 없어도 workspace_mismatch이고 고치지 않는다 (bound만 고친다)", async (status) => {
+      const w = await f.world();
+      const external = randomUUID();
+      const ref = wsRef();
+      const first = await f.attach(w.user, w.bridge, external, ref);
+      await f.q("update public.agent_sessions set status = $2 where id = $1", [first.session_id, status]);
+      expect(await f.attach(w.user, w.bridge, external, wsRef())).toEqual(MISMATCH);
+      expect(await f.one("select workspace_ref, status from public.agent_sessions where id = $1", [first.session_id])).toEqual({ workspace_ref: ref, status });
+    });
+
+    it("다른 사용자 · 다른 세션의 workspace_ref는 건드리지 않는다", async () => {
+      const w = await f.world();
+      const other = await f.world();
+      const external = randomUUID();
+      const mine = await f.attach(w.user, w.bridge, external, wsRef());
+      const sibling = await f.attach(w.user, w.bridge, randomUUID(), wsRef());
+      const theirRef = wsRef();
+      const theirs = await f.attach(other.user, other.bridge, external, theirRef);
+      const siblingBefore = await f.one("select workspace_ref from public.agent_sessions where id = $1", [sibling.session_id]);
+      const fresh = wsRef();
+      await f.attach(w.user, w.bridge, external, fresh);
+      expect(await f.one("select workspace_ref from public.agent_sessions where id = $1", [mine.session_id])).toEqual({ workspace_ref: fresh });
+      expect(await f.one("select workspace_ref from public.agent_sessions where id = $1", [sibling.session_id])).toEqual(siblingBefore);
+      expect(await f.one("select workspace_ref from public.agent_sessions where id = $1", [theirs.session_id])).toEqual({ workspace_ref: theirRef });
     });
   });
 
@@ -306,7 +412,7 @@ export function attachAgentSessionTests(db: () => ConversationAgentDb) {
       expect(await f.attach(w.user, w.bridge, shared)).toMatchObject({ status: "created" });
     });
 
-    it("같은 연결의 closed 세션은 다시 붙이지 않는다 (session_in_use)", async () => {
+    it("같은 연결의 closed 세션은 다시 붙이지 않는다 (session_in_use; 방어용 분기 — 정상 경로에서는 연결이 active인 채 세션만 closed가 되지 않아 직접 갱신으로 만든다)", async () => {
       const w = await f.world();
       const external = randomUUID();
       const first = await f.attach(w.user, w.bridge, external);
@@ -317,9 +423,10 @@ export function attachAgentSessionTests(db: () => ConversationAgentDb) {
     it("터미널로 내준 세션(external)도 existing이다 (상태를 바꾸지 않는다)", async () => {
       const w = await f.world();
       const external = randomUUID();
-      const first = await f.attach(w.user, w.bridge, external);
+      const ref = wsRef();
+      const first = await f.attach(w.user, w.bridge, external, ref);
       await f.q("update public.agent_sessions set status = 'external' where id = $1", [first.session_id]);
-      expect(await f.attach(w.user, w.bridge, external)).toEqual({ ...first, status: "existing" });
+      expect(await f.attach(w.user, w.bridge, external, ref)).toEqual({ ...first, status: "existing" });
       expect(await f.one("select status from public.agent_sessions where id = $1", [first.session_id])).toEqual({ status: "external" });
     });
   });
@@ -424,6 +531,37 @@ export function attachAgentSessionTests(db: () => ConversationAgentDb) {
       await db().asUser(user, async () => {
         await expect(f.q("insert into public.metric_events (type) values ('session_attached')")).rejects.toMatchObject({ code: expect.stringMatching(/^(42501|23514)$/) });
       });
+    });
+  });
+
+  describe("속도 제한 종류 agent_attach (30번 · 10분, take_rate_limit)", () => {
+    const take = async (user: string, kind: string, max = 30, seconds = 600) =>
+      (await f.one("select public.take_rate_limit($1, $2, $3, $4) as at", [user, kind, max, seconds])).at as string | Date | null;
+
+    it("30번까지 통과하고 31번째는 다시 할 수 있는 시각을 돌려준다 (사용자마다 따로, 한 번에 한 행)", async () => {
+      const user = await f.user();
+      const other = await f.user();
+      for (let i = 0; i < 30; i++) expect(await take(user, "agent_attach"), `${i + 1}번째`).toBeNull();
+      const retryAt = await take(user, "agent_attach");
+      expect(retryAt).not.toBeNull();
+      expect(new Date(String(retryAt)).getTime()).toBeGreaterThan(Date.now());
+      expect(new Date(String(retryAt)).getTime()).toBeLessThanOrEqual(Date.now() + 600_000 + 5_000);
+      expect(await f.count("select 1 from public.rate_limit_events where user_id = $1 and kind = 'agent_attach'", [user])).toBe(30);
+      expect(await take(other, "agent_attach")).toBeNull();
+    });
+
+    it("종류 검사가 agent_attach를 받고 앞 종류는 그대로 받으며 모르는 종류는 여전히 거절한다", async () => {
+      const user = await f.user();
+      for (const kind of ["ask", "connection_start", "action_create", "run_create", "ai_key", "bridge_register"]) expect(await take(user, kind, 100), kind).toBeNull();
+      await f.q("insert into public.rate_limit_events (user_id, kind) values ($1, 'agent_attach')", [user]);
+      await expect(f.q("insert into public.rate_limit_events (user_id, kind) values ($1, 'agent_attach_x')", [user])).rejects.toMatchObject({ code: "23514" });
+      await expect(take(user, "agent_attach_x")).rejects.toThrow(/take_rate_limit/);
+      await expect(take(user, "")).rejects.toThrow(/take_rate_limit/);
+    });
+
+    it("앱(authenticated)은 직접 부를 수 없다 (service_role만)", async () => {
+      const user = await f.user();
+      await expect(db().asUser(user, () => take(user, "agent_attach"))).rejects.toMatchObject({ code: "42501" });
     });
   });
 }
