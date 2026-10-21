@@ -20,7 +20,7 @@ enum EdgePanelMetrics {
     /// 패널 본문의 안쪽 여백. 새 Issues 화면(M1 · M3 · M4)은 디자인대로 좌우 8 · 아래 10(행이 364 폭, 행 안쪽 10이 글 시작을 만든다).
     /// 그 밖의 화면(게이트가 꺼진 All work · Chats · Review)은 지금의 공통 좌우 16 · 아래 12 그대로다
     static func bodyInsets(issueScreens: Bool, view: EdgeShellModel.View) -> EdgeInsets {
-        if issueScreens, view == .allWork {
+        if issueScreens, view == .allWork || view == .onThisMac {
             return EdgeInsets(top: 0, leading: TFSpace.sm, bottom: 10, trailing: TFSpace.sm)
         }
         return EdgeInsets(top: 0, leading: TFSpace.lg, bottom: TFSpace.md, trailing: TFSpace.lg)
@@ -101,6 +101,8 @@ struct EdgePanelView: View {
                             } else {
                                 PanelEmptyState(title: Self.noChats)
                             }
+                        case .onThisMac:
+                            ExternalSessionsPanelBody(shell: shell)
                         case .review:
                             // S4 gate가 꺼져 있으면(`review == nil`) 이 화면은 열리지 않는다. Taskforce 대화가 켜진 구성은 요청 카드 한 장 + 끝의 요약이다
                             if let desk = shell.review {

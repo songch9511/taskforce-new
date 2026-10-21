@@ -174,6 +174,8 @@ final class EdgeShellModel {
     /// 패널이 보이는 것 (한 번에 하나). `review`는 S4 gate가 켜졌을 때만 열린다 (`review != nil`). 일 상세는 다음 PR에서 더한다
     enum View: String, CaseIterable {
         case allWork, chats, review
+        /// 이 Mac의 Claude Code 세션 목록 (OA 외부 세션 PR1): 레일 셋째 캡슐의 On this Mac. 게이트가 켜진 셸(`externalSessionsVisible`)에서만 열린다
+        case onThisMac
 
         /// 패널 머리 제목. All work 화면의 머리는 "Your work"다 (디자인 WorkPage · WorkList 견본). 레일 칸 이름은 그대로 All work.
         /// Review의 머리는 그 결정의 항목 이름이다 (디자인 PanelHeader "Launch timing"): 이 값은 항목이 없을 때(빈 · 읽는 중 · 오프라인)의 머리다
@@ -182,35 +184,42 @@ final class EdgeShellModel {
             case .allWork: "Your work"
             case .chats: "Chats"
             case .review: "Review"
+            case .onThisMac: ExternalSessionCopy.sectionTitle
             }
         }
     }
 
     /// 레일의 고정 칸
     enum Control: String, CaseIterable {
-        case allWork, chats, more
+        case allWork, chats, onThisMac, more
+
+        /// 셋째 캡슐의 기본 칸. On this Mac은 여기 없다: 게이트가 켜진 셸만 더한다 (`EdgeShellModel.controls`). `allCases`는 빠짐없는 목록이다
+        static let defaultControls: [Control] = [.allWork, .chats, .more]
 
         var label: String {
             switch self {
             case .allWork: "All work"
             case .chats: "Chats"
+            case .onThisMac: ExternalSessionCopy.sectionTitle
             case .more: "More"
             }
         }
 
-        /// 툴팁의 단축키 (More는 없음)
+        /// 툴팁의 단축키 (On this Mac · More는 없음)
         var shortcut: String? {
             switch self {
             case .allWork: "⌘2"
             case .chats: "⌘3"
-            case .more: nil
+            case .onThisMac, .more: nil
             }
         }
     }
 
-    /// 이 셸의 레일 고정 칸 (Chats가 꺼져 있으면 Chats 칸이 없다)
+    /// 이 셸의 레일 고정 칸 (Chats가 꺼져 있으면 Chats 칸이 없다). 외부 세션 게이트가 켜졌으면 셋째 캡슐의 More 앞에 On this Mac이 든다
     var controls: [Control] {
-        chatsEnabled ? Control.allCases : Control.allCases.filter { $0 != .chats }
+        var list = chatsEnabled ? Control.defaultControls : Control.defaultControls.filter { $0 != .chats }
+        if externalSessionsVisible, let more = list.firstIndex(of: .more) { list.insert(.onThisMac, at: more) }
+        return list
     }
 
     /// 고정 칸의 이름. 새 Issues 화면이 켜진 셸의 첫 칸은 "Projects"다 (툴팁 "Projects ⌘2", OA U2b 사용자 결정: U2의 "Issues"를 바꿨다): 꺼져 있으면 "All work"
@@ -225,6 +234,7 @@ final class EdgeShellModel {
         switch control {
         case .allWork: issues != nil ? .project : .allWork
         case .chats: .talk
+        case .onThisMac: .laptop
         case .more: .more
         }
     }
@@ -241,13 +251,21 @@ final class EdgeShellModel {
 
     private(set) var slots: [RailEntry] = []
     /// 노치에 120ms 머물러 펼친 레일 (패널이 열려 있으면 `isExpanded`가 따로 참)
-    private(set) var railHovered = false
+    private(set) var railHovered = false {
+        // 레일이 펼쳐질 때 한 번 훑는다 (레일 입구의 새 세션 점을 위해, 패널이 열려 있으면 이미 훑고 있다)
+        didSet { if railHovered, !oldValue, externalSessionsVisible { externalSessions?.railExpanded() } }
+    }
     private(set) var panelOpen = false {
         // 패널을 접으면 세션 패널의 대화 읽기 기록을 지운다: 접어 둔 사이 온라인 복귀 · 목록 새로 읽기가 그 대화의 캐시를 비웠을 수 있어
         // 복원(⌥Space)하면 같은 conversation id여도 다시 읽는다 (재검토 반영 1)
-        didSet { if !panelOpen { loadedPanelConversation = nil } }
+        didSet {
+            if !panelOpen { loadedPanelConversation = nil }
+            externalSessionsPanelChanged()
+        }
     }
-    private(set) var view: View = .allWork
+    private(set) var view: View = .allWork {
+        didSet { externalSessionsPanelChanged() }
+    }
     /// 레일에서 연 일 (패널 목록에서 그 행을 표시)
     private(set) var currentID: UUID?
     /// 포인터 아래의 레일 칸. 패널이 닫혀 있으면 툴팁, 열려 있으면 패널의 그 행을 표시한다
@@ -308,6 +326,8 @@ final class EdgeShellModel {
     var assistantWindowFront = false
     /// 새 Issues 화면(OA U2): 세션 · 번호 · 상세를 읽는 곳. **없으면 게이트가 꺼진 것이다** — Projects · 이슈 목록 · 상세 · 세션 패널이 없고 All work는 지금 그대로다 (`EdgeSurfaces.issueScreens`)
     let issues: IssueRuntime?
+    /// 이 Mac의 Claude Code 세션 목록 (OA 외부 세션 PR1). **없으면 게이트가 꺼진 것이다**(새 Issues 화면 ∧ `BridgeFlag` ∧ 로그인): 레일 칸도 패널도 훑기도 서버 보고도 없다
+    let externalSessions: ExternalSessionsStore?
     /// 이 실행의 Taskforce 게이트 (`EdgeSurfaces.taskforceConversation`: Debug에서 다섯 인자가 모두 있을 때만, Release 빌드는 늘 false). 셸이 만들어지는 자리에서 한 번 정한다 (OA U3 검토 1)
     let taskforceGate: Bool
     var issueScreensEnabled: Bool { issues != nil }
@@ -404,9 +424,11 @@ final class EdgeShellModel {
         reduceMotion: Bool = false, schedule: @escaping EdgeSchedule = EdgeScheduler.live, clock: @escaping () -> Date = Date.init,
         calendar: @escaping () -> Calendar = { Calendar.current }, pinStore: WorkPinStore = WorkPinStore(defaults: nil),
         contexts: WorkContextStore? = nil, review: ReviewDesk? = nil, summary: ReturnSummaryStore? = nil, chatsEnabled: Bool = true,
-        windowsEnabled: Bool = false, issues: IssueRuntime? = nil, taskforceGate: Bool = EdgeSurfaces.taskforceConversationForThisRun
+        windowsEnabled: Bool = false, issues: IssueRuntime? = nil, taskforceGate: Bool = EdgeSurfaces.taskforceConversationForThisRun,
+        externalSessions: ExternalSessionsStore? = nil
     ) {
         self.issues = issues
+        self.externalSessions = issues == nil ? nil : externalSessions
         self.taskforceGate = taskforceGate
         self.windowsEnabled = chatsEnabled && windowsEnabled
         self.contexts = contexts
@@ -455,6 +477,8 @@ final class EdgeShellModel {
         if let hoveredControl, let shortcut = hoveredControl.shortcut {
             return (label(for: hoveredControl), shortcut)
         }
+        // On this Mac은 단축키 없이 이름만 (DS 툴팁 규칙, OA 외부 세션 PR1)
+        if hoveredControl == .onThisMac { return (label(for: .onThisMac), "") }
         return nil
     }
 
@@ -603,7 +627,7 @@ final class EdgeShellModel {
             }
             guard let currentID, let item = workItems.first(where: { $0.id == currentID }) else { return nil }
             return AssistantOpenItem(kind: .action, id: currentID, title: item.action.title)
-        case .chats:
+        case .chats, .onThisMac:
             return nil
         }
     }
@@ -626,6 +650,8 @@ final class EdgeShellModel {
     }
 
     func openPanel(_ view: View) {
+        // On this Mac은 게이트가 켜진 셸에서만 열린다
+        guard view != .onThisMac || externalSessionsVisible else { return }
         // Chats가 없는 셸은 Chats 화면으로 열지 않는다 (⌥ Space의 마지막 화면 · 레일 · 키 어느 길로도). Assistant 창이 있는 셸도 패널은 Chats 화면을 열지 않는다
         guard view != .chats || (chatsEnabled && !windowsEnabled) else { return }
         // Review를 떠나면 그 결정에 대한 안내는 거둔다 (돌아오면 지금 상태가 말한다)
@@ -654,6 +680,37 @@ final class EdgeShellModel {
         }
         openPanel(.allWork)
         if issues != nil { readSessionsOnEntry() }
+    }
+
+    // MARK: On this Mac (OA 외부 세션 PR1)
+
+    /// 레일 셋째 캡슐에 On this Mac이 있나: 새 Issues 화면(캡슐 레일) ∧ 목록이 만들어졌고(`BridgeFlag`) ∧ 로그인. 접힌 레일에서는 셋째 캡슐째 보이지 않는다
+    var externalSessionsVisible: Bool { issues != nil && externalSessions != nil && account != nil }
+
+    /// 줄의 Open in Claude: Claude 데스크톱 앱만 앞으로 (인자 0, 그 세션은 열지 않는다)
+    func openInClaude() {
+        _ = claudeApp.openClaudeApp()
+    }
+
+    /// 레일의 On this Mac: 패널에 이 Mac의 세션 목록을 연다 (게이트가 꺼진 셸은 아무 일도 없다)
+    func openOnThisMac() {
+        guard externalSessionsVisible else { return }
+        openPanel(.onThisMac)
+    }
+
+    /// Open in Claude (Claude 데스크톱 앱만 앞으로, 인자 0): 시험은 가짜로 바꾼다
+    @ObservationIgnored var claudeApp: any ClaudeAppOpening = LiveClaudeAppOpener()
+    /// 프로젝트 → 그 프로젝트의 작업 폴더 (이 Mac의 등록부): 묶음 머리에 프로젝트 이름을 쓰는 데만 쓴다. 시험은 바꾼다
+    @ObservationIgnored var projectFolders: () -> [UUID: String] = { BridgeHost.shared?.activeWorkspaceRegistry?.projectFolders() ?? [:] }
+
+    /// 목록이 보이는 동안만 훑는다 (패널 열림 ∧ 그 화면): 열면 점을 지우고 10초마다 다시 보고, 닫히거나 다른 화면으로 가면 멈춘다
+    @ObservationIgnored private var externalSessionsShowing = false
+
+    private func externalSessionsPanelChanged() {
+        let showing = panelOpen && view == .onThisMac && externalSessionsVisible
+        guard showing != externalSessionsShowing else { return }
+        externalSessionsShowing = showing
+        if showing { externalSessions?.panelOpened() } else { externalSessions?.panelClosed() }
     }
 
     /// Chats: 레일의 Chats · ⌘3. Assistant 창이 있으면 가장 앞 창을 앞으로 가져오고 없으면 연다 (패널은 그대로). 창이 없는 구성은 패널의 Chats로 마지막 대화로 돌아간다
@@ -1189,6 +1246,9 @@ final class EdgeShellModel {
         nav.reset()
         sessionPanelID = nil
         pins = account.map { pinStore.load(account: $0) } ?? WorkPins()
+        // 이 Mac의 세션 목록은 로그인한 사용자에게만 있다: 열려 있던 화면은 All work로 돌아간다
+        if view == .onThisMac { view = .allWork }
+        externalSessionsPanelChanged()
     }
 
     // MARK: 데이터
@@ -1342,7 +1402,12 @@ extension EdgeShellModel {
         if hoveredControl == control { return true }
         if control == .chats, windowsEnabled, assistantWindowFront, !panelOpen { return true }
         guard panelOpen else { return false }
-        return control == .allWork ? view == .allWork && currentID == nil : control == .chats && view == .chats
+        switch control {
+        case .allWork: return view == .allWork && currentID == nil
+        case .chats: return view == .chats
+        case .onThisMac: return view == .onThisMac
+        case .more: return false
+        }
     }
 
     /// 세션 링이 칠해지나: 호버, 또는 패널이 그 일을 보여 주는 중

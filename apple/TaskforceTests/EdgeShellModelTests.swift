@@ -354,8 +354,8 @@ struct EdgeShellModelTests {
             #expect(!title.localizedCaseInsensitiveContains("caught up"))
         }
         // Review(S4)는 S4 gate가 켜졌을 때만 열린다 (`S4GateTests`): 이름은 있어도 gate가 꺼진 셸은 열 수 없다
-        #expect(EdgeShellModel.View.allCases.map(\.title) == ["Your work", "Chats", "Review"])
-        #expect(EdgeShellModel.Control.allCases.map(\.label) == ["All work", "Chats", "More"])
+        #expect(EdgeShellModel.View.allCases.map(\.title) == ["Your work", "Chats", "Review", "On this Mac"], "On this Mac은 외부 세션 게이트가 켜진 셸에서만 열린다 (EdgeExternalSessionsTests)")
+        #expect(EdgeShellModel.Control.defaultControls.map(\.label) == ["All work", "Chats", "More"])
     }
 
     // MARK: 플래그

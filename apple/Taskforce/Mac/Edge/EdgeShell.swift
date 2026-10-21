@@ -66,9 +66,18 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         let pinStore = Self.pinStore()
         self.pinStore = pinStore
         let windows = chat != nil && assistantWindows
+        // 레일 On this Mac (OA 외부 세션 PR1): 새 Issues 화면 ∧ BridgeFlag ∧ 로그인일 때만. 아니면 nil이라 칸도 훑기도 서버 보고도 없다
+        #if DEBUG
+        // 견본 하네스(`-TFEdgeSnapshotExternalSessions`)는 가짜 훑기를 쓴다 (이 Mac의 실제 Claude 기록을 읽지 않는다)
+        let externalSessions = ExternalSessionSnapshot.isEnabled && chat?.issues != nil
+            ? ExternalSessionSnapshot.sampleStore(scope: chat?.scope)
+            : ExternalSessionsRuntime.make(services: launcher.services, scope: chat?.scope, issueScreens: chat?.issues != nil, session: launcher.session)
+        #else
+        let externalSessions = ExternalSessionsRuntime.make(services: launcher.services, scope: chat?.scope, issueScreens: chat?.issues != nil, session: launcher.session)
+        #endif
         shell = EdgeShellModel(
             reduceMotion: Self.systemReduceMotion, pinStore: pinStore, contexts: chat?.contexts, review: review, summary: summary, chatsEnabled: chat != nil,
-            windowsEnabled: windows, issues: chat?.issues
+            windowsEnabled: windows, issues: chat?.issues, externalSessions: externalSessions
         )
         rail = EdgeRailPanelController(shell: shell)
         panel = EdgePanelController(shell: shell, chat: chat)

@@ -66,17 +66,28 @@ public struct RailItem: View {
 
 /// 레일의 고정 칸 (All work · Chats · More): 32pt 정사각형의 Lucide 글리프, `bezel/ink`. 캡슐 레일(OA U3)에서는 칸이 원이다 (`circular`)
 public struct RailButton: View {
+    /// 새것 표시 점 (DS B): 흰 잉크(`bezel/ink`) 7pt에 `bezel` 2pt 테두리, 칸의 오른쪽 위. 색 점 · 숫자 배지는 아니다
+    nonisolated public static let dotSize: CGFloat = 7
+    nonisolated public static let dotBorder: CGFloat = 2
+
     let icon: TFIcon
     let label: String
     let highlighted: Bool
     let circular: Bool
+    let dot: Bool
+    let dotAccessibilityLabel: String?
     let action: () -> Void
 
-    public init(icon: TFIcon, label: String, highlighted: Bool = false, circular: Bool = false, action: @escaping () -> Void) {
+    /// - dot: 새것이 있다는 점. 접근성 이름은 `dotAccessibilityLabel`(없으면 `label` 그대로)이 된다 (숫자는 이름에만)
+    public init(
+        icon: TFIcon, label: String, highlighted: Bool = false, circular: Bool = false, dot: Bool = false, dotAccessibilityLabel: String? = nil, action: @escaping () -> Void
+    ) {
         self.icon = icon
         self.label = label
         self.highlighted = highlighted
         self.circular = circular
+        self.dot = dot
+        self.dotAccessibilityLabel = dotAccessibilityLabel
         self.action = action
     }
 
@@ -93,10 +104,20 @@ public struct RailButton: View {
                             .fill(highlighted ? TFColor.bezelHover : .clear)
                     }
                 }
+                .overlay(alignment: .topTrailing) {
+                    if dot {
+                        Circle()
+                            .fill(TFColor.bezelInk)
+                            .frame(width: Self.dotSize, height: Self.dotSize)
+                            .overlay(Circle().strokeBorder(TFColor.bezelBase, lineWidth: Self.dotBorder).frame(width: Self.dotSize + 2 * Self.dotBorder, height: Self.dotSize + 2 * Self.dotBorder))
+                            .offset(x: -3, y: 4)
+                            .accessibilityHidden(true)
+                    }
+                }
                 .contentShape(circular ? AnyShape(Circle()) : AnyShape(Rectangle()))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(label)
+        .accessibilityLabel(dot ? (dotAccessibilityLabel ?? label) : label)
     }
 }
 

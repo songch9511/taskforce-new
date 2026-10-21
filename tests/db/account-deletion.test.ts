@@ -49,6 +49,7 @@ const USER_TABLES = [
   "execution_runs",
   "execution_steps",
   "execution_usage",
+  "external_sessions",
   "identity_links",
   "inbox_events",
   "judge_logs",
@@ -222,6 +223,8 @@ async function seed(userId: string, tokenHex: string) {
   // 0.2.0 D1a(20261113000000): bridge · 에이전트 연결 · 세션 · 작업 · 에이전트 사건이 서로와 run · 단계 · 메시지 · Action을 가리킨다(복합 외래키 cascade / set null).
   // 계정 삭제 한 문장 안에서 함께 지워져 서로 막지 않아야 한다
   const bridgeId = await one(`insert into public.bridges (user_id, device_ref) values ($1, $2) returning id`, [userId, `device-${userId}`]);
+  // 외부 세션 목록(20261203000000): 제목은 bridge(복합 외래키)와 계정이 함께 지운다
+  await db.query(`select public.report_external_sessions($1, $2, $3::jsonb)`, [userId, bridgeId, JSON.stringify([{ id: '0'.repeat(64), title: '제목', state: 'available', last_activity_at: '2026-10-21T09:00:00Z' }])]);
   const agentConnectionId = await one(`insert into public.agent_connections (user_id, adapter, bridge_id) values ($1, 'agent:claude-code', $2) returning id`, [userId, bridgeId]);
   const agentSessionId = await one(
     `insert into public.agent_sessions (user_id, connection_id, external_session_id, workspace_ref, bound_action_id) values ($1, $2, 'ext-1', 'ws-1', $3) returning id`,

@@ -350,6 +350,13 @@ private final class RequestLog: @unchecked Sendable {
     func append(_ request: URLRequest) { lock.withLock { recorded.append(request) } }
 }
 
+/// `onSigningOut` 정리가 본 값
+@MainActor
+final class SigningOutProbe {
+    var states: [SessionStore.State] = []
+    var storedBefore: [Bool] = []
+}
+
 /// `onSignedOut`이 받은 계정들
 @MainActor
 final class Departures {
@@ -420,6 +427,69 @@ struct SessionStoreSignOutTests {
         #expect(store.state == .signedOut)
         #expect(store.errorMessage == nil)
         #expect(storage.isEmpty)
+    }
+
+    // MARK: 로그아웃 직전 정리 (`onSigningOut`, OA 외부 세션: 옛 토큰이 살아 있는 동안 서버 목록을 비운다)
+
+    /// 정리는 세션이 아직 저장돼 있고 로그인 상태일 때 돈다 (그 뒤에는 토큰이 없어 서버를 부를 수 없다)
+    @Test func signingOutHandlersRunWhileTheSessionIsStillStored() async throws {
+        let storage = try RemovableStorage(fixtures.session(expiresIn: 3600))
+        let store = store(storage: storage)
+        store.start()
+        await wait(for: signedIn, in: store)
+        let seen = SigningOutProbe()
+        store.onSigningOut { [unowned store] in
+            seen.states.append(store.state)
+            seen.storedBefore.append(!storage.isEmpty)
+        }
+        await store.signOut()
+        await wait(for: .signedOut, in: store)
+        #expect(seen.states == [signedIn] && seen.storedBefore == [true], "정리가 돌 때는 아직 로그인 상태이고 세션이 저장돼 있다")
+        #expect(store.state == .signedOut && storage.isEmpty, "정리 뒤에 로그아웃은 그대로 끝난다")
+    }
+
+    /// 끝나지 않는 정리가 로그아웃을 막지 않는다: 한도(기본 3초, 시험은 줄인다) 안에서 로그아웃이 끝난다
+    @Test func aSigningOutHandlerThatNeverFinishesDoesNotBlockSignOutPastTheBound() async throws {
+        #expect(SessionStore.defaultSigningOutTimeout == .seconds(3))
+        let storage = try RemovableStorage(fixtures.session(expiresIn: 3600))
+        let store = store(storage: storage)
+        store.signingOutTimeout = .milliseconds(150)
+        store.start()
+        await wait(for: signedIn, in: store)
+        store.onSigningOut { try? await Task.sleep(for: .seconds(20)) }
+        let started = ContinuousClock.now
+        await store.signOut()
+        let elapsed = ContinuousClock.now - started
+        #expect(elapsed < .seconds(2), "한도 150ms 뒤에는 기다리지 않고 로그아웃한다: \(elapsed)")
+        await wait(for: .signedOut, in: store)
+        #expect(store.state == .signedOut && storage.isEmpty)
+    }
+
+    /// 정리가 던져도 로그아웃은 멈추지 않고 오류로도 알리지 않는다. 뒤의 정리도 돈다
+    @Test func aThrowingSigningOutHandlerDoesNotStopSignOutOrTheNextHandler() async throws {
+        struct Boom: Error {}
+        let storage = try RemovableStorage(fixtures.session(expiresIn: 3600))
+        let store = store(storage: storage)
+        store.start()
+        await wait(for: signedIn, in: store)
+        let seen = SigningOutProbe()
+        store.onSigningOut { throw Boom() }
+        store.onSigningOut { seen.states.append(.signedOut) }
+        await store.signOut()
+        await wait(for: .signedOut, in: store)
+        #expect(seen.states.count == 1, "앞의 정리가 던져도 다음 정리는 돈다")
+        #expect(store.state == .signedOut && storage.isEmpty && store.errorMessage == nil)
+    }
+
+    /// 세션 만료 · 다른 기기에서 계정 삭제는 "누른 로그아웃"이 아니다: 토큰이 이미 없어 정리를 부르지 않는다 (서버 목록은 보관 기간 · 계정 삭제 cascade가 지운다)
+    @Test func signingOutHandlersAreNotCalledWhenTheSessionEndsByItself() async throws {
+        let session = fixtures.session(expiresIn: 3600)
+        let store = store(storage: try RemovableStorage(session))
+        let seen = SigningOutProbe()
+        store.onSigningOut { seen.states.append(.signedOut) }
+        store.apply(event: .signedIn, session: session)
+        store.apply(event: .signedOut, session: nil)
+        #expect(seen.states.isEmpty)
     }
 
     /// 계정이 떠날 때마다 그 계정으로 정리를 한 번 부른다. 토큰 갱신은 떠난 것이 아니다

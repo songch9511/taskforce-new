@@ -31,7 +31,7 @@ export type AgentEventSpec = {
 
 const sql = (fn: string): EventSource => ({ kind: "sql", fn });
 
-/** OA 지표 type 17개 (CHECK 블록 v3, 20261123000000_agent_path_leases.sql). 1–11 · 17이 에이전트 대화, 12–16이 프로젝트 · 이슈 정리 */
+/** OA 지표 type 18개 (CHECK 블록 v3, 20261123000000_agent_path_leases.sql + 외부 세션 1개, 20261203000000_external_sessions_list.sql). 1–11 · 17이 에이전트 대화, 12–16이 프로젝트 · 이슈 정리, 18이 외부 세션 목록 */
 export const AGENT_EVENTS: readonly AgentEventSpec[] = [
   // 전달 시작마다: 사용자가 보낸 순간이 아니라 대기열 · 재전달 · Mac 복귀 때도 생긴다 (리텐션 활동이 아니다, Q5)
   { type: "agent_message_sent", sources: [sql("start_agent_turn")], dims: [], activity: false },
@@ -61,6 +61,8 @@ export const AGENT_EVENTS: readonly AgentEventSpec[] = [
   { type: "project_archived", sources: [sql("update_work_context")], dims: [], activity: true },
   // 앱 insert 정책(owner_insert_client_app_types)은 이미 허용하지만 앱이 아직 보내지 않는다
   { type: "assistant_opened", sources: [], dims: [], activity: true, gap: "남기는 곳 없음 (Mac 후속: 앱이 Supabase로 직접 insert)" },
+  // 레일의 외부 세션 목록(On this Mac)이 행 1개 이상으로 보인 날 (하루 한 번). 앱이 POST /api/v2/external-sessions/shown으로 알리고 route가 서버 권한으로 남긴다. props는 구간 문자열뿐(rows_bucket · held_bucket)이라 dims로 가르지 않는다
+  { type: "external_sessions_shown", sources: [{ kind: "ts", file: "src/lib/api/external-sessions.ts" }], dims: [], activity: true },
 ];
 
 // ─── 결제 · 키 이벤트 등록부 (OA 결제 PR-A, 20261129000000) ───
@@ -174,7 +176,7 @@ export type UsageCard = {
   types: UsageType[];
   /** 에이전트에게 맡겨 이슈가 생김 (action_events user_created, rule assistant_agent) */
   agentIssues: { n: number; users: number };
-  /** 에이전트 등록부 17개 · OA 전 7개 · 결제 · 키 등록부 20개 밖의 type: 버리지 않고 따로 센다 */
+  /** 에이전트 등록부 18개 · OA 전 7개 · 결제 · 키 등록부 20개 밖의 type: 버리지 않고 따로 센다 */
   unknown: { types: number; events: number };
   /** 에이전트 기록이 하나도 없다 */
   empty: boolean;

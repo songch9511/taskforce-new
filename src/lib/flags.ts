@@ -17,6 +17,9 @@
  * RETURN_SUMMARY_ENABLED: 복귀 요약만 (GET /api/v2/return-summary · POST …/clear · POST …/baseline 세 경로). Review GET · 제안 생산 · 노출 · snooze · dismiss는 열지 않는다.
  *   복귀 요약 경로는 이 gate **또는** REVIEW_V2_ENABLED가 정확히 "true"이면 열린다(returnSummaryEnabled). REVIEW_V2_ENABLED는 여섯 경로 전부(와 결정만 읽기 경로)를 여는 상위 집합이다.
  *   그 뒤 켜는 REVIEW_V2_ENABLED를 끄고 이것만 남겨도 복귀 요약은 그대로 열려 있고 Review · 제안 경로만 404가 된다 (끄면 세 경로 모두 404, 인증 · DB 호출 없음, 새 쓰기 0).
+ * EXTERNAL_SESSIONS_REPORT_ENABLED: Mac이 Taskforce 밖에서 시작한 Claude Code 세션의 **제목을 서버에 올리는** PUT /api/v2/external-sessions만 연다 (끄면 404, 인증 · DB 호출 없음, 저장 0).
+ *   이 route는 CONVERSATIONS_V2_ENABLED · AGENT_ADAPTER_CLAUDE_CODE_ENABLED · 베타 명단도 함께 통과해야 한다. 처리방침(#169)이 "제목을 서버에 보낸다"고 게시되기 전에는 켜지 않는다.
+ *   Mac 레일 목록 자체는 서버 없이 로컬에서 만든다: 이 gate를 끄면 올리기만 멈춘다. 구간 값만 받는 POST …/shown 지표는 이 gate를 보지 않는다.
  */
 export const SERVER_FLAGS = [
   "CONVERSATIONS_V2_ENABLED",
@@ -29,6 +32,7 @@ export const SERVER_FLAGS = [
   "REPORTS_V2_ENABLED",
   "REVIEW_V2_ENABLED",
   "RETURN_SUMMARY_ENABLED",
+  "EXTERNAL_SESSIONS_REPORT_ENABLED",
 ] as const;
 export type ServerFlag = (typeof SERVER_FLAGS)[number];
 
