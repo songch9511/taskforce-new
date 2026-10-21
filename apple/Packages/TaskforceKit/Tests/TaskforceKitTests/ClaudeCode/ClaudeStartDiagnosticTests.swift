@@ -19,10 +19,15 @@ struct ClaudeStartDiagnosticTests {
         return url.path
     }
 
-    func spawn(keeper path: String, reportTimeout: TimeInterval = 0.5) -> Result<ClaudeKeptSpawn, ClaudeKeptFailure> {
+    /// 시험의 기한은 넉넉하다 (제품 기본은 보고 5초 · 거두기 3초): 붐비는 기계에서 `/bin/sh`가 뜨고 첫 줄을 쓰는 데 걸리는 시간이 원인 판정을 바꾸면 안 된다.
+    /// 기다림은 일이 정해지면 바로 돌아오므로 통과 시간은 같다. 기한이 짧아야 하는 시험(`report_timeout`)만 자기 값을 넘긴다
+    static let generousReport: TimeInterval = 30
+    static let generousAbort: TimeInterval = 20
+
+    func spawn(keeper path: String, reportTimeout: TimeInterval = generousReport, abortTimeout: TimeInterval = generousAbort) -> Result<ClaudeKeptSpawn, ClaudeKeptFailure> {
         ClaudeSpawner.spawnKept(
             keeper: path, ended: box.root.appending(path: "k.keeper"), executable: "/bin/sh", argv0: "/bin/sh", arguments: ["-c", "exit 0"],
-            environment: ["PATH": "/usr/bin:/bin"], cwd: box.root.path, reportTimeout: reportTimeout, abortTimeout: 2
+            environment: ["PATH": "/usr/bin:/bin"], cwd: box.root.path, reportTimeout: reportTimeout, abortTimeout: abortTimeout
         )
     }
 
@@ -44,13 +49,22 @@ struct ClaudeStartDiagnosticTests {
 
     /// 보고 없이 보고 fd를 닫고 끝났다: `report_eof` — 기한을 기다리지 않는다
     @Test func aKeeperThatClosesTheReportWithoutALineIsReportEOF() throws {
-        let diagnostic = try #require(cause(spawn(keeper: try keeper("exit 0"), reportTimeout: 5)))
+        let diagnostic = try #require(cause(spawn(keeper: try keeper("exit 0"))))
         #expect(diagnostic.cause == .reportEOF)
-        #expect(diagnostic.waitMilliseconds < 3000)
+        // EOF는 기한을 기다리지 않는다: 기한(30초)의 절반 안에 돌아왔다 (붐비는 기계에서 /bin/sh가 뜨는 시간은 넉넉히 허용)
+        #expect(diagnostic.waitMilliseconds < Int(Self.generousReport * 500))
     }
 
     @Test func aKeeperThatReportsFailureIsKeeperFailed() throws {
         #expect(cause(spawn(keeper: try keeper("echo failed >&3; exit 3")))?.cause == .keeperFailed)
+    }
+
+    /// 붐비는 기계에서는 `/bin/sh`가 뜨고 첫 줄을 쓰는 데 시험의 짧은 기한을 넘기기도 한다 (전체 시험을 부하 아래 돌리면 이 시험들이 간헐적으로 실패했다).
+    /// 늦게 쓴 줄도 기한 안이면 그 줄의 원인으로 가른다: 늦음이 `report_timeout`으로 둔갑하면 안 된다. 늦게 뜨는 지킴이를 1초 늦춘 대본으로 흉내 낸다
+    @Test func aKeeperThatReportsLateIsStillNamedByWhatItReported() throws {
+        let diagnostic = try #require(cause(spawn(keeper: try keeper("sleep 1; echo failed >&3; exit 3"))))
+        #expect(diagnostic.cause == .keeperFailed)
+        #expect(diagnostic.waitMilliseconds >= 900, "정말 늦게 보고했다")
     }
 
     @Test func aKeeperThatReportsTheWrongLineIsUnexpected() throws {

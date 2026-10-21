@@ -112,6 +112,36 @@ extension ExternalSessionSuites {
             }
         }
 
+        /// 데스크톱 앱 세션의 실제 등록 파일 모양(2.1.304): `procStart`는 UTC로 적힌 `ps lstart` 글이다. 이 Mac의 시간대로만 읽으면 어긋나 stale로 보였다 —
+        /// 쥔 세션이 "Running in Terminal"(argv의 `--resume=`)로 나오거나, 7일이 지난 것은 목록에서 사라졌다. 이 Mac의 시간대(`.current`)로 전체를 돌린다
+        @Test func aDesktopSessionRegisteredWithAUTCLstartShowsAsRunningInClaudeWithOpenInClaude() async throws {
+            try await withWorld { world in
+                try world.session(1, entrypoint: "claude-desktop", ageHours: 24 * 20)
+                try world.session(2, entrypoint: "claude-desktop", ageHours: 3)
+                let start = Date(timeIntervalSince1970: floor(Self.now.timeIntervalSince1970) - 4000)
+                let formatter = DateFormatter()
+                formatter.locale = Locale(identifier: "en_US_POSIX")
+                formatter.timeZone = TimeZone(identifier: "UTC")
+                formatter.dateFormat = "EEE MMM d HH:mm:ss yyyy"
+                for (pid, n) in [(4242, 1), (4243, 2)] {
+                    try world.home.registry(pid: pid, json: F.json([
+                        "pid": pid, "sessionId": F.uuid(n), "cwd": world.cwd, "entrypoint": "claude-desktop", "kind": "interactive", "version": "2.1.304", "status": "idle",
+                        "procStart": formatter.string(from: start), "pidDomain": "darwin", "peerProtocol": 1,
+                    ]))
+                }
+                let uid = getuid()
+                // 둘째만 argv에 `--resume=<id>`가 있다 (실제로도 하나는 있고 하나는 없었다)
+                let facts = ExternalSessionHoldTests.facts(lookups: [4242: .present(start: start, uid: uid), 4243: .present(start: start, uid: uid)], argv: [F.uuid(2)], uid: uid)
+                let scan = await world.scanner(facts: facts).scan()
+                for n in [1, 2] {
+                    let found = try #require(row(scan, n), "세션 \(n)이 목록에 있다")
+                    #expect(found.status == .held(.claudeApp), "세션 \(n)")
+                    let line = ExternalSessionLineText.make(found, now: Self.now)
+                    #expect(line.statusWord == "Running in Claude" && line.action == .openInClaude, "세션 \(n)")
+                }
+            }
+        }
+
         @Test func anOldSessionNamedInSomeArgvIsAlsoKept() async throws {
             try await withWorld { world in
                 try world.session(1, ageHours: 24 * 20)
