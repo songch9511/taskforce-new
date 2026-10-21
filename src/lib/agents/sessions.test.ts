@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { agentSessionSchema } from "@/lib/api/contract";
 
 import { fakeAdmin } from "./fake-admin";
-import { loadAgentSession, loadSessionAdapter, openAgentSessionExternal, renameAgentSession, resumeAgentSessionHere } from "./sessions";
+import { attachAgentSession, loadAgentSession, loadSessionAdapter, openAgentSessionExternal, renameAgentSession, resumeAgentSessionHere } from "./sessions";
 
 const USER = "10000000-0000-4000-8000-000000000001";
 const OTHER = "20000000-0000-4000-8000-000000000002";
@@ -213,5 +213,67 @@ describe("resumeAgentSessionHere (AC-36 · ONE-TF-13 서버 몫)", () => {
     } finally {
       log.mockRestore();
     }
+  });
+});
+
+describe("attachAgentSession (외부 세션 이어받기, ES-18)", () => {
+  const BRIDGE = "b0000000-0000-4000-8000-000000000001";
+  const CONVERSATION = "c5000000-0000-4000-8000-000000000001";
+  const EXTERNAL = "e0000000-0000-4000-8000-000000000001";
+  const WORKSPACE = "/taskforce/ws_0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f";
+  const INPUT = { bridgeId: BRIDGE, adapter: "agent:claude-code", externalSessionId: EXTERNAL, workspaceRef: WORKSPACE };
+  const attached = (status: string) => ({ attach_agent_session: () => ({ status, session_id: SESSION, conversation_id: CONVERSATION }) });
+
+  it("SQL 함수 한 번만 부른다: 사용자 id는 인자로, 칸은 받은 그대로. 이벤트 · 행 쓰기는 SQL의 같은 트랜잭션 몫이라 TS는 insert · update 0", async () => {
+    const fake = fakeAdmin({ tables: world(), rpc: attached("created") });
+    const result = await attachAgentSession(fake.admin, USER, INPUT);
+    expect(result).toMatchObject({ status: "created", conversationId: CONVERSATION, session: { id: SESSION, connection_id: CONN } });
+    expect(fake.rpcCalls("attach_agent_session")).toHaveLength(1);
+    expect(fake.rpcCalls("attach_agent_session")[0].args).toEqual({
+      p_user_id: USER, p_bridge_id: BRIDGE, p_adapter: "agent:claude-code", p_external_session_id: EXTERNAL, p_workspace_ref: WORKSPACE,
+    });
+    expect(writes(fake)).toEqual([]);
+  });
+
+  it("existing도 같은 모양으로 돌려준다 (세션은 내 것만 다시 읽는다)", async () => {
+    const fake = fakeAdmin({ tables: world(), rpc: attached("existing") });
+    expect(await attachAgentSession(fake.admin, USER, INPUT)).toMatchObject({ status: "existing", session: { id: SESSION, display_name: "Pricing copy" } });
+    expect(fake.calls.filter((call) => call.kind === "select").every((call) => call.filters?.some(([column, , value]) => column === "user_id" && value === USER))).toBe(true);
+  });
+
+  it.each(["not_found", "session_in_use"])("%s는 세션을 읽지 않는다", async (status) => {
+    const fake = fakeAdmin({ tables: world(), rpc: { attach_agent_session: () => ({ status }) } });
+    expect(await attachAgentSession(fake.admin, USER, INPUT)).toEqual({ status });
+    expect(fake.calls.filter((call) => call.kind === "select")).toEqual([]);
+  });
+
+  it("함수가 돌려준 세션이 그 사이 사라졌으면 not_found다 (성공으로 보이지 않는다)", async () => {
+    const fake = fakeAdmin({ tables: world({ agent_sessions: [] }), rpc: attached("created") });
+    expect(await attachAgentSession(fake.admin, USER, INPUT)).toEqual({ status: "not_found" });
+  });
+
+  it.each([
+    ["모르는 status", { status: "attached", session_id: SESSION, conversation_id: CONVERSATION }],
+    ["id 없음", { status: "created" }],
+    ["추가 칸", { status: "created", session_id: SESSION, conversation_id: CONVERSATION, extra: 1 }],
+    ["not_found에 id", { status: "not_found", session_id: SESSION }],
+    ["null", null],
+  ])("모르는 모양(%s)은 던진다", async (_name, data) => {
+    const fake = fakeAdmin({ tables: world(), rpc: { attach_agent_session: () => data } });
+    await expect(attachAgentSession(fake.admin, USER, INPUT)).rejects.toThrow();
+  });
+
+  it("롤백된 경합(40001 · 40P01 · 55P03)은 같은 호출로 최대 세 번까지 다시 한다. 그 밖의 오류는 한 번에 던진다", async () => {
+    let attempts = 0;
+    const flaky = fakeAdmin({
+      tables: world(),
+      rpc: { attach_agent_session: () => { attempts += 1; if (attempts < 3) throw Object.assign(new Error("lock"), { code: "55P03" }); return { status: "created", session_id: SESSION, conversation_id: CONVERSATION }; } },
+    });
+    expect(await attachAgentSession(flaky.admin, USER, INPUT)).toMatchObject({ status: "created" });
+    expect(attempts).toBe(3);
+    let hard = 0;
+    const broken = fakeAdmin({ tables: world(), rpc: { attach_agent_session: () => { hard += 1; throw Object.assign(new Error("boom"), { code: "XX000" }); } } });
+    await expect(attachAgentSession(broken.admin, USER, INPUT)).rejects.toMatchObject({ code: "XX000" });
+    expect(hard).toBe(1);
   });
 });

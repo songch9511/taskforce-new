@@ -19,11 +19,14 @@ import {
   type RequeueResult,
 } from "@/lib/agents/messages";
 import type { AnswerAgentQuestionResult } from "@/lib/agents/questions";
+import { attachExistingAllowed } from "@/lib/agents/registry";
 import {
+  attachAgentSession,
   loadSessionAdapter,
   openAgentSessionExternal,
   renameAgentSession,
   resumeAgentSessionHere,
+  type AttachAgentSessionResult,
   type OpenAgentSessionExternalResult,
   type RenameAgentSessionResult,
   type ResumeAgentSessionResult,
@@ -40,6 +43,8 @@ import { consentRequired } from "./consent";
 import {
   agentEmptyRequestSchema,
   answerAgentQuestionRequestSchema,
+  attachAgentSessionRequestSchema,
+  attachAgentSessionResponseSchema,
   deliverAgentMessagesRequestSchema,
   postAgentMessageResponseSchema,
   resumeAgentSessionRequestSchema,
@@ -48,6 +53,7 @@ import {
   type AgentDelivery,
   type AssistantTarget,
   type AssistantTargetWithDevice,
+  type AttachAgentSessionRequest,
   type Attachment,
   type AttachmentDropped,
   type AttachmentKind,
@@ -445,6 +451,54 @@ export async function handleResumeHere<User extends AppUser>(request: Request, s
   }
 }
 
+// ─────────────────────────── 외부 세션 이어받기 ───────────────────────────
+
+export type AttachSessionDeps<User> = {
+  /** 대화 v2 ∧ AGENT_ATTACH_EXISTING_ENABLED. 꺼져 있으면 인증 · DB 전에 403 */
+  enabled: () => boolean;
+  authenticate: (request: Request) => Promise<User | null>;
+  betaAllowed: (userId: string) => boolean;
+  /** 본문의 adapter가 registry에서 이어받기를 지원하고 그 adapter 플래그가 켜져 있는가 (grade) */
+  adapterAllowed: (adapter: string) => boolean;
+  attach: (user: User, input: AttachAgentSessionRequest) => Promise<AttachAgentSessionResult>;
+};
+
+const forbidden = () => errorResponse(403, "forbidden", "이어받을 수 없습니다.");
+
+/**
+ * POST /api/v2/agent-sessions/attach (ES-16 · ES-17): Taskforce 밖에서 시작한 Claude Code 세션을 이 Mac의 세션 + 대화로 묶는다 (created 201, 같은 Claude id가 이미 묶여 있으면 existing 200).
+ * 순서: gate 403(인증 · DB 0) → 인증 401(Bearer · 쿠키 + CSRF) → 베타 명단 403 → 본문 400(정규 소문자 UUID · 가상 루트 모양) → registry grade 403 → 저장.
+ * 404 = 없는 · 남의 · 해제된 bridge 또는 active 연결 없음(구별해서 알리지 않는다), 409 session_in_use = 다른 연결이나 닫힌 세션에 이미 묶임, 잠금 경합은 409 busy_retry.
+ * 로그는 결과 코드뿐이다: Claude 세션 id · 가상 루트 · bridge id · 사용자 id는 남기지 않는다.
+ */
+export async function handleAttachSession<User extends AppUser>(request: Request, deps: AttachSessionDeps<User>): Promise<Response> {
+  if (!deps.enabled()) return forbidden();
+  const user = await deps.authenticate(request);
+  if (!user) return unauthorized();
+  if (!deps.betaAllowed(user.user.id)) return forbidden();
+  const body = await parseBody(request, attachAgentSessionRequestSchema);
+  if ("error" in body) return body.error;
+  if (!deps.adapterAllowed(body.data.adapter)) return forbidden();
+  try {
+    const result = await deps.attach(user, body.data);
+    console.info(JSON.stringify({ event: "agent_session_attach", result: result.status }));
+    switch (result.status) {
+      case "created":
+      case "existing":
+        return Response.json(
+          attachAgentSessionResponseSchema.parse({ status: result.status, conversation_id: result.conversationId, session: result.session }),
+          { status: result.status === "created" ? 201 : 200 },
+        );
+      case "not_found":
+        return notFound("이 Mac을 찾지 못했습니다.");
+      case "session_in_use":
+        return errorResponse(409, "session_in_use", "이미 다른 곳에서 이어받은 세션입니다.");
+    }
+  } catch (error) {
+    return failed(error, "agent_session_attach_failed", "세션을 이어받지 못했습니다.");
+  }
+}
+
 // ─────────────────────────── 대상 목록 ───────────────────────────
 
 export type TargetsDeps<User> = Base<User> & { list: (user: User) => Promise<(AssistantTarget | AssistantTargetWithDevice)[]> };
@@ -643,6 +697,14 @@ export const realResumeHereDeps = (): ResumeHereDeps<ApiContext> => ({
   ...base,
   sessionAdapter,
   resume: ({ user }, sessionId) => resumeAgentSessionHere(admin(), user.id, sessionId),
+});
+
+export const realAttachDeps = (): AttachSessionDeps<ApiContext> => ({
+  enabled: () => flagEnabled("CONVERSATIONS_V2_ENABLED") && flagEnabled("AGENT_ATTACH_EXISTING_ENABLED"),
+  authenticate: authenticateRequest,
+  betaAllowed: agentBetaUserAllowed,
+  adapterAllowed: (adapter) => attachExistingAllowed(adapter),
+  attach: ({ user }, input) => attachAgentSession(admin(), user.id, { bridgeId: input.bridge_id, adapter: input.adapter, externalSessionId: input.external_session_id, workspaceRef: input.workspace_ref }),
 });
 
 export const realTargetsDeps = (): TargetsDeps<ApiContext> => ({ ...base, list: ({ user }) => listAssistantTargets(admin(), user.id) });

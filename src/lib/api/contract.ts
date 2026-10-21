@@ -1250,7 +1250,8 @@ export const agentCapabilitySchema = z.object({
   display_name: z.string().min(1).max(200).optional(),
   transport: z.enum(["remote_api", "local_bridge"]),
   sign_in: z.enum(["user_terminal", "user_app", "token"]).optional(),
-  session: z.object({ list: z.boolean(), attach_existing: z.boolean(), create: z.boolean(), workspace_scoped: z.boolean() }),
+  // evidence: 이 값들을 true로 두는 실측 근거 (경계 evidence와 같은 방식). 지금은 attach_existing만 쓴다 (OA 외부 세션 PR2s). 없으면 근거 없음
+  session: z.object({ list: z.boolean(), attach_existing: z.boolean(), create: z.boolean(), workspace_scoped: z.boolean(), evidence: z.string().max(2000).optional() }),
   dispatch: z.object({ ack_level: z.enum(["transport", "agent"]), max_instruction_chars: z.number().int().positive() }),
   events: z.enum(["push", "poll", "none"]),
   question: z.object({ receive: z.boolean(), answer: z.boolean(), structured: z.boolean().optional() }),
@@ -1916,6 +1917,28 @@ export type ResumeAgentSessionRequest = z.infer<typeof resumeAgentSessionRequest
 export const resumeAgentSessionResponseSchema = z.object({ session: agentSessionSchema, started_message_id: z.guid().nullable() });
 export type ResumeAgentSessionResponse = z.infer<typeof resumeAgentSessionResponseSchema>;
 
+// ─── 외부 세션 이어받기 (OA 외부 세션 PR2s, 계약 7장 ES-16 · ES-17 · 19장) ───
+/**
+ * POST /api/v2/agent-sessions/attach: Taskforce 밖에서 시작한 Claude Code 세션을 이 Mac의 세션으로 이어받는다.
+ * - external_session_id: Claude 세션 UUID, 정규 소문자 형태만. `--resume`에 그대로 쓰이므로 경로 · 옵션 · `pending:` 모양이 들어갈 길을 0으로 한다 (보안 T5).
+ * - workspace_ref: 가상 루트 `/taskforce/ws_<소문자 UUID>`뿐 (D4a2-03). 실제 경로 모양은 서버가 받지 않는다 — 경로가 서버에 오지 않음을 서버도 강제한다.
+ * 사용자 id · 연결 id는 본문에 없다 (인증과 bridge의 active 연결에서 온다). 모르는 칸은 거절한다.
+ */
+export const attachAgentSessionRequestSchema = z.strictObject({
+  bridge_id: z.uuid(),
+  adapter: agentAdapterIdSchema,
+  external_session_id: z.uuid().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
+  workspace_ref: z.string().regex(/^\/taskforce\/ws_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/),
+});
+export type AttachAgentSessionRequest = z.infer<typeof attachAgentSessionRequestSchema>;
+/** created = 이 요청이 세션(과 대화)을 새로 묶었다 (201), existing = 같은 Claude id가 이미 묶여 있어 그 행을 돌려준다 (200, 멱등) */
+export const attachAgentSessionResponseSchema = z.strictObject({
+  status: z.enum(["created", "existing"]),
+  conversation_id: z.guid(),
+  session: agentSessionSchema,
+});
+export type AttachAgentSessionResponse = z.infer<typeof attachAgentSessionResponseSchema>;
+
 // ─── 대상 목록 (계약 4.5) ───
 export const agentTargetStateSchema = z.enum(["ready", "not_connected", "sign_in_needed", "unreachable", "unsupported"]);
 export type AgentTargetState = z.infer<typeof agentTargetStateSchema>;
@@ -1951,7 +1974,10 @@ export type AnswerAgentQuestionResponse = z.infer<typeof answerAgentQuestionResp
 /** busy_retry: 잠금 경합(55P03 · 40001)이 재시도를 넘겼다 — 쓰기 0이고 같은 요청을 다시 보내도 된다 (코디네이터 결정 5.1). 나머지는 계약 OD-26 */
 export const agentConversationErrorCodeSchema = z.enum(["target_mismatch", "question_stale", "secret_requires_local", "session_busy", "approval_via_review", "busy_retry"]);
 export type AgentConversationErrorCode = z.infer<typeof agentConversationErrorCodeSchema>;
-export const apiErrorV2AgentCodeSchema = z.enum([...apiErrorV2CodeSchema.options, ...agentConversationErrorCodeSchema.options]);
+/** 이어받기(POST /api/v2/agent-sessions/attach)가 더하는 코드. session_in_use = 409 (다른 연결 · 닫힌 세션에 이미 묶임), forbidden = 403 (플래그 · 명단 · registry grade). 위 여섯 목록은 그대로다 */
+export const agentAttachErrorCodeSchema = z.enum(["session_in_use", "forbidden"]);
+export type AgentAttachErrorCode = z.infer<typeof agentAttachErrorCodeSchema>;
+export const apiErrorV2AgentCodeSchema = z.enum([...apiErrorV2CodeSchema.options, ...agentConversationErrorCodeSchema.options, ...agentAttachErrorCodeSchema.options]);
 export type ApiErrorV2AgentCode = z.infer<typeof apiErrorV2AgentCodeSchema>;
 
 // --- D3c-2 ---

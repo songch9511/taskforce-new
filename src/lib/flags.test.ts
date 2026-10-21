@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { flagEnabled, returnSummaryEnabled, SERVER_FLAGS } from "./flags";
 
 describe("0.2.0 서버 gate", () => {
-  it("구현 계획 7장의 일곱 gate와 C3의 REVIEW_V2_ENABLED · 복귀 요약만 여는 RETURN_SUMMARY_ENABLED · 외부 세션 제목 보고만 여는 EXTERNAL_SESSIONS_REPORT_ENABLED다", () => {
+  it("구현 계획 7장의 일곱 gate와 C3의 REVIEW_V2_ENABLED · 복귀 요약만 여는 RETURN_SUMMARY_ENABLED · 외부 세션 제목 보고만 여는 EXTERNAL_SESSIONS_REPORT_ENABLED · 외부 세션 이어받기만 여는 AGENT_ATTACH_EXISTING_ENABLED다", () => {
     expect([...SERVER_FLAGS]).toEqual([
       "CONVERSATIONS_V2_ENABLED",
       "MEMORY_ENABLED",
@@ -16,6 +16,7 @@ describe("0.2.0 서버 gate", () => {
       "REVIEW_V2_ENABLED",
       "RETURN_SUMMARY_ENABLED",
       "EXTERNAL_SESSIONS_REPORT_ENABLED",
+      "AGENT_ATTACH_EXISTING_ENABLED",
     ]);
   });
 

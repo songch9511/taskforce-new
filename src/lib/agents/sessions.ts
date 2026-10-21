@@ -91,3 +91,38 @@ export async function resumeAgentSessionHere(admin: SupabaseClient, userId: stri
   const session = await loadAgentSession(admin, userId, id);
   return session ? { status, session, startedMessageId } : { status: "not_found", startedMessageId: null };
 }
+
+const attachSchema = z.union([
+  z.strictObject({ status: z.enum(["created", "existing"]), session_id: z.guid(), conversation_id: z.guid() }),
+  z.strictObject({ status: z.enum(["not_found", "session_in_use"]) }),
+]);
+export type AttachAgentSessionResult = { status: "created" | "existing"; conversationId: string; session: AgentSession } | { status: "not_found" | "session_in_use" };
+
+/**
+ * POST /api/v2/agent-sessions/attach (ES-17 · ES-18): Taskforce 밖에서 시작한 Claude Code 세션을 이 사용자의 세션 + 대화로 묶는다.
+ * 검사 · 저장 · 지표(session_attached)는 모두 SQL(attach_agent_session)이 한 트랜잭션에서 한다 — 여기는 부르고, 모르는 모양이면 던지고, 묶인 세션 한 줄을 다시 읽을 뿐이다.
+ * not_found = 없는 · 남의 · 해제된 bridge, 또는 그 bridge에 이 adapter의 active 연결이 없음 (구별해서 알리지 않는다). session_in_use = 다른 연결(다른 Mac)이나 닫힌 세션에 이미 묶인 Claude id.
+ * Claude id · 가상 루트는 로그에 남기지 않는다.
+ */
+export async function attachAgentSession(
+  admin: SupabaseClient,
+  userId: string,
+  input: { bridgeId: string; adapter: string; externalSessionId: string; workspaceRef: string },
+): Promise<AttachAgentSessionResult> {
+  const { data } = await retryOnConflict(
+    async () =>
+      await admin
+        .rpc("attach_agent_session", {
+          p_user_id: userId,
+          p_bridge_id: input.bridgeId,
+          p_adapter: input.adapter,
+          p_external_session_id: input.externalSessionId,
+          p_workspace_ref: input.workspaceRef,
+        })
+        .throwOnError(),
+  );
+  const result = attachSchema.parse(data);
+  if (!("session_id" in result)) return { status: result.status };
+  const session = await loadAgentSession(admin, userId, result.session_id);
+  return session ? { status: result.status, conversationId: result.conversation_id, session } : { status: "not_found" };
+}
