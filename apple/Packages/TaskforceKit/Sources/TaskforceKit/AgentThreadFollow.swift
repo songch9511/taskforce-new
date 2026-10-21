@@ -7,7 +7,9 @@ import Foundation
 /// 세션 읽기(`AgentSessionReadPolicy`: 열린 task가 있으면 5초마다)가 이미 돌고 있으므로, 그 읽기에서 **새 일**이 보였을 때만 같이 읽는다 (비용을 지키는 규칙, 검토 P2 · P3):
 /// - 새 일 = 세션 표식(`Mark`)이 앞섰다: 턴 번호, 같은 턴이면 마지막 반영 사건 순서(`agent_tasks.last_event_seq`), 순서가 같으면 task 상태 · 세션 상태 · 갱신 시각이 달라졌다.
 ///   열린 task여도 새 일이 없으면 읽지 않는다. 낡은 읽기(다른 저장소의 늦은 응답)는 새 일이 아니다.
-/// - 처음 보는 세션: 열린 task가 있거나 그 세션의 `updatedAt`이 대화 글을 마지막으로 읽은 때보다 나중이면 한 번 읽는다 (앱이 안 보던 사이에 턴이 끝났다). 아니면 기준만 적는다.
+/// - 처음 보는 세션: 보이는 대화는 **한 번 읽는다** (요청 하나). `agent_sessions.updated_at`은 턴이 끝나도 바뀌지 않아 "갱신 시각이 오래됐으니 읽을 것이 없다"고 볼 수 없다
+///   (앱이 안 보던 사이에 끝난 턴의 답이 있을 수 있다). 보이지 않는 동안 본 세션은 표식을 적지 않아 처음 보일 때 읽는다.
+/// - 다시 연결되거나 Mac이 깨면 보이는 에이전트 대화를 한 번 더 읽는다 (마지막 답의 읽기가 두 번 다 실패했어도 건진다).
 /// - 같은 대화는 ~4초 안에 한 번으로 합친다. 읽는 중에 온 새 일은 그 읽기가 끝난 뒤 한 번 더 (지금 읽는 글에는 없을 수 있다). 전달 표시는 다시 읽지 않는다.
 /// - 표식은 읽기가 **성공한 뒤에만** 적는다. 실패하면 4초 뒤 한 번 다시 읽고, 그것도 실패하면 표식을 적지 않는다 (다음 세션 읽기가 같은 새 일을 다시 본다).
 /// - 표식은 세션 저장소가 둘이어도 하나를 함께 쓴다 (한 읽기에 없는 세션의 표식도 지우지 않는다): 같은 새 일을 두 번 읽지 않는다.
@@ -39,34 +41,22 @@ public enum AgentThreadFollow {
         }
     }
 
-    public struct Plan: Equatable, Sendable {
-        /// 글을 다시 읽을 세션 → 읽기가 성공하면 적을 표식
-        public var reread: [UUID: Mark]
-        /// 읽지 않고 기준만 적는 세션 (처음 보는 쉬는 세션)
-        public var baseline: [UUID: Mark]
-    }
-
+    /// 글을 다시 읽을 세션 → 읽기가 성공하면 적을 표식. 처음 보는 세션(표식 없음)은 늘 읽고, 아는 세션은 표식이 앞섰을 때만 읽는다
     /// - marks: 지금까지 적었거나 이미 읽기를 요청한 표식
-    /// - loadedAt: 그 세션의 보이는 대화 글을 마지막으로 읽은 때 (보이지 않으면 nil)
-    public static func plan(items: [AgentSessionItem], marks: [UUID: Mark], loadedAt: (UUID) -> Date?) -> Plan {
-        var plan = Plan(reread: [:], baseline: [:])
+    public static func plan(items: [AgentSessionItem], marks: [UUID: Mark]) -> [UUID: Mark] {
+        var reread: [UUID: Mark] = [:]
         for item in items {
             let mark = Mark(item)
-            if let old = marks[item.id] {
-                if mark.advances(past: old) { plan.reread[item.id] = mark }
-            } else if item.hasOpenTask || loadedAt(item.id).map({ item.updatedAt > $0 }) == true {
-                plan.reread[item.id] = mark
-            } else {
-                plan.baseline[item.id] = mark
-            }
+            if let old = marks[item.id], !mark.advances(past: old) { continue }
+            reread[item.id] = mark
         }
-        return plan
+        return reread
     }
 
-    /// 읽기 요청 하나: 어느 세션의 어떤 표식을 읽기가 성공하면 적을지 · 몇 번째 시도인지
+    /// 읽기 요청 하나: 어느 세션의 어떤 표식을 읽기가 성공하면 적을지(없으면 그냥 읽기: 다시 연결 · 깸) · 몇 번째 시도인지
     struct Request: Equatable {
-        var session: UUID
-        var mark: Mark
+        var session: UUID?
+        var mark: Mark?
         var attempts: Int
     }
 
@@ -80,8 +70,6 @@ public enum AgentThreadFollow {
         var marks: [UUID: Mark] = [:]
         /// 읽기를 요청했지만 아직 적지 않은 표식 (같은 새 일을 두 번 요청하지 않게 비교에 쓴다)
         var pending: [UUID: Mark] = [:]
-        /// 대화별 글을 마지막으로 읽은 때
-        var threadLoadedAt: [UUID: Date] = [:]
         /// 따라 읽기가 도는 대화
         var inFlight: Set<UUID> = []
         /// 대화별 마지막 따라 읽기를 시작한 때 (4초 안에 한 번)
@@ -106,21 +94,22 @@ public enum AgentThreadFollow {
 }
 
 extension ChatStore {
-    /// 세션 읽기가 반영됐다 (`AgentSessionStore.onApplied`): 새 일이 보인 세션의 **보이는** 에이전트 대화 글을 읽는다.
-    /// 보이지 않는 대화는 읽지 않고 표식도 적지 않는다 (보일 때 열면서 읽는다)
+    /// 세션 읽기가 반영됐다 (`AgentSessionStore.onApplied`): 새 일이 보인(또는 처음 보는) 세션의 **보이는** 에이전트 대화 글을 읽는다.
+    /// 보이지 않는 대화는 읽지 않고 표식도 적지 않는다 (처음 보일 때 읽는다)
     public func agentSessionsRead(_ items: [AgentSessionItem]) {
         let shown = shownAgentConversations()
-        func conversations(of session: UUID) -> [UUID] { shown.filter { agentSessionID(for: $0) == session } }
-        let plan = AgentThreadFollow.plan(
-            items: items, marks: follow.effectiveMarks(), loadedAt: { session in conversations(of: session).compactMap { self.follow.threadLoadedAt[$0] }.min() }
-        )
-        for (session, mark) in plan.baseline { follow.marks[session] = mark }
-        for (session, mark) in plan.reread {
-            let targets = conversations(of: session)
+        for (session, mark) in AgentThreadFollow.plan(items: items, marks: follow.effectiveMarks()) {
+            let targets = shown.filter { agentSessionID(for: $0) == session }
             guard !targets.isEmpty else { continue }
             follow.pending[session] = mark
             for id in targets { requestFollow(AgentThreadFollow.Request(session: session, mark: mark, attempts: 0), in: id) }
         }
+    }
+
+    /// 다시 연결됐거나 Mac이 깼다: 보이는 에이전트 대화의 글을 한 번 더 읽는다. 마지막 답의 따라 읽기가 두 번 다 실패했어도(표식이 안 적혔어도)
+    /// 그 사이 세션 읽기가 새 일을 다시 알려 주지 못했을 수 있어 여기서 건진다. 4초 창은 그대로 지킨다
+    func refollowShownAgentThreads() {
+        for id in shownAgentConversations() { requestFollow(AgentThreadFollow.Request(session: nil, mark: nil, attempts: 0), in: id) }
     }
 
     private func requestFollow(_ request: AgentThreadFollow.Request, in id: UUID) {
@@ -183,12 +172,14 @@ extension ChatStore {
 
     /// 읽기가 성공했다: 표식을 적는다 (뒤로 가지 않게 앞선 것만)
     private func commit(_ request: AgentThreadFollow.Request) {
-        if follow.marks[request.session].map({ request.mark.advances(past: $0) }) ?? true { follow.marks[request.session] = request.mark }
+        guard let session = request.session, let mark = request.mark else { return }
+        if follow.marks[session].map({ mark.advances(past: $0) }) ?? true { follow.marks[session] = mark }
         release(request)
     }
 
     /// 요청한 표식을 비교에서 뺀다 (적지 않았다면 다음 세션 읽기가 같은 새 일을 다시 본다)
     private func release(_ request: AgentThreadFollow.Request) {
-        if follow.pending[request.session] == request.mark { follow.pending[request.session] = nil }
+        guard let session = request.session, follow.pending[session] == request.mark else { return }
+        follow.pending[session] = nil
     }
 }

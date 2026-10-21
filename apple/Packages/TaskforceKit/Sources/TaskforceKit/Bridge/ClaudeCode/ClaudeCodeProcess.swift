@@ -10,7 +10,7 @@ import TaskforceAgentWire
 // - **판정은 서버, 파일 시스템 사실과 전송 안전 규칙은 Mac** (2.7): 훅 요청은 `ClaudeToolGate`가 정한다. Bash · Edit · Write는 서버 판정 없이 자동 허용하지 않는다.
 // - **CLI가 말한 것이 사실이다:** 보류는 `result.deferred_tool_use`로만 확정하고, 접수는 진짜 첫 assistant(synthetic 제외)로만, 버전은 init으로 다시 본다. transcript는 읽지 않는다.
 // - **다시 보내지 않는다:** 스스로 턴을 다시 띄우지 않는다. 결과를 모르면 런타임이 `unknown`으로 답한다 (`inputReached`, Q5).
-// - **글 사본 0:** 사용자 메시지 · 답 · 비밀값 · 도구 입력 · 출력 · stream 원문을 세션 폴더 · 원장 · 로그에 쓰지 않는다. 세션 폴더에는 설정 두 파일(spawn 동안)과 상태 파일,
+// - **글 사본 0:** 사용자 메시지 · 답 · 비밀값 · 도구 입력 · 출력 · stream 원문을 세션 폴더 · 원장 · 로그에 쓰지 않는다. 세션 폴더에는 설정 파일 셋(settings · mcp · 프롬프트, spawn 동안)과 상태 파일,
 //   그리고 비지 않은 `cwd/`를 옮겨 둔 격리 폴더(승인된 도구가 남긴 것, 12장 13)만. `lineage/`에는 spawn 혈통의 커널 id · pid 숫자와 끝 기록만.
 // - **writer 하나:** 같은 세션의 앞 프로세스가 끝난 뒤에만 다음 프로세스를 띄운다 (닫기 · 답 resume 포함).
 // - **init은 부수 효과 0:** probe · 폴더 만들기 · 소켓 없음. 런타임이 부를 때만 한다.
@@ -26,6 +26,36 @@ private final class DeadlineOnce: @unchecked Sendable {
             return !fired
         }
     }
+}
+
+/// 프로젝트 지침 읽기의 작업 폴더별 단일 비행 (검토): 한 작업 폴더에 읽기 일꾼은 하나다. 기한이 지나 건너뛴 읽기도 **일꾼이 실제로 돌아올 때까지** 읽는 중으로 남는다
+/// (막힌 볼륨에서 일꾼 스레드가 턴마다 쌓이지 않게). 기한을 넘긴 읽기는 "막힘"으로 적어, 뒤따르는 읽기가 기다리지 않고 바로 건너뛴다
+final class InstructionReads: @unchecked Sendable {
+    private let lock = NSLock()
+    private var reading: Set<String> = []
+    private var stuck: Set<String> = []
+
+    /// 읽기를 시작해도 되나 (이미 읽는 중이면 false)
+    func begin(_ workspace: String) -> Bool {
+        lock.withLock { reading.insert(workspace).inserted }
+    }
+
+    /// 일꾼이 돌아왔다
+    func end(_ workspace: String) {
+        lock.withLock {
+            reading.remove(workspace)
+            stuck.remove(workspace)
+        }
+    }
+
+    func isReading(_ workspace: String) -> Bool { lock.withLock { reading.contains(workspace) } }
+
+    /// 기한을 넘겼는데 일꾼이 아직 안 돌아왔다 (이미 돌아왔으면 적지 않는다: 영원히 막히지 않게)
+    func markStuck(_ workspace: String) {
+        lock.withLock { if reading.contains(workspace) { stuck.insert(workspace) } }
+    }
+
+    func isStuck(_ workspace: String) -> Bool { lock.withLock { stuck.contains(workspace) } }
 }
 
 /// 시험 전용 끼어들기 (Release에는 없다)
@@ -81,6 +111,8 @@ public actor ClaudeCodeProcess: AgentProcess {
     nonisolated let fileSystem: GateFileSystem
     nonisolated let timing: ClaudeCodeTiming
     nonisolated let log: any BridgeLogSink
+    /// 프로젝트 지침 읽기의 작업 폴더별 단일 비행
+    nonisolated let instructionReads = InstructionReads()
     nonisolated let probeActor: ClaudeCodeProbe
     nonisolated let testHooks: ClaudeCodeTestHooks
     nonisolated let services = Mutex<AgentRuntimeServices?>(nil)
@@ -231,12 +263,27 @@ public actor ClaudeCodeProcess: AgentProcess {
     /// 못 읽은 파일은 조용히 건너뛴다: 로그에는 고정 코드와 수만 남기고 글 · 이름 · 경로는 어디에도 가지 않는다
     private func loadInstructions(workspace: String) async -> ClaudeProjectInstructions {
         await testHooks.beforeInstructionsRead?()
-        // 기한을 둔다: 막힌 볼륨이 턴 시작을 영원히 막지 않게. 막힌 읽기 스레드는 그대로 두고(되돌릴 수 없다) 결과만 버린다
+        // 작업 폴더마다 읽기는 하나. 이미 읽는 중이면: 막힌 읽기(기한을 넘겼고 일꾼이 아직 안 돌아왔다)는 기다리지 않고 바로 건너뛴다(busy, 일꾼이 쌓이지 않는다).
+        // 막힌 게 아니라 방금 시작한 읽기(다른 세션이 같은 폴더를 거의 동시에 연다)는 기한 안에서 끝나기를 기다린 뒤 읽는다 — 건너뛰면 스냅샷 때문에 그 세션은 끝내 지침 없이 돈다
+        var claimed = instructionReads.begin(workspace)
+        if !claimed, !instructionReads.isStuck(workspace) {
+            let giveUp = Date().addingTimeInterval(timing.instructionsDeadline)
+            while instructionReads.isReading(workspace), !instructionReads.isStuck(workspace), Date() < giveUp { try? await Task.sleep(for: .milliseconds(10)) }
+            claimed = instructionReads.begin(workspace)
+        }
+        guard claimed else {
+            log.log("claude_instructions_skipped", ["count": .count(1), "why": .code("busy")])
+            return ClaudeProjectInstructions()
+        }
+        // 기한을 둔다: 막힌 볼륨이 턴 시작을 영원히 막지 않게. 막힌 읽기 스레드는 그대로 두고(되돌릴 수 없다) 결과만 버린다 — 일꾼이 돌아올 때 읽는 중 표시를 푼다
         let reader = testHooks.readInstructions
+        let reads = instructionReads
         let result: ClaudeProjectInstructions.Outcome? = await Self.withDeadline(timing.instructionsDeadline) {
-            reader?(workspace) ?? ClaudeProjectInstructions.read(workspace: workspace)
+            defer { reads.end(workspace) }
+            return reader?(workspace) ?? ClaudeProjectInstructions.read(workspace: workspace)
         }
         guard let outcome = result else {
+            instructionReads.markStuck(workspace)
             log.log("claude_instructions_skipped", ["count": .count(1), "why": .code("timeout")])
             return ClaudeProjectInstructions()
         }
@@ -478,9 +525,12 @@ public actor ClaudeCodeProcess: AgentProcess {
     }
 
     /// 앱이 뜰 때 부른다: 다른 부팅에 적힌 혈통 파일을 이번 부팅의 끝 기록으로 바꾸고 다른 부팅의 세션 잠금을 지운다 (10장 4 · 11장 1, 결정 11-1 · 14장 1).
-    /// 이번 부팅의 파일은 고아 정리 · 다음 writer가 쓰고 끝을 증명하면 끝 기록이 된다
+    /// 이번 부팅의 파일은 고아 정리 · 다음 writer가 쓰고 끝을 증명하면 끝 기록이 된다.
+    /// 끝이 증명된 spawn이 앱이 죽어 남긴 설정 파일 셋(`config/<spawn id>.*`: 훅 nonce · 프로젝트 지침 글)도 함께 지운다 (로그에는 지운 수만)
     public nonisolated func purgeLineageOfOtherBoots() {
         ClaudeLineage.purge(directory: sessionsRoot.appending(path: "lineage", directoryHint: .isDirectory))
+        let removed = ClaudeLineage.removeConfigLeftovers(sessionsRoot: sessionsRoot)
+        if removed > 0 { log.log("claude_config_leftovers_removed", ["count": .count(removed)]) }
     }
 
     /// 세션의 지금 실행 (14장 2 · 15장 1: 디스크 잠금이 유일한 생존 진실): 잠금의 현재 spawn(턴 · 답 · 닫기 · 내부 닫기)과 그 끝 증명. 감독 중이면 살아 있음
@@ -601,6 +651,11 @@ public actor ClaudeCodeProcess: AgentProcess {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async { continuation.resume(returning: work()) }
         }
+    }
+
+    /// 그 작업 폴더의 지침 읽기 일꾼이 아직 안 돌아왔다 (기한을 넘겨 건너뛴 읽기 포함, 시험이 본다)
+    nonisolated func instructionReadInFlight(_ workspace: String) -> Bool {
+        instructionReads.isReading(workspace)
     }
 
     /// 막힐 수 있는 일을 다른 스레드에서 돌리고 `seconds` 안에 끝나지 않으면 nil. 일은 끝까지 돌게 두고 결과만 버린다

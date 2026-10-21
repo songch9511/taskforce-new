@@ -1,6 +1,7 @@
 #if os(macOS) && DEBUG
 import Darwin
 import Foundation
+import Synchronization
 import Testing
 import TaskforceAgentWire
 @testable import TaskforceKit
@@ -196,6 +197,102 @@ struct ClaudeProjectInstructionsRuntimeTests {
         #expect(events.contains(.turnCompleted))
         #expect(fake.report(0)?["project_instructions"] as? Bool == false, "늦게 온 글은 쓰지 않는다")
         #expect(fake.log.lines.contains("claude_instructions_skipped count=count(1) why=code(\"timeout\")"))
+    }
+
+    // MARK: 작업 폴더마다 읽기는 하나 (막힌 읽기가 쌓이지 않는다)
+
+    @Test func aStuckReadBlocksFurtherReadsOfTheSameWorkspaceUntilItsWorkerActuallyReturns() async throws {
+        let gate = DispatchSemaphore(value: 0)
+        let calls = Mutex<Int>(0)
+        let hooks = ClaudeCodeTestHooks(readInstructions: { _ in
+            let n = calls.withLock { count -> Int in
+                count += 1
+                return count
+            }
+            if n == 1 { gate.wait() }
+            return ClaudeProjectInstructions.Outcome(instructions: ClaudeProjectInstructions(files: [.init(name: "CLAUDE.md", text: "Rule from the worker", truncated: false)]), skipped: 0)
+        })
+        var timing = ClaudeCodeTiming.ci
+        timing.instructionsDeadline = 0.3
+        let fake = try FakeClaude(hooks: hooks, timing: timing)
+        try fake.scenario(["runs": [["steps": [["text": "One"]]], ["steps": [["text": "Two"]]], ["steps": [["text": "Three"]]]]])
+        // 첫 턴: 읽기가 막혀 기한(0.3초)에서 건너뛴다
+        let first = EventLog()
+        let identity = try await fake.turn(events: first)
+        #expect(await first.wait { FakeClaude.ended($0) })
+        #expect(fake.report(0)?["project_instructions"] as? Bool == false)
+        #expect(fake.log.lines.contains("claude_instructions_skipped count=count(1) why=code(\"timeout\")"))
+        #expect(fake.process.instructionReadInFlight(fake.workspace), "기한이 지나도 일꾼이 돌아오기 전까지는 읽는 중이다")
+        // 둘째 턴: 같은 작업 폴더의 읽기가 아직 막혀 있다 → 새 일꾼을 띄우지 않고 바로 건너뛴다 (busy)
+        let second = EventLog()
+        _ = try await fake.turn("Next", task: "7a5c0001-0000-4000-8000-000000000002", external: FakeClaude.providerSession(identity), events: second)
+        #expect(await second.wait { FakeClaude.ended($0) })
+        #expect(fake.report(1)?["project_instructions"] as? Bool == false)
+        #expect(fake.log.lines.contains("claude_instructions_skipped count=count(1) why=code(\"busy\")"))
+        #expect(calls.withLock { $0 } == 1, "막힌 일꾼이 더 쌓이지 않았다")
+        // 일꾼이 돌아오면 다시 읽는다
+        gate.signal()
+        #expect(await ClaudeRereview5ReproTests.waitUntil(10) { !fake.process.instructionReadInFlight(fake.workspace) })
+        let third = EventLog()
+        _ = try await fake.turn("Again", task: "7a5c0001-0000-4000-8000-000000000003", external: FakeClaude.providerSession(identity), events: third)
+        #expect(await third.wait { FakeClaude.ended($0) })
+        #expect(fake.report(2)?["project_instructions"] as? Bool == true)
+        #expect(calls.withLock { $0 } == 2)
+    }
+
+    @Test func theInFlightRegistryAllowsOneReadPerWorkspaceAndDifferentWorkspacesDoNotBlockEachOther() {
+        let reads = InstructionReads()
+        #expect(reads.begin("/a") && !reads.begin("/a"), "같은 작업 폴더는 하나")
+        #expect(reads.begin("/b"), "다른 작업 폴더는 따로")
+        #expect(reads.isReading("/a") && reads.isReading("/b"))
+        reads.end("/a")
+        #expect(!reads.isReading("/a") && reads.begin("/a"), "일꾼이 돌아오면 다시 읽을 수 있다")
+    }
+
+    @Test func aReadIsStuckOnlyAfterItsDeadlinePassedAndOnlyWhileItsWorkerIsStillOut() {
+        let reads = InstructionReads()
+        #expect(reads.begin("/a") && !reads.isStuck("/a"), "도는 중인 읽기는 막힌 것이 아니다")
+        reads.markStuck("/a")
+        #expect(reads.isStuck("/a") && reads.isReading("/a"))
+        reads.end("/a")
+        #expect(!reads.isStuck("/a") && !reads.isReading("/a"), "일꾼이 돌아오면 막힘도 풀린다")
+        reads.markStuck("/a")
+        #expect(!reads.isStuck("/a"), "이미 돌아온 일꾼에는 막힘을 적지 않는다 (영원히 막히지 않게)")
+    }
+
+    @Test func anOverlappingReadThatIsStillYoungIsWaitedForNotSkipped() async throws {
+        // 같은 작업 폴더를 두 세션이 거의 동시에 연다. 첫 읽기는 늦지만(기한 안) 막힌 것이 아니다: 둘째가 "busy"로 지침을 잃으면 스냅샷 때문에 그 세션은 끝내 CLAUDE.md 없이 돈다
+        let calls = Mutex<Int>(0)
+        let hooks = ClaudeCodeTestHooks(readInstructions: { _ in
+            let n = calls.withLock { count -> Int in
+                count += 1
+                return count
+            }
+            if n == 1 { Thread.sleep(forTimeInterval: 0.4) }
+            return ClaudeProjectInstructions.Outcome(instructions: ClaudeProjectInstructions(files: [.init(name: "CLAUDE.md", text: "Shared rule", truncated: false)]), skipped: 0)
+        })
+        let fake = try FakeClaude(hooks: hooks)
+        try fake.scenario(["runs": [["steps": [["text": "One"]]], ["steps": [["text": "Two"]]]]])
+        func start(_ session: String, _ task: String) -> Task<AgentProcessIdentity?, Never> {
+            let workspace = fake.workspace
+            let process = fake.process
+            return Task {
+                try? await process.startTurn(AgentTurnStart(
+                    taskID: task, sessionID: session, turnSeq: 1, adapter: "agent:claude-code", externalSessionID: nil, workspaceRef: workspace, resume: false, access: .write,
+                    policyMode: .manual, marker: UUID().uuidString.lowercased(), text: "Hi"
+                ), events: EventLog().sink)
+            }
+        }
+        let first = start("5e551011-0000-4000-8000-000000000001", "7a5c0001-0000-4000-8000-000000000001")
+        for _ in 0..<200 where calls.withLock({ $0 }) < 1 { try await Task.sleep(for: .milliseconds(5)) }
+        let second = start("5e551011-0000-4000-8000-000000000002", "7a5c0001-0000-4000-8000-000000000002")
+        let firstIdentity = await first.value
+        let secondIdentity = await second.value
+        #expect(firstIdentity != nil && secondIdentity != nil)
+        #expect(!fake.log.lines.contains("claude_instructions_skipped count=count(1) why=code(\"busy\")"))
+        // (가짜 claude의 실행 번호는 동시에 뜨면 겹치므로 보고서 대신 로그로 본다) 두 세션 모두 지침을 읽었다
+        #expect(fake.log.lines.filter { $0.hasPrefix("claude_instructions ") }.count == 2, "두 세션 모두 지침을 받았다")
+        #expect(calls.withLock { $0 } == 2)
     }
 }
 #endif

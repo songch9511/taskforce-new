@@ -321,8 +321,11 @@ public final class ChatStore {
     public func pathChanged(online: Bool) {
         let cameBack = online && !isOnline
         isOnline = online
-        // 온라인 복귀: 보이는 에이전트 대화의 전달 표시를 한 번 읽는다 (그 사이 다른 기기 · 서버가 바꿨을 수 있다)
-        if cameBack { spawn { await self.refreshShownDeliveries() } }
+        // 온라인 복귀: 보이는 에이전트 대화의 전달 표시를 한 번 읽는다 (그 사이 다른 기기 · 서버가 바꿨을 수 있다). 대화 글도 한 번 더 읽는다 (놓친 마지막 답, `AgentThreadFollow`)
+        if cameBack {
+            spawn { await self.refreshShownDeliveries() }
+            refollowShownAgentThreads()
+        }
     }
 
     // MARK: 보이는 것
@@ -954,7 +957,6 @@ public final class ChatStore {
                 guard threads[id]?.revision == revision else { continue }
                 applyServerMessages(messages, to: id)
                 threads[id]?.load = .loaded(problem: nil)
-                follow.threadLoadedAt[id] = now()
                 // 대화를 열 때(읽을 때)마다 에이전트 대화의 전달 표시를 서버에서 다시 읽는다: 줄은 메모리뿐이라 앱을 다시 켜면 비어 있다 (D4a-10)
                 if conversationTarget(for: id).isAgent {
                     if refreshesDeliveries { spawn { await self.refreshDeliveries(id) } }

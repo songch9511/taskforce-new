@@ -113,6 +113,7 @@ struct ChatStoreAgentRepliesTests {
         let r = await rig()
         await read(r, snapshot(.idle, turn: 1, seq: 3))
         let before = threadReads(r)
+        clock.value = clock.value.addingTimeInterval(10)
         // 둘째 턴이 두 번의 읽기 사이에 시작하고 끝났다
         r.thread.value.append(reply(2, seq: 2, in: r.conversation.id, "Second turn done."))
         await read(r, snapshot(.idle, turn: 2, seq: 8))
@@ -164,22 +165,43 @@ struct ChatStoreAgentRepliesTests {
         #expect(threadReads(r) == before + 2, "갱신 시각이 앞섰다")
     }
 
-    @Test func aFirstSeenQuietSessionUpdatedBeforeTheThreadWasLoadedIsNotRead() async {
+    @Test func aShownSessionIsReadOnceTheFirstTimeItIsSeenEvenWhenItLooksQuiet() async {
+        // `agent_sessions.updated_at`은 턴이 끝나도 바뀌지 않는다: 갱신 시각이 오래된 쉬는 세션에도 앱이 안 보던 사이에 끝난 턴의 답이 있을 수 있다.
+        // 그래서 보이는 대화의 세션은 처음 볼 때 한 번 읽는다 (요청 한 번)
         let r = await rig()
-        // 스레드는 시계 500초에 읽었다. 그 전에 갱신된 쉬는 세션은 열 때 이미 읽은 것이다
+        r.thread.value.append(reply(2, seq: 2, in: r.conversation.id, "Finished while the window was closed."))
         r.chat.agentSessionsRead([item(open: false, state: .idle, seq: 3, updated: .test(100))])
         await r.chat.settle()
-        #expect(threadReads(r) == 1, "열 때 읽은 것뿐")
-    }
-
-    @Test func aFirstSeenQuietSessionUpdatedAfterTheThreadWasLoadedIsReadOnce() async {
-        let r = await rig()
-        // 읽은 뒤에 갱신된 쉬는 세션은 한 번 읽는다 (다른 기기 · 앱이 안 보던 사이에 턴이 끝났다)
-        r.thread.value.append(reply(2, seq: 2, in: r.conversation.id, "Finished while the window was closed."))
-        r.chat.agentSessionsRead([item(open: false, state: .idle, seq: 3, updated: .test(900))])
+        #expect(threadReads(r) == 2 && texts(r).last == "Finished while the window was closed.")
+        // 한 번뿐이다: 같은 읽기가 또 와도 그대로
+        clock.value = clock.value.addingTimeInterval(10)
+        r.chat.agentSessionsRead([item(open: false, state: .idle, seq: 3, updated: .test(100))])
         await r.chat.settle()
         #expect(threadReads(r) == 2)
-        #expect(texts(r).last == "Finished while the window was closed.")
+    }
+
+    @Test func aSessionSeenWhileItsConversationWasHiddenIsReadWhenItIsShownLater() async {
+        let shown = Fx.conversation(1, session: session, last: 20)
+        let hidden = Fx.conversation(2, session: SessionFx.id(2), last: 10)
+        gateway.conversationsHandler = { [shown, hidden] }
+        gateway.messagesHandler = { id in [Fx.user(id == shown.id ? 1 : 2, in: id, seq: 1)] }
+        gateway.lastMessagesHandler = { _ in [:] }
+        let clock = clock
+        let chat = ChatStore(gateway: gateway, scope: scope, now: { clock.value }, sleep: { [chatTicker] in await chatTicker.sleep($0) })
+        chat.agentConversation = agent
+        let visible = Mutex2<Set<UUID>>([])
+        chat.viewedConversations = { visible.value }
+        await chat.refresh()
+        await chat.settle()
+        let quiet = item(2, open: false, state: .idle, seq: 4)
+        chat.agentSessionsRead([quiet])
+        await chat.settle()
+        let hiddenReads = { gateway.calls(prefix: "messages:\(hidden.id.uuidString)").count }
+        #expect(hiddenReads() == 0, "보이지 않는 동안은 읽지 않는다 (표식도 적지 않는다)")
+        visible.value = [hidden.id]
+        chat.agentSessionsRead([quiet])
+        await chat.settle()
+        #expect(hiddenReads() == 1, "처음 보이는 때 한 번")
     }
 
     @Test func aFollowReadDoesNotRefreshTheDeliveryLines() async {
@@ -209,10 +231,56 @@ struct ChatStoreAgentRepliesTests {
         r.chat.agentSessionsRead([known])
         await r.chat.settle()
         let before = threadReads(r)
+        clock.value = clock.value.addingTimeInterval(10)
         r.chat.agentSessionsRead([])
         r.chat.agentSessionsRead([known])
         await r.chat.settle()
         #expect(threadReads(r) == before, "좁은 저장소가 초점을 잠깐 바꿨다 돌아와도 처음 보는 세션으로 취급하지 않는다")
+    }
+
+    // MARK: 다시 연결 · 깸 (두 번의 읽기가 모두 실패한 마지막 답)
+
+    /// 마지막 답의 따라 읽기가 두 번 다 실패해 표식이 안 적혔다: 글이 서버에 있는데 화면에 없다
+    private func stuckWithoutTheFinalReply() async -> Rig {
+        let r = await rig()
+        await read(r, snapshot(.running, turn: 1, seq: 3))
+        clock.value = clock.value.addingTimeInterval(10)
+        failures.value = 2
+        r.thread.value.append(reply(2, seq: 2, in: r.conversation.id, "Final reply."))
+        await read(r, snapshot(.idle, turn: 2, seq: 9))
+        #expect(await eventually { !chatTicker.pendingDelays.isEmpty })
+        chatTicker.fire()
+        #expect(await eventually { failures.value == 0 })
+        await r.chat.settle()
+        #expect(texts(r) == ["Create notes.txt in this folder"], "두 번 다 실패했다")
+        #expect(await eventually { chatTicker.pendingDelays.isEmpty })
+        clock.value = clock.value.addingTimeInterval(10)
+        return r
+    }
+
+    @Test func comingBackOnlineRereadsTheShownConversationsSoAMissedFinalReplyAppears() async {
+        let r = await stuckWithoutTheFinalReply()
+        r.chat.pathChanged(online: false)
+        r.chat.pathChanged(online: true)
+        await r.chat.settle()
+        #expect(await eventually { texts(r).last == "Final reply." }, "세션 읽기 없이도 글을 다시 읽는다")
+    }
+
+    @Test func wakingTheMacRereadsTheShownConversationsToo() async {
+        let r = await stuckWithoutTheFinalReply()
+        r.chat.setAsleep(true)
+        r.chat.setAsleep(false)
+        await r.chat.settle()
+        #expect(await eventually { texts(r).last == "Final reply." })
+    }
+
+    @Test func anUnchangedNetworkAndWakeStateRereadsNothing() async {
+        let r = await rig()
+        let before = threadReads(r)
+        r.chat.pathChanged(online: true)
+        r.chat.setAsleep(false)
+        await r.chat.settle()
+        #expect(threadReads(r) == before, "바뀐 것이 없다")
     }
 
     // MARK: 4초 안에는 한 번 (합친다)
@@ -322,16 +390,13 @@ struct ChatStoreAgentRepliesTests {
     // MARK: 규칙
 
     @Test func theRuleReadsOnlyNewsAndCommitsMarksOnlyWhenTheCallerSaysSo() {
-        let none: (UUID) -> Date? = { _ in nil }
-        let baseline = AgentThreadFollow.plan(items: [item(1, open: true, state: .running, seq: 5), item(2, open: false, state: .idle, seq: 3)], marks: [:], loadedAt: none)
-        #expect(Set(baseline.reread.keys) == [SessionFx.id(1)], "처음 보는 열린 세션만 읽는다")
-        #expect(baseline.baseline.keys.contains(SessionFx.id(2)) && !baseline.baseline.keys.contains(SessionFx.id(1)), "처음 보는 쉬는 세션은 읽지 않고 기준만 적는다")
-        let marks = [SessionFx.id(1): baseline.reread[SessionFx.id(1)]!, SessionFx.id(2): baseline.baseline[SessionFx.id(2)]!]
-        let steady = AgentThreadFollow.plan(items: [item(1, open: true, state: .running, seq: 5), item(2, open: false, state: .idle, seq: 3)], marks: marks, loadedAt: none)
-        #expect(steady.reread.isEmpty && steady.baseline.isEmpty, "그대로면 열린 세션도 읽지 않는다")
-        let news = AgentThreadFollow.plan(items: [item(1, open: false, state: .idle, seq: 9), item(2, open: false, state: .idle, turn: 2, seq: 4)], marks: marks, loadedAt: none)
-        #expect(Set(news.reread.keys) == [SessionFx.id(1), SessionFx.id(2)], "마지막 사건 순서 · 턴이 앞섰다")
-        let older = AgentThreadFollow.plan(items: [item(1, open: true, state: .running, seq: 2)], marks: marks, loadedAt: none)
-        #expect(older.reread.isEmpty, "낡은 읽기는 새 일이 아니다")
+        let first = AgentThreadFollow.plan(items: [item(1, open: true, state: .running, seq: 5), item(2, open: false, state: .idle, seq: 3)], marks: [:])
+        #expect(Set(first.keys) == [SessionFx.id(1), SessionFx.id(2)], "처음 보는 세션은 열려 있든 쉬든 한 번 읽는다 (갱신 시각은 턴이 끝나도 바뀌지 않는다)")
+        let steady = AgentThreadFollow.plan(items: [item(1, open: true, state: .running, seq: 5), item(2, open: false, state: .idle, seq: 3)], marks: first)
+        #expect(steady.isEmpty, "그대로면 열린 세션도 읽지 않는다")
+        let news = AgentThreadFollow.plan(items: [item(1, open: false, state: .idle, seq: 9), item(2, open: false, state: .idle, turn: 2, seq: 4)], marks: first)
+        #expect(Set(news.keys) == [SessionFx.id(1), SessionFx.id(2)], "마지막 사건 순서 · 턴이 앞섰다")
+        let older = AgentThreadFollow.plan(items: [item(1, open: true, state: .running, seq: 2)], marks: first)
+        #expect(older.isEmpty, "낡은 읽기는 새 일이 아니다")
     }
 }

@@ -189,6 +189,7 @@ extension ChatStore {
             deliveryPoll = nil
         } else {
             spawn { await self.refreshShownDeliveries() }
+            refollowShownAgentThreads()
         }
     }
 
