@@ -21,17 +21,17 @@ export const AGENT_REGISTRY: Record<"agent:claude-code" | "agent:codex", AgentCa
       target_scope: {
         channel: "PreToolUse",
         verified: true,
-        evidence: "R1-03 R1-03b R1-03c 2026-10-21 real claude 2.1.241: Read, Write and Edit outside the workspace denied at the hook with no server call, outside files unchanged; Bash scope not claimed",
+        evidence: "R1-03 R1-03b R1-03c 2026-10-21, real claude 2.1.241, see docs/rollouts/claude-code-r1-evidence.md: Read outside the workspace denied at the hook (R1-03); Write and Edit creating a new outside file denied at the hook with no server call (R1-03b, R1-03c); Edit and Write on an existing outside file refused by the CLI before the hook; outside files unchanged; Bash scope not claimed",
       },
       revocation: {
         channel: "PreToolUse",
         verified: true,
-        evidence: "R1-04 2026-10-21 real claude 2.1.241: Write allowed and file created, scripted decider switched to deny, next Write denied (write_gate_closed), file unchanged; scripted decider, not live server revocation",
+        evidence: "R1-04 2026-10-21, real claude 2.1.241, see docs/rollouts/claude-code-r1-evidence.md: Write allowed and file created, scripted decider switched to deny, next Write denied (write_gate_closed), file hash unchanged; scripted decider between two turns, not live server revocation",
       },
       read_only: {
         channel: "--tools Read,Glob,Grep + PreToolUse",
         verified: true,
-        evidence: "R1-02 2026-10-21 real claude 2.1.241: init tools exactly Read Glob Grep + ask_user (self-check), Read allowed at the hook, Edit refused by the CLI as disabled for the session, file unchanged",
+        evidence: "R1-02 R1-02b 2026-10-21, real claude 2.1.241, see docs/rollouts/claude-code-r1-evidence.md: init tools exactly Read Glob Grep + ask_user (self-check); Read allowed at the hook; Edit refused by the CLI as not available (disabled for the session in the first R1-02 run, not_advertised in R1-02b); file hash unchanged; Write and Bash absence rests on the exact init tool set",
       },
       budget: { channel: null, verified: false },
     },

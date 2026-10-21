@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { agentCapabilitySchema, type AgentCapability } from "@/lib/api/contract";
 import { agentAccess, directChat } from "./capability";
@@ -12,8 +14,16 @@ describe("S0 registry and access", () => {
     // Each promoted boundary names its scenario and date; budget stays unverified (no R1 scenario covers it).
     expect(cc.enforcement.approval_gate).toMatchObject({ channel: "PreToolUse", verified: true });
     expect(cc.enforcement.revocation).toMatchObject({ channel: "PreToolUse", verified: true, evidence: expect.stringMatching(/R1-04 2026-10-21/) });
-    expect(cc.enforcement.read_only).toMatchObject({ verified: true, evidence: expect.stringMatching(/R1-02 2026-10-21/) });
-    expect(cc.enforcement.target_scope).toMatchObject({ channel: "PreToolUse", verified: true, evidence: expect.stringMatching(/R1-03 .*2026-10-21/) });
+    expect(cc.enforcement.read_only).toMatchObject({ verified: true, evidence: expect.stringMatching(/R1-02 R1-02b 2026-10-21/) });
+    expect(cc.enforcement.target_scope).toMatchObject({ channel: "PreToolUse", verified: true, evidence: expect.stringMatching(/R1-03 R1-03b R1-03c 2026-10-21/) });
+    // The evidence strings point at the sanitized evidence record, and each scenario they cite is a row of it.
+    const record = readFileSync(path.join(process.cwd(), "docs/rollouts/claude-code-r1-evidence.md"), "utf8");
+    for (const gate of [cc.enforcement.revocation, cc.enforcement.read_only!, cc.enforcement.target_scope]) {
+      expect(gate.evidence).toContain("docs/rollouts/claude-code-r1-evidence.md");
+      for (const id of gate.evidence!.match(/R1-0\d[bc]?/g) ?? []) expect(record, id).toContain(`| ${id} `);
+    }
+    // The record carries no absolute paths, session ids or prompt text.
+    expect(record).not.toMatch(/\/Users\/|\/home\/|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
     expect(cc.enforcement.budget).toEqual({ channel: null, verified: false });
     expect(cx).toMatchObject({ display_name: "Codex", cancel_scope: "turn", version_range: ">=0.162.1 <0.163", enforcement: { target_scope: { verified: true }, read_only: { verified: true }, revocation: { verified: false } } });
     for (const mode of ["manual", "auto", "full"] as const) {
