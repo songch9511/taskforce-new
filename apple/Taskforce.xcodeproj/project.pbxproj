@@ -172,6 +172,7 @@
 		E04F065B94A24BBDB2009EDF /* AssistantWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B599BC480868CC552C6E2318 /* AssistantWindowController.swift */; };
 		E1126617A47FD961B4920E4A /* EdgeShellModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBD3E7D1D9EE7600950CF52C /* EdgeShellModel.swift */; };
 		E147D7CE5FF4219D93669F16 /* EdgeWorkLinks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F2E137BDCFE54052D520EA3 /* EdgeWorkLinks.swift */; };
+		E17FB6C6E7776D11E4AC5FBA /* AssistantFolderHeaderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B72DCF60FDF31473408DE336 /* AssistantFolderHeaderTests.swift */; };
 		E1C25933FFD0E3BF47AAD73D /* BridgeHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CC993637C8CA1F1EC530017 /* BridgeHost.swift */; };
 		E2E22004841EC931D746713B /* AccountStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E5447C917C7443CACB72BD8 /* AccountStore.swift */; };
 		E455E1D6F8D860ADAA6B5995 /* SettingsPlanSections.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0AD63C3321BCBC4D2CF565F /* SettingsPlanSections.swift */; };
@@ -379,6 +380,7 @@
 		B5BE681005FF1FE47D402019 /* WorkspacePicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspacePicker.swift; sourceTree = "<group>"; };
 		B685D9169E022928E243C657 /* EdgeSessionActionsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeSessionActionsTests.swift; sourceTree = "<group>"; };
 		B701324DD03164B78BB88972 /* EdgeSnapshotQuestions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeSnapshotQuestions.swift; sourceTree = "<group>"; };
+		B72DCF60FDF31473408DE336 /* AssistantFolderHeaderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantFolderHeaderTests.swift; sourceTree = "<group>"; };
 		B9D9D65A427403FE1B316DDD /* EdgeReview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeReview.swift; sourceTree = "<group>"; };
 		BAF3D3E29850EBE0DD34C7CF /* EmailSignInViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmailSignInViewTests.swift; sourceTree = "<group>"; };
 		BBB841970EC9F4B0554357BF /* UsageCreditsPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UsageCreditsPane.swift; sourceTree = "<group>"; };
@@ -661,6 +663,7 @@
 				094D955DB3633C1C8DCB0BAF /* AgentTerminalLauncherTests.swift */,
 				E93E5DE9D5429324E5F5A37F /* AppUpdaterTests.swift */,
 				1C7C19AACDBA2D530019F01A /* AssistantAgentChatTests.swift */,
+				B72DCF60FDF31473408DE336 /* AssistantFolderHeaderTests.swift */,
 				4FC81C6CDCCFBC76749900ED /* AssistantIssueTests.swift */,
 				6346DCBC1D933DB97280A8F7 /* AssistantQuestionTests.swift */,
 				C829DC4F9BA468450E9A197F /* AssistantWindowDragResizeTests.swift */,
@@ -1056,6 +1059,7 @@
 				DD68CB6B36E3BC106E792067 /* AgentTerminalLauncherTests.swift in Sources */,
 				BA2CF1AD4A217E50B7D29697 /* AppUpdaterTests.swift in Sources */,
 				14924059062045907C4ECE1A /* AssistantAgentChatTests.swift in Sources */,
+				E17FB6C6E7776D11E4AC5FBA /* AssistantFolderHeaderTests.swift in Sources */,
 				AABC37F575DB51D63D3E31D1 /* AssistantIssueTests.swift in Sources */,
 				C473E3BF70DAC68DFD12862F /* AssistantQuestionTests.swift in Sources */,
 				7E729B32F584508D320D9799 /* AssistantWindowDragResizeTests.swift in Sources */,

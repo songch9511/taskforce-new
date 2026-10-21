@@ -115,6 +115,9 @@ struct AssistantWindowView: View {
             // 머리 위 2 (DS `.tf-awin .tf-panel-head`): 핸들 아래
             .padding(EdgeInsets(top: 2, leading: TFSpace.lg, bottom: TFSpace.sm, trailing: 10))
             .background(AssistantDragRegion())
+            if model.mode == .chat, !chat.isUnavailable, let folder = runtime.folderLine(for: model) {
+                folderControl(folder)
+            }
             if model.mode == .chat, !chat.isUnavailable, let project = chat.project(for: model.conversationID) {
                 // 연결된 대화의 프로젝트는 머리에 둔다 (DS: Context appears in the header of linked work and linked chats only)
                 ProjectLink(
@@ -127,6 +130,27 @@ struct AssistantWindowView: View {
             }
         }
         .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { presentation.headHeight = $0 }
+    }
+
+    /// 에이전트 대화의 작업 폴더 (이 Mac이 이 대화에 적어 둔 폴더가 있을 때만, 사용자 결정 2026-10-21): 폴더 이름이 값인 Dropdown(DS)이고 전체 경로는 툴팁이다.
+    /// 누르면 시스템 메뉴 한 줄이 열린다 — 다른 폴더로 같은 에이전트의 **새 대화**를 연다 (이 세션의 폴더는 바뀌지 않는다). 컨트롤 밖의 빈 곳은 머리처럼 창을 끈다
+    private func folderControl(_ folder: AgentWorkspaceFolderLine) -> some View {
+        HStack(spacing: 0) {
+            Menu {
+                Button(AgentWorkspaceCopy.newChatInAnotherFolder) { Task { await runtime.startChatInAnotherFolder(model) } }
+            } label: {
+                DropdownLabel(folder.name, size: .compact, truncation: .middle)
+            }
+            .menuStyle(.button)
+            .menuIndicator(.hidden)
+            .buttonStyle(.plain)
+            .help(folder.tooltip)
+            .accessibilityLabel(AgentWorkspaceCopy.folderControl)
+            .accessibilityValue(folder.name)
+            Spacer(minLength: 0)
+        }
+        .padding(EdgeInsets(top: 0, leading: TFSpace.lg, bottom: TFSpace.sm, trailing: TFSpace.lg))
+        .background(AssistantDragRegion())
     }
 
     // MARK: 본문

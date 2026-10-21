@@ -270,6 +270,25 @@ public final class AssistantWindowModel: Identifiable {
         requestFocus()
     }
 
+    /// 대화 머리 폴더 메뉴의 "New chat in another folder…" (사용자 결정 2026-10-21): 같은 에이전트의 **새 대화**를 이 창에 연다. Claude 세션의 폴더는 세션을 연 뒤 바뀌지 않으므로
+    /// 다른 폴더는 새 대화로 연다 — 이 대화는 글 · 초안 · 폴더 모두 그대로다 (초안도 따라오지 않는다).
+    /// `bindFolder`가 새 대화 id에 고른 폴더를 적는다: **던지면 아무것도 바꾸지 않는다** (새 대화는 서버에 없는 빈 대화라 남아도 다음 새 대화가 다시 쓴다).
+    /// 쓰던 글이 있는 대화 · 다른 창이 보이는 대화 · 이 대화는 다시 쓰지 않는다. 연 뒤는 `newChat()`처럼 칩을 비우고 입력칸에 포커스를 준다. 열었으면 true
+    @discardableResult
+    public func startAgentChat(bindFolder: (UUID) throws -> Void) -> Bool {
+        guard toAgent else { return false }
+        let current = conversationID
+        let fresh = chat.reserveNewChat(target: option?.pick ?? pick, excluding: openElsewhere().union([current]).union(chat.draftConversationIDs))
+        do { try bindFolder(fresh) } catch { return false }
+        guard case .rebound = rebindHandler(fresh) else { return false }
+        conversationID = fresh
+        mode = .chat
+        chips = AssistantChipSet()
+        chat.ensureLoaded(fresh)
+        requestFocus()
+        return true
+    }
+
     public func toggleHistory() {
         if mode == .chat {
             mode = .history

@@ -334,6 +334,13 @@ extension WorkspaceRegistry: AgentWorkspaceFolders {
         }
     }
 
+    /// 이 대화의 폴더 (대화 머리, 사용자 결정 2026-10-21): 세션 핀(세션을 연 뒤에는 바뀌지 않는다) → 이 대화가 보내기 전에 고른 폴더. 프로젝트의 폴더만 있는 대화는 nil이다 —
+    /// 그 폴더가 이 Mac의 연결 것인지 모르고, 첫 보내기에서 세션 핀이 되어서야 이 대화의 폴더다. 규칙을 지금 다시 보지 않는다: 지워진 폴더도 그 세션이 쓰던 폴더다
+    public func folder(forSession session: UUID?, conversation: UUID) -> String? {
+        if let session, let pinned = pinned(session: session.uuidString) { return pinned }
+        return pending(conversation: conversation)
+    }
+
     public func register(path: String, scope: AgentWorkspaceGate.Scope) throws {
         switch scope {
         case .project(let id): try setFolder(path, forProject: id)
