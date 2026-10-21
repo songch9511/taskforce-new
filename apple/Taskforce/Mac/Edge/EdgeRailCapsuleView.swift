@@ -57,15 +57,19 @@ struct EdgeRailCapsuleView: View {
                     .transition(fade)
                 }
             }
-            // ③ Projects · Chats · More
+            // ③ Projects · Chats · On this Mac (외부 세션 게이트가 켜졌을 때) · More
             if let capsule = layout.thirdCapsuleDrawn {
                 capsuleBackground(capsule)
                 ForEach(shell.controls, id: \.self) { control in
                     if let frame = layout.controlDrawn(control) {
-                        RailButton(icon: shell.railIcon(for: control), label: shell.label(for: control), highlighted: highlighted(control), circular: true) {
+                        RailButton(
+                            icon: shell.railIcon(for: control), label: shell.label(for: control), highlighted: highlighted(control), circular: true,
+                            dot: control == .onThisMac && shell.externalSessions?.hasNew == true, dotAccessibilityLabel: ExternalSessionCopy.accessibilityNewSessions
+                        ) {
                             switch control {
                             case .allWork: shell.openAllWork()
                             case .chats: shell.openChats()
+                            case .onThisMac: shell.openOnThisMac()
                             case .more: onMore(layout.controlFrame(control) ?? frame)
                             }
                         }

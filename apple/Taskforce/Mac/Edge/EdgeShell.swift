@@ -66,9 +66,11 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         let pinStore = Self.pinStore()
         self.pinStore = pinStore
         let windows = chat != nil && assistantWindows
+        // 레일 On this Mac (OA 외부 세션 PR1): 새 Issues 화면 ∧ BridgeFlag ∧ 로그인일 때만. 아니면 nil이라 칸도 훑기도 서버 보고도 없다
+        let externalSessions = ExternalSessionsRuntime.make(services: launcher.services, scope: chat?.scope, issueScreens: chat?.issues != nil)
         shell = EdgeShellModel(
             reduceMotion: Self.systemReduceMotion, pinStore: pinStore, contexts: chat?.contexts, review: review, summary: summary, chatsEnabled: chat != nil,
-            windowsEnabled: windows, issues: chat?.issues
+            windowsEnabled: windows, issues: chat?.issues, externalSessions: externalSessions
         )
         rail = EdgeRailPanelController(shell: shell)
         panel = EdgePanelController(shell: shell, chat: chat)

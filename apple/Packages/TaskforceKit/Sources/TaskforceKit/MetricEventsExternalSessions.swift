@@ -28,7 +28,7 @@ public enum ExternalSessionsShownBuckets {
 
 extension APIClient {
     /// 행 수와 돌고 있는 줄 수를 **구간으로만** 알린다. 서버는 204(본문 없음)로 답한다
-    func externalSessionsShown(rowsBucket: String, heldBucket: String) async throws {
+    public func externalSessionsShown(rowsBucket: String, heldBucket: String) async throws {
         struct Empty: Decodable {}
         do {
             let _: Empty = try await send(.post, "metric-events", body: ExternalSessionsShownRequest(props: .init(rowsBucket: rowsBucket, heldBucket: heldBucket)))

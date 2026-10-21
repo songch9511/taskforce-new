@@ -73,7 +73,7 @@ public enum ExternalSessionReport {
 
 extension APIClient {
     /// 이 Mac의 외부 세션 목록을 스냅샷으로 알린다 (이번 목록에 없는 이 Mac의 행은 서버가 지운다). 오류는 던진다 — 부르는 쪽이 나중에 다시 보낸다
-    func reportExternalSessions(bridgeID: UUID, rows: [ExternalSessionReportRow]) async throws {
+    public func reportExternalSessions(bridgeID: UUID, rows: [ExternalSessionReportRow]) async throws {
         let _: ExternalSessionReportResponse = try await send(.put, "external-sessions", body: ExternalSessionReportRequest(bridgeID: bridgeID.lowercased, sessions: rows), version: .v2)
     }
 }

@@ -114,6 +114,26 @@ final class BridgeHost {
 
     var accountStamp: AccountStamp? { activePartitionID.map { AccountStamp(partitionID: $0, epoch: epoch()) } }
 
+    /// 외부 세션 목록(OA 외부 세션 PR1)이 쓰는 이 계정 파티션의 자리: 열쇠를 두는 파티션 폴더 · Taskforce가 띄운 세션의 폴더 루트 · 앱 데이터 보호 폴더(그 안이 cwd인 세션은 Taskforce가 띄운 것이다).
+    /// 계정이 없으면 nil. 경로는 이 Mac 안에서만 쓴다 (로그 · 서버 0)
+    struct ExternalSessionPaths: Sendable {
+        let partition: BridgePartition
+        let partitionDirectory: URL
+        let sessionsRoot: URL
+        let protectedRoots: [String]
+    }
+
+    func externalSessionPaths() -> ExternalSessionPaths? {
+        guard let partition = activePartition, let bundleID = Bundle.main.bundleIdentifier,
+              let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
+        let directory = partition.directory(in: storageRoot)
+        let roots = ProjectWorkspaces.protectedRoots(support: support, bundleID: bundleID, root: storageRoot).map(\.path)
+        return ExternalSessionPaths(
+            partition: partition, partitionDirectory: directory, sessionsRoot: directory.appending(path: "claude-code", directoryHint: .isDirectory),
+            protectedRoots: Array(Set(roots + roots.compactMap { GateFileSystem.realpath($0) }))
+        )
+    }
+
     /// 지금 계정의 작업 폴더 등록부 (계정이 없거나 이 빌드에 등록부가 없으면 nil)
     var activeWorkspaceRegistry: WorkspaceRegistry? { activePartition.flatMap { partition in workspaces?.registry(for: partition) } }
 

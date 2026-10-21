@@ -49,6 +49,8 @@ public enum TFIcon: String, CaseIterable, Sendable {
     case attach = "paperclip"
     /// 레일 맨 위 Review 타일 (OA U1, Lucide `clipboard-check`): 결정 · 결과의 입구
     case review = "clipboard-check"
+    /// 레일 셋째 캡슐의 On this Mac (OA 외부 세션 PR1, Lucide `laptop`): 이 Mac의 Claude Code 세션 목록의 입구
+    case laptop = "laptop"
 
     // OA U2: 프로젝트 아이콘 풀 12종 (서버 `PROJECT_ICON_POOL`, DS ProjectIcon). 풀 밖 이름은 `project`(folder)
     case rocket = "rocket"

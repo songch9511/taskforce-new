@@ -261,6 +261,7 @@ struct EdgeRailView: View {
                         switch control {
                         case .allWork: shell.openAllWork()
                         case .chats: shell.openChats()
+                        case .onThisMac: shell.openOnThisMac()
                         case .more: onMore(frame)
                         }
                     }

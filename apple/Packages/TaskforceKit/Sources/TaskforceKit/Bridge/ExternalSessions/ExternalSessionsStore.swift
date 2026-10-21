@@ -8,11 +8,19 @@ public protocol ExternalSessionSeenStore: Sendable {
     func setLastOpened(_ date: Date)
 }
 
+/// `UserDefaults`가 하는 일의 좁은 면 (시험은 실제 설정 도메인을 만들지 않으려고 사전으로 바꾼다)
+public protocol ExternalSessionDefaults: AnyObject, Sendable {
+    func object(forKey key: String) -> Any?
+    func set(_ value: Any?, forKey key: String)
+}
+
+extension UserDefaults: ExternalSessionDefaults {}
+
 public final class UserDefaultsExternalSessionSeenStore: ExternalSessionSeenStore, @unchecked Sendable {
     public static let key = "taskforce.externalSessions.lastOpened"
-    private let defaults: UserDefaults
+    private let defaults: any ExternalSessionDefaults
 
-    public init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+    public init(defaults: any ExternalSessionDefaults = UserDefaults.standard) { self.defaults = defaults }
 
     public var lastOpened: Date? { (defaults.object(forKey: Self.key) as? Double).map { Date(timeIntervalSince1970: $0) } }
     public func setLastOpened(_ date: Date) { defaults.set(date.timeIntervalSince1970, forKey: Self.key) }

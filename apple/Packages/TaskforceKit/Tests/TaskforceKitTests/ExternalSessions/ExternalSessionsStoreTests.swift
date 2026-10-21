@@ -280,17 +280,26 @@ struct ExternalSessionsStoreTests {
         #expect(s.fake.reports.count == 1)
     }
 
-    @Test func theSeenStoreKeepsTheTimeInUserDefaultsUnderItsOwnKeyInAnIsolatedSuite() {
-        let suite = "dev.taskforcelabs.unittest.ext-sessions.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
+    /// 실제 설정 도메인을 만들지 않는다: 사전으로 바꾼 `ExternalSessionDefaults`
+    final class DictionaryDefaults: ExternalSessionDefaults, @unchecked Sendable {
+        private let lock = NSLock()
+        private var values: [String: Any] = [:]
+        var keys: Set<String> { lock.withLock { Set(values.keys) } }
+        func object(forKey key: String) -> Any? { lock.withLock { values[key] } }
+        func set(_ value: Any?, forKey key: String) { lock.withLock { values[key] = value } }
+    }
+
+    @Test func theSeenStoreKeepsTheTimeUnderItsOwnKey() {
+        let defaults = DictionaryDefaults()
         let store = UserDefaultsExternalSessionSeenStore(defaults: defaults)
         #expect(store.lastOpened == nil)
         let date = Date(timeIntervalSince1970: 1_792_400_000)
         store.setLastOpened(date)
         #expect(store.lastOpened == date)
         #expect(UserDefaultsExternalSessionSeenStore(defaults: defaults).lastOpened == date)
-        #expect(defaults.dictionaryRepresentation().keys.contains("taskforce.externalSessions.lastOpened"))
+        #expect(defaults.keys == ["taskforce.externalSessions.lastOpened"] && UserDefaultsExternalSessionSeenStore.key == "taskforce.externalSessions.lastOpened")
+        defaults.set("not a number", forKey: UserDefaultsExternalSessionSeenStore.key)
+        #expect(store.lastOpened == nil, "모르는 값은 기준이 없는 것으로 본다")
     }
 }
 #endif

@@ -17,12 +17,14 @@ struct EdgeRailCapsuleTests {
     // MARK: 치수 (DS 미리보기를 재서 맞춘 값)
 
     @Test func theCapsuleHeightsAreTheMeasuredDesignSystemOnes() {
-        #expect(L.bellHeight == 44 && L.thirdHeight == 112)
+        #expect(L.bellHeight == 44 && L.thirdHeight == 146, "셋째 캡슐의 가장 큰 높이: 칸 넷 (Projects · Chats · On this Mac · More)")
+        #expect(layout(.expanded).thirdCapsuleDrawn?.height == 112, "칸이 셋이면(게이트 꺼짐) 지금 그대로 112")
+        #expect(L(mode: .expanded, bell: false, compactRingCount: 0, ringCount: 0, controls: [.allWork, .chats, .onThisMac, .more]).thirdCapsuleDrawn?.height == 146)
         #expect(L.sessionsHeight(rings: 4, expanded: true) == 182, "링 넷 + `+`")
         #expect(L.sessionsHeight(rings: 2, expanded: true) == 114 && L.sessionsHeight(rings: 0, expanded: true) == 46)
         #expect(L.sessionsHeight(rings: 3, expanded: false) == 116, "접힘 셋")
         #expect(L.sessionsHeight(rings: 0, expanded: false) == 0, "링 0이면 접힌 캡슐이 없다")
-        #expect(Double(L.maxColumnHeight) == 350, "가장 큰 열 350 (44 + 6 + 182 + 6 + 112)")
+        #expect(Double(L.maxColumnHeight) == 384, "가장 큰 열 384 (44 + 6 + 182 + 6 + 146)")
         #expect(L.windowHeight == L.maxColumnHeight + 8 && L.windowWidth == 4 + 44 + 6)
     }
 
@@ -153,9 +155,11 @@ struct EdgeRailCapsuleTests {
 
     @Test func theExpandedRailFrameIsTheRealColumnForTheAssistantWindow() {
         let frame = L.expandedRailFrame(screenMaxX: 1440, midY: 450, bell: true, rings: 4)
-        #expect(frame.minX == 1440 - 6 - 44 && frame.width == 44 && frame.height == 350 && abs(frame.midY - 450) < 0.001)
+        #expect(frame.minX == 1440 - 6 - 44 && frame.width == 44 && frame.height == 384 && abs(frame.midY - 450) < 0.001)
         let small = L.expandedRailFrame(screenMaxX: 1440, midY: 450, bell: false, rings: 0)
-        #expect(small.height == 46 + 6 + 112 && abs(small.midY - 450) < 0.001, "열이 줄면 가운데에서 줄어든다")
+        #expect(small.height == 46 + 6 + 146 && abs(small.midY - 450) < 0.001, "열이 줄면 가운데에서 줄어든다")
+        let threeControls = L.expandedRailFrame(screenMaxX: 1440, midY: 450, bell: false, rings: 0, controls: [.allWork, .chats, .more])
+        #expect(abs(threeControls.height - (46 + 6 + 112)) < 0.001, "칸이 셋인 레일의 실제 열")
     }
 }
 

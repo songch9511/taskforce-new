@@ -249,6 +249,14 @@ public struct ExternalSessionGroup: Identifiable, Equatable, Sendable {
 }
 
 public enum ExternalSessionGrouping {
+    /// 묶음은 줄 4개까지 보이고 넘으면 머리 오른쪽에 "Show all" (DZ 승인)
+    public static let visibleLimit = 4
+
+    /// 묶음에서 지금 보일 줄: 펼치지 않았으면 처음 4개
+    public static func visibleRows(_ group: ExternalSessionGroup, expanded: Bool) -> [ExternalSessionRow] {
+        expanded || group.rows.count <= visibleLimit ? group.rows : Array(group.rows.prefix(visibleLimit))
+    }
+
     /// 묶음 안 순서: 다른 곳에서 돌고 있음 → 이어받기 가능(Idle) → 그 밖 → 이미 이어받음
     public static func rank(_ status: ExternalSessionStatus) -> Int {
         switch status {

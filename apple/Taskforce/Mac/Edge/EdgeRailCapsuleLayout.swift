@@ -7,7 +7,7 @@ import TaskforceUI
 /// 레일은 화면 오른쪽 가운데에 검은 캡슐의 열로 떠 있다: ① Taskforce bell ② 살아 있는 세션 링(넷까지)과 New session `+` ③ Projects · Chats · More.
 /// 그리기와 포인터 판정이 **같은 값**을 쓴다 (이 구조체의 frame들이 곧 판정이다). 모양은 바뀌지 않고 접힘 ↔ 펼침은 열 전체의 transform(.72배, 오른쪽 가운데 기준)뿐이다.
 /// 숫자는 DS 미리보기를 헤드리스 브라우저로 재서 맞췄다: 캡슐 44 · 칸 32 · 칸 사이 2 · 안쪽 6 · 캡슐 사이 6, 세션 캡슐은 "넘치는 칸" 덩어리에 위 2가 더 있어
-/// 링 n개의 접힌 높이 = 14 + 34n, 펼친 높이 = 46 + 34n (넷 + `+` = 182), 셋째 캡슐 112, bell 캡슐 44. 열은 늘 창의 세로 가운데에서 자란다.
+/// 링 n개의 접힌 높이 = 14 + 34n, 펼친 높이 = 46 + 34n (넷 + `+` = 182), 셋째 캡슐 112(칸 셋) · 146(칸 넷, 외부 세션 게이트), bell 캡슐 44. 열은 늘 창의 세로 가운데에서 자란다.
 struct EdgeRailCapsuleLayout: Equatable {
     enum Mode: Equatable {
         /// 살아 있는 링 0 · 요청 0 · 펼침 아님: 막대 하나
@@ -51,7 +51,8 @@ struct EdgeRailCapsuleLayout: Equatable {
     static var windowSize: CGSize { CGSize(width: windowWidth, height: windowHeight) }
 
     static let bellHeight = padding * 2 + item
-    static let thirdHeight = padding * 2 + 3 * item + 2 * gap
+    /// 셋째 캡슐의 가장 큰 높이: Projects · Chats · On this Mac · More 넷 (외부 세션 게이트가 꺼져 있으면 셋이라 이보다 낮다 — 창은 늘 가장 큰 열이 들어가는 크기다)
+    static let thirdHeight = padding * 2 + 4 * item + 3 * gap
 
     /// 세션 캡슐의 높이: 접힘은 링 n개(≤ 3), 펼침은 링 n개(≤ 4) + `+`. 링 0의 접힘은 캡슐이 없다 (0)
     static func sessionsHeight(rings: Int, expanded: Bool) -> CGFloat {
@@ -244,8 +245,12 @@ struct EdgeRailCapsuleLayout: Equatable {
     }
 
     /// 화면 좌표(아래가 0)의 펼친 레일 바깥 모양: Assistant 창이 피하는 자리의 왼쪽 가장자리 · 위 가장자리. 펼친 열이 가운데에서 자랄 때의 가장 큰 모양이다
-    static func expandedRailFrame(screenMaxX: CGFloat, midY: CGFloat, bell: Bool, rings: Int) -> CGRect {
-        let layout = EdgeRailCapsuleLayout(mode: .expanded, bell: bell, compactRingCount: 0, ringCount: rings)
+    /// 셋째 캡슐은 가장 큰 모양(칸 넷: 외부 세션 게이트)으로 센다 — 창이 레일을 덜 피하는 쪽으로 틀리지 않게 (게이트가 꺼져 칸이 셋이면 34pt 넉넉할 뿐이다)
+    static func expandedRailFrame(
+        screenMaxX: CGFloat, midY: CGFloat, bell: Bool, rings: Int,
+        controls: [EdgeShellModel.Control] = [.allWork, .chats, .onThisMac, .more]
+    ) -> CGRect {
+        let layout = EdgeRailCapsuleLayout(mode: .expanded, bell: bell, compactRingCount: 0, ringCount: rings, controls: controls)
         let window = windowFrame(screenMaxX: screenMaxX, midY: midY)
         let top = layout.bellCapsuleDrawn?.minY ?? layout.sessionsCapsuleDrawn?.minY ?? 0
         let bottom = layout.thirdCapsuleDrawn?.maxY ?? 0
