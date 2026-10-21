@@ -2,12 +2,13 @@
 # Mac 앱 DMG 배포: 아카이브 → Developer ID 내보내기 → 공증 · 스테이플 → DMG → 서명 · 공증 · 스테이플 → Gatekeeper 확인.
 # 저장소 맨 위에서 실행한다. 절차 · 일회성 준비(공증 프로필)는 docs/go-live/mac-dmg.md.
 #
-#   scripts/release-mac-dmg.sh --version 0.1.0 --build 2 [--profile taskforce-notary] [--out <directory>] [--skip-notarize] [--appcast-dir <directory>] [--download-url-prefix <url>]
+#   scripts/release-mac-dmg.sh --version 0.1.0 --build 2 [--profile taskforce-notary] [--out <directory>] [--skip-notarize] [--appcast-dir <directory>] [--download-url-prefix <url>] [--internal]
 # --out 기본값: ${TMPDIR:-/tmp}/taskforce-release (저장소 밖 임시 폴더).
 # --skip-notarize: 공증 · 스테이플을 건너뛰는 시험용. 만든 DMG는 배포하면 안 된다(Gatekeeper가 막는다).
 # --appcast-dir: 공증 뒤 선택 단계(Sparkle appcast)가 DMG 사본과 appcast.xml을 둘 로컬 폴더. 기본값: <출력>/<이름>/appcast. 올리지는 않는다.
 # --download-url-prefix: appcast 안 DMG 주소의 접두어. 기본값: 앱 SUFeedURL의 폴더.
 # appcast 단계는 앱의 SUFeedURL · SUPublicEDKey, Keychain의 Sparkle 서명 키, generate_appcast(환경 변수 SPARKLE_BIN_DIR)가 모두 있을 때만 돈다. 없으면 건너뛴다(docs/go-live/mac-dmg.md "자동 업데이트").
+# --internal: 내부 배포 DMG. 아카이브에 TF_INTERNAL_BUILD=YES TF_BRIDGE_ENABLED=YES를 더해 0.2.0 표면 · Claude Code bridge를 켜고, 출력 이름 끝에 -internal을 붙인다. appcast는 만들지 않는다. 공증 · 서명 · 권한 검사는 그대로(docs/go-live/mac-dmg.md "내부 배포").
 set -euo pipefail
 
 TEAM_ID="${TEAM_ID:-U9DWQKQFMW}"
@@ -21,9 +22,10 @@ OUT="${TMPDIR:-/tmp}/taskforce-release"
 SKIP_NOTARIZE=0
 APPCAST_DIR=""
 DOWNLOAD_URL_PREFIX=""
+INTERNAL=0
 
 usage() {
-  sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 step() { printf '\n==> %s\n' "$*"; }
@@ -38,6 +40,7 @@ while (( $# > 0 )); do
     --skip-notarize) SKIP_NOTARIZE=1; shift ;;
     --appcast-dir) [[ $# -ge 2 ]] || fail "--appcast-dir 값이 없습니다"; APPCAST_DIR="$2"; shift 2 ;;
     --download-url-prefix) [[ $# -ge 2 ]] || fail "--download-url-prefix 값이 없습니다"; DOWNLOAD_URL_PREFIX="$2"; shift 2 ;;
+    --internal) INTERNAL=1; shift ;;
     -h|--help)  usage; exit 0 ;;
     *)          usage >&2; fail "모르는 인자: $1" ;;
   esac
@@ -51,7 +54,19 @@ cd "$ROOT"
 [[ "$OUT" = /* ]] || OUT="$ROOT/$OUT"
 [[ -z "$APPCAST_DIR" || "$APPCAST_DIR" = /* ]] || APPCAST_DIR="$ROOT/$APPCAST_DIR"
 
-NAME="Taskforce-$VERSION-$BUILD"
+# --internal이면 이름 끝에 -internal. 없으면 예전 이름 그대로
+release_name() {
+  if (( INTERNAL )); then printf 'Taskforce-%s-%s-internal' "$VERSION" "$BUILD"; else printf 'Taskforce-%s-%s' "$VERSION" "$BUILD"; fi
+}
+
+# 아카이브에 넘기는 빌드 설정 (한 줄에 하나). 버전 · 빌드 번호는 project.yml의 MARKETING_VERSION · CURRENT_PROJECT_VERSION 이름 그대로 덮어쓴다.
+# --internal이 없으면 예전 다섯 줄 그대로이고, 있으면 내부 배포 설정 둘이 더해진다: 표면 스위치(TF_INTERNAL_BUILD → Info.plist TaskforceInternalBuild)와 bridge(TF_BRIDGE_ENABLED → TaskforceBridgeEnabled)
+archive_settings() {
+  printf '%s\n' "MARKETING_VERSION=$VERSION" "CURRENT_PROJECT_VERSION=$BUILD" "TF_RELEASE_CHANNEL=Beta" "TF_SOURCE_COMMIT=$SOURCE_COMMIT" "TF_BUILD_TIME_UTC=$BUILD_TIME_UTC"
+  if (( INTERNAL )); then printf '%s\n' "TF_INTERNAL_BUILD=YES" "TF_BRIDGE_ENABLED=YES"; fi
+}
+
+NAME="$(release_name)"
 RUN_DIR="$OUT/$NAME"
 LOG_DIR="$RUN_DIR/logs"
 ARCHIVE="$RUN_DIR/Taskforce.xcarchive"
@@ -184,6 +199,9 @@ SOURCE_COMMIT="$(git rev-parse HEAD 2>/dev/null)" || fail "빌드 source commit�
 BUILD_TIME_UTC="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 echo "커밋: $(git rev-parse --short HEAD) / 버전 $VERSION ($BUILD) / 출력 $RUN_DIR"
 echo "앱 빌드 정보: Beta / $SOURCE_COMMIT / $BUILD_TIME_UTC UTC"
+if (( INTERNAL )); then
+  echo "내부 배포 빌드 (--internal): TF_INTERNAL_BUILD=YES TF_BRIDGE_ENABLED=YES. 이름 $NAME, appcast는 만들지 않습니다"
+fi
 
 mkdir -p "$OUT"
 mkdir "$RUN_DIR" || fail "출력 경로를 만들 수 없습니다 (기존 경로는 보존됨): $RUN_DIR"
@@ -191,7 +209,9 @@ mkdir -p "$LOG_DIR"
 
 # ---------------------------------------------------------------- 아카이브
 step "아카이브 (Release, generic/platform=macOS) — 로그: $LOG_DIR/archive.log"
-# 버전 · 빌드 번호는 project.yml의 MARKETING_VERSION · CURRENT_PROJECT_VERSION 이름 그대로 덮어쓴다.
+# 빌드 설정은 archive_settings 한 곳에서 받는다 (버전 · 빌드 번호 · 채널 · 커밋 · 시각, --internal이면 내부 배포 설정 둘이 더해진다)
+ARCHIVE_SETTINGS=()
+while IFS= read -r setting; do ARCHIVE_SETTINGS+=("$setting"); done < <(archive_settings)
 run_logged "아카이브" "$LOG_DIR/archive.log" \
   xcodebuild archive \
     -project apple/Taskforce.xcodeproj \
@@ -201,11 +221,7 @@ run_logged "아카이브" "$LOG_DIR/archive.log" \
     -archivePath "$ARCHIVE" \
     -derivedDataPath "$DERIVED" \
     -allowProvisioningUpdates \
-    MARKETING_VERSION="$VERSION" \
-    CURRENT_PROJECT_VERSION="$BUILD" \
-    TF_RELEASE_CHANNEL=Beta \
-    TF_SOURCE_COMMIT="$SOURCE_COMMIT" \
-    TF_BUILD_TIME_UTC="$BUILD_TIME_UTC"
+    "${ARCHIVE_SETTINGS[@]}"
 echo "아카이브 완료: $ARCHIVE"
 
 # ---------------------------------------------------------------- Developer ID 내보내기
@@ -264,6 +280,13 @@ echo "자동 업데이트(Sparkle): 피드 호스트 ${UPDATE_FEED_HOST:-(비어
 [[ -n "$SUPABASE_HOST" ]] || fail "SupabaseURL이 비어 있습니다 (apple/Config/Secrets.xcconfig 확인)"
 [[ -n "$(plist_value SupabaseKey)" ]] || fail "SupabaseKey가 비어 있습니다 (apple/Config/Secrets.xcconfig 확인)"
 [[ -n "$(plist_value GIDClientID)" ]] || fail "GIDClientID가 비어 있습니다 (Google 로그인 버튼이 사라집니다)"
+if (( INTERNAL )); then
+  [[ "$(plist_value TaskforceInternalBuild)" == "YES" ]] || fail "--internal인데 앱 Info.plist의 TaskforceInternalBuild가 YES가 아닙니다"
+  [[ "$(plist_value TaskforceBridgeEnabled)" == "YES" ]] || fail "--internal인데 앱 Info.plist의 TaskforceBridgeEnabled가 YES가 아닙니다"
+  echo "내부 배포 빌드: TaskforceInternalBuild=YES, TaskforceBridgeEnabled=YES"
+else
+  [[ "$(plist_value TaskforceInternalBuild)" != "YES" ]] || fail "--internal 없이 만든 앱인데 Info.plist의 TaskforceInternalBuild가 YES입니다"
+fi
 echo "Info.plist 확인: 통과 (키 값은 출력하지 않음)"
 
 # ---------------------------------------------------------------- 앱 공증
@@ -317,6 +340,8 @@ step "Sparkle appcast (선택, 로컬 폴더에만 만들고 올리지 않음)"
 APPCAST_FEED="$(plist_value SUFeedURL)"
 if (( SKIP_NOTARIZE )); then
   echo "appcast: 건너뜀 (--skip-notarize: 공증하지 않은 DMG는 업데이트로 배포하지 않습니다)"
+elif (( INTERNAL )); then
+  echo "appcast: 건너뜀 (--internal: 내부 배포 DMG는 공개 업데이트 피드에 올리지 않습니다)"
 else
   make_appcast "$DMG" "$APPCAST_DIR" "$APPCAST_FEED" "$(plist_value SUPublicEDKey)" "${DOWNLOAD_URL_PREFIX:-${APPCAST_FEED%/*}/}" "${SPARKLE_BIN_DIR:-$DERIVED/SourcePackages/artifacts/sparkle/Sparkle/bin}/generate_appcast" "$LOG_DIR/appcast.log"
 fi
@@ -325,6 +350,9 @@ fi
 step "결과"
 if (( SKIP_NOTARIZE )); then
   echo "공증하지 않은 시험 빌드입니다. 배포하지 마세요."
+fi
+if (( INTERNAL )); then
+  echo "내부 배포 빌드입니다 (0.2.0 표면 · Claude Code bridge 켬). 공개 download link에 올리지 마세요."
 fi
 echo "앱:   $APP"
 echo "DMG:  $DMG"

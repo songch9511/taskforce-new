@@ -148,3 +148,21 @@ Mac도 Sign in with Apple + Sign in with Google이다. **Developer ID 프로필�
 - **App ID의 Sign in with Apple을 켠 상태에서도 Developer ID export가 되는지**는 `--skip-notarize` 빌드로 한 번 확인한다(확인 필요).
 - **계정 삭제:** Apple이 붙은 계정은 삭제 직전에 브라우저 창에서 다시 확인받고 code를 `apple_client: web`로 보낸다. 취소하거나 받지 못하면 code 없이 지우고 로그인 화면에 안내 한 줄을 띄운다(처리방침 5장).
 - **법률 문서:** 약관 제4조 · 처리방침 1 · 5 · 17장의 바뀐 문장은 결제 변경과 한 판으로 게시한다(`docs/legal/README.md` "게시 대기"). **Apple 로그인이 든 DMG를 운영자 밖 사람에게 주기 전에** 게시를 마친다.
+
+## 내부 배포 (--internal)
+
+내부 배포 DMG는 같은 Developer ID · 공증 경로로 만들되 **0.2.0 기능을 켠 앱**이다 (사용자 결정 2026-10-21). 기본 Release(`--internal` 없이)는 한 글자도 바뀌지 않는다.
+
+```bash
+scripts/release-mac-dmg.sh --version 0.2.0 --build <새 번호> --internal
+# 출력: <출력>/Taskforce-0.2.0-<새 번호>-internal/Taskforce-0.2.0-<새 번호>-internal.dmg
+```
+
+- **켜지는 것:** 새 Edge 셸 전부(레일 · 패널 · Chats = Assistant 창 · 프로젝트 · 이슈 · 세션 · Taskforce 대화 · 에이전트 대화 · 질문 카드), 0.2.0 Settings 창, Claude Code 에이전트 bridge. 켜지는 값은 Debug에서 `-TF_EDGE_SHELL -TF_S4 -TF_C3 -TF_S3B -TF_U2`가 켜는 것과 같다(`EdgeSurfaces.internalBuild`).
+- **꺼진 채인 것:** 이메일 로그인(`EMAIL_SIGN_IN_ENABLED = NO` 그대로), 서버 결제(서버 플래그가 꺼진 채라 바뀌는 것 없음), 견본 · 가짜 agent · 합성 조작 인자(`#if DEBUG`라 Release 구성인 내부 빌드에도 들어가지 않는다).
+- **어떻게 켜지나:** 스크립트가 아카이브에 `TF_INTERNAL_BUILD=YES TF_BRIDGE_ENABLED=YES`를 더한다(명령줄 설정이 `Release.xcconfig`의 `NO`를 이긴다). 앱 Info.plist의 `TaskforceInternalBuild`(표면)와 `TaskforceBridgeEnabled`(bridge)가 YES가 된다. 스크립트는 만들어진 앱에서 둘이 YES인지 확인하고, `--internal` 없이 만든 앱에 `TaskforceInternalBuild=YES`가 있으면 멈춘다. xcconfig 파일의 `NO`를 YES로 바꾸지 않는다.
+- **그대로인 것:** 사전 점검 · Developer ID 내보내기 · App Sandbox 없음 확인 · `applesignin` 권한 없음 확인 · production APNs 확인 · 앱/DMG 공증 · staple · Gatekeeper.
+- **달라지는 것:** 출력 이름에 `-internal`, 그리고 **appcast를 만들지 않는다**(내부 DMG가 공개 업데이트 피드에 섞이지 않게. 출력에 "건너뜀"이 나온다). 공개 download link에도 올리지 않는다.
+- **알아 둘 것:** ① 내부 앱과 기본 앱은 앱 이름 · 출시 채널(`Beta`)이 같아 설치 뒤에 겉으로 구별되지 않는다(DMG 파일 이름만 다르다). 같은 Mac에는 한 쪽만 설치한다. ② `SPARKLE_FEED_URL`이 채워지면 내부 앱도 같은 피드를 보고 기본 빌드로 바뀔 수 있다(지금은 빈 값이라 업데이터가 꺼져 있다). ③ 0.2.0 Settings 창에는 Plan & usage가 있으나 서버 결제 플래그가 꺼져 있으면 서버가 정하는 대로만 보인다.
+- **확인하지 못한 것(서명 · 공증한 빌드에서만):** 내부 앱을 실제로 설치해 열었을 때 Edge 셸 · Assistant 창 · Settings 창 · bridge 연결이 서버와 실제로 맞물리는지. 시험은 표면 값 · 스위치 · 스크립트 설정을 확인하고 두 Release 빌드의 Info.plist를 비교한다.
+- **되돌리기:** `--internal`을 빼고 새 `--build` 번호로 다시 만든다. 코드 되돌리기는 `Base.xcconfig` · `Release.xcconfig`의 `TF_INTERNAL_BUILD` 줄과 `EdgeSurfaces.swift`의 `internalBuild`를 지우면 된다.

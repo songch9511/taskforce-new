@@ -28,6 +28,7 @@
 		1D21B5CFAA41940E0383FCBE /* LauncherModelSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30BD73A1EB36763CBA0B37E /* LauncherModelSessionTests.swift */; };
 		1D320494D52534D188026379 /* HotKeyCenterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AE065BCE63FAD6180201421 /* HotKeyCenterTests.swift */; };
 		1E9C6A9ADAB836D7CEE6E70E /* ProjectWorkspacesTranslocationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 996844ECC6544A8834AC5B51 /* ProjectWorkspacesTranslocationTests.swift */; };
+		1F04D1DB69B2EC13B289A445 /* InternalBuildTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC37D94210EDA5AC48FA3555 /* InternalBuildTests.swift */; };
 		1F418742E4B63D35418BB87A /* WorkspacePicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5BE681005FF1FE47D402019 /* WorkspacePicker.swift */; };
 		205EDA554EE2E30B65C54E07 /* LauncherLane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20348734D46E428BDA04EE04 /* LauncherLane.swift */; };
 		22C1399492FA20ABEC44A94E /* AssistantWindowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EBD0CD2AABE82C2D793F3EB /* AssistantWindowTests.swift */; };
@@ -360,6 +361,7 @@
 		AB01D992A7923CAF4414A91D /* LauncherDraftPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherDraftPane.swift; sourceTree = "<group>"; };
 		AB26C2543E88F763B3553D02 /* SignIn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SignIn.swift; sourceTree = "<group>"; };
 		AB6C40E329E6EAB3368F0C0B /* LauncherPresentationFixtureRendersTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LauncherPresentationFixtureRendersTests.swift; sourceTree = "<group>"; };
+		AC37D94210EDA5AC48FA3555 /* InternalBuildTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InternalBuildTests.swift; sourceTree = "<group>"; };
 		B0AD63C3321BCBC4D2CF565F /* SettingsPlanSections.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsPlanSections.swift; sourceTree = "<group>"; };
 		B293FEBAC4542535450BBE7A /* EdgeSnapshotAssistant.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeSnapshotAssistant.swift; sourceTree = "<group>"; };
 		B419DF6CD9E3FFA75C5ABB95 /* SampleContexts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SampleContexts.swift; sourceTree = "<group>"; };
@@ -671,6 +673,7 @@
 				C58F5AE03837589EB835718F /* EdgeWorkListTests.swift */,
 				BAF3D3E29850EBE0DD34C7CF /* EmailSignInViewTests.swift */,
 				1AE065BCE63FAD6180201421 /* HotKeyCenterTests.swift */,
+				AC37D94210EDA5AC48FA3555 /* InternalBuildTests.swift */,
 				D30BD73A1EB36763CBA0B37E /* LauncherModelSessionTests.swift */,
 				AB6C40E329E6EAB3368F0C0B /* LauncherPresentationFixtureRendersTests.swift */,
 				8CB05D753291715B60E890FF /* LauncherRunTests.swift */,
@@ -1063,6 +1066,7 @@
 				A8ED53988256E090313DF71C /* EdgeWorkListTests.swift in Sources */,
 				E5EB60DCC44FFEE407F80364 /* EmailSignInViewTests.swift in Sources */,
 				1D320494D52534D188026379 /* HotKeyCenterTests.swift in Sources */,
+				1F04D1DB69B2EC13B289A445 /* InternalBuildTests.swift in Sources */,
 				1D21B5CFAA41940E0383FCBE /* LauncherModelSessionTests.swift in Sources */,
 				49860D5AA10B47E94115ACA7 /* LauncherPresentationFixtureRendersTests.swift in Sources */,
 				7985AF2095DB0B6C7E070C31 /* LauncherRunTests.swift in Sources */,
