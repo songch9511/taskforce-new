@@ -185,7 +185,7 @@ final class ExternalSessionsEnvironment: @unchecked Sendable {
         guard let key = try? FileExternalSessionKeyStore(directory: context.paths.partitionDirectory).loadOrCreate() else { return nil }
         let sessionsRoot = context.paths.sessionsRoot
         let configuration = ExternalSessionScanner.Configuration(
-            claudeDirectory: home + "/.claude", folderRules: WorkspaceFolderRules.standard(home: home, protectedRoots: context.paths.protectedRoots),
+            claudeDirectory: home + "/.claude", folderRules: ExternalSessionFolderRules.lexical(home: home, protectedRoots: context.paths.protectedRoots),
             protectedRoots: context.paths.protectedRoots, taskforceSessionIDs: { Self.taskforceSessionIDs(sessionsRoot: sessionsRoot) },
             installedCLIVersion: { [weak self] in self?.lock.withLock { self?.currentVersion } }
         )
@@ -221,4 +221,132 @@ enum ExternalSessionsRuntime {
         )
     }
 }
+
+#if DEBUG
+/// 디자인 비교용 견본 (Debug 전용, Release 바이너리에 없다): `-TF_EDGE_SHELL YES -TFSampleData -TF_S3B YES -TF_U2 YES -TFEdgeSnapshot <폴더> -TFEdgeSnapshotIssues -TFEdgeSnapshotExternalSessions`
+/// (+ `-TFSnapshotDark`). 이 Mac의 실제 Claude 기록 · 프로세스 · 서버를 읽지 않는다: 줄은 모두 만든 값이다 (`mac-edge-external-<이름>.png`).
+/// 남기는 것: rail-dot · rail-open · mixed(DZ-02 맨 위) · many(17줄, Show all/Show less) · blocked(막힌 줄 모두) · long(긴 제목) · empty · not-installed · failed · checking
+@MainActor
+enum ExternalSessionSnapshot {
+    nonisolated static var isEnabled: Bool { ProcessInfo.processInfo.arguments.contains("-TFEdgeSnapshotExternalSessions") }
+
+    nonisolated enum Scenario { case mixed, many, blocked, long, empty, notInstalled, failed, checking }
+
+    nonisolated(unsafe) static var scenario = Scenario.mixed
+    /// 견본이 보는 "지금"
+    nonisolated static let now = Date()
+
+    nonisolated private static func row(
+        _ n: Int, _ title: String?, group: String, status: ExternalSessionStatus, client: ExternalSessionClient? = .terminal, minutes: Double, created: Date? = nil, folder: String? = nil
+    ) -> ExternalSessionRow {
+        let path = "/Users/sample/" + group
+        return ExternalSessionRow(
+            id: String(format: "5e5e5e5e-0000-4000-8000-%012x", n), ref: String(repeating: "d", count: 64), title: title, folderPath: folder ?? path, groupPath: path,
+            lastActivity: now.addingTimeInterval(-minutes * 60), created: created ?? now.addingTimeInterval(-minutes * 60), client: client, status: status
+        )
+    }
+
+    nonisolated static func rows(_ scenario: Scenario) -> [ExternalSessionRow] {
+        switch scenario {
+        case .mixed:
+            return [
+                row(1, "Fix launcher focus after sleep when the panel is open", group: "taskforce", status: .held(.claudeApp), client: .claudeDesktop, minutes: 2),
+                row(2, "Add RLS test for agent_sessions", group: "taskforce", status: .held(.terminal), minutes: 0.2),
+                row(3, "Rewrite the pricing page copy for the 3-day trial banner", group: "taskforce", status: .available, client: .claudeDesktop, minutes: 40),
+                row(4, "Remotion launch video storyboard", group: "taskforce", status: .inTaskforce, minutes: 3),
+                row(5, "Hero section motion pass", group: "life-design-site", status: .held(.unknown), minutes: 4),
+                row(6, "가격 페이지 FAQ 문구 다듬기", group: "life-design-site", status: .available, client: .claudeDesktop, minutes: 60 * 30),
+                row(7, "Banner variants", group: "life-design-site", status: .cannotResume(.worktree), client: .claudeDesktop, minutes: 120),
+                row(8, "Dependency bump", group: "thesvg-marks", status: .couldNotCheck, client: .claudeDesktop, minutes: 60),
+            ]
+        case .many:
+            let titles = [
+                "Spike: bridge reconnect backoff", "Review migration order for the invoice tables", "Pricing tone options", "Weekly review notes", "notes", "Tidy the Settings window copy",
+                "Update the Settings window copy", "Source marks audit", "Fix OG image cache headers", "Remove dead feature flags", "Check launch checklist", "Release notes draft",
+                "Investigate flaky test", "Rename Chats section", "Try Lucide laptop icon", "Compare rail dot options", "Kit scanner limits",
+            ]
+            return titles.enumerated().map { i, title in
+                row(100 + i, title, group: i < 11 ? "shape-launch" : "notes", status: i == 3 ? .cannotResume(.updateClaudeCode) : .available, client: i % 2 == 0 ? .terminal : .claudeDesktop, minutes: 30 + Double(i) * 70)
+            }
+        case .blocked:
+            return [
+                row(200, "Banner variants", group: "life-design-site", status: .cannotResume(.worktree), client: .claudeDesktop, minutes: 120),
+                row(201, "Clean up the home folder", group: "home", status: .cannotResume(.folderNotAllowed), minutes: 300),
+                row(202, nil, group: "notes", status: .cannotResume(.unreadable), minutes: 360, folder: nil),
+                row(203, "Weekly review notes", group: "notes", status: .cannotResume(.updateClaudeCode), minutes: 60 * 24 * 4),
+                row(204, "Launch checklist pass", group: "notes", status: .couldNotCheck, client: .claudeDesktop, minutes: 70),
+            ]
+        case .long:
+            return [
+                row(300, "Investigate why the launcher loses keyboard focus when the Mac wakes from sleep while a Claude desktop session is running in the background", group: "a-very-long-project-folder-name-that-keeps-going-and-going", status: .held(.claudeApp), client: .claudeDesktop, minutes: 5),
+                row(301, "Rewrite the pricing page copy for the three day trial banner and the annual plan comparison table including the refund wording", group: "a-very-long-project-folder-name-that-keeps-going-and-going", status: .available, client: .claudeDesktop, minutes: 50),
+                row(302, "Can't resume this one", group: "a-very-long-project-folder-name-that-keeps-going-and-going", status: .cannotResume(.folderNotAllowed), client: .claudeDesktop, minutes: 60 * 6),
+            ]
+        case .empty, .notInstalled, .failed, .checking:
+            return []
+        }
+    }
+
+    /// 견본 목록: 가짜 훑기(시나리오대로), 가짜 설치 판정, 서버 보고 · 지표 없음. 기준 시각이 아주 옛날이라 모든 줄이 "새것"이어서 점이 보인다
+    static func sampleStore(scope: AccountScope?) -> ExternalSessionsStore? {
+        guard let scope else { return nil }
+        return ExternalSessionsStore(
+            scope: scope,
+            scan: {
+                switch scenario {
+                case .failed: return ExternalSessionScan(rows: [], failure: .unreadable)
+                case .checking:
+                    try? await Task.sleep(for: .seconds(600))
+                    return ExternalSessionScan(rows: [])
+                default: return ExternalSessionScan(rows: rows(scenario))
+                }
+            },
+            isInstalled: { scenario == .notInstalled ? false : true }, seen: InMemoryExternalSessionSeenStore(Date(timeIntervalSince1970: 0)), pollInterval: 3600
+        )
+    }
+
+    static func capture(_ edge: EdgeShellController, file: (String) -> URL, pause: @escaping (Double) async -> Void) async {
+        let shell = edge.shell
+        guard let store = shell.externalSessions else {
+            print("ExternalSessionSnapshot: 목록이 꺼진 구성이다 (-TF_EDGE_SHELL YES -TFSampleData -TF_S3B YES -TF_U2 YES 필요) visible=\(shell.externalSessionsVisible)")
+            return
+        }
+        shell.projectFolders = { [IssueSnapshotData.taskforce: "/Users/sample/taskforce"] }
+        func shoot(_ name: String) { EdgeSnapshot.capture(edge, to: file("external-\(name)")) }
+        func show(_ next: Scenario, _ name: String, settle: Double = 0.9) async {
+            scenario = next
+            store.reset()
+            shell.openAllWork()
+            await pause(0.3)
+            shell.openOnThisMac()
+            await pause(settle)
+            shoot(name)
+        }
+        // 레일: 점(새 세션) → 열림(입구가 칠해지고 점이 사라진다)
+        scenario = .mixed
+        shell.dismiss()
+        shell.pointer(inside: true)
+        await pause(0.6)
+        await store.refresh()
+        await pause(0.5)
+        shoot("rail-dot")
+        shell.openOnThisMac()
+        await pause(0.9)
+        shoot("rail-open")
+        await show(.mixed, "mixed")
+        await show(.many, "many")
+        scenario = .many
+        await store.refresh()
+        await pause(0.5)
+        // Show all: 묶음 머리 오른쪽 링크를 누른 모양은 화면 상태라 여기서는 처음 모양만 남긴다
+        await show(.blocked, "blocked")
+        await show(.long, "long")
+        await show(.empty, "empty")
+        await show(.notInstalled, "not-installed")
+        await show(.failed, "failed")
+        await show(.checking, "checking", settle: 0.4)
+        store.reset()
+    }
+}
+#endif
 #endif

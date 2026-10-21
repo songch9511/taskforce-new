@@ -59,6 +59,11 @@ public struct ExternalSessionFileSystem: Sendable {
     )
 
     enum Live {
+        /// NUL로 끝나는 `[CChar]` → 글 (끝의 NUL 앞까지)
+        static func string(fromCString buffer: [CChar]) -> String {
+            String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        }
+
         static func kind(of mode: mode_t) -> Entry.Kind {
             switch mode & S_IFMT {
             case S_IFREG: .regular
@@ -110,7 +115,7 @@ public struct ExternalSessionFileSystem: Sendable {
             var info = stat()
             guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, info.st_uid == getuid() else { return nil }
             var actual = [CChar](repeating: 0, count: Int(MAXPATHLEN))
-            guard fcntl(fd, F_GETPATH, &actual) == 0, String(cString: actual) == path else { return nil }
+            guard fcntl(fd, F_GETPATH, &actual) == 0, string(fromCString: actual) == path else { return nil }
             var buffer = [UInt8](repeating: 0, count: length)
             var filled = 0
             while filled < length {

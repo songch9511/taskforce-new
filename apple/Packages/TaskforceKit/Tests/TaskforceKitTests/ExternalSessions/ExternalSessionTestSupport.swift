@@ -5,6 +5,9 @@ import Foundation
 
 /// 외부 세션 시험의 가짜 홈 (임시 폴더 안의 `.claude`). **사용자의 실제 기록은 열지 않는다**: 모든 줄 · 제목 · 경로는 여기서 만든 가짜다.
 /// 폴더는 시험이 끝나면 지운다 (`ExternalSessionTestSupport.withHome`)
+/// 외부 세션 시험은 모두 이 부모 아래에서 한 번에 하나씩 돈다: 임시 폴더 · 프로세스 · 파일 수백 개를 쓰는 시험이 전체 시험이 느린 기계에서 다른 시간 민감 시험(3초 래치 등)을 굶기지 않게
+@Suite(.serialized) enum ExternalSessionSuites {}
+
 final class ExternalHome: @unchecked Sendable {
     let root: String
     /// 가짜 `$HOME` (realpath)
@@ -90,6 +93,7 @@ final class RecordingFileSystem: @unchecked Sendable {
     private let lock = NSLock()
     private(set) var listed: [String] = []
     private(set) var statted: [String] = []
+    private(set) var resolved: [String] = []
     private(set) var reads: [(path: String, offset: Int64, length: Int, returned: Int)] = []
     let base: ExternalSessionFileSystem
 
@@ -97,7 +101,13 @@ final class RecordingFileSystem: @unchecked Sendable {
 
     var fileSystem: ExternalSessionFileSystem {
         ExternalSessionFileSystem(
-            userID: base.userID, realpath: base.realpath,
+            userID: base.userID,
+            realpath: { [self] path in
+                lock.lock()
+                resolved.append(path)
+                lock.unlock()
+                return base.realpath(path)
+            },
             lstat: { [self] path in
                 lock.lock()
                 statted.append(path)
@@ -132,4 +142,10 @@ func expectNoSentinel(in value: Any, _ comment: Comment? = nil, sourceLocation: 
 }
 
 import Testing
+
+extension Result {
+    var isFailure: Bool {
+        if case .failure = self { true } else { false }
+    }
+}
 #endif

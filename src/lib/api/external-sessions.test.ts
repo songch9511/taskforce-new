@@ -108,7 +108,7 @@ describe("handleReportExternalSessions", () => {
     const d = deps({ report: async () => Promise.reject(failure) });
     const response = await handleReportExternalSessions(put({ bridge_id: BRIDGE, sessions: [session(1)] }), d.value);
     expect(response.status).toBe(500);
-    const logged = log.mock.calls.map((call) => String(call[0])).join("\n");
+    const logged = JSON.stringify(log.mock.calls);
     expect(logged).toContain("external_sessions_report_failed");
     expect(logged).not.toMatch(/제목|\/Users|0000000000000001/);
     expect(JSON.stringify(await response.json())).not.toMatch(/제목|\/Users/);

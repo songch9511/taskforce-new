@@ -16,7 +16,7 @@ public struct ExternalSessionProcessFacts: Sendable {
     public var lookup: @Sendable (Int32) -> Lookup
     /// 같은 사용자 프로세스의 argv에서 `--resume <id>` · `-r <id>` · `--session-id <id>` · `--resume=<id>`로 가리킨 세션 id 전부. 프로세스 목록을 못 읽으면 nil
     public var argumentSessionIDs: @Sendable (_ excluding: Set<Int32>) -> Set<String>?
-    /// 등록 파일이 없는 `claude` 프로세스(registered 밖)의 cwd(realpath) 전부. 프로세스 목록을 못 읽으면 nil
+    /// 등록 파일이 없는 `claude` 프로세스(registered 밖)의 cwd 전부 (커널이 준 실제 경로). 프로세스 목록을 못 읽으면 nil
     public var unregisteredClaudeFolders: @Sendable (_ registered: Set<Int32>, _ excluding: Set<Int32>) -> Set<String>?
 
     public init(
@@ -66,8 +66,9 @@ public struct ExternalSessionProcessFacts: Sendable {
             guard let pids = AgentProcesses.userPIDs() else { return nil }
             var folders = Set<String>()
             for pid in pids where pid > 1 && pid != getpid() && !registered.contains(pid) && !excluding.contains(pid) {
-                guard executableName(pid) == "claude", let cwd = currentDirectory(pid), let real = GateFileSystem.realpath(cwd) else { continue }
-                folders.insert(real)
+                // `proc_pidinfo`가 주는 cwd는 이미 실제 경로다: 다시 파일 시스템으로 풀지 않는다 (보호 폴더 접근 동의 창이 뜨지 않게)
+                guard executableName(pid) == "claude", let cwd = currentDirectory(pid) else { continue }
+                folders.insert(cwd)
             }
             return folders
         }
@@ -75,7 +76,7 @@ public struct ExternalSessionProcessFacts: Sendable {
         static func executableName(_ pid: Int32) -> String? {
             var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
             guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return nil }
-            return (String(cString: buffer) as NSString).lastPathComponent
+            return (ExternalSessionFileSystem.Live.string(fromCString: buffer) as NSString).lastPathComponent
         }
 
         static func currentDirectory(_ pid: Int32) -> String? {
@@ -132,7 +133,7 @@ enum ExternalSessionHold {
             for entry in entries {
                 registeredPIDs.insert(entry.pid)
                 guard !ownPIDs.contains(entry.pid), isAlive(entry, facts: facts) else { continue }
-                live.append(LiveEntry(sessionID: entry.sessionID, holder: holder(entry), cwd: entry.cwd.map { fileSystem.realpath($0) ?? $0 }))
+                live.append(LiveEntry(sessionID: entry.sessionID, holder: holder(entry), cwd: entry.cwd))
             }
         }
         return Snapshot(
@@ -162,7 +163,7 @@ enum ExternalSessionHold {
         }
     }
 
-    /// - cwd: 기록 cwd의 realpath (모르면 nil)
+    /// - cwd: 기록의 cwd (글자 그대로, 모르면 nil). 파일 시스템으로 열지 않는다
     static func decide(id: String, cwd: String?, modified: Date, snapshot: Snapshot) -> Result {
         let mine = snapshot.live.filter { $0.sessionID == id }
         if !mine.isEmpty {

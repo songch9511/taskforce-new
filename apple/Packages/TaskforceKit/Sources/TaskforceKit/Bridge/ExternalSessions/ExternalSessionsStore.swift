@@ -78,6 +78,10 @@ public final class ExternalSessionsStore {
     @ObservationIgnored private var inFlight: Task<Void, Never>?
     @ObservationIgnored private var polling: Task<Void, Never>?
     @ObservationIgnored private var shownSent = false
+    /// 마지막으로 훑기를 마친 시각 (레일이 펼쳐질 때의 훑기를 아끼는 데 쓴다)
+    @ObservationIgnored private var lastScanEnded: Date?
+    /// 레일이 펼쳐질 때의 훑기 간격: 호버를 거듭해도 이 안에서는 다시 훑지 않는다
+    public static let railScanInterval: TimeInterval = 5
 
     public init(
         scope: AccountScope, scan: @escaping @Sendable () async -> ExternalSessionScan, isInstalled: @escaping @Sendable () async -> Bool? = { nil },
@@ -105,11 +109,13 @@ public final class ExternalSessionsStore {
         hasNew = false
         isOpen = false
         shownSent = false
+        lastScanEnded = nil
     }
 
     /// 레일이 펼쳐졌다: 점을 위해 한 번 훑는다 (패널이 열려 있으면 이미 훑고 있다)
     public func railExpanded() {
         guard !isOpen else { return }
+        if let lastScanEnded, now().timeIntervalSince(lastScanEnded) < Self.railScanInterval { return }
         Task { await refresh() }
     }
 
@@ -168,6 +174,7 @@ public final class ExternalSessionsStore {
         }
         let result = await scan()
         guard isCurrent(token), !Task.isCancelled else { return }
+        lastScanEnded = now()
         apply(result, installed: installed)
         if result.failure == nil {
             let current = rows

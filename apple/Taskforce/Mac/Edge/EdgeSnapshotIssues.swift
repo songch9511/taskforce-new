@@ -612,6 +612,11 @@ enum IssueSnapshot {
             await AgentChatSnapshot.capture(edge, file: file, pause: pause)
             return
         }
+        // 레일 On this Mac(OA 외부 세션 PR1)은 같은 인자에 `-TFEdgeSnapshotExternalSessions`를 더하면 따로 돈다
+        if ExternalSessionSnapshot.isEnabled {
+            await ExternalSessionSnapshot.capture(edge, file: file, pause: pause)
+            return
+        }
         // 에이전트 질문 카드 장면(OA D4b-m-1)은 같은 인자에 `-TFEdgeSnapshotQuestions`를 더하면 따로 돈다
         if QuestionSnapshot.isEnabled {
             await QuestionSnapshot.capture(edge, file: file, pause: pause)

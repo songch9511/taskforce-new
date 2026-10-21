@@ -155,11 +155,8 @@ public actor ExternalSessionScanner {
             }
             fresh[candidate.id] = Cached(path: candidate.path, modified: candidate.modified, size: candidate.size, meta: meta)
             if ExternalSessionRules.isSDKEntrypoint(meta?.entrypoint) { continue }
-            if let cwd = meta?.cwd, ExternalSessionRules.isPlainAbsolutePath(cwd) {
-                // Taskforce가 띄운 세션: cwd가 앱 데이터 · bridge root · 세션 폴더 안이다 (글자 그대로와 realpath 둘 다 본다)
-                let real = fs.realpath(cwd)
-                if configuration.protectedRoots.contains(where: { root in GateFileSystem.isInside(cwd, root: root) || (real.map { GateFileSystem.isInside($0, root: root) } ?? false) }) { continue }
-            }
+            // Taskforce가 띄운 세션: cwd가 앱 데이터 · bridge root · 세션 폴더 안이다 (글자만 본다 — cwd를 파일 시스템으로 열지 않는다)
+            if let cwd = meta?.cwd, ExternalSessionRules.isPlainAbsolutePath(cwd), configuration.protectedRoots.contains(where: { GateFileSystem.isInside(cwd, root: $0) }) { continue }
             rows.append(row(for: candidate, meta: meta, hold: hold, attached: attachedIDs.contains(candidate.id), cliTooOld: cliTooOld))
         }
         cache = fresh
@@ -185,15 +182,15 @@ public actor ExternalSessionScanner {
         var state = CwdState.unreadable
         var folderPath: String?
         var groupPath: String?
-        var realCwd: String?
         var trustedCwd: String?
-        // 기록 안의 cwd는 힌트일 뿐이다 (5.3): 평범한 절대 경로이고 그 이름이 부모 디렉터리 이름과 정확히 같아야 한다
+        // 기록 안의 cwd는 힌트일 뿐이다 (5.3): 평범한 절대 경로이고 그 이름이 부모 디렉터리 이름과 정확히 같아야 한다.
+        // **cwd를 파일 시스템으로 열지 않는다** (stat · realpath 0): Documents · Desktop 같은 보호 폴더 안이면 macOS 접근 동의 창이 앱 이름으로 뜬다.
+        // Claude Code의 cwd는 이미 실제 경로이고, 폴더가 지금도 있는지는 이어받을 때(사용자 행동) 확인한다
         if let cwd = meta?.cwd, ExternalSessionRules.isPlainAbsolutePath(cwd), ExternalSessionRules.projectDirectoryName(forCwd: cwd) == candidate.directory {
-            realCwd = fileSystem.realpath(cwd)
             trustedCwd = cwd
             if let repository = ExternalSessionRules.worktreeRepository(ofCwd: cwd) {
                 state = .worktree
-                folderPath = realCwd ?? cwd
+                folderPath = cwd
                 groupPath = repository
             } else {
                 switch configuration.folderRules.validate(cwd) {
@@ -205,7 +202,7 @@ public actor ExternalSessionScanner {
                     case .notAbsolute, .notFound, .notADirectory: state = .unreadable
                     default: state = .folderNotAllowed
                     }
-                    folderPath = realCwd ?? cwd
+                    folderPath = cwd
                 }
                 groupPath = folderPath
             }
@@ -214,7 +211,7 @@ public actor ExternalSessionScanner {
         if attached {
             status = .inTaskforce
         } else {
-            switch ExternalSessionHold.decide(id: candidate.id, cwd: realCwd ?? trustedCwd, modified: candidate.modified, snapshot: hold) {
+            switch ExternalSessionHold.decide(id: candidate.id, cwd: trustedCwd, modified: candidate.modified, snapshot: hold) {
             case .cwdMismatch: status = .cannotResume(.unreadable)
             case .held(let holder): status = .held(holder)
             case .unknown: status = .couldNotCheck

@@ -82,7 +82,7 @@ describe("PUT /api/v2/external-sessions", () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
     mocks.rpc.mockResolvedValueOnce({ data: null, error: Object.assign(new Error("Fix launcher focus"), { code: "XX000" }) });
     expect((await call()).status).toBe(500);
-    expect(log.mock.calls.map((c) => String(c[0])).join("")).not.toContain("Fix launcher");
+    expect(JSON.stringify(log.mock.calls)).not.toContain("Fix launcher");
     log.mockRestore();
   });
 
