@@ -123,7 +123,7 @@ describe("bridge capability boundary details", () => {
   it("uses server policy and registry enforcement even when client reports readiness", () => {
     for (const mode of ["manual", "auto", "full"] as const) {
       expect(bridgeDeliveryAccess("agent:codex", report, mode, { AGENT_BETA_USER_IDS: id, CONVERSATIONS_V2_ENABLED: "true", EXECUTION_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" })).toBe("read_only");
-      expect(bridgeDeliveryAccess("agent:claude-code", { adapters: { "agent:claude-code": { ...report.adapters["agent:codex"], version: "2.1.241" } } }, mode, { AGENT_BETA_USER_IDS: id, CONVERSATIONS_V2_ENABLED: "true", EXECUTION_ENABLED: "true", AGENT_ADAPTER_CLAUDE_CODE_ENABLED: "true" })).toBeNull();
+      expect(bridgeDeliveryAccess("agent:claude-code", { adapters: { "agent:claude-code": { ...report.adapters["agent:codex"], version: "2.1.241" } } }, mode, { AGENT_BETA_USER_IDS: id, CONVERSATIONS_V2_ENABLED: "true", EXECUTION_ENABLED: "true", AGENT_ADAPTER_CLAUDE_CODE_ENABLED: "true" })).toBe("write");
     }
     expect(bridgeDeliveryAccess("agent:other", report, "manual", { AGENT_BETA_USER_IDS: id, CONVERSATIONS_V2_ENABLED: "true", EXECUTION_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" })).toBeNull();
   });
