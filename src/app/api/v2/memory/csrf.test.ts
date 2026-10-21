@@ -82,3 +82,5 @@ describe.each(ROUTES)("%s: 쿠키 CSRF · 인증", (_name, method, call, body) =
     for (const write of writes()) expect(write).not.toHaveBeenCalled();
   });
 });
+
+beforeEach(() => vi.stubEnv("AGENT_BETA_USER_IDS", USER));

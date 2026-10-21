@@ -60,17 +60,17 @@ function deliveryDb(overrides: Record<string, unknown> = {}) {
     conversations: { agent_connection_id: id },
     agent_connections: { adapter: "agent:codex", status: "active", bridge_id: id },
     bridges: { status: "active", capabilities: { adapters: { "agent:codex": { installed: true, version: "0.162.1", signed_in: "yes", managed_settings: false } } } },
-    execution_policies: { mode: "manual" }, execution_actors: { user_id: id },
+    execution_policies: { mode: "manual" }, agent_execution_allowed: true,
     execution_controls: { blocked: false }, execution_tools: { provider: "agent:codex" }, agent_sessions: { status: "bound", connection_id: id },
     conversation_messages: { delivery_state: "queued", delivery_reason: null, refs: {}, selected: null },
     ...overrides,
   };
-  const rpc = vi.fn((name: string) => ({ throwOnError: async () => ({ data: name === "bridge_redelivery_candidates" ? [{ user_id: id, agent_session_id: id, conversation_id: id }] : name === "next_unbound_agent_messages" ? [] : id }) }));
+  const rpc = vi.fn((name: string) => ({ throwOnError: async () => ({ data: name === "agent_execution_allowed" ? rows.agent_execution_allowed : name === "bridge_redelivery_candidates" ? [{ user_id: id, agent_session_id: id, conversation_id: id }] : name === "next_unbound_agent_messages" ? [] : id }) }));
   const from = vi.fn((table: string) => ({ select: vi.fn().mockReturnThis(), eq: vi.fn().mockReturnThis(), maybeSingle: vi.fn().mockReturnThis(), throwOnError: async () => ({ data: rows[table] }) }));
   return { admin: { rpc, from } as unknown as SupabaseClient, rpc };
 }
 it.each([
-  { execution_actors: null }, { execution_controls: { blocked: true } }, { execution_tools: null },
+  { agent_execution_allowed: false }, { agent_execution_allowed: null }, { agent_execution_allowed: "true" }, { execution_controls: { blocked: true } }, { execution_tools: null },
   { agent_connections: { adapter: "agent:codex", status: "revoked", bridge_id: id } },
   { bridges: { status: "active", capabilities: {} } },
 ])("gate retry starts nothing while an admission gate is closed: %j", async (overrides) => {
@@ -172,4 +172,12 @@ it("F3: sweepBridge가 한 사용자의 회수 세션 6개를 넘기면 앞 다�
   const heads = calls.filter(([name, args]) => name === "next_bridge_agent_message" && args?.p_agent_session_id === sixth);
   expect(heads).toHaveLength(1);
   expect(startPinnedAgentMessage).toHaveBeenCalledWith(admin, expect.objectContaining({ userId: id, messageId: id }), expect.any(Object));
+});
+
+it("redelivery uses the exact agent grant without querying generic execution actors", async () => {
+  const { admin, rpc } = deliveryDb();
+  const from = vi.spyOn(admin, "from");
+  expect(await redeliverBridgeMessages(admin, { EXECUTION_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" })).toBe(1);
+  expect(rpc).toHaveBeenCalledWith("agent_execution_allowed", { p_user_id: id, p_adapter: "agent:codex" });
+  expect(from).not.toHaveBeenCalledWith("execution_actors");
 });

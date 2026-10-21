@@ -46,3 +46,6 @@ describe("POST /api/v2/agent-sessions/{id}/resume-here (route)", () => {
     expect(mocks.resumeAgentSessionHere).toHaveBeenCalledExactlyOnceWith({ admin: true }, USER, SESSION);
   });
 });
+
+// Enroll this route fixture only; global-off and authentication assertions are unchanged.
+beforeEach(() => vi.stubEnv("AGENT_BETA_USER_IDS", "11111111-0000-4000-8000-000000000001"));

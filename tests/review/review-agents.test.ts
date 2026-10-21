@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 import type { PGlite } from "@electric-sql/pglite";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
@@ -40,13 +40,20 @@ beforeAll(async () => {
 afterAll(() => db.close());
 afterEach(() => vi.unstubAllEnvs());
 
+// These integration worlds exercise admitted beta accounts; membership-denial cases live in agent-beta tests.
+beforeEach(() => vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true"));
+function enrollFixture(user: string): void {
+  const enrolled = process.env.AGENT_BETA_USER_IDS;
+  vi.stubEnv("AGENT_BETA_USER_IDS", enrolled ? `${enrolled},${user}` : user);
+}
+
 const SEOUL = async () => "Asia/Seoul";
 const NOW = new Date();
 const hoursFromNow = (h: number) => new Date(NOW.getTime() + h * 3_600_000).toISOString();
-const review = (user: string, agentAdapters?: readonly string[], client: SupabaseClient = admin) => loadReview(client, user, NOW, { coordinatorEnabled: false, timeZone: SEOUL, agentAdapters });
+const review = (user: string, agentAdapters?: readonly string[], client: SupabaseClient = admin) => { enrollFixture(user); return loadReview(client, user, NOW, { coordinatorEnabled: false, timeZone: SEOUL, agentAdapters }); };
 /** 지평(horizon)을 고정한다: 같은 입력이면 커서 · 토큰까지 바이트가 같다 */
 const HORIZON = NOW.toISOString().replace("Z", "000Z");
-const summary = (user: string, agentAdapters?: readonly string[], client: SupabaseClient = admin) => loadReturnSummary(client, user, NOW, { agentAdapters, horizon: HORIZON });
+const summary = (user: string, agentAdapters?: readonly string[], client: SupabaseClient = admin) => { enrollFixture(user); return loadReturnSummary(client, user, NOW, { agentAdapters, horizon: HORIZON }); };
 /** admin.rpc 호출 이름을 기록한다 */
 const spy = (client: SupabaseClient) => {
   const calls: string[] = [];
@@ -275,10 +282,11 @@ describe("U9 답 연결 (ONE-TF-03 서버 몫): Review 항목의 ref로 D1d 답 
   /** D1d의 실제 답 handler를 PGlite admin 위에서 그대로 돌린다 (realAnswerDeps와 같은 구성, 인증만 고정) */
   const answerWith = (user: string, env: Record<string, string | undefined> = { CONVERSATIONS_V2_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true", AGENT_ADAPTER_CLAUDE_CODE_ENABLED: "true" }) =>
     async (task: string, body: unknown) => {
+      enrollFixture(user);
       const response = await handleAnswerQuestion(new Request(`https://api.example.dev/api/v2/agent-tasks/${task}/answer`, { method: "POST", body: JSON.stringify(body) }), task, {
         enabled: () => true,
         authenticate: async () => ({ user: { id: user } }),
-        sessionAdapter: (_u, sessionId) => loadSessionAdapter(admin, user, sessionId, env),
+        sessionAdapter: (_u, sessionId) => loadSessionAdapter(admin, user, sessionId, { ...env, AGENT_BETA_USER_IDS: user }),
         loadTask: (_u, taskId) => loadAnswerTask(admin, user, taskId),
         answerApproval: (_u, input) => answerAgentApproval(admin, { userId: user, agentTaskId: input.taskId, providerRequestId: input.providerRequestId, answers: input.answers, question: input.question }),
         answer: (_u, input) => answerFromRoute(admin, { userId: user, agentTaskId: input.taskId, providerRequestId: input.providerRequestId, answers: input.answers, question: input.question }),
@@ -346,6 +354,7 @@ describe("U9 답 연결 (ONE-TF-03 서버 몫): Review 항목의 ref로 D1d 답 
 
 describe("U10 경로 충돌 해소 (실제 SQL): Review 항목의 conflict_version으로 해소 route를 부른다", () => {
   const resolveWith = (user: string) => async (lease: string, body: unknown) => {
+    enrollFixture(user);
     const response = await handleResolvePathConflict(new Request(`https://api.example.test/api/v2/path-conflicts/${lease}/resolve`, { method: "POST", body: JSON.stringify(body) }), lease, {
       enabled: () => true,
       authenticate: async () => ({ user: { id: user } }),

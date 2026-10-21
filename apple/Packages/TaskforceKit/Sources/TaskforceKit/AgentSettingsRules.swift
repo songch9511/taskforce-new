@@ -12,6 +12,8 @@ public struct AgentSettingsFacts: Equatable, Sendable {
     public enum Target: Equatable, Sendable {
         /// 아직 못 받았다 (읽는 중 · 읽기 실패): 서버 상태를 주장하지 않는다
         case notLoaded
+        /// 서버가 대상 목록을 제공하지 않는다. 연결 행이 없다는 뜻은 아니다
+        case unavailable
         /// 읽었고 이 Mac의 연결 행이 없다 (서버의 `not_connected` 행과 같은 말)
         case none
         case row(state: AgentTargetState, access: AgentAccessLevel?)
@@ -49,7 +51,7 @@ public struct AgentSettingsFacts: Equatable, Sendable {
 public struct AgentSettingsLine: Equatable, Sendable {
     /// 5.2 표의 어느 줄인가
     public enum Kind: Equatable, Sendable {
-        case checking, unavailable, reconnect, tooManyMacs, notInstalled, connect, signInNeeded, offline, ready
+        case checking, unavailable, serverUnavailable, reconnect, tooManyMacs, notInstalled, connect, signInNeeded, offline, ready
     }
 
     /// 오른쪽: 없음(셰브런) · Connect · Reconnect · Level(고칠 수 없는 Value "Can write", SA-01 A)
@@ -118,6 +120,8 @@ public enum AgentSettingsRules {
     // MARK: 줄 (5.2, 위에서부터 먼저 맞는 줄)
 
     public static func line(_ facts: AgentSettingsFacts) -> AgentSettingsLine {
+        // 서버 기능이 닫혀 있으면 로컬 등록 · 로그인 상태로 연결 가능하다고 주장하지 않는다
+        if facts.canRunAgents, facts.target == .unavailable { return line(.serverUnavailable, AgentSettingsCopy.notAvailable, control: .none) }
         // 0. P · T를 아직 받지 못함 (이 빌드가 못 띄우면 기다릴 것이 없다 → 아래 1)
         if facts.canRunAgents, facts.report == nil || facts.target == .notLoaded { return line(.checking, AgentSettingsCopy.checking, control: .none) }
         // 1. 이 빌드가 못 띄움
@@ -133,6 +137,8 @@ public enum AgentSettingsRules {
         switch facts.target {
         case .notLoaded:
             return line(.checking, AgentSettingsCopy.checking, control: .none)
+        case .unavailable:
+            return line(.serverUnavailable, AgentSettingsCopy.notAvailable, control: .none)
         case .none:
             // 5. 연결 없음
             return line(.connect, AgentSettingsCopy.notConnected, control: .connect)

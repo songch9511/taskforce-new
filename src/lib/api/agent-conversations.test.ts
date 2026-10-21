@@ -708,6 +708,14 @@ describe("POST …/stop (AC-12): 세션 단위 중단", () => {
   }
   const stopConversation = (d: StopConversationDeps<User>, payload: unknown = {}, conversationId = CONV) => handleStopConversation(json(payload), conversationId, d);
 
+  it("cohort removal keeps Stop available and suppresses the follow-on start", async () => {
+    vi.stubEnv("AGENT_BETA_USER_IDS", "");
+    const d = convDeps({ adapterOpen: vi.fn(async () => false) });
+    expect((await stopConversation(d)).status).toBe(200);
+    expect(d.stop).toHaveBeenCalledOnce();
+    expect(d.afterStop).not.toHaveBeenCalled();
+  });
+
   it("대화에 묶인 세션을 surface 'assistant'로 멈추고 작업별 결과(processes 그대로)를 돌려준다", async () => {
     const d = convDeps();
     const response = await stopConversation(d);
@@ -826,10 +834,10 @@ describe("GET …/delivery (OD-13)", () => {
     }
   });
 
-  it("대화 없음 404 · taskforce 대화 409 · adapter 꺼짐 404", async () => {
+  it("대화 없음 404 · taskforce 대화 409 · adapter 꺼져도 전달 읽기 가능", async () => {
     expect((await handleGetDeliveries(json(undefined, "GET", url()), CONV, deps({ conversation: vi.fn(async () => null) }))).status).toBe(404);
     expect((await handleGetDeliveries(json(undefined, "GET", url()), CONV, deps({ conversation: vi.fn(async () => ({ ...agentConv, targetKind: "taskforce" as const })) }))).status).toBe(409);
-    expect((await handleGetDeliveries(json(undefined, "GET", url()), CONV, deps({ adapterOpen: vi.fn(async () => false) }))).status).toBe(404);
+    expect((await handleGetDeliveries(json(undefined, "GET", url()), CONV, deps({ adapterOpen: vi.fn(async () => false) }))).status).toBe(200);
   });
 });
 
@@ -1100,4 +1108,18 @@ describe("POST /api/v2/agent-tasks/{id}/answer (R13)", () => {
     expect(JSON.parse(logged())).toMatchObject({ event: "agent_answer_failed", error: "PostgrestError", code: "XX000" });
     expectNoUserText();
   });
+});
+
+// Explicit beta fixture; production remains fail-closed.
+beforeEach(() => { vi.stubEnv("AGENT_BETA_USER_IDS", USER.user.id); vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true"); });
+afterEach(() => vi.unstubAllEnvs());
+
+it("authenticated outsider gets 404 before target lookup", async () => {
+  vi.stubEnv("AGENT_BETA_USER_IDS", "20000000-0000-4000-8000-000000000002");
+  const list = vi.fn(async () => []);
+  const authenticate = vi.fn(async () => USER);
+  const response = await handleListTargets(new Request("https://api.example.test/api/v2/assistant/targets"), { enabled: () => true, authenticate, list });
+  expect(response.status).toBe(404);
+  expect(authenticate).toHaveBeenCalledOnce();
+  expect(list).not.toHaveBeenCalled();
 });

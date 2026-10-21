@@ -120,6 +120,8 @@ async function writeProof(client: pg.Client, baseline: number) {
 /** 결정 대기 세계 (review-agents.test.ts richWorld와 같은 모양) */
 async function richWorld() {
   const w = await f.agentWorld();
+  vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true");
+  vi.stubEnv("AGENT_BETA_USER_IDS", w.user);
   await f.updateRow("actions", w.action, { title: "비밀 이슈 제목" });
   const confirm = await s.action(w.user, { title: "확인 요청 일", needsConfirmation: true });
   await s.q("update public.actions set last_activity_at = $2 where id = $1", [confirm, "2026-10-10T00:00:00Z"]);
@@ -262,6 +264,8 @@ describe("P2 같음 (실제 Postgres): 결정만 → loadReview 순서로 decisi
     const kinds = new Set<string>();
     for (const [adapters, env] of cases) {
       vi.unstubAllEnvs();
+      vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true");
+      vi.stubEnv("AGENT_BETA_USER_IDS", w.user);
       for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
       const only = await decisionsOn(reader, w.user, adapters);
       const both = await reviewOn(reader, w.user, adapters);

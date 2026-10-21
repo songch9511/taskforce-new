@@ -140,3 +140,6 @@ describe("GET delivery: CSRF 대상이 아니다 (읽기)", () => {
     expect((await read({})).status).toBe(401);
   });
 });
+
+// Enroll this route fixture only; global-off and authentication assertions are unchanged.
+beforeEach(() => vi.stubEnv("AGENT_BETA_USER_IDS", "11111111-0000-4000-8000-000000000001"));

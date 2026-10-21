@@ -1,5 +1,5 @@
 import { PGlite } from "@electric-sql/pglite";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { handlePostConversationMessage, type PostMessageDeps, type PostResult } from "@/lib/api/conversations";
 import type { TurnPlan } from "@/lib/conversation/respond";
@@ -47,7 +47,10 @@ beforeAll(async () => {
     create table public.execution_artifacts (id uuid primary key, user_id uuid not null);
   `);
 }, 60_000);
+afterEach(() => vi.unstubAllEnvs());
 beforeEach(async () => {
+  vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true");
+  vi.stubEnv("AGENT_BETA_USER_IDS", ME);
   for (const { table } of KINDS) {
     await db.query(`truncate public.${table}`);
     const extra = table === "actions" ? ", '견적서 보내기'" : "";

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 
 import { handleResolvePathConflict, type ResolvePathConflictDeps } from "./path-conflicts";
 
@@ -101,4 +101,15 @@ describe("handleResolvePathConflict", () => {
     expect(JSON.parse(logged)).toEqual({ event: "path_conflict_resolve_failed", error: "PostgrestError" });
     for (const text of [LEASE, "/w/proj", "pricing", "holder"]) expect(logged).not.toContain(text);
   });
+});
+
+// Explicit beta fixture; production remains fail-closed.
+beforeEach(() => { vi.stubEnv("AGENT_BETA_USER_IDS", USER.user.id); vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true"); });
+afterEach(() => vi.unstubAllEnvs());
+
+it("denies non-cohort before resolving a conflict", async () => {
+  vi.stubEnv("AGENT_BETA_USER_IDS", "");
+  const t = deps();
+  expect((await post(BODY, LEASE, t.deps)).status).toBe(404);
+  expect(t.resolve).not.toHaveBeenCalled();
 });

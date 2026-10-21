@@ -11,8 +11,8 @@ const CONN = "c0000000-0000-4000-8000-000000000001";
 const SESSION = "5e000000-0000-4000-8000-000000000001";
 const MSG = "a1000000-0000-4000-8000-000000000001";
 const TASK = "7a000000-0000-4000-8000-000000000001";
-const CODEX = { AGENT_ADAPTER_CODEX_ENABLED: "true", EXECUTION_ENABLED: "true" };
-const OFF = { AGENT_ADAPTER_CODEX_ENABLED: "true" };
+const CODEX = { AGENT_BETA_USER_IDS: USER, CONVERSATIONS_V2_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true", EXECUTION_ENABLED: "true" };
+const OFF = { AGENT_BETA_USER_IDS: USER, CONVERSATIONS_V2_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" };
 const started = { status: "started", action_id: TASK, run_id: TASK, agent_task_id: TASK, step_id: TASK, turn_seq: 2, created_action: false };
 
 const sessionRow = (extra: Record<string, unknown> = {}) => ({

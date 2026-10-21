@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 const mocks = vi.hoisted(() => ({ mode: vi.fn(), access: vi.fn(), after: vi.fn(), append: vi.fn() }));
 vi.mock("next/server", () => ({ after: mocks.after }));
@@ -72,4 +72,15 @@ it("bounds path-in-use note to 300 characters and handles unknown action", async
   const result = await decideBridgeToolCall(admin, { userId, bridge, input: { ...decisionRequest, call: writeCall } });
   expect(result).toHaveProperty("agent_note");
   if ("agent_note" in result) { expect(result.agent_note!.length).toBeLessThanOrEqual(300); expect(result.agent_note).toContain("another task"); }
+});
+
+// Explicit beta fixture; production remains fail-closed.
+beforeEach(() => { vi.stubEnv("AGENT_BETA_USER_IDS", userId); vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true"); });
+afterEach(() => vi.unstubAllEnvs());
+
+it("cohort removal denies tool access while recording the denial", async () => {
+  vi.stubEnv("AGENT_BETA_USER_IDS", "");
+  const { admin, rpc } = setup([{ ...decided, decision: "deny", reason: "write_gate_closed" }]);
+  expect(await decideBridgeToolCall(admin, { userId, bridge, input: decisionRequest })).toMatchObject({ decision: "deny", reason: "write_gate_closed" });
+  expect(rpc).toHaveBeenCalledWith("decide_agent_tool_call", expect.objectContaining({ p_decision: expect.objectContaining({ access: null, decision: "deny", lease_op: "none" }) }));
 });

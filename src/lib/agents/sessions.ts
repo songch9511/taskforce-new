@@ -1,3 +1,4 @@
+import { agentBetaUserAllowed } from "@/lib/flags";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 
@@ -34,7 +35,7 @@ export async function loadSessionAdapter(admin: SupabaseClient, userId: string, 
     .throwOnError();
   const adapter = (connectionData as { adapter: string } | null)?.adapter;
   if (!adapter || !Object.hasOwn(AGENT_REGISTRY, adapter)) return null;
-  return { adapter, enabled: adapterEnabled(adapter, env) };
+  return { adapter, enabled: agentBetaUserAllowed(userId, env) && adapterEnabled(adapter, env) };
 }
 
 export type RenameAgentSessionResult = { status: "renamed" | "unchanged"; session: AgentSession } | { status: "not_found" };

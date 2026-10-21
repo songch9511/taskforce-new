@@ -1,3 +1,4 @@
+import { agentBetaUserAllowed } from "@/lib/flags";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { after } from "next/server";
 import { z } from "zod";
@@ -21,7 +22,7 @@ export async function decideBridgeToolCall(admin: SupabaseClient, input: { userI
   const adapter = call.kind.startsWith("claude_") ? "agent:claude-code" : "agent:codex";
   for (let attempt = 0; attempt < 2; attempt++) {
     const mode = await bridgePolicyMode(admin, input.userId);
-    const access = bridgeDeliveryAccess(adapter, input.bridge.capabilities, mode, env);
+    const access = agentBetaUserAllowed(input.userId, env) ? bridgeDeliveryAccess(adapter, input.bridge.capabilities, mode, env) : null;
     const decision = decideToolCall({ call, access, mode, workspace_real_path: body.workspace_real_path });
     const { data } = await admin.rpc("decide_agent_tool_call", {
       p_user_id: input.userId, p_bridge_id: input.bridge.id, p_session_id: body.agent_session_id, p_task_id: body.agent_task_id,

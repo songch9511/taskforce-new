@@ -37,8 +37,8 @@ const NOW = new Date("2026-10-14T12:00:00.000Z");
 // 전달 만료 시각이 아직 안 지난 값. 실제 시계가 흘러도 시험이 변하지 않게 먼 미래로 고정한다
 const FUTURE = "2099-01-01T00:00:00.000Z";
 // 실행 kill switch(EXECUTION_ENABLED)가 켜진 환경. 꺼진 환경은 아래 OFF (D2a 보안 검토 P1 방어)
-const CODEX = { AGENT_ADAPTER_CODEX_ENABLED: "true", EXECUTION_ENABLED: "true" };
-const OFF = { AGENT_ADAPTER_CODEX_ENABLED: "true" };
+const CODEX = { AGENT_BETA_USER_IDS: USER, CONVERSATIONS_V2_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true", EXECUTION_ENABLED: "true" };
+const OFF = { AGENT_BETA_USER_IDS: USER, CONVERSATIONS_V2_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" };
 const started = { status: "started", action_id: ACTION, run_id: RUN, agent_task_id: TASK, step_id: STEP, turn_seq: 1, created_action: true };
 
 const messageRow = (extra: Record<string, unknown> = {}) => ({
@@ -323,7 +323,7 @@ describe("startAgentMessage: 대화의 연결을 해석해 전달 단계를 시�
       tables: world({ agent_connections: [{ id: CONN, user_id: USER, adapter: "agent:claude-code", status: "active" }] }),
       rpc: rpcs({ mark_agent_message_not_sent_auto: () => ({ status: "not_sent", reason: "write_gate_closed" }) }),
     });
-    expect(await startAgentMessage(fake.admin, { userId: USER, conversationId: CONV, messageId: MSG }, { AGENT_ADAPTER_CLAUDE_CODE_ENABLED: "true" }, NOW)).toEqual({ status: "not_sent", reason: "write_gate_closed" });
+    expect(await startAgentMessage(fake.admin, { userId: USER, conversationId: CONV, messageId: MSG }, { AGENT_BETA_USER_IDS: USER, CONVERSATIONS_V2_ENABLED: "true", AGENT_ADAPTER_CLAUDE_CODE_ENABLED: "true" }, NOW)).toEqual({ status: "not_sent", reason: "write_gate_closed" });
     expect(fake.rpcCalls().map((call) => call.target)).toEqual(["mark_agent_message_not_sent_auto"]);
   });
 

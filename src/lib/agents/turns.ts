@@ -1,3 +1,4 @@
+import { agentBetaUserAllowed } from "@/lib/flags";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 
@@ -33,6 +34,7 @@ export async function startAgentTurn(admin: SupabaseClient, input: {
   actionIds?: string[];
   contextIds?: string[];
 }, env: Record<string, string | undefined> = process.env): Promise<StartAgentTurnResult> {
+  if (!agentBetaUserAllowed(input.userId, env)) return { status: "not_found" };
   const access = agentAccess(input.capability, input.mode);
   const reason = input.connectionStatus !== "active" ? input.connectionStatus
     : access === null ? "write_gate_closed"
@@ -62,6 +64,7 @@ export async function startNextQueuedTurn(admin: SupabaseClient, input: {
   userId: string;
   sessionId: string;
 }, env: Record<string, string | undefined> = process.env): Promise<StartAgentTurnResult | null> {
+  if (!agentBetaUserAllowed(input.userId, env)) return null;
   const { data: next } = await admin.rpc("next_queued_agent_message", {
     p_user_id: input.userId, p_session_id: input.sessionId,
   }).throwOnError();

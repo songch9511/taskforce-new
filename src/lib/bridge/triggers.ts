@@ -61,8 +61,8 @@ export async function kickBridgeConnections(admin: SupabaseClient, userId: strin
   }
 }
 async function databaseGatesOpen(admin: SupabaseClient, userId: string, adapter: string, mode: string) {
-  const { data: actor } = await admin.from("execution_actors").select("user_id").eq("user_id", userId).maybeSingle().throwOnError();
-  if (!actor) return false;
+  const { data: allowed } = await admin.rpc("agent_execution_allowed", { p_user_id: userId, p_adapter: adapter }).throwOnError();
+  if (allowed !== true) return false;
   for (const [scope, key] of [["global", "*"], ["provider", adapter], ["mode", mode]]) {
     const { data } = await admin.from("execution_controls").select("blocked").eq("scope", scope).eq("key", key).maybeSingle().throwOnError();
     if (!data || data.blocked !== false) return false;

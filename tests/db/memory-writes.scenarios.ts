@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { apiErrorV2Schema, memoryItemResponseSchema, updateConversationResponseSchema, type MemoryItem } from "@/lib/api/contract";
 import { handleUpdateConversation } from "@/lib/api/conversations";
@@ -104,6 +104,7 @@ const AUTHORITY_TABLES = [
 ];
 
 export function memoryWritesTests(db: () => MemoryWritesDb) {
+  afterEach(() => vi.unstubAllEnvs());
   const f = memoryWritesFixtures(db);
   const { conversations: cf } = f;
 
@@ -1021,6 +1022,8 @@ export function memoryWritesTests(db: () => MemoryWritesDb) {
 
     it("대화 범위 바꾸기 → 200 { conversation }, 보관된 범위 404, 범위 기능 꺼짐 400", async () => {
       const me = await f.user();
+      vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true");
+      vi.stubEnv("AGENT_BETA_USER_IDS", me);
       const project = await f.context(me, "Shape");
       const conversation = await cf.conversation(me);
       const deps = (env: Record<string, string>) => ({ ...base(me), update: (_u: unknown, id: string, contextId: string | null) => setConversationContext(f.admin(), me, id, contextId, env) });

@@ -88,12 +88,40 @@ struct SettingsAgentsModelTests {
         #expect(model.line.kind == .signInNeeded, "읽지 못하면 마지막으로 받은 것을 그대로 둔다")
     }
 
-    @Test func aServerThatHasNoAgentGateGivesNoConnectionRow() async {
-        let env = Env()
-        env.targetsRead = .unavailable
+    @Test func anUnavailableServerNeverOffersConnectOrReconnect() async {
+        for status in [BridgeStatus.connected, .revoked, .credentialRejected] {
+            let env = Env()
+            env.runtimeStatus = status
+            env.targetsRead = .unavailable
+            let model = Self.model(env)
+            await model.refresh(.shown)
+            #expect(model.line.detail == "Not available" && model.line.control == .none)
+            #expect(model.detail.openNow == nil && !model.detail.showsDisconnect)
+            #expect(model.detail.signIn?.text == "Signed in", "이 Mac의 로그인 사실은 그대로다")
+            await model.connect()
+            await model.reconnect()
+            #expect(env.connectCalls == 0 && env.reconnectCalls == 0 && env.notificationCalls == 0)
+        }
+    }
+
+    @Test func theServerCanBecomeUnavailableAndReturnWithoutLosingItsConnection() async {
+        let env = Self.connected()
         let model = Self.model(env)
         await model.refresh(.shown)
-        #expect(model.line.kind == .connect)
+        #expect(model.line.kind == .ready)
+        env.targetsRead = .unavailable
+        await model.refresh(.again)
+        #expect(model.line.detail == "Not available" && model.line.control == .none)
+        env.targetsRead = .failed
+        await model.refresh(.again)
+        #expect(model.line.detail == "Not available", "읽기 실패는 서버가 마지막에 말한 상태를 유지한다")
+        env.targetsRead = env.serverRow(state: .ready)
+        await model.refresh(.again)
+        #expect(model.line.kind == .ready && model.detail.showsDisconnect)
+        #expect(env.connectCalls == 0 && env.reconnectCalls == 0)
+        env.targetsRead = .rows([])
+        await model.refresh(.again)
+        #expect(model.line.kind == .connect, "실제로 연결 행이 없을 때만 Connect")
     }
 
     @Test func aBuildThatCannotRunAgentsReadsNothingButStaysHonest() async {

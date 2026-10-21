@@ -13,7 +13,7 @@ const SESSION = "5e000000-0000-4000-8000-000000000001";
 const SESSION2 = "5e000000-0000-4000-8000-000000000002";
 const CONTEXT = "c7000000-0000-4000-8000-000000000001";
 const CONV = "c1000000-0000-4000-8000-000000000001";
-const CODEX = { AGENT_ADAPTER_CODEX_ENABLED: "true" };
+const CODEX = { AGENT_BETA_USER_IDS: USER, CONVERSATIONS_V2_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" };
 
 const conversationRow = (extra: Record<string, unknown> = {}) => ({
   id: CONV, user_id: USER, title: null, context_id: null, created_at: "2026-10-14T00:00:00Z", last_message_at: null, last_read_at: null, archived_at: null, text_purged_at: null,

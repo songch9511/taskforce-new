@@ -3,7 +3,7 @@ import path from "node:path";
 
 import type { PGlite } from "@electric-sql/pglite";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
@@ -98,3 +98,5 @@ describe("U6 gate 꺼짐 = 전체 JSON 바이트 동일", () => {
     expect(bytes(c3)).toBe(bytes((golden.review as { decisions: unknown[] }).decisions));
   });
 });
+
+beforeEach(() => { vi.stubEnv("AGENT_BETA_USER_IDS", GOLDEN_USER); vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true"); });

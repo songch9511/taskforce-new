@@ -1,3 +1,4 @@
+import { agentBetaUserAllowed } from "@/lib/flags";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 
@@ -83,6 +84,7 @@ export async function startPinnedAgentMessage(
   input: { userId: string; messageId: string; state: string | null; reason: string | null; chips: StartChips; target: Pick<ResolvedAgentTarget, "capability" | "mode" | "connectionStatus"> },
   env: Env = process.env,
 ): Promise<PinnedStartResult> {
+  if (!agentBetaUserAllowed(input.userId, env)) return { status: "skipped" };
   // 만료된 계정은 실행을 시작하지 못한다 (결제 계약 22장). 수동 시작 · 자동 시작 · 다시 전달 · bridge 계기가 모두 이 함수를 지나므로 검사는 여기 한 곳이다.
   // 막힌 일은 이어 갈 수 있다: queued는 not_sent/write_gate_closed(gate 계열, 자동 시작 대상)로 표시하고, 다시 사면 다음 계기가 같은 메시지를 시작한다. 이미 not_sent인 이유는 덮지 않는다.
   if (!(await agentRunsAllowed(admin, input.userId))) {
@@ -140,6 +142,7 @@ const headSchema = z.object({
  * - 그 밖에는 startPinnedAgentMessage (처리용 칩 필터 + 잠금 안 재확인)
  */
 export async function startNextAgentMessage(admin: SupabaseClient, input: { userId: string; sessionId: string }, env: Env = process.env): Promise<StartAgentTurnResult | null> {
+  if (!agentBetaUserAllowed(input.userId, env)) return null;
   const { data } = await admin.rpc("next_queued_agent_message", { p_user_id: input.userId, p_session_id: input.sessionId }).throwOnError();
   const messageId = z.guid().nullable().parse(data);
   if (messageId === null) return null;

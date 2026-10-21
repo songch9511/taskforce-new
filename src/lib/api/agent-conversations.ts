@@ -32,7 +32,7 @@ import { startNextAgentMessage } from "@/lib/agents/next-turn";
 import { stopAgentSession, type StopAgentSessionResult } from "@/lib/agents/tasks";
 import { listAssistantTargets, resolveAgentTarget } from "@/lib/agents/targets";
 
-import { flagEnabled } from "@/lib/flags";
+import { agentBetaUserAllowed, flagEnabled } from "@/lib/flags";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 import { authenticateRequest, type ApiContext } from "./auth";
@@ -91,11 +91,13 @@ function failed(error: unknown, event: string, message: string): Response {
   return errorResponse(500, "internal_error", message);
 }
 
-/** gate → 인증. 꺼져 있으면 인증 · DB 없이 404 */
-async function begin<User extends AppUser>(request: Request, deps: Base<User>): Promise<{ user: User } | { response: Response }> {
+/** Global gate → authentication → beta admission. Cleanup/readback bypass cohort admission only. */
+async function begin<User extends AppUser>(request: Request, deps: Base<User>, cleanup = false): Promise<{ user: User } | { response: Response }> {
   if (!deps.enabled()) return { response: errorResponse(404, "not_found", "없는 경로입니다.") };
   const user = await deps.authenticate(request);
-  return user ? { user } : { response: unauthorized() };
+  if (!user) return { response: unauthorized() };
+  if (!cleanup && !agentBetaUserAllowed(user.user.id)) return { response: notFound() };
+  return { user };
 }
 
 const keyOf = (item: { kind: AttachmentKind; id: string }) => `${item.kind}:${item.id.toLowerCase()}`;
@@ -301,7 +303,7 @@ export type StopConversationDeps<User> = Base<User> & {
 
 /** POST /api/v2/conversations/{id}/stop (계약 5장 · AC-12): 이 대화에 묶인 세션 단위 중단. 세션이 없는 대화는 { tasks: [] } (쓰기 0, OD-19). adapter 플래그가 꺼져 있어도 멈춘다 */
 export async function handleStopConversation<User extends AppUser>(request: Request, conversationId: string, deps: StopConversationDeps<User>): Promise<Response> {
-  const started = await begin(request, deps);
+  const started = await begin(request, deps, true);
   if ("response" in started) return started.response;
   const { user } = started;
   if (!UUID.test(conversationId)) return notFound();
@@ -326,7 +328,7 @@ export type StopSessionDeps<User> = Base<User> & {
 
 /** POST /api/v2/agent-sessions/{id}/stop: 세션 패널의 같은 동작 (surface session_panel). adapter 플래그가 꺼져 있어도 멈춘다 */
 export async function handleStopSession<User extends AppUser>(request: Request, sessionId: string, deps: StopSessionDeps<User>): Promise<Response> {
-  const started = await begin(request, deps);
+  const started = await begin(request, deps, true);
   if ("response" in started) return started.response;
   const { user } = started;
   if (!UUID.test(sessionId)) return notFound(SESSION_NOT_FOUND);
@@ -348,9 +350,9 @@ export type DeliveryReadDeps<User> = Base<User> & {
   deliveries: (user: User, conversationId: string, sinceSeq: number | undefined) => Promise<{ message_id: string; seq: number; delivery: AgentDelivery }[]>;
 };
 
-/** GET /api/v2/conversations/{id}/delivery?since_seq= (OD-13): RLS로 읽은 사용자 메시지의 전달 표시를 서버 계산으로. 읽기만 한다 */
+/** GET delivery readback remains available after cohort/adapter rollback; ownership still comes from the conversation lookup. */
 export async function handleGetDeliveries<User extends AppUser>(request: Request, conversationId: string, deps: DeliveryReadDeps<User>): Promise<Response> {
-  const started = await begin(request, deps);
+  const started = await begin(request, deps, true);
   if ("response" in started) return started.response;
   const { user } = started;
   if (!UUID.test(conversationId)) return notFound();
@@ -360,7 +362,6 @@ export async function handleGetDeliveries<User extends AppUser>(request: Request
     const conversation = await deps.conversation(user, conversationId);
     if (!conversation) return notFound();
     if (conversation.targetKind !== "agent") return notAgent();
-    if (!(await deps.adapterOpen(user, conversation.connectionId))) return notFound();
     return Response.json({ messages: await deps.deliveries(user, conversation.id, since === null ? undefined : Number(since)) });
   } catch (error) {
     return failed(error, "agent_delivery_read_failed", "전달 상태를 읽지 못했습니다.");

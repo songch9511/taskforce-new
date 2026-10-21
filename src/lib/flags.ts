@@ -40,3 +40,14 @@ export function flagEnabled(flag: ServerFlag, env: Record<string, string | undef
 export function returnSummaryEnabled(env: Record<string, string | undefined> = process.env): boolean {
   return flagEnabled("RETURN_SUMMARY_ENABLED", env) || flagEnabled("REVIEW_V2_ENABLED", env);
 }
+
+/** Explicit deployment snapshot, independent of billing/notice state. A malformed entry closes the entire cohort. */
+export function agentBetaUserAllowed(userId: string, env: Record<string, string | undefined> = process.env): boolean {
+  if (!flagEnabled("CONVERSATIONS_V2_ENABLED", env)) return false;
+  const raw = env.AGENT_BETA_USER_IDS;
+  if (!raw) return false;
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const ids = raw.split(",");
+  if (userId.length !== 36 || !uuid.test(userId) || ids.some((id) => id.length !== 36 || !uuid.test(id))) return false;
+  return ids.some((id) => id.toLowerCase() === userId.toLowerCase());
+}

@@ -17,7 +17,7 @@ function db(count = 0, response: unknown = started) {
 }
 const input = { userId, messageId, capability: AGENT_REGISTRY["agent:codex"], mode: "manual", connectionStatus: "active" } as const;
 // OD-2: Codex 대화도 gate(AGENT_ADAPTER_CODEX_ENABLED, 기본 꺼짐)가 켜져야 시작한다.
-const CODEX_ON = { AGENT_ADAPTER_CODEX_ENABLED: "true" };
+const CODEX_ON = { AGENT_BETA_USER_IDS: userId, CONVERSATIONS_V2_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" };
 
 describe("startAgentTurn", () => {
   it("starts S0 Codex with read_only and validates RPC output", async () => {
@@ -28,7 +28,7 @@ describe("startAgentTurn", () => {
   });
   it("keeps Codex closed while its adapter gate is off: no route RPC, message marked unsupported", async () => {
     const d = db(0, { status: "not_sent", reason: "unsupported" });
-    expect(await startAgentTurn(d.admin, input, {})).toEqual({ status: "not_sent", reason: "unsupported" });
+    expect(await startAgentTurn(d.admin, input, { AGENT_BETA_USER_IDS: userId, CONVERSATIONS_V2_ENABLED: "true" })).toEqual({ status: "not_sent", reason: "unsupported" });
     expect(d.rpc).toHaveBeenCalledExactlyOnceWith("mark_agent_message_not_sent", { p_user_id: userId, p_message_id: messageId, p_reason: "unsupported" });
   });
   it.each([{ status: "answered", step_id: userId }, { status: "duplicate", step_id: userId }, { status: "secret_requires_local" }, { status: "question_stale" }, { status: "invalid_answer" }])("preserves question routing outcomes", async (response) => {
@@ -36,7 +36,7 @@ describe("startAgentTurn", () => {
   });
   it("marks S0 Claude Code not_sent with no dispatch", async () => {
     const d = db(0, { status: "not_sent", reason: "write_gate_closed" });
-    expect(await startAgentTurn(d.admin, { ...input, capability: AGENT_REGISTRY["agent:claude-code"] }, { AGENT_ADAPTER_CLAUDE_CODE_ENABLED: "true" })).toEqual({ status: "not_sent", reason: "write_gate_closed" });
+    expect(await startAgentTurn(d.admin, { ...input, capability: AGENT_REGISTRY["agent:claude-code"] }, { AGENT_BETA_USER_IDS: userId, CONVERSATIONS_V2_ENABLED: "true", AGENT_ADAPTER_CLAUDE_CODE_ENABLED: "true" })).toEqual({ status: "not_sent", reason: "write_gate_closed" });
     expect(d.rpc).toHaveBeenCalledExactlyOnceWith("mark_agent_message_not_sent", { p_user_id: userId, p_message_id: messageId, p_reason: "write_gate_closed" });
     expect(d.from).not.toHaveBeenCalled();
   });
@@ -130,7 +130,7 @@ describe("startNextQueuedTurn", () => {
   });
   it("uses the registry to keep Claude Code's unverified gate closed", async () => {
     const d = queuedDb("agent:claude-code");
-    expect(await startNextQueuedTurn(d.admin, { userId, sessionId: userId }, { AGENT_ADAPTER_CLAUDE_CODE_ENABLED: "true" })).toEqual({ status: "not_sent", reason: "write_gate_closed" });
+    expect(await startNextQueuedTurn(d.admin, { userId, sessionId: userId }, { AGENT_BETA_USER_IDS: userId, CONVERSATIONS_V2_ENABLED: "true", AGENT_ADAPTER_CLAUDE_CODE_ENABLED: "true" })).toEqual({ status: "not_sent", reason: "write_gate_closed" });
     expect(d.rpc).toHaveBeenLastCalledWith("mark_agent_message_not_sent", expect.objectContaining({ p_reason: "write_gate_closed" }));
   });
   it("uses current revoked connection state", async () => {

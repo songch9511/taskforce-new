@@ -55,6 +55,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://project.example.test");
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY", "sb_publishable_bridge-test");
+  vi.stubEnv("AGENT_BETA_USER_IDS", userId);
   vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true");
   vi.stubEnv("AGENT_ADAPTER_CODEX_ENABLED", "true");
   mocks.cookie.mockResolvedValue({ auth: { getClaims: vi.fn(async () => ({ data: { claims: { sub: userId } }, error: null })) } });
