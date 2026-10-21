@@ -272,10 +272,40 @@ struct EdgeExternalSessionsTests {
 
     @Test func aRowWithoutAFolderStillAsksAndTheOpenerFallsBack() async {
         let rig = make()
-        var row = desktopRow(4, status: .held(.claudeApp))
+        var row = desktopRow(4)
         row.folderPath = nil
         await rig.shell.openInClaude(row).value
         #expect(rig.app.sessions == [.init(id: Self.uuid(4), folder: nil)], "폴더가 없으면 nil을 넘긴다 (열기는 폴더 없이 하지 않는다)")
+    }
+
+    /// 실측 (2026-10-22): 이미 데스크톱 앱이 쥔 세션에 `--desktop --resume`을 하면 CLI가 "open in another terminal"로 거절하고 1로 끝난다
+    @Test func aRunningInClaudeRowOnlyActivatesTheAppAndNeverRunsTheCLIAndKeepsItsButton() async {
+        let rig = make()
+        for client in [ExternalSessionClient.claudeDesktop, .terminal] {
+            let row = Self.row(5, status: .held(.claudeApp), group: "/Users/tester/proj5", client: client)
+            #expect(ExternalSessionLineText.make(row, now: Date()).action == .openInClaude, "버튼은 그대로 있다")
+            let before = rig.app.opened
+            await rig.shell.openInClaude(row).value
+            #expect(rig.app.opened == before + 1, "앱만 앞으로: 출처가 \(String(describing: client))인 줄도")
+        }
+        #expect(rig.app.sessions.isEmpty, "Claude 앱이 쥔 세션에는 CLI를 돌리지 않는다")
+        #expect(rig.shell.openNoticeSessionID == nil, "거절 줄도 없다")
+        rig.app.installed = false
+        await rig.shell.openInClaude(Self.row(5, status: .held(.claudeApp), client: .claudeDesktop)).value
+        #expect(rig.app.sessions.isEmpty, "설치돼 있지 않아도 터지지 않는다")
+    }
+
+    @Test func aRunningRowIsNotHeldUpByAnotherSessionStillOpening() async {
+        let rig = make()
+        rig.app.holds = true
+        let idle = rig.shell.openInClaude(desktopRow(1))
+        #expect(await until { rig.app.sessions.count == 1 })
+        let running = rig.shell.openInClaude(Self.row(2, status: .held(.claudeApp), client: .claudeDesktop))
+        #expect(await until { rig.app.opened == 1 }, "다른 줄을 여는 중이어도 Running in Claude 줄은 곧바로 앱을 앞으로")
+        rig.app.release()
+        await idle.value
+        await running.value
+        #expect(rig.app.sessions.map(\.id) == [Self.uuid(1)])
     }
 
     @Test func anUnavailableAnswerFallsBackToActivatingTheAppOnceWithoutAnyNotice() async {
@@ -293,11 +323,13 @@ struct EdgeExternalSessionsTests {
         let rig = make()
         rig.app.answer = .openInAnotherTerminal
         let asked = desktopRow(1), other = desktopRow(2)
+        let scansBefore = rig.counter.scans
         await rig.shell.openInClaude(asked).value
         #expect(rig.app.opened == 0, "다른 터미널이 쥔 세션이라 앱은 보여 줄 것이 없다")
+        #expect(rig.counter.scans == scansBefore + 1, "스캔과 클릭 사이에 쥐어졌다: 목록을 다시 훑는다")
         let now = Date()
         let line = rig.shell.externalLine(asked, now: now)
-        #expect(line.metaText == ExternalSessionCopy.openInAnotherTerminal && !line.statusIsEmphasis && line.action == .openInClaude, "회색 한 줄, 버튼은 그대로")
+        #expect(line.metaText == "Running in Terminal" && !line.statusIsEmphasis && line.action == .openInClaude, "이미 승인된 말을 회색 한 줄로, 버튼은 그대로")
         #expect(rig.shell.externalLine(other, now: now) == ExternalSessionLineText.make(other, now: now), "다른 줄은 그대로")
         #expect(rig.shell.externalLine(asked, now: now) != ExternalSessionLineText.make(asked, now: now))
     }
@@ -466,9 +498,9 @@ struct EdgeExternalSessionsTests {
     }
 
     /// 실제 패널(`EdgePanelView`: 머리 · 스크롤 · TimelineView · 줄)에 올린 Open in Claude 버튼을 실제 마우스 이벤트로 눌러 본다.
-    /// 줄 하나를 따로 올린 위 시험과 달리 스크롤 · 겹친 뷰가 클릭을 가로채지 않는지 본다: 두 줄의 버튼 캡슐을 훑어 두 세션 모두 눌리고, 눌린 세로 범위가 버튼 높이만큼이고 가로 끝도 눌린다.
+    /// 줄 하나를 따로 올린 위 시험과 달리 스크롤 · 겹친 뷰가 클릭을 가로채지 않는지 본다: 두 줄(쉬는 데스크톱 줄 · Running in Claude 줄)의 버튼 캡슐을 훑어 둘 다 눌리고(앞은 그 세션을 열고 뒤는 앱만 앞으로), 눌린 세로 범위가 버튼 높이만큼이고 가로 끝도 눌린다.
     /// 패널이 키가 아닐 때(`orderFront`만)도 같다: 비활성 패널의 첫 클릭이 먹히지 않는 문제가 아니다
-    @Test func inTheRealPanelBothButtonsAreClickableAndEachOpensItsOwnSession() async {
+    @Test func inTheRealPanelBothButtonsAreClickableAndEachDoesItsOwnThing() async {
         for key in [true, false] {
             let rig = make()
             rig.counter.set([
@@ -491,20 +523,26 @@ struct EdgeExternalSessionsTests {
             var hits: [(x: Int, y: Int, id: String)] = []
             for x in [262, 306, 356] {
                 for y in stride(from: 70, to: 260, by: 5) {
-                    let before = rig.app.sessions.count
+                    let (sessionsBefore, openedBefore) = (rig.app.sessions.count, rig.app.opened)
                     click(panel, hosting, at: CGPoint(x: x, y: y))
                     // 줄의 클릭은 Task로 가서 한 번 양보해야 닿는다
                     try? await Task.sleep(for: .milliseconds(15))
-                    if rig.app.sessions.count > before, let last = rig.app.sessions.last { hits.append((x, y, last.id)) }
+                    if rig.app.sessions.count > sessionsBefore, let last = rig.app.sessions.last {
+                        hits.append((x, y, last.id))
+                    } else if rig.app.opened > openedBefore {
+                        hits.append((x, y, "app"))
+                    }
                 }
             }
-            #expect(Set(hits.map(\.id)) == [Self.uuid(1), Self.uuid(2)], Comment(rawValue: "key=\(key): 두 줄의 버튼이 각자 자기 세션을 연다"))
-            for n in [1, 2] {
-                let ys = hits.filter { $0.id == Self.uuid(n) }.map(\.y)
-                #expect((ys.max() ?? 0) - (ys.min() ?? 0) >= 12, Comment(rawValue: "key=\(key) 세션 \(n): 버튼 높이만큼 눌린다 (\(ys.min() ?? -1)–\(ys.max() ?? -1))"))
-                #expect(Set(hits.filter { $0.id == Self.uuid(n) }.map(\.x)) == [262, 306, 356], Comment(rawValue: "key=\(key) 세션 \(n): 캡슐의 왼쪽 · 가운데 · 오른쪽 모두"))
+            // 쉬는 줄은 그 세션을 열고, 이미 Claude 앱이 쥔 줄은 앱만 앞으로 가져온다
+            #expect(Set(hits.map(\.id)) == [Self.uuid(1), "app"], Comment(rawValue: "key=\(key): 두 줄의 버튼이 각자 눌린다"))
+            #expect(!rig.app.sessions.contains { $0.id == Self.uuid(2) }, "쥔 세션에는 CLI를 돌리지 않는다")
+            for id in [Self.uuid(1), "app"] {
+                let ys = hits.filter { $0.id == id }.map(\.y)
+                #expect((ys.max() ?? 0) - (ys.min() ?? 0) >= 12, Comment(rawValue: "key=\(key) \(id): 버튼 높이만큼 눌린다 (\(ys.min() ?? -1)–\(ys.max() ?? -1))"))
+                #expect(Set(hits.filter { $0.id == id }.map(\.x)) == [262, 306, 356], Comment(rawValue: "key=\(key) \(id): 캡슐의 왼쪽 · 가운데 · 오른쪽 모두"))
             }
-            #expect(rig.app.opened == 0, "열기가 `.opened`를 돌려주면 앱만 앞으로 가져오지 않는다")
+            #expect(rig.app.opened == hits.filter { $0.id == "app" }.count, "앱을 앞으로 가져온 것은 쥔 줄의 클릭뿐")
         }
     }
 

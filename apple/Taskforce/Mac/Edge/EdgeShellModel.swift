@@ -697,10 +697,17 @@ final class EdgeShellModel {
     @ObservationIgnored private var openingSessionIDs: Set<String> = []
     @ObservationIgnored private var openNoticeTimer: EdgeTimer?
 
-    /// 줄의 Open in Claude: 그 세션을 데스크톱 앱에서 연다. 성공이면 앱이 앞으로 오는 것은 `claude`가 하고 더 하지 않는다. "다른 터미널에 열려 있다"는 거절이면 그 줄에 회색 한 줄을 보이고(앱은 보여 줄 것이 없다),
-    /// 그 밖의 실패(`claude` 없음 · 옛 버전 · 폴더 규칙 · 시간 초과 …)는 앱만 앞으로 가져온다. 같은 세션을 여는 중에 다시 누르면 무시한다 (끝나기를 기다릴 수 있게 Task를 돌려준다)
+    /// 줄의 Open in Claude.
+    /// - **Claude 앱이 이미 쥔 줄(Running in Claude)**: CLI를 돌리지 않고 앱만 앞으로 가져온다. 실측(2026-10-22): 이미 데스크톱 앱이 쥔 세션에 `--desktop --resume`을 하면 CLI가 "open in another terminal"로 거절하고 1로 끝난다.
+    /// - **쉬는 데스크톱 줄**: 그 세션을 데스크톱 앱에서 연다. 성공이면 앱이 앞으로 오는 것은 `claude`가 하고 더 하지 않는다. "다른 터미널에 열려 있다"는 거절은 스캔과 클릭 사이에 누가 그 세션을 쥐었다는 뜻이다:
+    ///   그 줄에 이미 승인된 말 "Running in Terminal"을 회색 한 줄로 8초 보이고(앱은 보여 줄 것이 없다) 목록을 다시 훑는다. 그 밖의 실패(`claude` 없음 · 옛 버전 · 폴더 규칙 · 시간 초과 …)는 앱만 앞으로 가져온다.
+    /// 같은 세션을 여는 중에 다시 누르면 무시한다 (끝나기를 기다릴 수 있게 Task를 돌려준다)
     @discardableResult
     func openInClaude(_ row: ExternalSessionRow) -> Task<Void, Never> {
+        if row.status == .held(.claudeApp) {
+            _ = claudeApp.openClaudeApp()
+            return Task {}
+        }
         let id = row.id
         guard openingSessionIDs.insert(id).inserted else { return Task {} }
         clearOpenNotice()
@@ -711,7 +718,9 @@ final class EdgeShellModel {
             openingSessionIDs.remove(id)
             switch result {
             case .opened: break
-            case .openInAnotherTerminal: showOpenNotice(for: id)
+            case .openInAnotherTerminal:
+                showOpenNotice(for: id)
+                await externalSessions?.refresh()
             case .unavailable: _ = claudeApp.openClaudeApp()
             }
         }
@@ -729,9 +738,9 @@ final class EdgeShellModel {
         openNoticeSessionID = nil
     }
 
-    /// 패널의 줄 글: 방금 Open in Claude가 거절당한 줄은 둘째 줄이 회색 한 줄로 바뀐다
+    /// 패널의 줄 글: 방금 Open in Claude가 "다른 터미널에 열려 있다"고 거절당한 쉬는 줄은 둘째 줄이 회색 "Running in Terminal" 한 줄로 바뀐다
     func externalLine(_ row: ExternalSessionRow, now: Date) -> ExternalSessionLineContent {
-        ExternalSessionLineText.make(row, now: now, notice: openNoticeSessionID == row.id ? ExternalSessionCopy.openInAnotherTerminal : nil)
+        ExternalSessionLineText.make(row, now: now, notice: openNoticeSessionID == row.id ? ExternalSessionCopy.runningInTerminal : nil)
     }
 
     /// 레일의 On this Mac: 패널에 이 Mac의 세션 목록을 연다 (게이트가 꺼진 셸은 아무 일도 없다)

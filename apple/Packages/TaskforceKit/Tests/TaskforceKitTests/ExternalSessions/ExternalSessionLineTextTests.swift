@@ -66,23 +66,18 @@ extension ExternalSessionSuites {
         @Test func aRefusalNoticeReplacesTheSecondLineWithOneGrayLineAndKeepsTheButton() {
             let row = Self.row(status: .available, client: .claudeDesktop, ageMinutes: 40)
             let plain = line(row)
-            let noticed = ExternalSessionLineText.make(row, now: Self.now, timeZone: Self.utc, notice: ExternalSessionCopy.openInAnotherTerminal)
-            #expect(noticed.metaText == ExternalSessionCopy.openInAnotherTerminal && noticed.detail.isEmpty, "둘째 줄은 이 한 줄뿐")
+            let noticed = ExternalSessionLineText.make(row, now: Self.now, timeZone: Self.utc, notice: ExternalSessionCopy.runningInTerminal)
+            #expect(noticed.metaText == "Running in Terminal" && noticed.detail.isEmpty, "둘째 줄은 이미 승인된 말 한 줄뿐")
             #expect(!noticed.statusIsEmphasis, "회색 (굵지 않다)")
             #expect(noticed.action == .openInClaude && noticed.title == plain.title, "버튼은 그대로: 터미널을 닫고 다시 누를 수 있다")
             // 굵던 줄("Running in Claude")도 거절 줄은 회색이다
             let running = Self.row(status: .held(.claudeApp), client: .claudeDesktop)
-            let runningNoticed = ExternalSessionLineText.make(running, now: Self.now, timeZone: Self.utc, notice: ExternalSessionCopy.openInAnotherTerminal)
+            let runningNoticed = ExternalSessionLineText.make(running, now: Self.now, timeZone: Self.utc, notice: ExternalSessionCopy.runningInTerminal)
             #expect(line(running).statusIsEmphasis && !runningNoticed.statusIsEmphasis && runningNoticed.action == .openInClaude)
             // 버튼이 없는 줄에는 거절 줄을 얹지 않는다 (그 줄은 이미 자기 상태를 말한다)
             let terminal = Self.row(status: .held(.terminal), client: .claudeDesktop)
-            #expect(ExternalSessionLineText.make(terminal, now: Self.now, timeZone: Self.utc, notice: ExternalSessionCopy.openInAnotherTerminal) == line(terminal))
+            #expect(ExternalSessionLineText.make(terminal, now: Self.now, timeZone: Self.utc, notice: ExternalSessionCopy.runningInTerminal) == line(terminal))
             #expect(ExternalSessionLineText.make(row, now: Self.now, timeZone: Self.utc, notice: nil) == plain, "notice가 없으면 그대로")
-        }
-
-        @Test func theRefusalLineIsAProposalNotYetInTheApprovedList() {
-            // 사용자 승인 전 문구 (노트에 제안): 승인되면 `everyCopyStringIsTheApprovedOne`의 목록으로 옮긴다
-            #expect(ExternalSessionCopy.openInAnotherTerminal == "Open in another terminal")
         }
 
         @Test func anIdleRowSaysIdleTimeAndSourceWithoutEmphasis() {
