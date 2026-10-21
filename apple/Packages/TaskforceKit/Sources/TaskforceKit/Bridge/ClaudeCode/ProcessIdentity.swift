@@ -26,11 +26,15 @@ public struct ClaudeCodeTiming: Sendable, Equatable {
     public var keeperExit: TimeInterval
     /// 답 훅이 새 정체 기록을 기다리는 최대 시간 (소켓 답 예산 안, 9장 8)
     public var identityWait: TimeInterval
+    /// 프로젝트 지침(CLAUDE.md) 읽기를 기다리는 최대 시간 (넘으면 건너뛰고 띄운다: 막힌 볼륨이 턴 시작을 막지 않게, 검토 보안 P3-4)
+    public var instructionsDeadline: TimeInterval
 
     public init(
         orphanInterruptGrace: TimeInterval, orphanKillGrace: TimeInterval, closeTimeout: TimeInterval, exitAfterResult: TimeInterval, drainAfterExit: TimeInterval,
-        probeTimeout: TimeInterval, serverTimeout: TimeInterval, answerTimeout: TimeInterval = 10, keeperExit: TimeInterval = 3, identityWait: TimeInterval = 0.8
+        probeTimeout: TimeInterval, serverTimeout: TimeInterval, answerTimeout: TimeInterval = 10, keeperExit: TimeInterval = 3, identityWait: TimeInterval = 0.8,
+        instructionsDeadline: TimeInterval = 2
     ) {
+        self.instructionsDeadline = instructionsDeadline
         self.identityWait = identityWait
         self.orphanInterruptGrace = orphanInterruptGrace
         self.orphanKillGrace = orphanKillGrace

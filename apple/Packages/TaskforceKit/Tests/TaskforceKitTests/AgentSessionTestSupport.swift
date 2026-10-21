@@ -29,11 +29,11 @@ enum SessionFx {
 
     /// 세션 `n`의 마지막 턴. 같은 run id는 `n`에서 정한다
     static func task(
-        _ session: Int, state: AgentTaskState, turn: Int = 1, cancelRequested: Bool = false, live: AgentTaskState? = nil
+        _ session: Int, state: AgentTaskState, turn: Int = 1, cancelRequested: Bool = false, live: AgentTaskState? = nil, seq: Int? = nil
     ) -> AgentTaskRecord {
         AgentTaskRecord(
             agentSessionID: id(session), runID: id(session * 100 + turn, prefix: "7a7a0000"), turnSeq: turn, state: state, lastLiveState: live,
-            cancelRequestedAt: cancelRequested ? at(1) : nil
+            cancelRequestedAt: cancelRequested ? at(1) : nil, lastEventSeq: seq
         )
     }
 

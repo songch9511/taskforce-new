@@ -97,6 +97,32 @@ struct AssistantAgentChatTests {
         #expect(!model.canSendAgain(after))
     }
 
+    // MARK: 에이전트의 마지막 답 (Claude Code 첫 실사용: 승인 세 번 뒤 마지막 답이 창에 나오지 않았다)
+
+    @Test func theRepliesTheAgentWritesWhileAndAfterTheTurnRunsAppearWithoutReopeningTheWindow() async throws {
+        var thread = Data.Thread()
+        thread.user("Create notes.txt in this folder", AgentDelivery(state: .accepted))
+        let r = try await rig(Data.state(thread, task: .running, lastEventSeq: 3))
+        defer { r.defaults.cleanup(); r.manager.closeAll() }
+        r.chat.follow.window = 0   // 시험은 같은 대화를 4초 안에 한 번으로 합치는 창을 열어 둔다 (합치기 규칙은 Kit 시험이 본다)
+        let model = try await open(r)
+        #expect(turns(r).map(\.text) == ["Create notes.txt in this folder"])
+        // 턴이 도는 중에 에이전트가 글을 쓴다: 세션 읽기에서 새 사건(마지막 사건 순서가 올랐다)이 보이면 글도 다시 읽는다
+        var midway = thread
+        midway.agent("Looking at the folder first.")
+        r.gateway.state = Data.state(midway, task: .running, lastEventSeq: 4)
+        await model.agent?.sessions.refresh()
+        await r.chat.settle()
+        #expect(turns(r).map(\.text).last == "Looking at the folder first.")
+        // 마지막 답을 쓰고 턴이 닫힌다 (서버는 글을 먼저 쓰고 task를 idle로 바꾼다)
+        var finished = midway
+        finished.agent("Created notes.txt as asked.")
+        r.gateway.state = Data.state(finished, task: .idle, lastEventSeq: 9)
+        await model.agent?.sessions.refresh()
+        await r.chat.settle()
+        #expect(turns(r).map(\.text) == ["Create notes.txt in this folder", "Looking at the folder first.", "Created notes.txt as asked."])
+    }
+
     // MARK: 거절된 Send again (동의 · 오류)
 
     @Test func aConsentRefusalOnSendAgainShowsTheConsentNoticeAndTheStatusLineAndTryAgainResendsIt() async throws {
