@@ -92,6 +92,8 @@ enum ExternalSessionFixture {
 final class RecordingFileSystem: @unchecked Sendable {
     private let lock = NSLock()
     private(set) var listed: [String] = []
+    /// 나열 호출마다 (경로, 요청한 상한, 돌려준 항목 수)
+    private(set) var listCalls: [(path: String, limit: Int, returned: Int)] = []
     private(set) var statted: [String] = []
     private(set) var resolved: [String] = []
     private(set) var reads: [(path: String, offset: Int64, length: Int, returned: Int)] = []
@@ -114,11 +116,15 @@ final class RecordingFileSystem: @unchecked Sendable {
                 lock.unlock()
                 return base.lstat(path)
             },
-            list: { [self] path in
+            list: { [self] path, limit in
+                let result = base.list(path, limit)
+                var returned = 0
+                if case .entries(let items) = result { returned = items.count }
                 lock.lock()
                 listed.append(path)
+                listCalls.append((path, limit, returned))
                 lock.unlock()
-                return base.list(path)
+                return result
             },
             read: { [self] path, offset, length in
                 let data = base.read(path, offset, length)
@@ -131,6 +137,16 @@ final class RecordingFileSystem: @unchecked Sendable {
     }
 
     var bytesRead: Int { reads.reduce(0) { $0 + $1.returned } }
+}
+
+/// 로그를 모으는 싱크 (이벤트 이름과 값 종류만 남는다: 글 · 경로 · id를 넣을 자리가 없다)
+final class RecordingLog: BridgeLogSink, @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [(event: String, fields: [String: BridgeLogValue])] = []
+
+    var events: [(event: String, fields: [String: BridgeLogValue])] { lock.withLock { recorded } }
+
+    func log(_ event: String, _ fields: [String: BridgeLogValue]) { lock.withLock { recorded.append((event, fields)) } }
 }
 
 /// 화면에 찍힐 수 있는 모든 글(설명 · 필드)에 시험 글(sentinel)이 없다

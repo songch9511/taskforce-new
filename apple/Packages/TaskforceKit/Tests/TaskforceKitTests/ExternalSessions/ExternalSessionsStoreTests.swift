@@ -15,7 +15,10 @@ extension ExternalSessionSuites {
             private var _installed: Bool? = nil
             private var _scans = 0
             private var _reports: [[ExternalSessionRow]] = []
+            private var _origins: [ExternalSessionOrigin?] = []
             private var _shown: [(String, String)] = []
+            /// 보임 지표를 보낼 때마다 앞에서 하나씩 쓴다 (false = 서버에 닿지 않음). 비면 성공
+            private var _shownScript: [Bool] = []
             private var _gate: CheckedContinuation<Void, Never>?
             var holdScans = false
 
@@ -29,7 +32,12 @@ extension ExternalSessionSuites {
             }
             var scans: Int { lock.withLock { _scans } }
             var reports: [[ExternalSessionRow]] { lock.withLock { _reports } }
+            var origins: [ExternalSessionOrigin?] { lock.withLock { _origins } }
             var shown: [(String, String)] { lock.withLock { _shown } }
+            var shownScript: [Bool] {
+                get { lock.withLock { _shownScript } }
+                set { lock.withLock { _shownScript = newValue } }
+            }
 
             func doScan() async -> ExternalSessionScan {
                 lock.withLock { _scans += 1 }
@@ -46,8 +54,19 @@ extension ExternalSessionSuites {
                 gate?.resume()
             }
 
-            func recordReport(_ rows: [ExternalSessionRow]) { lock.withLock { _reports.append(rows) } }
-            func recordShown(_ rows: String, _ held: String) { lock.withLock { _shown.append((rows, held)) } }
+            func recordReport(_ rows: [ExternalSessionRow], _ origin: ExternalSessionOrigin?) {
+                lock.withLock {
+                    _reports.append(rows)
+                    _origins.append(origin)
+                }
+            }
+
+            func recordShown(_ rows: String, _ held: String) -> Bool {
+                lock.withLock {
+                    _shown.append((rows, held))
+                    return _shownScript.isEmpty ? true : _shownScript.removeFirst()
+                }
+            }
         }
 
         struct Setup {
@@ -56,6 +75,7 @@ extension ExternalSessionSuites {
             let seen: InMemoryExternalSessionSeenStore
             let scope: AccountScope
             let clock: Clock
+            let log: RecordingLog
         }
 
         final class Clock: @unchecked Sendable {
@@ -66,16 +86,17 @@ extension ExternalSessionSuites {
         }
 
         func make(seen: Date? = nil, poll: TimeInterval = 10) -> Setup {
+            let log = RecordingLog()
             let fake = Fake()
             let user = UUID()
             let scope = AccountScope(currentAccount: { user })
             let seenStore = InMemoryExternalSessionSeenStore(seen)
             let clock = Clock()
             let store = ExternalSessionsStore(
-                scope: scope, scan: { await fake.doScan() }, isInstalled: { fake.installed }, report: { fake.recordReport($0) }, shown: { fake.recordShown($0, $1) }, seen: seenStore,
-                now: { clock.now }, pollInterval: poll
+                scope: scope, scan: { await fake.doScan() }, isInstalled: { fake.installed }, report: { fake.recordReport($0, $1) }, shown: { fake.recordShown($0, $1) }, seen: seenStore,
+                now: { clock.now }, pollInterval: poll, log: log
             )
-            return Setup(store: store, fake: fake, seen: seenStore, scope: scope, clock: clock)
+            return Setup(store: store, fake: fake, seen: seenStore, scope: scope, clock: clock, log: log)
         }
 
         /// 조건이 될 때까지 기다린다 (최대 3초)
@@ -125,10 +146,46 @@ extension ExternalSessionSuites {
             #expect(s.store.phase == .failed && s.store.rows.isEmpty)
             s.fake.scan = ExternalSessionScan(rows: [], failure: .notFound)
             await s.store.refresh()
-            #expect(s.store.phase == .notInstalled)
+            #expect(s.store.phase == .empty, "설치 여부를 모르면(probe 없음) ~/.claude가 없어도 '설치 안 됨'이라고 말하지 않는다")
             s.fake.installed = true
             await s.store.refresh()
             #expect(s.store.phase == .empty, "Claude Code는 있는데 아직 쓴 적이 없다")
+            s.fake.installed = false
+            await s.store.refresh()
+            #expect(s.store.phase == .notInstalled, "probe가 없다고 하면 설치 안 됨")
+        }
+
+        @Test func aMissingClaudeFolderIsReportedAsAnEmptyListSoTheServerDropsStaleRows() async {
+            let s = make()
+            s.fake.scan = ExternalSessionScan(rows: [], failure: .notFound, origin: ExternalSessionOrigin(partition: "p", bridgeID: UUID()))
+            await s.store.refresh()
+            #expect(await until { s.fake.reports.count == 1 })
+            #expect(s.fake.reports.first?.isEmpty == true)
+        }
+
+        @Test func tryAgainShowsCheckingWhileItReadsAgain() async {
+            let s = make()
+            s.fake.scan = ExternalSessionScan(rows: [], failure: .unreadable)
+            await s.store.refresh()
+            #expect(s.store.phase == .failed)
+            s.fake.holdScans = true
+            s.fake.scan = ExternalSessionScan(rows: [R.row(1)])
+            s.store.retry()
+            #expect(s.store.phase == .checking, "누르는 순간 Checking…")
+            #expect(await until { s.fake.scans == 2 })
+            s.fake.release()
+            #expect(await until { s.store.phase == .ready })
+        }
+
+        @Test func tryAgainOnlyChangesAFailedStateAndKeepsTheRows() async {
+            let s = make()
+            s.fake.scan = ExternalSessionScan(rows: [R.row(1)])
+            await s.store.refresh()
+            s.fake.holdScans = true
+            s.store.retry()
+            #expect(s.store.phase == .ready && s.store.rows.count == 1, "목록이 있으면 그대로 두고 뒤에서 고친다")
+            #expect(await until { s.fake.scans == 2 })
+            s.fake.release()
         }
 
         @Test func whenTheProbeSaysNotInstalledTheScanIsNotEvenRun() async {
@@ -245,6 +302,43 @@ extension ExternalSessionSuites {
             #expect(s.fake.reports.count == 1)
         }
 
+        @Test func theReportCarriesTheOriginCapturedWithTheScan() async {
+            let s = make()
+            let origin = ExternalSessionOrigin(partition: "account-a", bridgeID: UUID())
+            s.fake.scan = ExternalSessionScan(rows: [R.row(1)], origin: origin)
+            await s.store.refresh()
+            #expect(await until { s.fake.reports.count == 1 })
+            #expect(s.fake.origins == [origin], "보고는 스캔할 때 잡은 계정 · bridge로 간다")
+        }
+
+        @Test func theListWorksWithoutTheServerEvenIfTheReportNeverReturns() async {
+            let user = UUID()
+            let scope = AccountScope(currentAccount: { user })
+            let fake = Fake()
+            fake.scan = ExternalSessionScan(rows: [R.row(1), R.row(2)])
+            let store = ExternalSessionsStore(
+                scope: scope, scan: { await fake.doScan() }, report: { _, _ in try? await Task.sleep(for: .seconds(30)) }, seen: InMemoryExternalSessionSeenStore(), pollInterval: 3600
+            )
+            await store.refresh()
+            #expect(store.phase == .ready && store.rows.count == 2, "서버가 꺼 둔 길(404)이거나 응답이 없어도 목록은 이 Mac 안에서 만들어진다")
+        }
+
+        @Test func scanFailuresAreLoggedAsBucketCodesOnly() async {
+            let s = make()
+            s.fake.scan = ExternalSessionScan(rows: [R.row(1)])
+            await s.store.refresh()
+            s.fake.scan = ExternalSessionScan(rows: [], failure: .notFound)
+            await s.store.refresh()
+            #expect(s.log.events.isEmpty, "정상 · 없음은 실패가 아니다")
+            s.fake.scan = ExternalSessionScan(rows: [], failure: .unreadable)
+            await s.store.refresh()
+            #expect(s.log.events.count == 1)
+            #expect(s.log.events.first?.event == "external_sessions_scan_failed")
+            #expect(s.log.events.first?.fields == ["cause": .code("unreadable")])
+            let text = s.log.events.map { "\($0.event) \($0.fields)" }.joined()
+            #expect(!text.contains("/") && !text.contains(ExternalSessionFixture.uuid(1)))
+        }
+
         @Test func theShownMetricGoesOutOnceWithBucketsWhenTheOpenListFirstShowsRows() async {
             let s = make()
             // 닫혀 있을 때(레일 펼침)는 "보임"이 아니다
@@ -267,6 +361,87 @@ extension ExternalSessionSuites {
             #expect(await until { s.store.phase == .empty })
             try? await Task.sleep(for: .milliseconds(30))
             #expect(s.fake.shown.isEmpty)
+            s.store.panelClosed()
+        }
+
+        // MARK: 보임 지표: UTC 날짜마다 한 번
+
+        /// UTC 자정까지 남은 초 (시험 시계의 지금 = 2026-10-19 08:53:20Z)
+        static let untilMidnight: TimeInterval = 54_400
+
+        @Test func theShownMetricGoesOutOncePerUTCDayAcrossReopens() async {
+            let s = make(poll: 3600)
+            s.fake.scan = ExternalSessionScan(rows: [R.row(1), R.row(2)])
+            s.store.panelOpened()
+            #expect(await until { s.fake.shown.count == 1 })
+            s.store.panelClosed()
+            s.clock.advance(3600)
+            s.store.panelOpened()
+            #expect(await until { s.fake.scans >= 2 && !s.store.isScanning })
+            try? await Task.sleep(for: .milliseconds(40))
+            #expect(s.fake.shown.count == 1, "같은 UTC 날에는 다시 열어도 한 번")
+            s.store.panelClosed()
+        }
+
+        @Test func theShownMetricGoesOutAgainAfterUTCMidnight() async {
+            let s = make(poll: 3600)
+            s.fake.scan = ExternalSessionScan(rows: [R.row(1)])
+            s.store.panelOpened()
+            #expect(await until { s.fake.shown.count == 1 })
+            s.clock.advance(Self.untilMidnight - 10)  // 23:59:50Z: 아직 같은 날
+            await s.store.refresh()
+            try? await Task.sleep(for: .milliseconds(40))
+            #expect(s.fake.shown.count == 1)
+            s.clock.advance(20)  // 00:00:10Z: 다음 날
+            await s.store.refresh()
+            #expect(await until { s.fake.shown.count == 2 }, "자정을 넘으면 그날의 첫 보임을 다시 보낸다")
+            await s.store.refresh()
+            try? await Task.sleep(for: .milliseconds(40))
+            #expect(s.fake.shown.count == 2)
+            s.store.panelClosed()
+        }
+
+        @Test func aFailedShownMetricIsNotRememberedAndIsRetriedLater() async {
+            let s = make(poll: 3600)
+            s.fake.scan = ExternalSessionScan(rows: [R.row(1)])
+            s.fake.shownScript = [false]
+            s.store.panelOpened()
+            #expect(await until { s.fake.shown.count == 1 })
+            await s.store.refresh()
+            try? await Task.sleep(for: .milliseconds(40))
+            #expect(s.fake.shown.count == 1, "실패 직후 곧바로 두드리지 않는다")
+            s.clock.advance(ExternalSessionsStore.shownRetryInterval + 1)
+            await s.store.refresh()
+            #expect(await until { s.fake.shown.count == 2 }, "시간이 지나면 다시 보낸다")
+            s.clock.advance(ExternalSessionsStore.shownRetryInterval + 1)
+            await s.store.refresh()
+            try? await Task.sleep(for: .milliseconds(40))
+            #expect(s.fake.shown.count == 2, "닿았으면 그날은 끝")
+            #expect(ExternalSessionsStore.shownRetryInterval == 60)
+            s.store.panelClosed()
+        }
+
+        @Test func aFailedShownMetricIsLoggedAsACodeOnly() async {
+            let s = make(poll: 3600)
+            s.fake.scan = ExternalSessionScan(rows: [R.row(1)])
+            s.fake.shownScript = [false]
+            s.store.panelOpened()
+            #expect(await until { s.fake.shown.count == 1 })
+            #expect(await until { !s.log.events.isEmpty })
+            #expect(s.log.events.first?.event == "external_sessions_shown_failed")
+            #expect(s.log.events.first?.fields.isEmpty == true)
+            s.store.panelClosed()
+        }
+
+        @Test func aNewAccountOnTheSameDayShowsItsOwnMetric() async {
+            let s = make(poll: 3600)
+            s.fake.scan = ExternalSessionScan(rows: [R.row(1)])
+            s.store.panelOpened()
+            #expect(await until { s.fake.shown.count == 1 })
+            s.scope.accountLeft()
+            s.fake.scan = ExternalSessionScan(rows: [R.row(1)])
+            s.store.panelOpened()
+            #expect(await until { s.fake.shown.count == 2 })
             s.store.panelClosed()
         }
 

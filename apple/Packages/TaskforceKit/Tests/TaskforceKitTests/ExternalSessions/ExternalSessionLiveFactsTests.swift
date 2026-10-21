@@ -52,6 +52,20 @@ extension ExternalSessionSuites {
             #expect(ids.allSatisfy { !skipped.contains($0) }, "우리 혈통의 pid는 센 값에서 뺀다")
         }
 
+        @Test func theLiveListingStopsAtTheLimitInsteadOfReadingTheWholeFolder() throws {
+            let home = try ExternalHome()
+            defer { home.cleanup() }
+            let directory = try home.directory("-many")
+            for n in 1...30 { FileManager.default.createFile(atPath: directory + "/file-\(n).txt", contents: Data()) }
+            guard case .entries(let few) = ExternalSessionFileSystem.live.list(directory, 5) else { Issue.record("목록을 읽지 못했다"); return }
+            #expect(few.count == 5, "상한에서 멈춘다")
+            guard case .entries(let all) = ExternalSessionFileSystem.live.list(directory, 1000) else { Issue.record("목록을 읽지 못했다"); return }
+            #expect(all.count == 30, "상한이 넉넉하면 전부")
+            guard case .entries(let none) = ExternalSessionFileSystem.live.list(directory, 0) else { Issue.record("목록을 읽지 못했다"); return }
+            #expect(none.isEmpty)
+            #expect(ExternalSessionFileSystem.live.list(directory + "/nope", 5) == .missing)
+        }
+
         @Test func aLiveProcessHasItsKernelStartTimeAndOurUserAndAGoneOneIsGone() throws {
             let own = ExternalSessionProcessFacts.live.lookup(getpid())
             guard case .present(let start, let uid) = own else {

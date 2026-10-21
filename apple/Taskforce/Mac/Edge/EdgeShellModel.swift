@@ -193,8 +193,8 @@ final class EdgeShellModel {
     enum Control: String, CaseIterable {
         case allWork, chats, onThisMac, more
 
-        /// 기본 칸. On this Mac은 여기 없다: 게이트가 켜진 셸만 더한다 (`EdgeShellModel.controls`)
-        static var allCases: [Control] { [.allWork, .chats, .more] }
+        /// 셋째 캡슐의 기본 칸. On this Mac은 여기 없다: 게이트가 켜진 셸만 더한다 (`EdgeShellModel.controls`). `allCases`는 빠짐없는 목록이다
+        static let defaultControls: [Control] = [.allWork, .chats, .more]
 
         var label: String {
             switch self {
@@ -217,7 +217,7 @@ final class EdgeShellModel {
 
     /// 이 셸의 레일 고정 칸 (Chats가 꺼져 있으면 Chats 칸이 없다). 외부 세션 게이트가 켜졌으면 셋째 캡슐의 More 앞에 On this Mac이 든다
     var controls: [Control] {
-        var list = chatsEnabled ? Control.allCases : Control.allCases.filter { $0 != .chats }
+        var list = chatsEnabled ? Control.defaultControls : Control.defaultControls.filter { $0 != .chats }
         if externalSessionsVisible, let more = list.firstIndex(of: .more) { list.insert(.onThisMac, at: more) }
         return list
     }

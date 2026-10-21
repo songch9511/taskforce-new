@@ -86,12 +86,12 @@ public struct WorkspaceFolderRules: Sendable {
         self.facts = facts
     }
 
-    /// 앱이 쓰는 규칙: 시스템 폴더 목록은 고정이다. `CLAUDE_CONFIG_DIR`이 설정돼 있으면 그 폴더도 막는다
+    /// 앱이 쓰는 시스템 폴더 목록 (고정). 폴더 창 규칙(`standard`)과 외부 세션 목록 규칙(`ExternalSessionFolderRules.lexical`)이 같은 목록을 쓴다
+    public static let systemRoots = ["/System", "/Library", "/Applications", "/usr", "/bin", "/sbin", "/private"]
+
+    /// 앱이 쓰는 규칙: 시스템 폴더 목록은 고정이다(`systemRoots`). `CLAUDE_CONFIG_DIR`이 설정돼 있으면 그 폴더도 막는다
     public static func standard(home: String, protectedRoots: [String], environment: [String: String] = ProcessInfo.processInfo.environment) -> WorkspaceFolderRules {
-        WorkspaceFolderRules(
-            home: home, extraClaudeConfig: environment["CLAUDE_CONFIG_DIR"], systemRoots: ["/System", "/Library", "/Applications", "/usr", "/bin", "/sbin", "/private"],
-            protectedRoots: protectedRoots
-        )
+        WorkspaceFolderRules(home: home, extraClaudeConfig: environment["CLAUDE_CONFIG_DIR"], systemRoots: systemRoots, protectedRoots: protectedRoots)
     }
 
     /// 두 폴더(realpath)가 겹치나: 서로 다른 폴더이고 한쪽이 다른 쪽의 조상이다. 같은 실제 경로는 겹침이 아니다 (경로 lease 키가 같다 — 같은 `ws_id`)

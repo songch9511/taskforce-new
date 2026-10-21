@@ -289,7 +289,7 @@ struct EdgeShellWithoutChatsTests {
     @Test func theLayoutFollowsTheControlCount() {
         let three = EdgeRailLayout(notchCount: 2, restCount: 1, expanded: true, idle: false)
         let two = EdgeRailLayout(notchCount: 2, restCount: 1, expanded: true, idle: false, controls: [.allWork, .more])
-        #expect(three.controls == EdgeShellModel.Control.allCases, "기본은 지금 그대로")
+        #expect(three.controls == EdgeShellModel.Control.defaultControls, "기본은 지금 그대로")
         #expect(two.controlFrame(.allWork) == three.controlFrame(.allWork), "첫 칸 자리는 같다")
         #expect(two.controlFrame(.more).minY == three.controlFrame(.chats).minY, "More가 Chats 자리로 올라온다")
         #expect(two.moreHeight == three.moreHeight - (EdgeRailLayout.item + EdgeRailLayout.gap), "칸 하나만큼 짧다")

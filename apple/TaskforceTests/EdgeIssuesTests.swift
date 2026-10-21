@@ -472,7 +472,7 @@ struct EdgeIssuesTests {
     @Test func thePlusRowAddsOneStepOnlyWhenGatedAndOnlyWhenTheRailIsExpanded() {
         #expect(EdgeRailLayout.windowHeight(plus: false) == EdgeRailLayout.windowHeight, "꺼져 있으면 지금 높이 그대로")
         #expect(EdgeRailLayout.windowHeight(plus: true) == EdgeRailLayout.windowHeight + EdgeRailLayout.item + EdgeRailLayout.gap)
-        let base = EdgeRailLayout(notchCount: 2, restCount: 1, expanded: true, idle: false, controls: EdgeShellModel.Control.allCases)
+        let base = EdgeRailLayout(notchCount: 2, restCount: 1, expanded: true, idle: false, controls: EdgeShellModel.Control.defaultControls)
         var withPlus = base
         withPlus.plus = true
         let step = EdgeRailLayout.item + EdgeRailLayout.gap
@@ -481,16 +481,16 @@ struct EdgeIssuesTests {
         #expect(frame?.height == EdgeRailLayout.item && frame?.minY == withPlus.restFrame(withPlus.restCount).minY, "링 바로 뒤")
         #expect(withPlus.ruleY == base.ruleY + step, "구분선이 한 칸 내려간다")
         #expect(withPlus.controlFrame(.allWork).minY == base.controlFrame(.allWork).minY + step && withPlus.controlFrame(.chats).minY == base.controlFrame(.chats).minY + step)
-        let folded = EdgeRailLayout(notchCount: 2, restCount: 1, expanded: false, idle: false, controls: EdgeShellModel.Control.allCases, plus: true)
+        let folded = EdgeRailLayout(notchCount: 2, restCount: 1, expanded: false, idle: false, controls: EdgeShellModel.Control.defaultControls, plus: true)
         #expect(folded.plusFrame == nil, "숨은 레일의 노치에는 +가 없다")
     }
 
     @Test func thePlusHitTestFollowsItsFrameAndIgnoresAnIdleRail() {
-        let layout = EdgeRailLayout(notchCount: 1, restCount: 0, expanded: true, idle: false, controls: EdgeShellModel.Control.allCases, plus: true)
+        let layout = EdgeRailLayout(notchCount: 1, restCount: 0, expanded: true, idle: false, controls: EdgeShellModel.Control.defaultControls, plus: true)
         let frame = layout.plusFrame!
         #expect(layout.hitsPlus(CGPoint(x: frame.midX, y: frame.midY)))
         #expect(!layout.hitsPlus(CGPoint(x: frame.midX, y: frame.maxY + 40)))
-        let idle = EdgeRailLayout(notchCount: 0, restCount: 0, expanded: true, idle: true, controls: EdgeShellModel.Control.allCases, plus: true)
+        let idle = EdgeRailLayout(notchCount: 0, restCount: 0, expanded: true, idle: true, controls: EdgeShellModel.Control.defaultControls, plus: true)
         if let frame = idle.plusFrame { #expect(!idle.hitsPlus(CGPoint(x: frame.midX, y: frame.midY))) }
     }
 

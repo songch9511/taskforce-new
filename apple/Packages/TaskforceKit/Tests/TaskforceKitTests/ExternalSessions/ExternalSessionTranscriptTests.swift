@@ -248,7 +248,7 @@ extension ExternalSessionSuites {
                 let path = try home.transcript(directory: "d", id: id, lines: [F.user(id: id, cwd: "/Users/tester/proj")])
                 #expect(read(path + ".nope", size: 100) == nil)
                 #expect(read(path, size: 0) == nil)
-                let denied = ExternalSessionFileSystem(userID: 0, realpath: { $0 }, lstat: { _ in nil }, list: { _ in .failed }, read: { _, _, _ in nil })
+                let denied = ExternalSessionFileSystem(userID: 0, realpath: { $0 }, lstat: { _ in nil }, list: { _, _ in .failed }, read: { _, _, _ in nil })
                 #expect(read(path, size: 100, fileSystem: denied) == nil)
             }
         }

@@ -29,6 +29,12 @@ public final class SessionStore {
     private var listenTask: Task<Void, Never>?
     /// 계정이 이 기기를 떠날 때 부를 정리 (`onSignedOut`)
     @ObservationIgnored private var signedOutCleanups: [@MainActor (UUID) -> Void] = []
+    /// 로그아웃을 누른 직후, 세션을 지우기 전에 돌 정리 (`onSigningOut`)
+    @ObservationIgnored private var signingOutHandlers: [@MainActor () async throws -> Void] = []
+    /// 로그아웃 정리를 기다리는 한도의 기본값
+    public static let defaultSigningOutTimeout: Duration = .seconds(3)
+    /// 로그아웃 정리를 기다리는 한도 (시험은 줄인다)
+    @ObservationIgnored var signingOutTimeout: Duration = SessionStore.defaultSigningOutTimeout
 
     /// `link`: 로그인 방법 이어 붙이기를 보내는 길 (`LinkTransport`). 없으면 이어 붙이기는 늘 `.failed`다
     public init(auth: AuthClient, link: LinkTransport? = nil) {
@@ -43,6 +49,16 @@ public final class SessionStore {
     /// 앱이 돌지 않을 때 떠난 계정(로그아웃 도중 종료 등)은 여기로 오지 않는다: 디스크에 남기는 것은 시작할 때도 지금 계정 것만 남겨야 한다.
     public func onSignedOut(_ cleanup: @escaping @MainActor (UUID) -> Void) {
         signedOutCleanups.append(cleanup)
+    }
+
+    /// 등록된 로그아웃 정리의 수 (시험)
+    var signingOutHandlerCount: Int { signingOutHandlers.count }
+
+    /// 사용자가 Sign Out을 눌렀을 때, **세션을 지우기 전에** 돌 정리 (옛 토큰이 아직 유효한 동안만 할 수 있는 서버 호출: 예 — 이 Mac이 올린 외부 세션 제목 목록 비우기).
+    /// 세션 만료 · 다른 기기에서 지운 계정 · 계정 삭제는 누른 로그아웃이 아니라 토큰이 이미 없어 부르지 않는다.
+    /// 로그아웃을 막지 않는다: 합쳐서 `signingOutTimeout`(기본 3초)까지만 기다리고, 정리가 던지는 오류는 삼키며, 앞의 정리가 던져도 다음 정리는 돈다
+    public func onSigningOut(_ handler: @escaping @MainActor () async throws -> Void) {
+        signingOutHandlers.append(handler)
     }
 
     /// 로그인해 있던 계정이 떠났으면(로그아웃 · 다른 계정) 그 계정으로 정리를 부른다
@@ -290,7 +306,26 @@ public final class SessionStore {
     /// supabase-swift는 저장된 세션을 먼저 지우고 `signedOut`을 보낸 뒤 서버에 알린다: 그 요청이 실패해도(오프라인) 이 기기는 이미 로그아웃됐으니 오류로 알리지 않는다.
     public func signOut() async {
         errorMessage = nil
+        await runSigningOutHandlers()
         try? await auth.signOut(scope: .local)
+    }
+
+    /// `onSigningOut` 정리를 차례로 돌린다. 합쳐서 `signingOutTimeout`까지만 기다린다: 끝나지 않는 정리는 그대로 두고(취소하지 않는다) 로그아웃을 이어 간다
+    private func runSigningOutHandlers() async {
+        let handlers = signingOutHandlers
+        guard !handlers.isEmpty else { return }
+        let limit = signingOutTimeout
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let once = ResumeOnce(continuation)
+            Task { @MainActor in
+                for handler in handlers { try? await handler() }
+                once.resume()
+            }
+            Task {
+                try? await Task.sleep(for: limit)
+                once.resume()
+            }
+        }
     }
 }
 
@@ -373,5 +408,21 @@ extension AuthClient {
         } catch {
             return false
         }
+    }
+}
+
+/// 두 길 중 먼저 끝나는 쪽이 한 번만 이어 간다 (`SessionStore.runSigningOutHandlers`)
+private final class ResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    init(_ continuation: CheckedContinuation<Void, Never>) { self.continuation = continuation }
+
+    func resume() {
+        let taken = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            defer { continuation = nil }
+            return continuation
+        }
+        taken?.resume()
     }
 }

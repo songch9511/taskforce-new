@@ -50,7 +50,7 @@ public struct ExternalSessionKey: Sendable {
 /// 열쇠를 두는 곳. 읽지도 만들지도 못하면 던진다 (그때는 서버에 아무것도 보내지 않는다)
 public protocol ExternalSessionKeyStore: Sendable {
     func loadOrCreate() throws -> ExternalSessionKey
-    /// 계정 삭제 · 끊기에서 열쇠를 지운다 (없으면 그대로)
+    /// Sign Out에서 열쇠를 지운다 (`ExternalSessionSignOut`: 서버 목록을 비운 뒤, 없으면 그대로). 계정 삭제는 파티션 폴더째 지워진다
     func delete()
 }
 
@@ -80,7 +80,7 @@ public final class InMemoryExternalSessionKeyStore: ExternalSessionKeyStore, @un
 }
 
 /// 파티션 폴더의 `external-sessions.key` (0600, 소문자 hex 64자). 기호 링크 · 남의 파일 · 느슨한 권한 · 깨진 내용이면 지우고 새로 만든다 (그러면 id가 바뀌고 서버 목록은 다음 보고에 교체된다).
-/// 파티션 폴더는 계정 삭제 때 통째로 지워지므로 열쇠도 함께 지워진다 (`BridgeStorage.deletePartition`)
+/// Sign Out 때 `delete()`로 지운다(그 뒤 로그인하면 새 열쇠). 파티션 폴더는 계정 삭제 때 통째로 지워지므로 열쇠도 함께 지워진다 (`BridgeStorage.deletePartition`)
 public final class FileExternalSessionKeyStore: ExternalSessionKeyStore, @unchecked Sendable {
     public static let fileName = "external-sessions.key"
     private let directory: URL

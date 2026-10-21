@@ -58,7 +58,7 @@ struct ExternalSessionsPanelBody: View {
             }
         case .failed:
             PanelEmptyState(title: ExternalSessionCopy.couldNotCheckSessions) {
-                Button(ExternalSessionCopy.tryAgain) { Task { await store.refresh() } }.buttonStyle(TFButtonStyle(.secondary, size: .md))
+                Button(ExternalSessionCopy.tryAgain) { store.retry() }.buttonStyle(TFButtonStyle(.secondary, size: .md))
             }
         case .ready:
             // 시각("2 min ago")이 열려 있는 동안 흐르게 30초마다 다시 그린다
@@ -165,17 +165,43 @@ final class ExternalSessionsEnvironment: @unchecked Sendable {
         return await probe(context).installed
     }
 
+    /// 훑는다. 훑기 시작에 잡은 계정 · bridge를 결과에 싣는다 (`ExternalSessionScan.origin`): 서버 보고는 이 값으로만 나간다
     func scan() async -> ExternalSessionScan {
         guard let context = await context() else { return ExternalSessionScan(rows: [], failure: .unreadable) }
+        let origin = await origin(of: context)
         _ = await probe(context)
-        guard let scanner = makeScanner(context) else { return ExternalSessionScan(rows: [], failure: .unreadable) }
-        return await scanner.scan()
+        guard let scanner = makeScanner(context) else { return ExternalSessionScan(rows: [], failure: .unreadable, origin: origin) }
+        var result = await scanner.scan()
+        result.origin = origin
+        return result
     }
 
-    /// 서버에 알린다 (이 Mac의 bridge가 등록돼 있을 때만)
-    func report(_ rows: [ExternalSessionRow], via reporter: ExternalSessionReporter) async {
-        guard let context = await context(), let runtime = context.runtime, let bridge = await runtime.localBridgeID() else { return }
-        await reporter.report(rows, bridgeID: bridge)
+    /// 이 계정 파티션 + 이 Mac의 bridge id. bridge가 아직 등록되지 않았으면 nil
+    private func origin(of context: Context) async -> ExternalSessionOrigin? {
+        guard let runtime = context.runtime, let bridge = await runtime.localBridgeID() else { return nil }
+        return ExternalSessionOrigin(partition: context.paths.partition.id, bridgeID: bridge)
+    }
+
+    /// 지금의 계정 · bridge (로그아웃 · 다른 계정이면 nil 또는 다른 값)
+    func currentOrigin() async -> ExternalSessionOrigin? {
+        guard let context = await context() else { return nil }
+        return await origin(of: context)
+    }
+
+    /// 서버에 알린다: 훑을 때 잡은 계정 · bridge로만. 보내기 직전에 지금의 값과 다르면 버린다. 훑을 때 bridge가 없었으면 알리지 않는다
+    func report(_ rows: [ExternalSessionRow], origin: ExternalSessionOrigin?, via reporter: ExternalSessionReporter) async {
+        guard let origin else { return }
+        await reporter.report(rows, origin: origin, current: { await self.currentOrigin() })
+    }
+
+    /// 로그아웃 직전 (`SessionStore.onSigningOut`, 옛 토큰이 살아 있는 동안): 이 Mac의 서버 목록(제목)을 비우고 이 계정의 열쇠를 지운다. 끝나면 스캐너(열쇠를 쥐고 있다)도 버린다
+    func signingOut(via reporter: ExternalSessionReporter) async {
+        let context = await context()
+        var bridge: UUID?
+        if let runtime = context?.runtime { bridge = await runtime.localBridgeID() }
+        let keyStore = context.map { FileExternalSessionKeyStore(directory: $0.paths.partitionDirectory) }
+        await ExternalSessionSignOut.run(bridgeID: bridge, reporter: reporter, keyStore: keyStore)
+        lock.withLock { scanner = nil }
     }
 
     private func makeScanner(_ context: Context) -> ExternalSessionScanner? {
@@ -203,21 +229,24 @@ final class ExternalSessionsEnvironment: @unchecked Sendable {
 
 enum ExternalSessionsRuntime {
     /// 이 실행에서 목록이 있나: 새 Issues 화면(캡슐 레일) ∧ `BridgeFlag` ∧ 서비스 · 계정 경계가 있다. 로그인은 셸 모델이 본다 (`externalSessionsVisible`)
+    /// - session: Sign Out을 누르면 세션을 지우기 전에 서버에 올린 제목 목록을 비우고 열쇠를 지운다 (`SessionStore.onSigningOut`, 옛 토큰이 살아 있는 동안만 할 수 있다)
     @MainActor
     static func make(
         services: AppServices?, scope: AccountScope?, issueScreens: Bool, bridgeEnabled: Bool = BridgeFlag.current,
-        host: @escaping @MainActor @Sendable () -> BridgeHost? = { BridgeHost.shared },
+        host: @escaping @MainActor @Sendable () -> BridgeHost? = { BridgeHost.shared }, session: SessionStore? = nil,
         seen: any ExternalSessionSeenStore = UserDefaultsExternalSessionSeenStore()
     ) -> ExternalSessionsStore? {
         guard issueScreens, bridgeEnabled, let services, let scope else { return nil }
         let environment = ExternalSessionsEnvironment(host: host)
         let api = services.api
-        let reporter = ExternalSessionReporter(send: { bridge, rows in try await api.reportExternalSessions(bridgeID: bridge, rows: rows) })
+        let log = BridgeOSLog()
+        let reporter = ExternalSessionReporter(send: { bridge, rows in try await api.reportExternalSessions(bridgeID: bridge, rows: rows) }, log: log)
         scope.onLeft { Task { await reporter.reset() } }
+        session?.onSigningOut { await environment.signingOut(via: reporter) }
         return ExternalSessionsStore(
             scope: scope, scan: { await environment.scan() }, isInstalled: { await environment.isInstalled() },
-            report: { rows in await environment.report(rows, via: reporter) },
-            shown: { rows, held in try? await api.externalSessionsShown(rowsBucket: rows, heldBucket: held) }, seen: seen
+            report: { rows, origin in await environment.report(rows, origin: origin, via: reporter) },
+            shown: { rows, held in (try? await api.externalSessionsShown(rowsBucket: rows, heldBucket: held)) != nil }, seen: seen, log: log
         )
     }
 }

@@ -71,9 +71,9 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         // 견본 하네스(`-TFEdgeSnapshotExternalSessions`)는 가짜 훑기를 쓴다 (이 Mac의 실제 Claude 기록을 읽지 않는다)
         let externalSessions = ExternalSessionSnapshot.isEnabled && chat?.issues != nil
             ? ExternalSessionSnapshot.sampleStore(scope: chat?.scope)
-            : ExternalSessionsRuntime.make(services: launcher.services, scope: chat?.scope, issueScreens: chat?.issues != nil)
+            : ExternalSessionsRuntime.make(services: launcher.services, scope: chat?.scope, issueScreens: chat?.issues != nil, session: launcher.session)
         #else
-        let externalSessions = ExternalSessionsRuntime.make(services: launcher.services, scope: chat?.scope, issueScreens: chat?.issues != nil)
+        let externalSessions = ExternalSessionsRuntime.make(services: launcher.services, scope: chat?.scope, issueScreens: chat?.issues != nil, session: launcher.session)
         #endif
         shell = EdgeShellModel(
             reduceMotion: Self.systemReduceMotion, pinStore: pinStore, contexts: chat?.contexts, review: review, summary: summary, chatsEnabled: chat != nil,

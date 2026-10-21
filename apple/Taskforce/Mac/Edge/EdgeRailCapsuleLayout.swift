@@ -71,7 +71,7 @@ struct EdgeRailCapsuleLayout: Equatable {
     /// 펼침에서 보일 링 (칸 전체, 넷까지)
     let ringCount: Int
     /// 셋째 캡슐의 칸 (Projects · Chats · More)
-    var controls: [EdgeShellModel.Control] = EdgeShellModel.Control.allCases
+    var controls: [EdgeShellModel.Control] = EdgeShellModel.Control.defaultControls
 
     var expanded: Bool { mode == .expanded }
 

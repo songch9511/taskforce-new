@@ -160,7 +160,7 @@ extension ExternalSessionSuites {
 
         @Test func anUnreadableSessionsFolderIsUnknown() throws {
             try withHome { home in
-                let denied = ExternalSessionFileSystem(userID: 501, realpath: { $0 }, lstat: { _ in nil }, list: { _ in .failed }, read: { _, _, _ in nil })
+                let denied = ExternalSessionFileSystem(userID: 501, realpath: { $0 }, lstat: { _ in nil }, list: { _, _ in .failed }, read: { _, _, _ in nil })
                 #expect(decide(home, files: [], facts: Self.facts(), fileSystem: denied) == .unknown)
             }
         }
@@ -239,14 +239,74 @@ extension ExternalSessionSuites {
             }
         }
 
+        // MARK: procStart 믿기 (fail-closed)
+
+        /// 모양은 문서에 없다(R4). 단위를 잘못 읽으면(µs · ns를 초 · ms로) 먼 미래가 되어 어긋난 시작 시각 = "pid 재사용"으로 보이고, 쥔 세션이 비어 있다고 오판한다.
+        /// 그래서 2015년 이전이거나 지금보다 하루 넘게 앞이면 읽지 않은 것(nil)으로 두고, 살아 있는 pid는 쥔 것으로 본다
+        @Test func aProcStartInMicrosecondsOrNanosecondsIsNotTrustedSoALiveProcessStaysHeld() throws {
+            let seconds = started.timeIntervalSince1970
+            let forms: [Any] = [seconds * 1_000_000, seconds * 1_000_000_000, String(Int(seconds * 1_000_000)), String(Int(seconds * 1_000_000_000))]
+            try withHome { home in
+                for form in forms {
+                    let json = entry(pid: 4242, procStart: form)
+                    #expect(decide(home, files: [(4242, json)], facts: Self.facts(lookups: [4242: alive])) == .held(.claudeApp), "\(form)")
+                    // 시작 시각이 크게 어긋나도 stale로 보지 않는다: 읽지 못한 값으로는 pid 재사용을 가릴 수 없다
+                    #expect(decide(home, files: [(4242, json)], facts: Self.facts(lookups: [4242: .present(start: started.addingTimeInterval(500), uid: 501)])) == .held(.claudeApp), "\(form)")
+                }
+            }
+        }
+
+        @Test func aProcStartBefore2015OrMoreThanADayAheadIsNotTrusted() throws {
+            let readable = { (value: Any) -> Date? in
+                self.parsedProcStart(value)
+            }
+            let year2015: TimeInterval = 1_420_070_400  // 2015-01-01T00:00:00Z
+            #expect(readable(year2015 - 1) == nil, "2015년 이전")
+            #expect(readable(1_400_000_000) == nil, "2014년")
+            #expect(readable(year2015) != nil, "경계는 받는다")
+            #expect(readable(now.timeIntervalSince1970 + 2 * 86_400) == nil, "하루 넘게 앞")
+            #expect(readable(now.timeIntervalSince1970 + 86_400 - 1) != nil, "하루 안은 받는다 (시계 오차)")
+            #expect(readable(now.timeIntervalSince1970 + 86_400 + 1) == nil)
+            #expect(readable(String(Int(now.timeIntervalSince1970 + 3 * 86_400))) == nil, "글로 써도 같다")
+            #expect(readable(started.timeIntervalSince1970 * 1000) != nil, "밀리초는 계속 읽는다")
+            #expect(readable(started.timeIntervalSince1970) != nil)
+            try withHome { home in
+                // 2014년으로 읽힌 값은 시작 시각 대조에 쓰이지 않는다: 어긋나도 stale이 아니다
+                let old = entry(pid: 4242, procStart: 1_400_000_000)
+                #expect(decide(home, files: [(4242, old)], facts: Self.facts(lookups: [4242: alive])) == .held(.claudeApp))
+                // 믿을 수 있는 값이 어긋나면 지금처럼 stale
+                let fine = entry(pid: 4242, procStart: started.timeIntervalSince1970)
+                #expect(decide(home, files: [(4242, fine)], facts: Self.facts(lookups: [4242: .present(start: started.addingTimeInterval(500), uid: 501)])) == .free)
+            }
+        }
+
+        /// 등록 파일 하나를 읽어 procStart를 본다
+        private func parsedProcStart(_ value: Any) -> Date? {
+            guard let home = try? ExternalHome() else { return nil }
+            defer { home.cleanup() }
+            try? home.registry(pid: 4242, json: entry(pid: 4242, procStart: value))
+            if case .entries(let entries) = ExternalSessionRegistry.read(fileSystem: .live, sessionsDirectory: home.sessions, now: now) { return entries.first?.procStart }
+            return nil
+        }
+
+        @Test func aHugeRegistryFolderIsNotListedWithoutALimitAndCountsAsUnavailable() throws {
+            try withHome { home in
+                for pid in 1...30 { try home.registry(pid: 1000 + pid, json: entry(pid: 1000 + pid, procStart: nil)) }
+                let recording = RecordingFileSystem()
+                let result = ExternalSessionRegistry.read(fileSystem: recording.fileSystem, sessionsDirectory: home.sessions, now: now, limit: 10)
+                #expect(result == .unavailable, "다 보지 못한 목록으로는 쥔 곳이 없다고 말하지 못한다")
+                #expect(recording.listCalls.allSatisfy { $0.limit <= 11 && $0.returned <= 11 })
+            }
+        }
+
         @Test func registryFilesOfAnotherOwnerAreSkipped() throws {
             try withHome { home in
                 try home.registry(pid: 4242, json: entry(pid: 4242, procStart: nil))
                 let base = ExternalSessionFileSystem.live
                 let strangers = ExternalSessionFileSystem(
                     userID: base.userID, realpath: base.realpath, lstat: base.lstat,
-                    list: { path in
-                        guard case .entries(let items) = base.list(path) else { return base.list(path) }
+                    list: { path, limit in
+                        guard case .entries(let items) = base.list(path, limit) else { return base.list(path, limit) }
                         return .entries(items.map { var copy = $0; copy.owner = base.userID &+ 1; return copy })
                     },
                     read: base.read

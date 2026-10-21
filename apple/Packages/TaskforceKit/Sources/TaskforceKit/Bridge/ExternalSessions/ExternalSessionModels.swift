@@ -85,6 +85,19 @@ public struct ExternalSessionRow: Identifiable, Equatable, Sendable, CustomStrin
     public var debugDescription: String { description }
 }
 
+/// 훑을 때 잡은 "누구의 어느 Mac"인가 (계정 파티션 + 이 Mac의 bridge id). 보고는 이 값으로만 나간다:
+/// 훑은 뒤 보내기 전에 계정이 바뀌었으면 버린다 (다른 계정의 열쇠로 만든 id가 새 계정의 목록에 섞이지 않게)
+public struct ExternalSessionOrigin: Equatable, Sendable {
+    /// 계정 파티션 id (계정마다 다르다)
+    public var partition: String
+    public var bridgeID: UUID
+
+    public init(partition: String, bridgeID: UUID) {
+        self.partition = partition
+        self.bridgeID = bridgeID
+    }
+}
+
 /// 한 번 훑은 결과
 public struct ExternalSessionScan: Equatable, Sendable {
     public enum Failure: Equatable, Sendable {
@@ -98,11 +111,14 @@ public struct ExternalSessionScan: Equatable, Sendable {
     public var failure: Failure?
     /// 상한(파일 500 · 읽기 32 MiB · 줄 50)에 걸려 일부를 건너뛰었다
     public var truncated: Bool
+    /// 훑을 때 잡은 계정 · bridge. 이 Mac에 bridge가 아직 없으면 nil (그때는 서버에 알리지 않는다). 스캐너는 모르고 부르는 쪽(앱)이 채운다
+    public var origin: ExternalSessionOrigin?
 
-    public init(rows: [ExternalSessionRow], failure: Failure? = nil, truncated: Bool = false) {
+    public init(rows: [ExternalSessionRow], failure: Failure? = nil, truncated: Bool = false, origin: ExternalSessionOrigin? = nil) {
         self.rows = rows
         self.failure = failure
         self.truncated = truncated
+        self.origin = origin
     }
 }
 #endif

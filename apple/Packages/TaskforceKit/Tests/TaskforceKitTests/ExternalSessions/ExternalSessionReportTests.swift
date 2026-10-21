@@ -137,22 +137,36 @@ extension ExternalSessionSuites {
 
         final class Sink: @unchecked Sendable {
             private let lock = NSLock()
+            /// 성공한 보내기
             private(set) var calls: [(UUID, [ExternalSessionReportRow])] = []
+            /// 시도한 모든 보내기 (실패 포함)
+            private(set) var attempts: [(UUID, [ExternalSessionReportRow])] = []
             var failing = false
+            /// 시도마다 앞에서 하나씩 쓴다: 오류면 던지고 nil이면 성공한다. 비면 `failing`을 따른다
+            var script: [Error?] = []
             func send(_ bridge: UUID, _ rows: [ExternalSessionReportRow]) throws {
                 lock.lock()
                 defer { lock.unlock() }
+                attempts.append((bridge, rows))
+                if !script.isEmpty {
+                    if let error = script.removeFirst() { throw error }
+                    calls.append((bridge, rows))
+                    return
+                }
                 if failing { throw URLError(.notConnectedToInternet) }
                 calls.append((bridge, rows))
             }
             var count: Int { lock.withLock { calls.count } }
+            var attemptCount: Int { lock.withLock { attempts.count } }
         }
 
-        private func make() -> (ExternalSessionReporter, Sink, Clock) {
+        private func make(log: any BridgeLogSink = NoBridgeLog()) -> (ExternalSessionReporter, Sink, Clock) {
             let sink = Sink()
             let clock = Clock()
-            return (ExternalSessionReporter(send: { try sink.send($0, $1) }, clock: { clock.now }), sink, clock)
+            return (ExternalSessionReporter(send: { try sink.send($0, $1) }, clock: { clock.now }, log: log), sink, clock)
         }
+
+        static func http(_ status: Int, _ code: APIErrorCode = .notFound) -> APIError { .server(status: status, code: code, message: "") }
 
         let bridge = UUID()
 
@@ -225,6 +239,177 @@ extension ExternalSessionSuites {
             await reporter.reset()
             clock.advance(1)
             #expect(await reporter.report([R.row(1)], bridgeID: bridge), "초기화하면 마지막으로 보낸 값을 잊고 속도 조절도 잊는다")
+        }
+
+        // MARK: 서버가 꺼 둔 길 (404): 6시간 물러난다
+
+        @Test func aNotFoundAnswerBacksOffForSixHoursInsteadOfRetryingEveryThirtySeconds() async {
+            let (reporter, sink, clock) = make()
+            sink.script = [Self.http(404)]
+            #expect(await !reporter.report([R.row(1)], bridgeID: bridge))
+            #expect(sink.attemptCount == 1)
+            for _ in 0..<10 {
+                clock.advance(35)
+                #expect(await !reporter.report([R.row(1)], bridgeID: bridge))
+            }
+            #expect(sink.attemptCount == 1, "30초마다 다시 부르지 않는다")
+            #expect(await !reporter.report([R.row(1), R.row(2)], bridgeID: bridge), "목록이 바뀌어도 물러나는 동안은 보내지 않는다")
+            clock.advance(6 * 3600 - 400)
+            #expect(await !reporter.report([R.row(1)], bridgeID: bridge))
+            #expect(sink.attemptCount == 1, "6시간이 되기 전")
+            clock.advance(120)
+            #expect(await reporter.report([R.row(1)], bridgeID: bridge), "6시간이 지나면 다시 시도하고 이번엔 닿는다")
+            #expect(sink.attemptCount == 2 && sink.count == 1)
+        }
+
+        @Test func anUnexpectedFourOhFourWithoutTheEnvelopeBacksOffToo() async {
+            let (reporter, sink, clock) = make()
+            sink.script = [APIError.unexpectedStatus(404)]
+            _ = await reporter.report([R.row(1)], bridgeID: bridge)
+            clock.advance(3600)
+            #expect(await !reporter.report([R.row(1)], bridgeID: bridge))
+            #expect(sink.attemptCount == 1)
+        }
+
+        @Test func otherFailuresStillRetryAfterThirtySecondsWithoutTheLongBackoff() async {
+            for error in [Self.http(500, .internalError), Self.http(429, .rateLimited), Self.http(401, .unauthorized)] as [Error] {
+                let (reporter, sink, clock) = make()
+                sink.script = [error]
+                _ = await reporter.report([R.row(1)], bridgeID: bridge)
+                clock.advance(31)
+                #expect(await reporter.report([R.row(1)], bridgeID: bridge), "\(error)")
+                #expect(sink.attemptCount == 2)
+            }
+        }
+
+        @Test func clearIgnoresTheBackoffBecauseItIsOneBestEffortCallAtSignOut() async {
+            let (reporter, sink, clock) = make()
+            sink.script = [Self.http(404)]
+            _ = await reporter.report([R.row(1)], bridgeID: bridge)
+            clock.advance(60)
+            #expect(await reporter.clear(bridgeID: bridge))
+            #expect(sink.calls.last?.1.isEmpty == true)
+        }
+
+        @Test func aSuccessfulSendEndsTheBackoffBookkeeping() async {
+            let (reporter, sink, clock) = make()
+            sink.script = [Self.http(404)]
+            _ = await reporter.report([R.row(1)], bridgeID: bridge)
+            #expect(await reporter.clear(bridgeID: bridge), "clear가 닿았다")
+            clock.advance(40)
+            #expect(await reporter.report([R.row(1)], bridgeID: bridge), "닿았다면 물러남은 끝났다")
+        }
+
+        // MARK: 400: 제목을 모두 null로 해서 한 번 더
+
+        @Test func anInvalidRequestIsResentOnceWithEveryTitleSetToNull() async {
+            let (reporter, sink, clock) = make()
+            sink.script = [Self.http(400, .invalidRequest), nil]
+            let rows = [R.row(1), R.row(2, title: "Other")]
+            #expect(await reporter.report(rows, bridgeID: bridge))
+            #expect(sink.attemptCount == 2 && sink.count == 1)
+            guard sink.attempts.count == 2 else { return }
+            #expect(sink.attempts[0].1.map(\.title) == ["Title 1", "Other"])
+            #expect(sink.attempts[1].1.map(\.title) == [nil, nil], "두 번째는 제목이 모두 null")
+            #expect(sink.attempts[1].1.map(\.id) == sink.attempts[0].1.map(\.id), "id · 상태 · 시각은 그대로")
+            #expect(sink.attempts[1].1.map(\.state) == sink.attempts[0].1.map(\.state))
+            clock.advance(60)
+            #expect(await !reporter.report(rows, bridgeID: bridge), "같은 목록을 30초마다 400으로 되풀이하지 않는다")
+            #expect(sink.attemptCount == 2)
+        }
+
+        @Test func ifTheTitleFreeResendIsRejectedTooTheReporterBacksOff() async {
+            let (reporter, sink, clock) = make()
+            sink.script = [Self.http(400, .invalidRequest), Self.http(400, .invalidRequest)]
+            #expect(await !reporter.report([R.row(1)], bridgeID: bridge))
+            #expect(sink.attemptCount == 2)
+            clock.advance(40)
+            #expect(await !reporter.report([R.row(1)], bridgeID: bridge))
+            #expect(sink.attemptCount == 2, "제목을 빼도 거절하면 6시간 물러난다")
+            clock.advance(6 * 3600)
+            #expect(await reporter.report([R.row(1)], bridgeID: bridge))
+        }
+
+        @Test func aRejectedListWithoutTitlesIsNotResentAndAnotherFailureIsNotResentEither() async {
+            let (untitled, sinkA, _) = make()
+            sinkA.script = [Self.http(400, .invalidRequest)]
+            #expect(await !untitled.report([R.row(1, untitled: true)], bridgeID: bridge))
+            #expect(sinkA.attemptCount == 1, "보낼 제목이 없으면 다시 보내도 소용없다")
+            let (server, sinkB, _) = make()
+            sinkB.script = [Self.http(500, .internalError)]
+            #expect(await !server.report([R.row(1)], bridgeID: bridge))
+            #expect(sinkB.attemptCount == 1, "400만 다시 보낸다")
+        }
+
+        // MARK: 스캔한 계정과 같은 계정으로만 보낸다
+
+        @Test func aReportIsDroppedWhenTheAccountOrBridgeChangedSinceTheScan() async {
+            let (reporter, sink, _) = make()
+            let scanned = ExternalSessionOrigin(partition: "account-a", bridgeID: bridge)
+            #expect(await !reporter.report([R.row(1)], origin: scanned, current: { ExternalSessionOrigin(partition: "account-b", bridgeID: UUID()) }), "다른 계정")
+            #expect(await !reporter.report([R.row(1)], origin: scanned, current: { ExternalSessionOrigin(partition: "account-a", bridgeID: UUID()) }), "같은 파티션의 다른 bridge")
+            #expect(await !reporter.report([R.row(1)], origin: scanned, current: { nil }), "로그아웃 · bridge 없음")
+            #expect(sink.attemptCount == 0)
+            // 버린 보고는 속도 조절을 쓰지 않는다
+            #expect(await reporter.report([R.row(1)], origin: scanned, current: { scanned }))
+            #expect(sink.calls.first?.0 == bridge, "스캔할 때 잡은 bridge로 보낸다")
+        }
+
+        @Test func theCurrentOriginIsAskedOnceAndBeforeTheSendNotAfter() async {
+            let (reporter, sink, clock) = make()
+            let scanned = ExternalSessionOrigin(partition: "account-a", bridgeID: bridge)
+            let asked = Counter()
+            let attemptsWhenAsked = Counter()
+            let sent = await reporter.report([R.row(1)], origin: scanned, current: {
+                asked.value += 1
+                attemptsWhenAsked.value = sink.attemptCount
+                return scanned
+            })
+            #expect(sent && sink.count == 1)
+            #expect(asked.value == 1, "한 번 확인한다")
+            #expect(attemptsWhenAsked.value == 0, "확인은 보내기 전에 한다")
+            // 속도 조절에 걸려 안 보낼 때는 묻지도 않는다
+            clock.advance(5)
+            #expect(await !reporter.report([R.row(1), R.row(2)], origin: scanned, current: {
+                asked.value += 1
+                return scanned
+            }))
+            #expect(asked.value == 1)
+        }
+
+        final class Counter: @unchecked Sendable {
+            private let lock = NSLock()
+            private var _value = 0
+            var value: Int {
+                get { lock.withLock { _value } }
+                set { lock.withLock { _value = newValue } }
+            }
+        }
+
+        // MARK: 로그: 구간 코드뿐
+
+        @Test func failuresAreLoggedAsBucketCodesOnlyWithNoTextPathOrID() async {
+            let table: [(Error, String)] = [
+                (Self.http(404), "not_enabled"), (APIError.unexpectedStatus(404), "not_enabled"), (Self.http(400, .invalidRequest), "rejected"), (Self.http(401, .unauthorized), "auth"),
+                (APIError.notSignedIn, "auth"), (Self.http(429, .rateLimited), "rate_limited"), (Self.http(500, .internalError), "server"), (APIError.unexpectedStatus(502), "server"),
+                (APIError.transport("The request to /Users/tester/secret-title failed"), "network"), (URLError(.notConnectedToInternet), "network"), (CocoaError(.fileNoSuchFile), "other"),
+            ]
+            for (error, bucket) in table {
+                let log = RecordingLog()
+                let (reporter, sink, _) = make(log: log)
+                sink.script = [error]
+                _ = await reporter.report([R.row(1, untitled: true)], bridgeID: bridge)
+                #expect(log.events.count == 1, "\(error)")
+                #expect(log.events.first?.event == "external_sessions_report_failed")
+                #expect(log.events.first?.fields == ["bucket": .code(bucket)], "\(error)")
+                expectNoSentinel(in: log.events.map { "\($0.event) \($0.fields)" })
+                let text = log.events.map { "\($0.event) \($0.fields)" }.joined()
+                #expect(!text.contains("/Users") && !text.contains("secret") && !text.contains(ExternalSessionFixture.uuid(1)), "\(error)")
+            }
+            let quiet = RecordingLog()
+            let (reporter, _, _) = make(log: quiet)
+            #expect(await reporter.report([R.row(1)], bridgeID: bridge))
+            #expect(quiet.events.isEmpty, "성공은 로그를 남기지 않는다")
         }
 
         @Test func rowsAlreadyInTaskforceAreNotPartOfTheComparison() async {

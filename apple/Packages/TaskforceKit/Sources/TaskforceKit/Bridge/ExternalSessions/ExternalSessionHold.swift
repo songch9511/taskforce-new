@@ -126,7 +126,7 @@ enum ExternalSessionHold {
         var live: [LiveEntry] = []
         var registeredPIDs = Set<Int32>()
         var unavailable = false
-        switch ExternalSessionRegistry.read(fileSystem: fileSystem, sessionsDirectory: sessionsDirectory) {
+        switch ExternalSessionRegistry.read(fileSystem: fileSystem, sessionsDirectory: sessionsDirectory, now: now) {
         case .unavailable:
             unavailable = true
         case .entries(let entries):

@@ -12,7 +12,7 @@ public enum ExternalSessionFolderRules {
     ) -> WorkspaceFolderRules {
         let facts = WorkspaceFolderRules.Facts(realpath: { $0 }, inspect: { _ in (isDirectory: true, owner: userID) }, userID: userID)
         return WorkspaceFolderRules(
-            home: home, extraClaudeConfig: environment["CLAUDE_CONFIG_DIR"], systemRoots: ["/System", "/Library", "/Applications", "/usr", "/bin", "/sbin", "/private"],
+            home: home, extraClaudeConfig: environment["CLAUDE_CONFIG_DIR"], systemRoots: WorkspaceFolderRules.systemRoots,
             protectedRoots: protectedRoots, facts: facts
         )
     }

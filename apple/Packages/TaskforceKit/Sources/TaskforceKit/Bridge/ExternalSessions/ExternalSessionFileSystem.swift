@@ -39,12 +39,13 @@ public struct ExternalSessionFileSystem: Sendable {
     public var realpath: @Sendable (String) -> String?
     /// `lstat(2)`: 기호 링크를 따라가지 않는다. `name`은 마지막 성분
     public var lstat: @Sendable (String) -> Entry?
-    public var list: @Sendable (String) -> Listing
+    /// 폴더 항목을 **최대 `limit`개까지만** 읽고 멈춘다 (큰 폴더를 끝까지 읽지 않는다). `limit`보다 많았는지는 호출하는 쪽이 `limit + 1`을 요청해 알아낸다
+    public var list: @Sendable (_ path: String, _ limit: Int) -> Listing
     /// `[offset, offset + length)`를 읽는다 (파일이 짧으면 그만큼). 기호 링크 · 일반 파일 아님 · 남의 파일 · 열 수 없음은 nil
     public var read: @Sendable (_ path: String, _ offset: Int64, _ length: Int) -> Data?
 
     public init(
-        userID: UInt32, realpath: @escaping @Sendable (String) -> String?, lstat: @escaping @Sendable (String) -> Entry?, list: @escaping @Sendable (String) -> Listing,
+        userID: UInt32, realpath: @escaping @Sendable (String) -> String?, lstat: @escaping @Sendable (String) -> Entry?, list: @escaping @Sendable (String, Int) -> Listing,
         read: @escaping @Sendable (String, Int64, Int) -> Data?
     ) {
         self.userID = userID
@@ -55,7 +56,7 @@ public struct ExternalSessionFileSystem: Sendable {
     }
 
     public static let live = ExternalSessionFileSystem(
-        userID: getuid(), realpath: { GateFileSystem.realpath($0) }, lstat: { Live.lstat($0) }, list: { Live.list($0) }, read: { Live.read($0, offset: $1, length: $2) }
+        userID: getuid(), realpath: { GateFileSystem.realpath($0) }, lstat: { Live.lstat($0) }, list: { Live.list($0, limit: $1) }, read: { Live.read($0, offset: $1, length: $2) }
     )
 
     enum Live {
@@ -88,13 +89,13 @@ public struct ExternalSessionFileSystem: Sendable {
             return entry(name: (path as NSString).lastPathComponent, info)
         }
 
-        static func list(_ path: String) -> Listing {
+        static func list(_ path: String, limit: Int) -> Listing {
             guard !path.utf8.contains(0) else { return .failed }
             guard let dir = opendir(path) else { return errno == ENOENT ? .missing : .failed }
             defer { closedir(dir) }
             let fd = dirfd(dir)
             var entries: [Entry] = []
-            while let item = readdir(dir) {
+            while entries.count < max(0, limit), let item = readdir(dir) {
                 let name = withUnsafePointer(to: &item.pointee.d_name) { pointer in
                     pointer.withMemoryRebound(to: CChar.self, capacity: Int(MAXNAMLEN) + 1) { String(cString: $0) }
                 }

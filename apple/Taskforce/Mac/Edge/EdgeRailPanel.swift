@@ -38,7 +38,7 @@ struct EdgeRailLayout: Equatable {
     let expanded: Bool
     let idle: Bool
     /// 레일의 고정 칸 (Chats가 꺼져 있으면 둘: All work · More). 칸 좌표 · 펼친 높이가 이 수를 따른다
-    var controls: [EdgeShellModel.Control] = EdgeShellModel.Control.allCases
+    var controls: [EdgeShellModel.Control] = EdgeShellModel.Control.defaultControls
     /// Review 타일이 맨 위 칸에 있다 (OA U1): 링 · 구분선 · 고정 칸이 한 칸(`item + gap`)씩 내려가고 레일이 그만큼 길다. 없으면 지금 그대로
     var tile = false
     /// New session `+` 칸이 펼친 레일의 링 뒤 · 구분선 앞에 있다 (OA U2): 구분선 · 고정 칸이 한 칸씩 더 내려간다. 숨은 레일의 노치에는 없다. 없으면 지금 그대로

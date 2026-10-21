@@ -32,6 +32,15 @@ extension ExternalSessionSuites {
             }
         }
 
+        @Test func onlyARowWithAButtonHighlightsOnHover() {
+            #expect(line(Self.row(status: .held(.claudeApp), client: .claudeDesktop)).highlightsOnHover, "버튼이 있는 줄")
+            let quiet: [ExternalSessionStatus] = [
+                .held(.terminal), .held(.background), .held(.unknown), .available, .inTaskforce, .couldNotCheck,
+                .cannotResume(.worktree), .cannotResume(.folderNotAllowed), .cannotResume(.unreadable), .cannotResume(.updateClaudeCode),
+            ]
+            for status in quiet { #expect(!line(Self.row(status: status)).highlightsOnHover, "누를 수 없는 줄: \(status)") }
+        }
+
         @Test func anIdleRowSaysIdleTimeAndSourceWithoutEmphasis() {
             let desktop = line(Self.row(status: .available, client: .claudeDesktop, ageMinutes: 40))
             #expect(desktop.metaText == "Idle · 40 min ago · Claude desktop" && !desktop.statusIsEmphasis && desktop.action == nil)

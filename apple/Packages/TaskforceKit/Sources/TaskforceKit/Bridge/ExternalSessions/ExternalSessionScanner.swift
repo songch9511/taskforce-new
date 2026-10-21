@@ -100,22 +100,25 @@ public actor ExternalSessionScanner {
         var truncated = false
         var candidates: [Candidate] = []
         var listed = 0
-        switch fs.list(projects) {
+        // 나열 자체가 상한을 지킨다: 폴더를 끝까지 읽은 뒤 세지 않고, 남은 칸 + 1개까지만 읽어 넘쳤는지 안다
+        switch fs.list(projects, configuration.maxListedEntries + 1) {
         case .missing: return ExternalSessionScan(rows: [], failure: nil)
         case .failed: return ExternalSessionScan(rows: [], failure: .unreadable)
         case .entries(let directories):
+            if directories.count > configuration.maxListedEntries { truncated = true }
             collect: for directory in directories.sorted(by: { $0.name < $1.name })
             where directory.kind == .directory && directory.owner == fs.userID && ExternalSessionReadAllowList.isProjectDirectory(directory.name) {
-                guard case .entries(let files) = fs.list(projects + "/" + directory.name) else { continue }
-                for file in files {
+                let remaining = configuration.maxListedEntries - listed
+                guard case .entries(let files) = fs.list(projects + "/" + directory.name, remaining + 1) else { continue }
+                for file in files.prefix(remaining) {
                     listed += 1
-                    if listed > configuration.maxListedEntries {
-                        truncated = true
-                        break collect
-                    }
                     guard file.kind == .regular, file.owner == fs.userID, file.size >= configuration.minimumSize, ExternalSessionReadAllowList.isTranscript(file: file.name),
                           let id = ExternalSessionRules.sessionID(fromFileName: file.name) else { continue }
                     candidates.append(Candidate(id: id, directory: directory.name, path: projects + "/" + directory.name + "/" + file.name, modified: file.modified, created: file.created, size: file.size))
+                }
+                if files.count > remaining {
+                    truncated = true
+                    break collect
                 }
             }
         }
@@ -178,6 +181,11 @@ public actor ExternalSessionScanner {
         case unreadable
     }
 
+    /// `~/.claude/worktrees/<이름>`처럼 사용자가 저장소 밖에 모아 둔 워크트리 자리다 (저장소로 읽히는 것이 홈이거나 `~/.claude` 안): 홈 폴더 이름 밑으로 묶지 않고 일반 폴더 규칙의 결과를 쓴다
+    private func isUsersOwnWorktreeLayout(repository: String) -> Bool {
+        repository == configuration.folderRules.home || GateFileSystem.isInside(repository, root: configuration.claudeDirectory)
+    }
+
     private func row(for candidate: Candidate, meta: ExternalSessionTranscript.Meta?, hold: ExternalSessionHold.Snapshot, attached: Bool, cliTooOld: Bool) -> ExternalSessionRow {
         var state = CwdState.unreadable
         var folderPath: String?
@@ -188,7 +196,7 @@ public actor ExternalSessionScanner {
         // Claude Code의 cwd는 이미 실제 경로이고, 폴더가 지금도 있는지는 이어받을 때(사용자 행동) 확인한다
         if let cwd = meta?.cwd, ExternalSessionRules.isPlainAbsolutePath(cwd), ExternalSessionRules.projectDirectoryName(forCwd: cwd) == candidate.directory {
             trustedCwd = cwd
-            if let repository = ExternalSessionRules.worktreeRepository(ofCwd: cwd) {
+            if let repository = ExternalSessionRules.worktreeRepository(ofCwd: cwd), !isUsersOwnWorktreeLayout(repository: repository) {
                 state = .worktree
                 folderPath = cwd
                 groupPath = repository

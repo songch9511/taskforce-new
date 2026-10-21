@@ -229,6 +229,34 @@ extension ExternalSessionSuites {
             }
         }
 
+        @Test func aWorktreeUnderTheClaudeFolderIsTheUsersOwnLayoutAndIsNotGroupedUnderTheHomeFolder() async throws {
+            try await withWorld { world in
+                // ~/.claude/worktrees/<이름>: 저장소가 아니라 홈이 나온다. 홈 폴더 이름 밑으로 묶지 않고 일반 폴더 규칙의 결과를 쓴다
+                let central = world.home.claude + "/worktrees/feat"
+                try world.session(1, cwd: central)
+                let nested = world.home.claude + "/other-repo/.claude/worktrees/deep"
+                try world.session(2, cwd: nested)
+                let scan = await world.scanner().scan()
+                let first = try #require(row(scan, 1))
+                #expect(first.groupPath == central && first.groupName == "feat", "홈 이름(\(URL(fileURLWithPath: world.home.home).lastPathComponent))이 아니다")
+                #expect(first.status == .cannotResume(.folderNotAllowed), "~/.claude 안이라 일반 폴더 규칙이 거절한다 (Worktree 이유가 아니다)")
+                let second = try #require(row(scan, 2))
+                #expect(second.groupPath == nested && second.status == .cannotResume(.folderNotAllowed), "저장소가 ~/.claude 안이어도 같다")
+                let groups = ExternalSessionGrouping.groups(scan.rows)
+                #expect(groups.count == 2 && !groups.contains { $0.id == world.home.home })
+            }
+        }
+
+        @Test func aWorktreeOfARealRepositoryStillGroupsUnderTheRepositoryNextToTheHomeRule() async throws {
+            try await withWorld { world in
+                try world.session(1, cwd: world.home.home + "/Repo/.claude/worktrees/feat")
+                try world.session(2, cwd: world.home.claude + "/worktrees/feat")
+                let scan = await world.scanner().scan()
+                #expect(row(scan, 1)?.status == .cannotResume(.worktree) && row(scan, 1)?.groupPath == world.home.home + "/Repo")
+                #expect(row(scan, 2)?.status == .cannotResume(.folderNotAllowed))
+            }
+        }
+
         // MARK: 상태
 
         @Test func aHeldSessionShowsWhoHoldsItEvenWhenItsFolderIsRefused() async throws {
@@ -331,6 +359,28 @@ extension ExternalSessionSuites {
                 let scan = await world.scanner(tweak: { $0.maxListedEntries = 10 }).scan()
                 #expect(scan.truncated)
                 #expect(scan.rows.count <= 10)
+            }
+        }
+
+        @Test func theDirectoryListingStopsAtTheCapInsteadOfReadingEveryEntry() async throws {
+            try await withWorld { world in
+                for n in 1...30 { try world.session(n) }
+                let recording = RecordingFileSystem()
+                let scan = await world.scanner(fileSystem: recording.fileSystem, tweak: { $0.maxListedEntries = 10 }).scan()
+                #expect(scan.truncated)
+                let projectLists = recording.listCalls.filter { $0.path.hasSuffix(world.dirName) }
+                #expect(!projectLists.isEmpty)
+                #expect(projectLists.allSatisfy { $0.limit <= 11 && $0.returned <= 11 }, "남은 칸 + 1까지만 나열한다: \(projectLists.map { ($0.limit, $0.returned) })")
+                let projectsSide = recording.listCalls.filter { !$0.path.hasSuffix("/sessions") }
+                #expect(!projectsSide.isEmpty && projectsSide.allSatisfy { $0.limit <= 11 }, "등록 폴더(sessions)는 따로 자기 상한이 있다")
+            }
+        }
+
+        @Test func aListingExactlyAtTheCapIsNotTruncated() async throws {
+            try await withWorld { world in
+                for n in 1...10 { try world.session(n) }
+                let scan = await world.scanner(tweak: { $0.maxListedEntries = 10 }).scan()
+                #expect(!scan.truncated && scan.rows.count == 10)
             }
         }
 
@@ -498,6 +548,19 @@ extension ExternalSessionSuites {
             #expect(verdict("/Applications/Xcode.app") == .system)
             #expect(verdict("relative") == .notAbsolute)
             #expect(ExternalSessionFolderRules.lexical(home: "/Users/x", protectedRoots: [], environment: ["CLAUDE_CONFIG_DIR": "/Users/x/dotfiles/claude"], userID: 501).validate("/Users/x/dotfiles/claude/projects").isFailure)
+        }
+
+        @Test func theSystemFolderListIsOneSharedConstantForTheAppRulesAndTheListRules() {
+            #expect(WorkspaceFolderRules.systemRoots == ["/System", "/Library", "/Applications", "/usr", "/bin", "/sbin", "/private"])
+            let lexical = ExternalSessionFolderRules.lexical(home: "/Users/nobody-such-user", protectedRoots: [], environment: [:], userID: 501)
+            let standard = WorkspaceFolderRules.standard(home: "/Users/nobody-such-user", protectedRoots: [], environment: [:])
+            for root in WorkspaceFolderRules.systemRoots {
+                for rules in [lexical, standard] {
+                    // 앱 규칙(.standard)은 realpath를 부르지만 이 폴더들은 이 Mac에 있어 같은 판정이다: 거절 이유가 system
+                    if case .failure(let why) = rules.validate(root + "/something/inside") { #expect(why == .system || why == .notFound, Comment(rawValue: root)) } else { Issue.record("받아 주면 안 된다: \(root)") }
+                }
+                if case .failure(let why) = lexical.validate(root + "/something/inside") { #expect(why == .system, Comment(rawValue: root)) }
+            }
         }
 
         // MARK: 글 · 경로 · id는 로그 · 설명에 나오지 않는다 (T1 · 9.3)

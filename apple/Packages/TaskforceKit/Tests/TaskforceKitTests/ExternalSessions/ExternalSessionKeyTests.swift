@@ -88,6 +88,60 @@ extension ExternalSessionSuites {
             #expect(try store.loadOrCreate().ref(forSessionID: F.uuid(1)) != first)
         }
 
+        // MARK: 로그아웃 정리 (`SessionStore.onSigningOut`): 서버 목록을 비운 뒤 열쇠를 지운다
+
+        private final class Events: @unchecked Sendable {
+            private let lock = NSLock()
+            private var items: [String] = []
+            func add(_ item: String) { lock.withLock { items.append(item) } }
+            var all: [String] { lock.withLock { items } }
+        }
+
+        private final class OrderedKeyStore: ExternalSessionKeyStore, @unchecked Sendable {
+            let events: Events
+            init(_ events: Events) { self.events = events }
+            func loadOrCreate() throws -> ExternalSessionKey { ExternalSessionKey.random() }
+            func delete() { events.add("delete-key") }
+        }
+
+        @Test func signingOutClearsTheServerListFirstAndThenDeletesTheKey() async {
+            let events = Events()
+            let bridge = UUID()
+            let reporter = ExternalSessionReporter(send: { id, rows in events.add("clear \(id == bridge) \(rows.count)") })
+            await ExternalSessionSignOut.run(bridgeID: bridge, reporter: reporter, keyStore: OrderedKeyStore(events))
+            #expect(events.all == ["clear true 0", "delete-key"], "먼저 빈 목록을 올리고(옛 토큰이 유효한 동안) 그 뒤에 열쇠를 지운다")
+        }
+
+        @Test func theKeyIsDeletedEvenIfTheServerCannotBeReached() async {
+            let events = Events()
+            let reporter = ExternalSessionReporter(send: { _, _ in
+                events.add("clear")
+                throw URLError(.notConnectedToInternet)
+            })
+            await ExternalSessionSignOut.run(bridgeID: UUID(), reporter: reporter, keyStore: OrderedKeyStore(events))
+            #expect(events.all == ["clear", "delete-key"], "오프라인이어도 로그아웃은 가고 열쇠는 지워진다 (남은 서버 행은 열쇠를 잃어 이 Mac과 이어지지 않고 14일 뒤 지워진다)")
+        }
+
+        @Test func withoutARegisteredBridgeOnlyTheKeyIsDeleted() async {
+            let events = Events()
+            let reporter = ExternalSessionReporter(send: { _, _ in events.add("clear") })
+            await ExternalSessionSignOut.run(bridgeID: nil, reporter: reporter, keyStore: OrderedKeyStore(events))
+            #expect(events.all == ["delete-key"])
+            await ExternalSessionSignOut.run(bridgeID: UUID(), reporter: reporter, keyStore: nil)
+            #expect(events.all == ["delete-key", "clear"], "열쇠 저장소를 모르면 비우기만")
+        }
+
+        @Test func aFileKeyDeletedAtSignOutGivesTheNextSignInANewKey() async throws {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("tf-key-\(UUID().uuidString.lowercased())", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let store = FileExternalSessionKeyStore(directory: directory)
+            let before = try store.loadOrCreate().ref(forSessionID: F.uuid(1))
+            await ExternalSessionSignOut.run(bridgeID: nil, reporter: ExternalSessionReporter(send: { _, _ in }), keyStore: store)
+            #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent(FileExternalSessionKeyStore.fileName).path))
+            let after = try store.loadOrCreate().ref(forSessionID: F.uuid(1))
+            #expect(before != after)
+        }
+
         @Test func aStoreThatCannotWriteThrowsSoNothingIsSent() throws {
             let home = try ExternalHome()
             defer { home.cleanup() }

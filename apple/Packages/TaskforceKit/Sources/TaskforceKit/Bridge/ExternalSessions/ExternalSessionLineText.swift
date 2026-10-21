@@ -53,6 +53,9 @@ public struct ExternalSessionLineContent: Equatable, Sendable {
         self.action = action
     }
 
+    /// 줄 위에 포인터를 올리면 바탕을 칠하나: 누를 수 있는 것(버튼)이 있는 줄만. 누를 수 없는 줄은 칠하지 않는다
+    public var highlightsOnHover: Bool { action != nil }
+
     /// "상태 · 조각 · 조각"
     public var metaText: String { ([statusWord] + detail).joined(separator: " · ") }
 

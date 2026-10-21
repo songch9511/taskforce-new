@@ -63,7 +63,7 @@ struct EdgeRailCapsuleTests {
         #expect(plus.minY - rings[3].maxY == 2 && capsule.maxY - plus.maxY == 6)
         #expect(l.ringDrawn(4) == nil, "링은 넷까지")
         let third = l.thirdCapsuleDrawn!
-        let controls = EdgeShellModel.Control.allCases.map { l.controlDrawn($0)! }
+        let controls = EdgeShellModel.Control.defaultControls.map { l.controlDrawn($0)! }
         #expect(controls[0].minY - third.minY == 6 && third.maxY - controls[2].maxY == 6 && controls[1].minY - controls[0].maxY == 2)
     }
 
@@ -126,7 +126,7 @@ struct EdgeRailCapsuleTests {
         #expect(l.hit(center(l.bellFrame), slots: slots).bell)
         for (index, slot) in slots.enumerated() { #expect(l.hit(center(l.ringFrame(index)), slots: slots).item == slot.id) }
         #expect(l.hit(center(l.plusFrame), slots: slots).plus)
-        for control in EdgeShellModel.Control.allCases { #expect(l.hit(center(l.controlFrame(control)), slots: slots).control == control) }
+        for control in EdgeShellModel.Control.defaultControls { #expect(l.hit(center(l.controlFrame(control)), slots: slots).control == control) }
         // 칸 사이(캡슐 안) · 캡슐 밖은 칸이 아니다
         let capsule = l.sessionsCapsuleFrame!
         #expect(l.hit(CGPoint(x: capsule.midX, y: l.ringFrame(0)!.maxY + 1), slots: slots) == .init(), "칸 사이 2")

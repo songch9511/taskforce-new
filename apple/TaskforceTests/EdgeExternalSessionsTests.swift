@@ -86,7 +86,15 @@ struct EdgeExternalSessionsTests {
         #expect(make(signedIn: false).shell.controls == base, "로그인하지 않았으면 없다")
         #expect(make().shell.controls == [.allWork, .chats, .onThisMac, .more], "More 앞에 든다")
         #expect(make(gated: false).shell.externalSessions == nil, "게이트가 꺼진 셸은 목록을 아예 들지 않는다")
-        #expect(EdgeShellModel.Control.allCases == base, "기본 칸 목록은 그대로다")
+        #expect(EdgeShellModel.Control.defaultControls == base, "기본 칸 목록은 그대로다")
+    }
+
+    @Test func allCasesIsTheCompleteListAndTheDefaultColumnIsSeparate() {
+        #expect(EdgeShellModel.Control.allCases == [.allWork, .chats, .onThisMac, .more], "allCases는 빠짐없이: 새 칸이 생겨도 allCases를 믿는 코드가 조용히 틀리지 않는다")
+        #expect(EdgeShellModel.Control.defaultControls == [.allWork, .chats, .more], "게이트가 꺼진 셋째 캡슐의 칸")
+        #expect(EdgeRailLayout(notchCount: 2, restCount: 1, expanded: true, idle: false).controls == EdgeShellModel.Control.defaultControls)
+        #expect(EdgeRailCapsuleLayout(mode: .expanded, bell: false, compactRingCount: 0, ringCount: 0).controls == EdgeShellModel.Control.defaultControls)
+        #expect(SettingsPanelKeys.rows.map(\.label).prefix(2) == ["All work", "Chats"], "단축키 목록은 칸이 늘어도 단축키가 있는 것만")
     }
 
     @Test func theControlNamesItsIconAndTooltipWithoutAShortcut() {
@@ -266,6 +274,46 @@ struct EdgeExternalSessionsTests {
         #expect(await environment.isInstalled() == nil)
         let scan = await environment.scan()
         #expect(scan.rows.isEmpty && scan.failure == .unreadable)
+    }
+
+    // MARK: 계정 · 로그아웃
+
+    @Test func theRuntimeRegistersTheSignOutClearOnlyWhenItGetsASessionStore() {
+        let scope = AccountScope(currentAccount: { SampleData.userID })
+        let withSession = SessionStore(auth: Self.services.supabase.auth)
+        #expect(withSession.signingOutHandlerCount == 0)
+        #expect(ExternalSessionsRuntime.make(services: Self.services, scope: scope, issueScreens: true, bridgeEnabled: true, host: { nil }, session: withSession, seen: InMemoryExternalSessionSeenStore()) != nil)
+        #expect(withSession.signingOutHandlerCount == 1, "로그아웃을 누르면 세션을 지우기 전에 서버 목록을 비운다")
+        let without = SessionStore(auth: Self.services.supabase.auth)
+        #expect(ExternalSessionsRuntime.make(services: Self.services, scope: scope, issueScreens: true, bridgeEnabled: true, host: { nil }, seen: InMemoryExternalSessionSeenStore()) != nil)
+        #expect(without.signingOutHandlerCount == 0)
+        #expect(ExternalSessionsRuntime.make(services: Self.services, scope: scope, issueScreens: false, bridgeEnabled: true, session: without) == nil)
+        #expect(without.signingOutHandlerCount == 0, "목록이 없는 구성은 아무것도 등록하지 않는다")
+    }
+
+    final class Sends: @unchecked Sendable {
+        private let lock = NSLock()
+        private var items: [UUID] = []
+        func add(_ id: UUID) { lock.withLock { items.append(id) } }
+        var all: [UUID] { lock.withLock { items } }
+    }
+
+    @Test func aReportWhoseOriginIsNotTheCurrentOneIsDropped() async {
+        let environment = ExternalSessionsEnvironment(host: { nil }, home: "/nonexistent")
+        let sends = Sends()
+        let reporter = ExternalSessionReporter(send: { bridge, _ in sends.add(bridge) })
+        let scanned = ExternalSessionOrigin(partition: "account-a", bridgeID: UUID())
+        await environment.report([Self.row(1)], origin: scanned, via: reporter)
+        #expect(sends.all.isEmpty, "지금은 계정 · bridge가 없다(로그아웃 · 다른 계정): 스캔할 때의 것으로 보내지 않는다")
+        await environment.report([Self.row(1)], origin: nil, via: reporter)
+        #expect(sends.all.isEmpty, "bridge가 없던 스캔은 알리지 않는다")
+    }
+
+    @Test func signingOutWithoutAnyBridgeOrKeyDoesNothingAndDoesNotHang() async {
+        let environment = ExternalSessionsEnvironment(host: { nil }, home: "/nonexistent")
+        let sends = Sends()
+        await environment.signingOut(via: ExternalSessionReporter(send: { bridge, _ in sends.add(bridge) }))
+        #expect(sends.all.isEmpty)
     }
 
     @Test func theTaskforceSessionIDsComeFromTheSessionFolderStates() throws {
