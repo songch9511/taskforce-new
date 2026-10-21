@@ -61,8 +61,8 @@ export const AGENT_EVENTS: readonly AgentEventSpec[] = [
   { type: "project_archived", sources: [sql("update_work_context")], dims: [], activity: true },
   // 앱 insert 정책(owner_insert_client_app_types)은 이미 허용하지만 앱이 아직 보내지 않는다
   { type: "assistant_opened", sources: [], dims: [], activity: true, gap: "남기는 곳 없음 (Mac 후속: 앱이 Supabase로 직접 insert)" },
-  // 레일의 외부 세션 목록(On this Mac)이 행 1개 이상으로 보인 날 (하루 한 번). 앱이 POST /api/v1/metric-events로 알리고 route가 서버 권한으로 남긴다. props는 구간 문자열뿐(rows_bucket · held_bucket)이라 dims로 가르지 않는다
-  { type: "external_sessions_shown", sources: [{ kind: "ts", file: "src/app/api/v1/metric-events/route.ts" }], dims: [], activity: true },
+  // 레일의 외부 세션 목록(On this Mac)이 행 1개 이상으로 보인 날 (하루 한 번). 앱이 POST /api/v2/external-sessions/shown으로 알리고 route가 서버 권한으로 남긴다. props는 구간 문자열뿐(rows_bucket · held_bucket)이라 dims로 가르지 않는다
+  { type: "external_sessions_shown", sources: [{ kind: "ts", file: "src/lib/api/external-sessions.ts" }], dims: [], activity: true },
 ];
 
 // ─── 결제 · 키 이벤트 등록부 (OA 결제 PR-A, 20261129000000) ───

@@ -156,6 +156,27 @@ extension ExternalSessionSuites {
             }
         }
 
+        /// 꼬리 창이 한 줄의 한가운데에서 시작해 그 토막이 우연히 제목 줄처럼 읽혀도(`{"type":"custom-title",…}`) 잘린 줄은 믿지 않는다
+        @Test func aFragmentThatLooksLikeATitleLineAtTheStartOfTheTailWindowIsDropped() throws {
+            try withHome { home in
+                let prefix = F.user(id: id, cwd: "/Users/tester/proj") + "\n"
+                let lead = "not json at all "
+                let garbage = lead + F.customTitle(id: id, "Fragment") + "\n"
+                let total = prefix.utf8.count + lead.utf8.count + ExternalSessionTranscript.tailBytes
+                let need = total - prefix.utf8.count - garbage.utf8.count
+                var filler = String(repeating: String(repeating: "x", count: 999) + "\n", count: need / 1000)
+                if need % 1000 > 0 { filler += String(repeating: "x", count: need % 1000 - 1) + "\n" }
+                let path = home.projects + "/d6/" + id + ".jsonl"
+                try FileManager.default.createDirectory(atPath: home.projects + "/d6", withIntermediateDirectories: true)
+                try (prefix + garbage + filler).write(toFile: path, atomically: false, encoding: .utf8)
+                #expect(home.fileSystemSize(path) == Int64(total))
+                #expect(read(path)?.title == nil)
+                // 대조: 제목 줄이 그 자체로 한 줄이면 읽힌다
+                let whole = try home.transcript(directory: "d7", id: id, lines: [F.user(id: id, cwd: "/Users/tester/proj"), F.customTitle(id: id, "Whole line")])
+                #expect(read(whole)?.title == "Whole line")
+            }
+        }
+
         @Test func aSmallFileIsReadOnceInFull() throws {
             try withHome { home in
                 let path = try home.transcript(directory: "d", id: id, lines: [F.user(id: id, cwd: "/Users/tester/proj"), F.customTitle(id: id, "Small")])

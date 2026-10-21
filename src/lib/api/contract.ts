@@ -288,18 +288,21 @@ export const handoffResponseSchema = z.object({
 });
 export type HandoffResponse = z.infer<typeof handoffResponseSchema>;
 
-// POST /api/v1/metric-events — 앱이 알리는 지표. action_started · handoff_used는 해당 API가 서버에서 남긴다 (중복 집계 방지).
-// external_sessions_shown(OA 외부 세션 PR1): 값은 구간 문자열뿐이다 (글 · 수 0). 앱이 열 권한 없이도 route가 서버 권한으로 남긴다 (20261203000000).
+// POST /api/v1/metric-events — 앱이 직접 남기는 지표. action_started · handoff_used는 해당 API가 서버에서 남긴다 (중복 집계 방지). v1은 동결이다 (contract-v1-freeze.test.ts).
+export const metricEventRequestSchema = z.object({
+  type: z.enum(["app_opened"]),
+  action_id: z.uuid().optional(),
+});
+
+// POST /api/v2/external-sessions/shown — 레일의 외부 세션 목록(On this Mac)이 행 1개 이상으로 보인 날의 지표 external_sessions_shown (OA 외부 세션 PR1).
+// 값은 구간 문자열뿐이다 (글 · 수 0). 앱의 열 권한 없이 route가 서버 권한으로 남기고, 같은 날 두 번째는 서버가 조용히 넘긴다 (20261203000000).
 export const EXTERNAL_ROWS_BUCKETS = ["1", "2-5", "6-15", "16+"] as const;
 export const EXTERNAL_HELD_BUCKETS = ["0", "1-2", "3+"] as const;
-export const metricEventRequestSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("app_opened"), action_id: z.uuid().optional() }),
-  z.strictObject({
-    type: z.literal("external_sessions_shown"),
-    props: z.strictObject({ rows_bucket: z.enum(EXTERNAL_ROWS_BUCKETS), held_bucket: z.enum(EXTERNAL_HELD_BUCKETS) }),
-  }),
-]);
-export type MetricEventRequest = z.infer<typeof metricEventRequestSchema>;
+export const externalSessionsShownRequestSchema = z.strictObject({
+  rows_bucket: z.enum(EXTERNAL_ROWS_BUCKETS),
+  held_bucket: z.enum(EXTERNAL_HELD_BUCKETS),
+});
+export type ExternalSessionsShownRequest = z.infer<typeof externalSessionsShownRequestSchema>;
 
 // PUT /api/v2/external-sessions — Mac이 Taskforce 밖에서 시작한 Claude Code 세션의 목록을 알린다 (OA 외부 세션 PR1, 계약 16장). 스냅샷 교체: 이번 목록에 없는 그 Mac의 행은 지운다.
 // 서버에 가는 것은 제목 · 상태 · 마지막 활동 시각 · 불투명 id뿐이다. 대화 본문 · 경로 · 폴더 이름 · Claude 세션 id는 보내지 않는다.

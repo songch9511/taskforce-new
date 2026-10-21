@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { EXTERNAL_SESSION_STATES, externalSessionReportRequestSchema, metricEventRequestSchema } from "./contract";
-import { EXTERNAL_SESSION_RETENTION_DAYS, handleReportExternalSessions, type ExternalSessionReportOutcome, type ExternalSessionsDeps } from "./external-sessions";
+import { EXTERNAL_SESSION_STATES, externalSessionReportRequestSchema, externalSessionsShownRequestSchema, metricEventRequestSchema } from "./contract";
+import { EXTERNAL_SESSION_RETENTION_DAYS, handleExternalSessionsShown, handleReportExternalSessions, type ExternalSessionReportOutcome, type ExternalSessionsDeps } from "./external-sessions";
 
 vi.mock("server-only", () => ({}));
 
@@ -12,9 +12,10 @@ const session = (n: number, over: Record<string, unknown> = {}) => ({ id: ref(n)
 
 function deps(over: Partial<ExternalSessionsDeps<{ user: { id: string } }>> = {}) {
   const report = vi.fn(async (): Promise<ExternalSessionReportOutcome> => ({ status: "ok", kept: 1, removed: 0 }));
+  const recordShown = vi.fn(async (): Promise<"recorded" | "duplicate"> => "recorded");
   const authenticate = vi.fn(async () => ({ user: { id: USER } }));
-  const value: ExternalSessionsDeps<{ user: { id: string } }> = { enabled: () => true, authenticate, betaAllowed: () => true, report, ...over };
-  return { value, report, authenticate };
+  const value: ExternalSessionsDeps<{ user: { id: string } }> = { enabled: () => true, authenticate, betaAllowed: () => true, report, recordShown, ...over };
+  return { value, report, recordShown, authenticate };
 }
 
 const put = (body: unknown, headers: Record<string, string> = {}) =>
@@ -125,20 +126,68 @@ describe("계약 스키마", () => {
     expect(externalSessionReportRequestSchema.safeParse({ bridge_id: BRIDGE, sessions: [session(1, { state: "worktree" })] }).success).toBe(false);
   });
 
-  it("metric-events: app_opened는 예전 모양 그대로 받고, external_sessions_shown은 구간 값만 받는다", () => {
+  it("v1 metric-events 스키마는 동결 그대로다: app_opened만 받는다 (새 지표는 v2)", () => {
     expect(metricEventRequestSchema.safeParse({ type: "app_opened" }).success).toBe(true);
     expect(metricEventRequestSchema.safeParse({ type: "app_opened", action_id: "5e5e5e5e-0000-4000-8000-000000000001" }).success).toBe(true);
-    expect(metricEventRequestSchema.safeParse({ type: "external_sessions_shown", props: { rows_bucket: "2-5", held_bucket: "0" } }).success).toBe(true);
-    for (const bad of [
-      { type: "external_sessions_shown" },
-      { type: "external_sessions_shown", props: { rows_bucket: "7", held_bucket: "0" } },
-      { type: "external_sessions_shown", props: { rows_bucket: "1", held_bucket: "9" } },
-      { type: "external_sessions_shown", props: { rows_bucket: "1", held_bucket: "0", title: "x" } },
-      { type: "external_sessions_shown", props: { rows_bucket: "1", held_bucket: "0" }, action_id: "5e5e5e5e-0000-4000-8000-000000000001" },
-      { type: "session_attached" },
-      { type: "agent_message_sent" },
-    ]) {
+    for (const bad of [{ type: "external_sessions_shown", props: { rows_bucket: "2-5", held_bucket: "0" } }, { type: "session_attached" }, { type: "agent_message_sent" }]) {
       expect(metricEventRequestSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
     }
+  });
+
+  it("external_sessions_shown 본문은 구간 값 둘뿐이다", () => {
+    expect(externalSessionsShownRequestSchema.safeParse({ rows_bucket: "2-5", held_bucket: "0" }).success).toBe(true);
+    for (const bad of [
+      {},
+      { rows_bucket: "2-5" },
+      { rows_bucket: "7", held_bucket: "0" },
+      { rows_bucket: "1", held_bucket: "9" },
+      { rows_bucket: "1", held_bucket: "0", title: "x" },
+      { rows_bucket: "1", held_bucket: "0", user_id: "x" },
+      { type: "external_sessions_shown", rows_bucket: "1", held_bucket: "0" },
+    ]) {
+      expect(externalSessionsShownRequestSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+    }
+  });
+});
+
+describe("handleExternalSessionsShown", () => {
+  const post = (body: unknown) =>
+    new Request("https://api.example.dev/api/v2/external-sessions/shown", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const shown = { rows_bucket: "2-5", held_bucket: "1-2" };
+
+  it("꺼져 있으면 404 · 로그인 없으면 401 · 베타 명단 밖이면 404 (저장 0)", async () => {
+    const off = deps({ enabled: () => false });
+    expect((await handleExternalSessionsShown(post(shown), off.value)).status).toBe(404);
+    expect(off.authenticate).not.toHaveBeenCalled();
+    const anonymous = deps({ authenticate: async () => null });
+    expect((await handleExternalSessionsShown(post(shown), anonymous.value)).status).toBe(401);
+    const outside = deps({ betaAllowed: () => false });
+    expect((await handleExternalSessionsShown(post(shown), outside.value)).status).toBe(404);
+    expect(off.recordShown).not.toHaveBeenCalled();
+    expect(anonymous.recordShown).not.toHaveBeenCalled();
+    expect(outside.recordShown).not.toHaveBeenCalled();
+  });
+
+  it("구간 값만으로 저장하고 204, 같은 날 두 번째도 204", async () => {
+    const d = deps();
+    const response = await handleExternalSessionsShown(post(shown), d.value);
+    expect(response.status).toBe(204);
+    expect(d.recordShown).toHaveBeenCalledExactlyOnceWith({ user: { id: USER } }, shown);
+    const again = deps({ recordShown: async () => "duplicate" });
+    expect((await handleExternalSessionsShown(post(shown), again.value)).status).toBe(204);
+  });
+
+  it.each([{}, { rows_bucket: "12", held_bucket: "0" }, { rows_bucket: "1", held_bucket: "0", title: "x" }])("잘못된 본문은 400 (저장 0): %j", async (body) => {
+    const d = deps();
+    expect((await handleExternalSessionsShown(post(body), d.value)).status).toBe(400);
+    expect(d.recordShown).not.toHaveBeenCalled();
+  });
+
+  it("저장이 실패하면 500이고 로그에 오류 이름과 코드뿐이다", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const d = deps({ recordShown: async () => Promise.reject(Object.assign(new Error("secret detail"), { code: "XX000" })) });
+    expect((await handleExternalSessionsShown(post(shown), d.value)).status).toBe(500);
+    expect(JSON.stringify(log.mock.calls)).not.toContain("secret detail");
+    expect(JSON.stringify(log.mock.calls)).toContain("external_sessions_shown_failed");
   });
 });

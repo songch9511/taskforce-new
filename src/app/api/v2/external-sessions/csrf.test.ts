@@ -9,6 +9,7 @@ vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: mocks.admin }));
 vi.mock("@supabase/supabase-js", async (original) => ({ ...(await original<typeof import("@supabase/supabase-js")>()), createClient: mocks.createSupabaseClient }));
 
 import { PUT } from "./route";
+import { POST as shownPost } from "./shown/route";
 
 // 인증 거부 · 쿠키 CSRF (OA 외부 세션 PR1). 거절되면 DB 클라이언트도 부르지 않는다.
 const USER = "11111111-0000-4000-8000-000000000001";
@@ -28,6 +29,7 @@ beforeEach(() => {
   mocks.createSupabaseClient.mockReturnValue({ auth: { getClaims: claims() } } as unknown as SupabaseClient);
   mocks.admin.mockReturnValue({ rpc: mocks.rpc });
   mocks.rpc.mockResolvedValue({ data: { status: "ok", kept: 0, removed: 0 }, error: null });
+  mocks.admin.mockReturnValue({ rpc: mocks.rpc, from: () => ({ insert: mocks.rpc }) });
 });
 afterEach(() => {
   vi.clearAllMocks();
@@ -55,5 +57,20 @@ describe("PUT external-sessions: 쿠키 CSRF · 인증", () => {
     mocks.createCookieClient.mockResolvedValue({ auth: { getClaims: vi.fn().mockResolvedValue({ data: null, error: new Error("no session") }) } } as unknown as SupabaseClient);
     expect((await PUT(request({ "sec-fetch-site": "same-origin" }))).status).toBe(401);
     expect(mocks.rpc).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST external-sessions/shown: 쿠키 CSRF · 인증", () => {
+  const post = (headers: Record<string, string>) =>
+    new Request("https://api.example.test/api/v2/external-sessions/shown", { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify({ rows_bucket: "1", held_bucket: "0" }) });
+
+  it("다른 사이트에서 온 쿠키 쓰기는 로그인하지 않은 것으로 본다 (401, 저장 0)", async () => {
+    for (const headers of CROSS_SITE) expect((await shownPost(post(headers))).status, JSON.stringify(headers)).toBe(401);
+    expect(mocks.admin).not.toHaveBeenCalled();
+  });
+
+  it("같은 출처의 쿠키와 Bearer는 통과한다 (204)", async () => {
+    expect((await shownPost(post({ "sec-fetch-site": "same-origin" }))).status).toBe(204);
+    expect((await shownPost(post({ authorization: "Bearer token-123", "sec-fetch-site": "cross-site" }))).status).toBe(204);
   });
 });

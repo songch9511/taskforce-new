@@ -9,7 +9,7 @@
 --        - 보고마다 이번 목록에 없는 그 Mac의 행(제목)을 지운다 (7일 창 밖으로 나간 세션 · 사라진 세션).
 --        - bridge가 해제(revoked)되면 트리거가 그 Mac의 행을 즉시 지운다. bridge 삭제 · 계정 삭제는 cascade.
 --        - Mac이 보고를 멈추면 reported_at이 오래된 행을 purge_external_sessions가 지운다 (매일 도는 /api/cron/retention).
---   3) metric_events: external_sessions_shown (앱이 POST /api/v1/metric-events로 알리고 route가 남김, 하루 한 번 — UTC 날짜별 부분 unique 인덱스). 종류 검사는 20261129000000의 전체 목록 + 이 type 하나.
+--   3) metric_events: external_sessions_shown (앱이 POST /api/v2/external-sessions/shown으로 알리고 route가 서버 권한으로 남김, 하루 한 번 — UTC 날짜별 부분 unique 인덱스). 종류 검사는 20261129000000의 전체 목록 + 이 type 하나.
 --      앱 insert 정책(owner_insert_client_app_types)과 앱의 열 권한(type · action_id)은 그대로다: props를 쓰려고 앱에 열 권한을 넓히지 않고, route가 구간 enum을 검증한 뒤 서버 권한으로 넣는다.
 --      (session_attached · session_attach_refused는 이어받기 PR2의 몫이다.)
 --

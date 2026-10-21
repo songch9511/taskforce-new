@@ -4,7 +4,13 @@ import { agentBetaUserAllowed, flagEnabled } from "@/lib/flags";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 import { authenticateRequest, type ApiContext } from "./auth";
-import { externalSessionReportRequestSchema, type ExternalSessionReportRequest, type ExternalSessionReportResponse } from "./contract";
+import {
+  externalSessionReportRequestSchema,
+  externalSessionsShownRequestSchema,
+  type ExternalSessionReportRequest,
+  type ExternalSessionReportResponse,
+  type ExternalSessionsShownRequest,
+} from "./contract";
 import { errorResponse, parseBody, unauthorized } from "./respond";
 
 // 외부 세션 목록 route 처리 (OA 외부 세션 PR1, 계약 16장): Mac이 Taskforce 밖에서 시작한 Claude Code 세션의 제목 · 상태 · 마지막 활동 시각 · 불투명 id를 알린다.
@@ -27,6 +33,8 @@ export type ExternalSessionsDeps<User extends AppUser> = {
   authenticate: (request: Request) => Promise<User | null>;
   betaAllowed: (userId: string) => boolean;
   report: (user: User, input: ExternalSessionReportRequest) => Promise<ExternalSessionReportOutcome>;
+  /** 지표 external_sessions_shown: 같은 날 두 번째는 "duplicate" (서버가 조용히 넘긴다) */
+  recordShown: (user: User, input: ExternalSessionsShownRequest) => Promise<"recorded" | "duplicate">;
 };
 
 const NOT_FOUND = "없는 경로입니다.";
@@ -56,6 +64,23 @@ export async function handleReportExternalSessions<User extends AppUser>(request
   }
 }
 
+/** POST /api/v2/external-sessions/shown: 레일 목록이 행 1개 이상으로 보인 날의 지표. 구간 값만 받고 응답은 늘 204 (같은 날 두 번째도) */
+export async function handleExternalSessionsShown<User extends AppUser>(request: Request, deps: ExternalSessionsDeps<User>): Promise<Response> {
+  if (!deps.enabled()) return errorResponse(404, "not_found", NOT_FOUND);
+  const user = await deps.authenticate(request);
+  if (!user) return unauthorized();
+  if (!deps.betaAllowed(user.user.id)) return errorResponse(404, "not_found", NOT_FOUND);
+  const body = await parseBody(request, externalSessionsShownRequestSchema);
+  if ("error" in body) return body.error;
+  try {
+    await deps.recordShown(user, body.data);
+    return new Response(null, { status: 204 });
+  } catch (error) {
+    console.error(JSON.stringify({ event: "external_sessions_shown_failed", error: error instanceof Error ? error.name : "unknown", ...(codeOf(error) ? { code: codeOf(error) } : {}) }));
+    return errorResponse(500, "internal_error", "이벤트를 남기지 못했습니다.");
+  }
+}
+
 const rpcResultSchema = z.union([z.strictObject({ status: z.literal("ok"), kept: z.number().int().min(0), removed: z.number().int().min(0) }), z.strictObject({ status: z.literal("not_found") })]);
 
 export const realExternalSessionsDeps = (): ExternalSessionsDeps<ApiContext> => ({
@@ -66,5 +91,12 @@ export const realExternalSessionsDeps = (): ExternalSessionsDeps<ApiContext> => 
     const { data, error } = await createAdminClient().rpc("report_external_sessions", { p_user_id: user.id, p_bridge_id: input.bridge_id, p_sessions: input.sessions });
     if (error) throw error;
     return rpcResultSchema.parse(data);
+  },
+  // 앱의 열 권한(type · action_id)을 넓히지 않으려고 구간 값을 검증한 뒤 서버 권한으로 남긴다. 하루 한 번(UTC 날짜별 부분 unique 인덱스): 두 번째는 23505
+  recordShown: async ({ user }, input) => {
+    const { error } = await createAdminClient().from("metric_events").insert({ user_id: user.id, type: "external_sessions_shown", props: input });
+    if (error?.code === "23505") return "duplicate";
+    if (error) throw error;
+    return "recorded";
   },
 });

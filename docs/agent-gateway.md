@@ -424,7 +424,7 @@ Taskforce 밖에서 시작한 Claude Code 세션을 이 Mac의 레일 "On this M
 
 ### 13-4. 지표
 
-- `external_sessions_shown`(`metric_events` 종류 검사는 `20261129000000`의 목록 + 이 type): 레일 목록이 행 1개 이상으로 보인 날 하루 한 번(UTC 날짜별 부분 unique 인덱스). 앱이 `POST /api/v1/metric-events`로 `props = { rows_bucket: 1 | 2-5 | 6-15 | 16+, held_bucket: 0 | 1-2 | 3+ }`(구간 값만, 글 · 수 0)을 알리면 route가 서버 권한으로 남긴다 — 앱의 열 권한(`type` · `action_id`)과 insert 정책(`app_opened` · `assistant_opened`)은 그대로다. 같은 날 두 번째는 23505를 조용히 넘긴다.
+- `external_sessions_shown`(`metric_events` 종류 검사는 `20261129000000`의 목록 + 이 type): 레일 목록이 행 1개 이상으로 보인 날 하루 한 번(UTC 날짜별 부분 unique 인덱스). 앱이 **`POST /api/v2/external-sessions/shown`**으로 `{ rows_bucket: 1 | 2-5 | 6-15 | 16+, held_bucket: 0 | 1-2 | 3+ }`(구간 값만, 글 · 수 0, strict)를 알리면 route가 서버 권한으로 남긴다 — 앱의 열 권한(`type` · `action_id`)과 insert 정책(`app_opened` · `assistant_opened`)은 그대로다. 같은 날 두 번째는 23505를 조용히 넘겨 204다. gate · 베타 명단은 13-3과 같다. **v1 `metric-events`는 동결이라 건드리지 않았다**(`contract-v1-freeze.test.ts`가 그 스키마 지문을 지킨다): 새 지표는 v2다.
 - `session_attached` · `session_attach_refused`는 이어받기 PR의 몫이다(남기는 곳 없는 type을 지금 넣으면 등록부 시험이 깨진다).
 
 ### 13-5. Mac이 읽는 것 (Kit `Bridge/ExternalSessions/`)

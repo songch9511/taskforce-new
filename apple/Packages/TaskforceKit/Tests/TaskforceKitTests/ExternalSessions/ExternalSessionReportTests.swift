@@ -103,10 +103,10 @@ extension ExternalSessionSuites {
             let (api, host) = client(status: 204, body: "")
             try await api.externalSessionsShown(rowsBucket: "2-5", heldBucket: "1-2")
             let sent = try #require(StubProtocol.requests(host: host).last)
-            #expect(sent.method == "POST" && sent.url.path == "/api/v1/metric-events")
+            #expect(sent.method == "POST" && sent.url.path == "/api/v2/external-sessions/shown", "v1 metric-events는 동결이라 새 지표는 v2다")
             let body = try #require(sent.body)
             let object = try #require(try JSONSerialization.jsonObject(with: body) as? NSDictionary)
-            #expect(object == ["type": "external_sessions_shown", "props": ["rows_bucket": "2-5", "held_bucket": "1-2"]])
+            #expect(object == ["rows_bucket": "2-5", "held_bucket": "1-2"])
         }
 
         @Test func aFailedMetricPostThrows() async {
