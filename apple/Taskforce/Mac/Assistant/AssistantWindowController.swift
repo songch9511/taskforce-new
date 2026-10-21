@@ -8,11 +8,27 @@ import TaskforceUI
 final class AssistantPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+    /// 핸들 · 머리를 끄는 중 (`DragNSView`가 문턱을 넘은 뒤 놓을 때까지 켠다)
+    var isDragging = false
+
+    /// 키 창이 아닌 창의 왼쪽 누름: 끌기 · 크기 조절 영역이 받으면 우리가 그 뷰에 직접 전달한다.
+    /// 그냥 두면 비활성 패널은 `sendEvent` 안에서 뷰의 `mouseDown`보다 **먼저** 키 창이 되어, 창을 옮기려던 사용자의 다음 키 입력이 이 창으로 들어간다.
+    /// 클릭(움직이지 않은 누름)이면 `DragNSView`가 직접 키 창으로 만든다. 그 밖의 곳(SwiftUI 단추 · 입력창 · 본문)은 예전처럼 누르면 키 창이 된다
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown, !isKeyWindow,
+           let hit = contentView?.superview?.hitTest(event.locationInWindow),
+           hit is AssistantDragRegion.DragNSView || hit is AssistantResizeEdgeView {
+            hit.mouseDown(with: event)
+            return
+        }
+        super.sendEvent(event)
+    }
 }
 
-/// 창 하나의 NSPanel · 자리 · 높이. 어느 대화를 보이는지는 `AssistantWindowModel`, 창 개수 · 위치 기억은 `AssistantWindowManager`가 정한다.
-/// - 380pt 폭, 높이는 내용에 맞춰 560까지 (빈 대화는 440 아래로 줄지 않는다). 높이가 변해도 **위 가장자리**가 움직이지 않는다
-/// - 크기 조절 없음. 핸들 · 머리의 빈 곳으로 끌고(`isMovable`), 핸들에 포커스를 두고 화살표 키로 8pt씩
+/// 창 하나의 NSPanel · 자리 · 크기. 어느 대화를 보이는지는 `AssistantWindowModel`, 창 개수 · 위치 · 크기 기억은 `AssistantWindowManager`가 정한다.
+/// - 기본은 380pt 폭, 높이는 내용에 맞춰 560까지 (빈 대화는 440 아래로 줄지 않는다). 높이가 변해도 **위 가장자리**가 움직이지 않는다
+/// - 크기는 사용자가 가장자리 · 모서리를 끌어 바꾼다 (`preferredSize`: 폭만 바꾸면 높이는 계속 내용에 맞추고, 높이를 바꾸면 그 높이). 두 번 누르면 기본으로
+/// - 핸들 · 머리의 빈 곳을 누르면 마우스를 직접 따라가 옮기고(`AssistantMouseTracker`), 핸들에 포커스를 두고 화살표 키로 8pt씩 옮기고 ⌥ + 화살표로 16pt씩 크기를 바꾼다
 /// - 열고 닫는 움직임은 불투명도뿐이다 (DS가 창의 움직임을 말하지 않는다. 움직임 줄이기와 같은 모양)
 @MainActor
 final class AssistantWindowController: NSObject, NSWindowDelegate {
@@ -21,12 +37,17 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
     let presentation = AssistantWindowPresentation()
     let targetMenu = AssistantTargetMenu()
     private let hosting: NSHostingView<AssistantWindowView>
+    private let container: AssistantWindowContentView
     private let runtime: ChatRuntime
     private let environment: AssistantWindowManager.Environment
     private(set) var topLeft: CGPoint
     /// 바라는 자리: 사용자가 옮겼거나 기억에서 가져온 자리. 높이가 변해 보정이 창을 밀어도 이 자리가 원본이라, 높이가 다시 줄면 돌아온다
     /// (History로 대화를 바꿀 때 앞 대화의 높이로 밀린 자리가 굳지 않게)
     private(set) var desiredTopLeft: CGPoint
+    /// 사용자가 정한 크기: 폭, 높이(nil이면 내용에 맞춘다). 화면이 작아 줄어 보여도 이 값은 그대로다 (큰 화면으로 돌아오면 다시 이 크기)
+    private(set) var preferredSize: AssistantWindowSize
+    /// 크기 조절 끌기 하나의 시작 상태 (끌기 시작 때의 창 · 화면 · 한도). 있는 동안은 내용 높이 맞춤이 창을 건드리지 않는다
+    private var resizeSession: ResizeSession?
     /// 우리가 옮기는 중(프로그램): `windowDidMove`가 사용자의 이동으로 기억하지 않게
     private var programmatic = false
     /// 창을 올리고(`show`) 내리는(`hide` · `close`) 요청이 올 때마다 오른다 (늦은 숨김이 새 요청을 되돌리지 못하게 · 시험은 화면 없이 `show`가 불렸는지 본다)
@@ -38,6 +59,8 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
     /// 마우스 왼쪽 버튼이 눌려 있나 (끌기 도중에는 보정하지 않는다. 시험은 바꾼다)
     var mouseIsDown: () -> Bool = { NSEvent.pressedMouseButtons & 1 != 0 }
     var onMoved: (CGPoint) -> Void = { _ in }
+    /// 사용자가 크기를 정했다 (끌기를 놓았을 때 · 키보드 · 기본으로 되돌림). 자리는 이미 `topLeft`에 있다: 받는 쪽이 크기와 자리를 같이 기억한다
+    var onResized: (AssistantWindowSize) -> Void = { _ in }
     var onBecameKey: () -> Void = {}
     var onResignedKey: () -> Void = {}
     var onOpenConnections: () -> Void = {}
@@ -45,30 +68,40 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
     var presents = true
 
     /// - screenID: 기억한 위치를 읽은 화면. 그 위치는 그 화면에 놓는다 (처음 높이로 어느 화면과 더 많이 겹치는지 따지지 않는다)
+    /// - size: 그 화면에서 사용자가 정한 크기 (없으면 기본)
     init(
-        model: AssistantWindowModel, runtime: ChatRuntime, topLeft: CGPoint, screenID: String? = nil,
+        model: AssistantWindowModel, runtime: ChatRuntime, topLeft: CGPoint, screenID: String? = nil, size: AssistantWindowSize = .standard,
         environment: AssistantWindowManager.Environment, reduceMotion: Bool
     ) {
         self.model = model
         self.runtime = runtime
         self.topLeft = topLeft
         desiredTopLeft = topLeft
+        preferredSize = size
         self.environment = environment
         panel = AssistantPanel(
-            contentRect: NSRect(x: 0, y: 0, width: AssistantWindowGeometry.width, height: AssistantWindowGeometry.emptyHeight),
+            contentRect: NSRect(x: 0, y: 0, width: size.width, height: size.height ?? AssistantWindowGeometry.emptyHeight),
             styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         hosting = NSHostingView(rootView: AssistantWindowView(model: model, runtime: runtime, presentation: AssistantWindowPresentation(), reduceMotion: reduceMotion))
+        container = AssistantWindowContentView(content: hosting)
         super.init()
         hosting.rootView = AssistantWindowView(
             model: model, runtime: runtime, presentation: presentation, reduceMotion: reduceMotion,
             actions: AssistantWindowActions(
                 toggleTargetMenu: { [weak self] in self?.toggleTargetMenu() },
                 move: { [weak self] direction in self?.move(by: direction) },
+                resize: { [weak self] direction in self?.resize(by: direction) },
                 openConnections: { [weak self] in self?.onOpenConnections() }
             )
+        )
+        container.handlers = AssistantResizeHandlers(
+            begin: { [weak self] edge in self?.beginResize(edge) },
+            drag: { [weak self] delta in self?.resize(by: delta) },
+            end: { [weak self] in self?.endResize() },
+            reset: { [weak self] in self?.resetSize() }
         )
         hosting.sizingOptions = []
         panel.isFloatingPanel = true
@@ -79,11 +112,12 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
         panel.hasShadow = true
         panel.hidesOnDeactivate = false
         panel.isMovable = true
+        // 배경 끌기는 끈다: 본문 어디서나 끌리면 글을 고르다 창이 움직인다. 핸들 · 머리의 빈 곳만 직접 따라가 끈다
         panel.isMovableByWindowBackground = false
         panel.isReleasedWhenClosed = false
         panel.animationBehavior = .none
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.contentView = hosting
+        panel.contentView = container
         panel.delegate = self
         panel.setAccessibilityLabel("Assistant")
         panel.title = "Assistant"
@@ -91,11 +125,22 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
         followLayout()
     }
 
-    // MARK: 자리 · 높이
+    // MARK: 자리 · 크기
 
-    /// 지금 내용에 맞는 높이
-    var height: CGFloat {
-        AssistantWindowGeometry.height(content: presentation.contentHeight, isEmpty: model.isEmptyConversation)
+    /// 사용자가 정한 값과 지금 내용으로 바라는 크기 (화면 한도로 줄이기 전). 화면을 고르는 데 쓴다
+    private var wantedSize: CGSize {
+        CGSize(
+            width: preferredSize.width,
+            height: preferredSize.height ?? AssistantWindowGeometry.height(content: presentation.contentHeight, isEmpty: model.isEmptyConversation)
+        )
+    }
+
+    /// 이 화면에 놓을 크기: 사용자가 정한 값 · 지금 내용 · 화면의 한도(보이는 영역 − 레일)
+    private func size(on screen: AssistantScreen) -> CGSize {
+        AssistantWindowGeometry.size(
+            preferredSize, contentHeight: presentation.contentHeight, isEmpty: model.isEmptyConversation,
+            head: presentation.headHeight, footer: presentation.footerHeight, visible: screen.visible, railWidth: environment.reservedRailWidth(on: screen)
+        )
     }
 
     /// 창을 놓는 두 경우: 실제로 옮기거나 처음 놓을 때(`placement`)는 목적지의 화면을 따르고,
@@ -104,15 +149,17 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
         case placement, heightChange
     }
 
-    /// 위 가장자리를 둔 채 높이를 맞춘다. 보이는 영역 · 레일 밖으로 넣는다. 보정은 늘 **바라는 자리**에서 시작한다.
+    /// 위 가장자리를 둔 채 크기를 맞춘다. 보이는 영역 · 레일 밖으로 넣는다. 보정은 늘 **바라는 자리**에서 시작한다.
+    /// 크기 조절 · 창 끌기 중에는 아무것도 하지 않는다 (끌기가 창을 정한다: 스트리밍 답이 창을 키우거나 보정이 창을 밀어 끌리는 창이 튀지 않게. 놓으면 `endResize` · 끌기 정착이 맞춘다)
     /// - screenID: 놓을 화면을 정해 준다 (`placement`일 때만). 기억한 위치를 읽은 화면이다: 지금 높이로 다른 화면을 고르면 새 높이가 반영돼도 돌아오지 못한다
     func applyFrame(_ change: Change = .heightChange, screenID: String? = nil) {
-        let height = height
+        guard resizeSession == nil, !panel.isDragging else { return }
         // 창이 있는 화면 기준으로 보정한다 (레일은 레일 화면에만 있다)
-        let reference = change == .placement ? Self.rect(topLeft: desiredTopLeft, height: height) : panel.frame
+        let reference = change == .placement ? Self.rect(topLeft: desiredTopLeft, size: wantedSize) : panel.frame
         let screen = (change == .placement ? screenID.flatMap { environment.screen(id: $0) } : nil) ?? environment.screen(for: reference)
-        topLeft = AssistantWindowGeometry.clamped(topLeft: desiredTopLeft, height: height, visible: screen.visible, railWidth: environment.reservedRailWidth(on: screen))
-        let frame = NSRect(x: topLeft.x, y: topLeft.y - height, width: AssistantWindowGeometry.width, height: height)
+        let size = size(on: screen)
+        topLeft = AssistantWindowGeometry.clamped(topLeft: desiredTopLeft, size: size, visible: screen.visible, railWidth: environment.reservedRailWidth(on: screen))
+        let frame = NSRect(x: topLeft.x, y: topLeft.y - size.height, width: size.width, height: size.height)
         guard frame != panel.frame else { return }
         programmatic = true
         panel.setFrame(frame, display: true)
@@ -120,8 +167,8 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
         panel.invalidateShadow()
     }
 
-    private static func rect(topLeft: CGPoint, height: CGFloat) -> CGRect {
-        CGRect(x: topLeft.x, y: topLeft.y - height, width: AssistantWindowGeometry.width, height: height)
+    private static func rect(topLeft: CGPoint, size: CGSize) -> CGRect {
+        CGRect(x: topLeft.x, y: topLeft.y - size.height, width: size.width, height: size.height)
     }
 
     /// 이 창이 지금 있는 화면의 키 (위치를 기억하는 키)
@@ -163,6 +210,94 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
     func place(topLeft: CGPoint, onScreen screenID: String? = nil) {
         desiredTopLeft = topLeft
         applyFrame(.placement, screenID: screenID)
+    }
+
+    /// 화면 구성이 바뀌었다 (해상도 · 모니터 연결 · 해제): 지금 화면 기준으로 다시 놓는다.
+    /// 모니터를 뗄 때는 macOS가 창을 먼저 옮기고 그 옮김이 `windowDidMove`로 바라는 자리가 되므로, 모니터가 돌아와도 열려 있는 창은 저절로 돌아가지 않는다
+    /// (기억해 둔 위치는 그 화면 키로 남아 다시 열 때 그 화면의 자리로 열린다. 정한 크기 값도 그대로라 큰 화면으로 옮기면 다시 그 크기다)
+    func screenParametersChanged() {
+        applyFrame(.placement)
+    }
+
+    // MARK: 크기 조절
+
+    /// 크기 조절 끌기 하나: 시작 때의 창과 한도. 끄는 동안 이 값에 마우스가 움직인 만큼을 더해 창을 정한다
+    private struct ResizeSession {
+        let edge: AssistantWindowGeometry.ResizeEdge
+        let frame: NSRect
+        let bounds: CGRect
+        let minimum: CGSize
+        let maximum: CGSize
+    }
+
+    /// 크기 조절 끌기를 시작한다 (가장자리 · 모서리를 누름). 남은 이동 정착은 먼저 끝내고, 열려 있는 메뉴는 닫는다. 키 창은 바꾸지 않는다
+    func beginResize(_ edge: AssistantWindowGeometry.ResizeEdge) {
+        // 끌기를 막 놓아 정착(화면 안 · 레일 밖 보정과 기억)이 남아 있으면 지금 끝낸다: 취소하면 보정 · 기억 없이 크기 조절이 시작한다
+        if settleTask != nil {
+            settleTask?.cancel()
+            finishMove()
+        }
+        closeTargetMenu()
+        let screen = environment.screen(for: panel.frame)
+        let railWidth = environment.reservedRailWidth(on: screen)
+        resizeSession = ResizeSession(
+            edge: edge, frame: panel.frame,
+            bounds: AssistantWindowGeometry.resizeBounds(visible: screen.visible, railWidth: railWidth),
+            minimum: CGSize(
+                width: AssistantWindowGeometry.minWidth,
+                height: AssistantWindowGeometry.minimumHeight(head: presentation.headHeight, footer: presentation.footerHeight)
+            ),
+            maximum: AssistantWindowGeometry.maxSize(visible: screen.visible, railWidth: railWidth)
+        )
+    }
+
+    /// 끌기 시작 때 마우스가 있던 곳에서 `delta`(화면 좌표, 위로 끌면 +)만큼 움직였다: 창이 따라온다
+    func resize(by delta: CGPoint) {
+        guard let session = resizeSession else { return }
+        let frame = AssistantWindowGeometry.resized(
+            session.frame, edge: session.edge, by: delta, within: session.bounds, min: session.minimum, max: session.maximum
+        )
+        guard frame != panel.frame else { return }
+        programmatic = true
+        panel.setFrame(frame, display: true)
+        programmatic = false
+        panel.invalidateShadow()
+    }
+
+    /// 마우스를 놓았다: 이 크기를 사용자가 정한 크기로 삼는다. 폭은 왼쪽 · 오른쪽 가장자리가 움직여 바뀌었을 때만, 높이는 위 · 아래 가장자리가 움직여 바뀌었을 때만 가져온다:
+    /// 작은 화면에서 줄어 보이는 창의 높이만 끌어도 큰 화면에서 정한 폭을 덮어쓰지 않고, 높이를 바꾸지 않았으면 높이는 계속 내용에 맞춘다.
+    /// 자리도 함께 기억한다 (`onResized` 한 번에 크기와 자리를 같이 쓴다: 위 · 왼쪽 가장자리를 끌면 자리가 바뀌고, 아니어도 크기와 짝으로 다시 열린다)
+    func endResize() {
+        guard let session = resizeSession else { return }
+        resizeSession = nil
+        let frame = panel.frame
+        guard frame != session.frame else { return }
+        let changedWidth = (session.edge.movesLeft || session.edge.movesRight) && frame.width != session.frame.width
+        let changedHeight = session.edge.changesHeight && frame.height != session.frame.height
+        preferredSize = AssistantWindowSize(
+            width: changedWidth ? frame.width : preferredSize.width,
+            height: changedHeight ? frame.height : preferredSize.height
+        )
+        topLeft = CGPoint(x: frame.minX, y: frame.maxY)
+        desiredTopLeft = topLeft
+        onResized(preferredSize)
+        // 자동 높이는 새 폭의 내용에 다시 맞춘다
+        applyFrame()
+    }
+
+    /// 핸들에 포커스를 두고 ⌥ + 화살표: 오른쪽 아래 모서리를 16pt씩 옮긴다 (왼쪽 위는 그대로)
+    func resize(by direction: AssistantWindowGeometry.Direction) {
+        beginResize(.bottomRight)
+        resize(by: AssistantWindowGeometry.keyboardResizeDelta(direction))
+        endResize()
+    }
+
+    /// 가장자리를 두 번 눌렀다: 기본 크기(380 폭, 높이는 내용에 맞춘다)로. 왼쪽 위는 그대로
+    func resetSize() {
+        guard preferredSize != .standard else { return }
+        preferredSize = .standard
+        applyFrame()
+        onResized(.standard)
     }
 
     // MARK: 보이기 · 숨기기
@@ -209,6 +344,8 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
     /// ⌘W · 계정이 떠남: 창을 닫는다 (대화는 Chat history에 남는다)
     func close() {
         settleTask?.cancel()
+        // 끌던 중에 닫히면(계정이 떠남) 놓았을 때 크기를 다시 기억하지 않는다
+        resizeSession = nil
         targetMenu.dismiss(notify: false)
         generation += 1
         panel.delegate = nil

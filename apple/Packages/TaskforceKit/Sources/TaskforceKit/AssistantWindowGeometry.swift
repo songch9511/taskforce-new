@@ -64,18 +64,10 @@ public enum AssistantWindowGeometry {
         CGPoint(x: topLeft.x - cascadeStep, y: topLeft.y - cascadeStep)
     }
 
-    /// 보이는 영역 안으로 넣는다. 레일(펼친 폭 `railWidth`)은 덮지 않는다: 오른쪽 가장자리는 보이는 영역의 오른쪽 − 레일 폭 안쪽이다.
-    /// 높이가 보이는 영역보다 크면 위를 맞춘다 (머리가 늘 보인다)
+    /// 보이는 영역 안으로 넣는다 (기본 폭 `width`의 창). 레일(펼친 폭 `railWidth`)은 덮지 않는다: 오른쪽 가장자리는 보이는 영역의 오른쪽 − 레일 폭 안쪽이다.
+    /// 높이가 보이는 영역보다 크면 위를 맞춘다 (머리가 늘 보인다). 폭이 다른 창은 `clamped(topLeft:size:visible:railWidth:)`
     public static func clamped(topLeft: CGPoint, height: CGFloat, visible: CGRect, railWidth: CGFloat) -> CGPoint {
-        let rightLimit = visible.maxX - railWidth - width
-        let x = max(visible.minX, min(topLeft.x, rightLimit))
-        let y: CGFloat
-        if height >= visible.height {
-            y = visible.maxY
-        } else {
-            y = max(visible.minY + height, min(topLeft.y, visible.maxY))
-        }
-        return CGPoint(x: x, y: y)
+        clamped(topLeft: topLeft, size: CGSize(width: width, height: height), visible: visible, railWidth: railWidth)
     }
 
     /// 창의 높이: 내용(머리 + 본문 + 입력 영역)에 맞추고 560에서 멈춘다. 빈 대화는 440 아래로 줄지 않는다

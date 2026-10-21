@@ -120,7 +120,7 @@ public struct AssistantWindowRegistry: Equatable, Sendable {
 }
 
 /// 창 위치의 기억 (대화 id별 · 화면별). 점은 창의 **왼쪽 위**(화면 좌표, 아래가 0)다 — 높이가 변해도 위가 움직이지 않는다.
-/// 오래된 대화부터 잊는다 (`capacity`개까지)
+/// 오래된 대화부터 잊는다 (`capacity`개까지). 사용자가 정한 창 **크기**는 대화가 아니라 화면별로 하나 기억한다 (그 화면에서 새로 여는 창이 그 크기로 열린다)
 public struct AssistantWindowPositions: Codable, Equatable, Sendable {
     public static let capacity = 100
 
@@ -130,8 +130,20 @@ public struct AssistantWindowPositions: Codable, Equatable, Sendable {
     }
 
     private(set) var entries: [Entry] = []
+    private(set) var sizes: [String: AssistantWindowSize] = [:]
 
     public init() {}
+
+    private enum CodingKeys: String, CodingKey {
+        case entries, sizes
+    }
+
+    /// 크기 기억이 생기기 전에 저장한 것도 읽는다 (`sizes`가 없으면 비어 있다): 업데이트로 창 위치를 잃지 않는다
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        entries = try container.decode([Entry].self, forKey: .entries)
+        sizes = try container.decodeIfPresent([String: AssistantWindowSize].self, forKey: .sizes) ?? [:]
+    }
 
     public var conversationCount: Int { entries.count }
 
@@ -147,6 +159,16 @@ public struct AssistantWindowPositions: Codable, Equatable, Sendable {
         entry.displays[display] = [Double(topLeft.x), Double(topLeft.y)]
         entries.append(entry)
         if entries.count > Self.capacity { entries.removeFirst(entries.count - Self.capacity) }
+    }
+
+    /// 그 화면에서 사용자가 정한 창 크기 (없으면 기본)
+    public func size(display: String) -> AssistantWindowSize? {
+        sizes[display]
+    }
+
+    /// 기본 크기로 되돌렸으면 기억을 지운다 (기본은 기억할 값이 아니다)
+    public mutating func rememberSize(_ size: AssistantWindowSize, display: String) {
+        if size == .standard { sizes[display] = nil } else { sizes[display] = size }
     }
 
     private static func key(_ id: UUID) -> String { id.uuidString.lowercased() }
