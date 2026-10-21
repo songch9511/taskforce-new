@@ -92,8 +92,18 @@ public enum ClaudeInterruptCause: Equatable, Sendable {
     case answerLost
 }
 
+/// ④의 예외 (R1-02 · R1-03): 훅 답 없이 온 **오류** 결과인데 아무것도 실행되지 않았다고 볼 수 있는 둘. 로그에는 이 고정 코드만 남긴다 (글 0)
+public enum ClaudeToolRefusal: String, Equatable, Sendable {
+    /// Read · Glob · Grep · Edit · Write: CLI가 훅 앞에서 입력을 검증해 거절했다 (예: 읽기 전에 쓰기). 오류 결과면 실행도 쓰기도 없었다
+    case cliValidated = "cli_validated"
+    /// init `tools`에 없는 도구: CLI가 "없는 도구"로 거절했다 (읽기 전용 등급의 Edit 등)
+    case notAdvertised = "not_advertised"
+}
+
 public enum ClaudeMapperAction: Equatable, Sendable {
     case emit(AgentEvent)
+    /// 훅 답 없는 오류 결과를 ④ 실패로 보지 않고 넘겼다 (모델이 오류를 보고 이어 간다)
+    case toolRefusedBeforeHook(ClaudeToolRefusal)
     /// SIGINT를 보낸다
     case interrupt(ClaudeInterruptCause)
     /// `result.deferred_tool_use`가 기록한 보류를 보고했다: 상태 파일에 적는다 (질문 사건은 프로세스가 끝날 때 낸다)
@@ -122,6 +132,8 @@ public struct ClaudeEventMapper: Sendable {
     private var lastProgress: Date?
     private var text: (messageID: String?, value: String)?
     private var hookStarted: [String: Int] = [:]
+    /// init이 알린 도구 집합 (④ 예외: 없는 도구의 거절). init을 보기 전에는 nil
+    private var advertisedTools: Set<String>?
     private var toolUseNames: [String: String] = [:]
     private var toolUseFiles: [String: String] = [:]
     private var artifacts: [ClaudeArtifactCandidate] = []
@@ -156,6 +168,7 @@ public struct ClaudeEventMapper: Sendable {
         case .systemInit(let info):
             out += flushText()
             out.append(.initSeen(info))
+            advertisedTools = info.tools.isEmpty ? nil : Set(info.tools)
             if case .answer(let requestID) = config.mode, !facts.answered.contains(requestID) {
                 terminal = true
                 return out + [.interrupt(.answerLost)]
@@ -198,9 +211,15 @@ public struct ClaudeEventMapper: Sendable {
         case .toolResults(let results):
             out += flushText()
             for result in results {
+                let known = toolUseNames[result.toolUseID] ?? facts.toolNames[result.toolUseID]
+                // ④의 예외: 훅 답이 **없는 오류** 결과인데 아무것도 실행되지 않았다고 볼 수 있다 (CLI가 훅 앞에서 입력을 검증해 거절한 것, R1-02 · R1-03).
+                // 성공 결과나 그 밖 도구의 오류 결과는 훅을 건너뛴 실행일 수 있으므로 아래 ④가 그대로 막는다
+                if !facts.answered.contains(result.toolUseID), let known, let refusal = refusalBeforeHook(tool: known, isError: result.isError) {
+                    out.append(.toolRefusedBeforeHook(refusal))
+                    continue
+                }
                 // ④: 이 프로세스에서 그 결과보다 먼저 `hook_started PreToolUse:<tool>`이 있었고 bridge가 그 id에 소켓 답을 줬다
-                guard facts.answered.contains(result.toolUseID), let name = toolUseNames[result.toolUseID] ?? facts.toolNames[result.toolUseID],
-                      let started = hookStarted[name], started > 0 else {
+                guard facts.answered.contains(result.toolUseID), let name = known, let started = hookStarted[name], started > 0 else {
                     return out + fail(4)
                 }
                 hookStarted[name] = started - 1
@@ -294,6 +313,15 @@ public struct ClaudeEventMapper: Sendable {
         if let session = config.expectedSessionID, info.sessionID != session { return (2, false) }
         return nil
     }
+
+    /// CLI가 입력 검증으로 거절한 오류 결과인가. init `tools`에 없는 도구가 먼저, 아니면 CLI가 훅 앞에서 검증하는 파일 도구 다섯. 성공 결과는 어느 쪽도 아니다
+    private func refusalBeforeHook(tool: String, isError: Bool) -> ClaudeToolRefusal? {
+        guard isError else { return nil }
+        if let advertisedTools, !advertisedTools.contains(tool) { return .notAdvertised }
+        return Self.validatedBeforeHook.contains(tool) ? .cliValidated : nil
+    }
+
+    private static let validatedBeforeHook: Set<String> = ["Read", "Glob", "Grep", "Edit", "Write"]
 
     private mutating func fail(_ check: Int, versionOutOfRange: Bool = false) -> [ClaudeMapperAction] {
         let flushed = flushText() + flushArtifacts()

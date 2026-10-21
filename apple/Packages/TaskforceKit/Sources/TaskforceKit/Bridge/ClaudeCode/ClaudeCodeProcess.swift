@@ -1037,6 +1037,8 @@ public actor ClaudeCodeProcess: AgentProcess {
                 // 멈추기로 한 spawn의 훅은 모두 deny (8장 9)
                 spawn.stopped = true
                 sendInterrupt(spawn)
+            case .toolRefusedBeforeHook(let refusal):
+                log.log("claude_tool_refused_before_hook", ["reason": .code(refusal.rawValue)])
             case .confirmQuestion(let pending):
                 // 보고된 보류만 열린 요청이다: id · 종류 · digest · 대상 지문만 적는다 (글 · 경로 0)
                 var state = ClaudeSessionState.load(from: spawn.folder.root)
