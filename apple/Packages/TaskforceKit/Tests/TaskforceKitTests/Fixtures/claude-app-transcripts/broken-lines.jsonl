@@ -1,0 +1,11 @@
+{"type":"user","isSidechain":false,"message":{"role":"user","content":"before"},"sessionId":"5e5e5e5e-0000-4000-8000-0000000000d2","timestamp":"2026-10-22T02:00:00.000Z"}
+{"type":"user","message":{"role":"user","content":"truncated in the middle of a stri
+not json at all, but it mentions "user" and "assistant"
+
+{"type":"user","message":"a string where an object belongs","sessionId":"5e5e5e5e-0000-4000-8000-0000000000d2"}
+{"type":"user","message":{"role":"user","content":{"nested":"an object where text belongs"}},"sessionId":"5e5e5e5e-0000-4000-8000-0000000000d2"}
+{"type":"assistant","message":{"role":"assistant","content":"a string where blocks belong"},"sessionId":"5e5e5e5e-0000-4000-8000-0000000000d2","timestamp":"2026-10-22T02:00:01.000Z"}
+["user","assistant"]
+{"type":"user","isMeta":"yes","isSidechain":"no","message":{"role":"user","content":"wrong flag types are ignored"},"sessionId":"5e5e5e5e-0000-4000-8000-0000000000d2","timestamp":"not a time"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text"},{"type":"text","text":7},{"type":"tool_use","id":5,"name":{"x":1}},{"type":"tool_use","name":"Edit","input":"not an object"},{"type":"text","text":"after"}]},"sessionId":"5e5e5e5e-0000-4000-8000-0000000000d2","timestamp":"2026-10-22T02:00:02.000Z"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"unterminated
