@@ -687,9 +687,51 @@ final class EdgeShellModel {
     /// 레일 셋째 캡슐에 On this Mac이 있나: 새 Issues 화면(캡슐 레일) ∧ 목록이 만들어졌고(`BridgeFlag`) ∧ 로그인. 접힌 레일에서는 셋째 캡슐째 보이지 않는다
     var externalSessionsVisible: Bool { issues != nil && externalSessions != nil && account != nil }
 
-    /// 줄의 Open in Claude: Claude 데스크톱 앱만 앞으로 (인자 0, 그 세션은 열지 않는다)
-    func openInClaude() {
-        _ = claudeApp.openClaudeApp()
+    // MARK: Open in Claude (F4: 그 세션을 데스크톱 앱에서 연다)
+
+    /// 거절 줄(회색 한 줄)을 보이는 시간
+    static let openNoticeSeconds: TimeInterval = 8
+
+    /// 지금 거절 줄을 보이는 세션 (한 줄만). 사용자가 터미널을 닫고 다시 누르거나 시간이 지나면 사라진다
+    private(set) var openNoticeSessionID: String?
+    @ObservationIgnored private var openingSessionIDs: Set<String> = []
+    @ObservationIgnored private var openNoticeTimer: EdgeTimer?
+
+    /// 줄의 Open in Claude: 그 세션을 데스크톱 앱에서 연다. 성공이면 앱이 앞으로 오는 것은 `claude`가 하고 더 하지 않는다. "다른 터미널에 열려 있다"는 거절이면 그 줄에 회색 한 줄을 보이고(앱은 보여 줄 것이 없다),
+    /// 그 밖의 실패(`claude` 없음 · 옛 버전 · 폴더 규칙 · 시간 초과 …)는 앱만 앞으로 가져온다. 같은 세션을 여는 중에 다시 누르면 무시한다 (끝나기를 기다릴 수 있게 Task를 돌려준다)
+    @discardableResult
+    func openInClaude(_ row: ExternalSessionRow) -> Task<Void, Never> {
+        let id = row.id
+        guard openingSessionIDs.insert(id).inserted else { return Task {} }
+        clearOpenNotice()
+        let folder = row.folderPath
+        return Task { [weak self] in
+            guard let self else { return }
+            let result = await claudeApp.openSession(id: id, folder: folder)
+            openingSessionIDs.remove(id)
+            switch result {
+            case .opened: break
+            case .openInAnotherTerminal: showOpenNotice(for: id)
+            case .unavailable: _ = claudeApp.openClaudeApp()
+            }
+        }
+    }
+
+    private func showOpenNotice(for id: String) {
+        openNoticeTimer?.cancel()
+        openNoticeSessionID = id
+        openNoticeTimer = schedule(Self.openNoticeSeconds) { [weak self] in self?.clearOpenNotice() }
+    }
+
+    private func clearOpenNotice() {
+        openNoticeTimer?.cancel()
+        openNoticeTimer = nil
+        openNoticeSessionID = nil
+    }
+
+    /// 패널의 줄 글: 방금 Open in Claude가 거절당한 줄은 둘째 줄이 회색 한 줄로 바뀐다
+    func externalLine(_ row: ExternalSessionRow, now: Date) -> ExternalSessionLineContent {
+        ExternalSessionLineText.make(row, now: now, notice: openNoticeSessionID == row.id ? ExternalSessionCopy.openInAnotherTerminal : nil)
     }
 
     /// 레일의 On this Mac: 패널에 이 Mac의 세션 목록을 연다 (게이트가 꺼진 셸은 아무 일도 없다)
@@ -698,7 +740,7 @@ final class EdgeShellModel {
         openPanel(.onThisMac)
     }
 
-    /// Open in Claude (Claude 데스크톱 앱만 앞으로, 인자 0): 시험은 가짜로 바꾼다
+    /// Open in Claude (그 세션을 데스크톱 앱에서 열고, 못 열면 앱만 앞으로): 시험은 가짜로 바꾼다
     @ObservationIgnored var claudeApp: any ClaudeAppOpening = LiveClaudeAppOpener()
     /// 프로젝트 → 그 프로젝트의 작업 폴더 (이 Mac의 등록부): 묶음 머리에 프로젝트 이름을 쓰는 데만 쓴다. 시험은 바꾼다
     @ObservationIgnored var projectFolders: () -> [UUID: String] = { BridgeHost.shared?.activeWorkspaceRegistry?.projectFolders() ?? [:] }

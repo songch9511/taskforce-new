@@ -20,6 +20,8 @@ public enum ExternalSessionCopy {
     public static let terminal = "Terminal"
     public static let untitled = "Untitled"
     public static let openInClaude = "Open in Claude"
+    /// Open in Claude가 "다른 터미널에 열려 있다"는 거절을 받았을 때 줄에 잠깐 보이는 회색 한 줄. **제안 문구: 사용자 승인 전(Debug 상수)** — 승인되면 `everyCopyStringIsTheApprovedOne` 목록으로 옮긴다
+    public static let openInAnotherTerminal = "Open in another terminal"
     public static let showAll = "Show all"
     public static let showLess = "Show less"
     public static let checking = "Checking…"
@@ -33,7 +35,7 @@ public enum ExternalSessionCopy {
 /// 줄 하나의 말 (DZ 승인): 제목(없으면 폴더 이름, 그것도 없으면 "Untitled"), 둘째 줄 = 상태 말(굵게는 막힌 이유 · 돌고 있음 · 확인 못 함의 첫 말) · 이유 · 시각 · 출처
 public struct ExternalSessionLineContent: Equatable, Sendable {
     public enum Action: Equatable, Sendable {
-        /// 데스크톱 앱만 앞으로 (인자 0)
+        /// 그 세션을 Claude 데스크톱 앱에서 연다 (`claude --desktop --resume <id>`, 실패하면 앱만 앞으로)
         case openInClaude
     }
 
@@ -64,14 +66,14 @@ public struct ExternalSessionLineContent: Equatable, Sendable {
 }
 
 public enum ExternalSessionLineText {
-    public static func make(_ row: ExternalSessionRow, now: Date, timeZone: TimeZone = .current) -> ExternalSessionLineContent {
+    public static func make(_ row: ExternalSessionRow, now: Date, timeZone: TimeZone = .current, notice: String? = nil) -> ExternalSessionLineContent {
         let time = timeLabel(row.lastActivity, now: now, timeZone: timeZone)
         let source: String? = switch row.client {
         case .claudeDesktop?: ExternalSessionCopy.claudeDesktop
         case .terminal?: ExternalSessionCopy.terminal
         case .other?, nil: nil
         }
-        let word: String
+        var word: String
         var emphasis = true
         var detail: [String]
         var action: ExternalSessionLineContent.Action?
@@ -96,10 +98,18 @@ public enum ExternalSessionLineText {
             word = ExternalSessionCopy.idle
             emphasis = false
             detail = [time] + (source.map { [$0] } ?? [])
+            // 데스크톱에서 시작한 쉬는 줄에도 Open in Claude (F4). 터미널 · 그 밖 출처의 줄은 그대로
+            if row.client == .claudeDesktop { action = .openInClaude }
         case .inTaskforce:
             word = ExternalSessionCopy.inTaskforce
             emphasis = false
             detail = [time]
+        }
+        // 방금 누른 Open in Claude가 거절당했다: 버튼이 있는 줄만 둘째 줄을 이 한 줄(회색)로 바꾼다. 버튼은 그대로라 다시 누를 수 있다
+        if let notice, action != nil {
+            word = notice
+            emphasis = false
+            detail = []
         }
         return ExternalSessionLineContent(title: title(row), statusWord: word, statusIsEmphasis: emphasis, detail: detail, action: action)
     }

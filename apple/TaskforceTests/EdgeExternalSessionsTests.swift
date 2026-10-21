@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftUI
 import Testing
 @testable import Taskforce
 @testable import TaskforceKit
@@ -14,12 +15,43 @@ struct EdgeExternalSessionsTests {
     static func uuid(_ n: Int) -> String { String(format: "5e5e5e5e-0000-4000-8000-%012x", n) }
 
     final class FakeClaudeApp: ClaudeAppOpening {
+        struct Open: Equatable {
+            var id: String
+            var folder: String?
+        }
+
+        /// 앱만 앞으로 가져온 횟수
         private(set) var opened = 0
         var installed = true
+        /// 세션을 열라고 한 요청 (id · 폴더)
+        private(set) var sessions: [Open] = []
+        /// `openSession`의 답. `holds`가 켜져 있으면 `release()`까지 기다린다 (열기 중인 상태를 보려고)
+        var answer = ClaudeDesktopOpenResult.opened
+        var holds = false
+        private var waiting: [CheckedContinuation<Void, Never>] = []
+
+        func release() {
+            holds = false
+            let pending = waiting
+            waiting = []
+            for continuation in pending { continuation.resume() }
+        }
+
+        /// 기다리는 것 중 가장 먼저 온 하나만 놓는다
+        func releaseFirst() {
+            guard !waiting.isEmpty else { return }
+            waiting.removeFirst().resume()
+        }
 
         func openClaudeApp() -> Bool {
             opened += 1
             return installed
+        }
+
+        func openSession(id: String, folder: String?) async -> ClaudeDesktopOpenResult {
+            sessions.append(Open(id: id, folder: folder))
+            if holds { await withCheckedContinuation { waiting.append($0) } }
+            return answer
         }
     }
 
@@ -46,10 +78,12 @@ struct EdgeExternalSessionsTests {
         let scope: AccountScope
     }
 
-    static func row(_ n: Int, status: ExternalSessionStatus = .available, group: String = "/Users/tester/proj", created: Date = Date()) -> ExternalSessionRow {
+    static func row(
+        _ n: Int, status: ExternalSessionStatus = .available, group: String = "/Users/tester/proj", created: Date = Date(), client: ExternalSessionClient? = .terminal
+    ) -> ExternalSessionRow {
         ExternalSessionRow(
             id: Self.uuid(n), ref: String(repeating: "c", count: 64), title: "Session \(n)", folderPath: group, groupPath: group, lastActivity: Date().addingTimeInterval(-3600),
-            created: created, client: .terminal, status: status
+            created: created, client: client, status: status
         )
     }
 
@@ -220,16 +254,304 @@ struct EdgeExternalSessionsTests {
         #expect(rig.shell.panelOpen && rig.shell.view == .onThisMac)
     }
 
-    // MARK: Open in Claude (가짜 1회)
+    // MARK: Open in Claude (F4: 그 세션을 데스크톱 앱에서 연다, 가짜 실행기)
 
-    @Test func openInClaudeOpensTheAppOnceWithoutAnyArgumentsOrSession() {
+    private func desktopRow(_ n: Int = 1, status: ExternalSessionStatus = .available) -> ExternalSessionRow {
+        Self.row(n, status: status, group: "/Users/tester/proj\(n)", client: .claudeDesktop)
+    }
+
+    @Test func openInClaudeOpensThatSessionWithItsIDAndFolderAndLeavesTheAppToTheCLI() async {
         let rig = make()
-        rig.shell.openInClaude()
-        #expect(rig.app.opened == 1)
+        let row = desktopRow(3)
+        await rig.shell.openInClaude(row).value
+        #expect(rig.app.sessions == [.init(id: Self.uuid(3), folder: "/Users/tester/proj3")], "그 줄의 세션 id와 검증된 폴더")
+        #expect(rig.app.opened == 0, "열었으면 앱 앞으로 가져오기는 CLI가 한다")
+        #expect(rig.shell.openNoticeSessionID == nil)
         #expect(LiveClaudeAppOpener.bundleID == "com.anthropic.claudefordesktop")
+    }
+
+    @Test func aRowWithoutAFolderStillAsksAndTheOpenerFallsBack() async {
+        let rig = make()
+        var row = desktopRow(4, status: .held(.claudeApp))
+        row.folderPath = nil
+        await rig.shell.openInClaude(row).value
+        #expect(rig.app.sessions == [.init(id: Self.uuid(4), folder: nil)], "폴더가 없으면 nil을 넘긴다 (열기는 폴더 없이 하지 않는다)")
+    }
+
+    @Test func anUnavailableAnswerFallsBackToActivatingTheAppOnceWithoutAnyNotice() async {
+        let rig = make()
+        rig.app.answer = .unavailable
+        await rig.shell.openInClaude(desktopRow()).value
+        #expect(rig.app.opened == 1, "CLI가 없거나 거절하면 앱만 앞으로")
+        #expect(rig.shell.openNoticeSessionID == nil)
         rig.app.installed = false
-        rig.shell.openInClaude()
+        await rig.shell.openInClaude(desktopRow()).value
         #expect(rig.app.opened == 2, "설치돼 있지 않아도 터지지 않는다")
+    }
+
+    @Test func theAnotherTerminalRefusalShowsOneGrayLineOnThatRowOnlyAndDoesNotActivateTheApp() async {
+        let rig = make()
+        rig.app.answer = .openInAnotherTerminal
+        let asked = desktopRow(1), other = desktopRow(2)
+        await rig.shell.openInClaude(asked).value
+        #expect(rig.app.opened == 0, "다른 터미널이 쥔 세션이라 앱은 보여 줄 것이 없다")
+        let now = Date()
+        let line = rig.shell.externalLine(asked, now: now)
+        #expect(line.metaText == ExternalSessionCopy.openInAnotherTerminal && !line.statusIsEmphasis && line.action == .openInClaude, "회색 한 줄, 버튼은 그대로")
+        #expect(rig.shell.externalLine(other, now: now) == ExternalSessionLineText.make(other, now: now), "다른 줄은 그대로")
+        #expect(rig.shell.externalLine(asked, now: now) != ExternalSessionLineText.make(asked, now: now))
+    }
+
+    @Test func theRefusalLineGoesAwayAfterItsTimeAndWhenTheSessionIsAskedAgain() async {
+        let time = EdgeShellModelTests.ManualTime()
+        let scope = AccountScope(currentAccount: { SampleData.userID })
+        let external = ExternalSessionsStore(scope: scope, scan: { ExternalSessionScan(rows: []) }, seen: InMemoryExternalSessionSeenStore(), pollInterval: 3600)
+        let shell = EdgeShellModel(
+            schedule: time.schedule, clock: time.clock, chatsEnabled: true, windowsEnabled: true, issues: IssueRuntime(gateway: IssueSampleGateway(), scope: scope), externalSessions: external
+        )
+        let app = FakeClaudeApp()
+        shell.claudeApp = app
+        app.answer = .openInAnotherTerminal
+        let row = desktopRow(1)
+        await shell.openInClaude(row).value
+        #expect(shell.openNoticeSessionID == row.id)
+        time.advance(EdgeShellModel.openNoticeSeconds - 0.5)
+        #expect(shell.openNoticeSessionID == row.id, "아직 보인다")
+        time.advance(1)
+        #expect(shell.openNoticeSessionID == nil, "\(EdgeShellModel.openNoticeSeconds)초 뒤 사라진다")
+        #expect(EdgeShellModel.openNoticeSeconds >= 3 && EdgeShellModel.openNoticeSeconds <= 15)
+
+        // 다시 누르면 먼저 지우고, 이번에 열렸으면 그대로 없다
+        await shell.openInClaude(row).value
+        #expect(shell.openNoticeSessionID == row.id)
+        app.answer = .opened
+        await shell.openInClaude(row).value
+        #expect(shell.openNoticeSessionID == nil, "다시 눌러 열렸으면 거절 줄은 없다")
+        // 오래된 타이머가 새 줄을 지우지 않는다
+        app.answer = .openInAnotherTerminal
+        await shell.openInClaude(row).value
+        time.advance(EdgeShellModel.openNoticeSeconds - 1)
+        await shell.openInClaude(row).value
+        time.advance(2)
+        #expect(shell.openNoticeSessionID == row.id, "두 번째 거절의 시간은 두 번째부터 센다")
+    }
+
+    @Test func anEarlierRefusalsTimerNeverClearsALaterRefusalOnAnotherRow() async {
+        let time = EdgeShellModelTests.ManualTime()
+        let scope = AccountScope(currentAccount: { SampleData.userID })
+        let external = ExternalSessionsStore(scope: scope, scan: { ExternalSessionScan(rows: []) }, seen: InMemoryExternalSessionSeenStore(), pollInterval: 3600)
+        let shell = EdgeShellModel(
+            schedule: time.schedule, clock: time.clock, chatsEnabled: true, windowsEnabled: true, issues: IssueRuntime(gateway: IssueSampleGateway(), scope: scope), externalSessions: external
+        )
+        let app = FakeClaudeApp()
+        shell.claudeApp = app
+        app.answer = .openInAnotherTerminal
+        app.holds = true
+        let (first, second) = (desktopRow(1), desktopRow(2))
+        let firstTask = shell.openInClaude(first)
+        let secondTask = shell.openInClaude(second)
+        #expect(await until { app.sessions.count == 2 })
+        app.releaseFirst()
+        await firstTask.value
+        #expect(shell.openNoticeSessionID == first.id)
+        time.advance(5)
+        app.releaseFirst()
+        await secondTask.value
+        #expect(shell.openNoticeSessionID == second.id, "한 줄만 보인다: 나중 거절이 앞 줄의 거절을 대신한다")
+        time.advance(EdgeShellModel.openNoticeSeconds - 1)
+        #expect(shell.openNoticeSessionID == second.id, "앞 거절의 타이머가 나중 거절을 지우지 않는다")
+        time.advance(2)
+        #expect(shell.openNoticeSessionID == nil)
+    }
+
+    @Test func aSecondClickOnTheSameSessionWhileItIsStillOpeningIsIgnored() async {
+        let rig = make()
+        rig.app.holds = true
+        let row = desktopRow(1)
+        let first = rig.shell.openInClaude(row)
+        let second = rig.shell.openInClaude(row)
+        let otherSession = rig.shell.openInClaude(desktopRow(2))
+        #expect(await until { rig.app.sessions.count == 2 }, "다른 세션은 따로 열린다")
+        rig.app.release()
+        await first.value
+        await second.value
+        await otherSession.value
+        #expect(rig.app.sessions.map(\.id).sorted() == [Self.uuid(1), Self.uuid(2)], "같은 세션은 한 번만")
+        await rig.shell.openInClaude(row).value
+        #expect(rig.app.sessions.count == 3, "끝난 뒤에는 다시 누를 수 있다")
+    }
+
+    @Test func theLiveOpenerHandsTheSessionAndFolderToTheCLIOpenerAndNeverActivatesTheAppItself() async {
+        final class Seen: @unchecked Sendable {
+            private let lock = NSLock()
+            private var value: [[String]] = []
+            var calls: [[String]] { lock.withLock { value } }
+            func add(_ arguments: [String], _ cwd: String) { lock.withLock { value.append(arguments + [cwd]) } }
+        }
+        let seen = Seen()
+        let home = NSTemporaryDirectory() + "tf-open-\(UUID().uuidString.lowercased())"
+        let folder = home + "/proj"
+        try? FileManager.default.createDirectory(atPath: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let real = GateFileSystem.realpath(folder) ?? folder
+        let live = LiveClaudeAppOpener(makeOpener: {
+            ClaudeDesktopSessionOpener(
+                locator: ClaudeCodeLocator(candidates: ["/usr/bin/true"]), folderRules: WorkspaceFolderRules(home: GateFileSystem.realpath(home) ?? home, systemRoots: []),
+                run: { _, arguments, _, cwd, timeout in
+                    seen.add(arguments, cwd)
+                    return timeout == 15 ? .openInAnotherTerminal : .unavailable
+                }
+            )
+        })
+        #expect(await live.openSession(id: Self.uuid(9), folder: folder) == .openInAnotherTerminal)
+        #expect(seen.calls == [["--desktop", "--resume", Self.uuid(9), real]])
+        #expect(await live.openSession(id: "nope", folder: folder) == .unavailable, "나쁜 id는 띄우지 않는다")
+        #expect(seen.calls.count == 1)
+    }
+
+    // MARK: 클릭이 눌린다 (비활성 패널)
+
+    /// 줄 하나를 실제 패널과 같은 스타일(`EdgeKeyPanel`: borderless · nonactivating)의 380pt 폭에 올린다 (바깥 여백 8)
+    private func panelWithRow(_ content: ExternalSessionLineContent, onAction: @escaping () -> Void, key: Bool) -> (panel: EdgeKeyPanel, hosting: NSHostingView<AnyView>) {
+        let hosting = NSHostingView(rootView: AnyView(
+            ExternalSessionLineView(content: content) { _ in onAction() }.frame(width: 380).padding(8).background(TFColor.bgPanel)
+        ))
+        hosting.frame = NSRect(x: 0, y: 0, width: 396, height: 80)
+        let panel = EdgeKeyPanel(contentRect: hosting.frame, styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView], backing: .buffered, defer: false)
+        panel.isFloatingPanel = true
+        panel.contentView = hosting
+        if key { panel.makeKeyAndOrderFront(nil) } else { panel.orderFront(nil) }
+        hosting.layoutSubtreeIfNeeded()
+        return (panel, hosting)
+    }
+
+    private func spin(_ seconds: TimeInterval) { RunLoop.current.run(until: Date().addingTimeInterval(seconds)) }
+
+    /// 실제 마우스 이벤트(눌림 · 뗌)를 창에 보낸다. 점은 호스팅 뷰 좌표(왼쪽 위가 원점)
+    private func click(_ panel: NSWindow, _ hosting: NSView, at point: CGPoint) {
+        let location = hosting.convert(point, to: nil)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            if let event = NSEvent.mouseEvent(
+                with: type, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: panel.windowNumber, context: nil,
+                eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0
+            ) { panel.sendEvent(event) }
+        }
+        RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+    }
+
+    /// 사용자가 "버튼이 아무 일도 안 한다"고 알렸다 (2026-10-21): 비활성 패널에서 첫 클릭이 먹히지 않거나 버튼 영역 일부가 눌리지 않는 문제가 아니다.
+    /// 버튼 캡슐 안은 어디를 눌러도 한 번 눌리고(글자 밖 여백 포함), 줄의 다른 곳은 눌리지 않으며, 창이 키가 아니어도 첫 클릭이 먹힌다
+    @Test func theOpenInClaudeButtonTakesAFirstClickAnywhereInItsCapsuleAndNothingElseInTheRow() {
+        let content = ExternalSessionLineText.make(desktopRow(), now: Date())
+        #expect(content.action == .openInClaude)
+        // 호스팅 뷰 좌표: 380pt 줄 + 바깥 여백 8 → 버튼 캡슐은 x ≈ 265–376, y ≈ 19–43 (실측 스윕)
+        let inside: [CGPoint] = [CGPoint(x: 320, y: 31), CGPoint(x: 272, y: 31), CGPoint(x: 368, y: 31), CGPoint(x: 320, y: 24), CGPoint(x: 320, y: 38)]
+        let outside: [CGPoint] = [CGPoint(x: 60, y: 31), CGPoint(x: 150, y: 28), CGPoint(x: 320, y: 8), CGPoint(x: 320, y: 62), CGPoint(x: 390, y: 31)]
+        for key in [true, false] {
+            for point in inside {
+                var fired = 0
+                let (panel, hosting) = panelWithRow(content, onAction: { fired += 1 }, key: key)
+                defer { panel.orderOut(nil) }
+                click(panel, hosting, at: point)
+                #expect(fired == 1, Comment(rawValue: "캡슐 안 \(point) key=\(key): 한 번 눌린다 (\(fired))"))
+            }
+            for point in outside {
+                var fired = 0
+                let (panel, hosting) = panelWithRow(content, onAction: { fired += 1 }, key: key)
+                defer { panel.orderOut(nil) }
+                click(panel, hosting, at: point)
+                #expect(fired == 0, Comment(rawValue: "줄의 다른 곳 \(point) key=\(key): 눌리지 않는다 (\(fired))"))
+            }
+        }
+    }
+
+    /// 실제 패널(`EdgePanelView`: 머리 · 스크롤 · TimelineView · 줄)에 올린 Open in Claude 버튼을 실제 마우스 이벤트로 눌러 본다.
+    /// 줄 하나를 따로 올린 위 시험과 달리 스크롤 · 겹친 뷰가 클릭을 가로채지 않는지 본다: 두 줄의 버튼 캡슐을 훑어 두 세션 모두 눌리고, 눌린 세로 범위가 버튼 높이만큼이고 가로 끝도 눌린다.
+    /// 패널이 키가 아닐 때(`orderFront`만)도 같다: 비활성 패널의 첫 클릭이 먹히지 않는 문제가 아니다
+    @Test func inTheRealPanelBothButtonsAreClickableAndEachOpensItsOwnSession() async {
+        for key in [true, false] {
+            let rig = make()
+            rig.counter.set([
+                Self.row(1, status: .available, group: "/Users/tester/proj1", client: .claudeDesktop),
+                Self.row(2, status: .held(.claudeApp), group: "/Users/tester/proj2", client: .claudeDesktop),
+            ])
+            await rig.store.refresh()
+            rig.shell.openOnThisMac()
+            let presentation = EdgePanelPresentation()
+            presentation.shown = true
+            let hosting = NSHostingView(rootView: EdgePanelView(shell: rig.shell, presentation: presentation, chat: nil))
+            hosting.frame = NSRect(x: 0, y: 0, width: 380, height: 520)
+            let panel = EdgeKeyPanel(contentRect: hosting.frame, styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView], backing: .buffered, defer: false)
+            panel.isFloatingPanel = true
+            panel.contentView = hosting
+            if key { panel.makeKeyAndOrderFront(nil) } else { panel.orderFront(nil) }
+            defer { panel.orderOut(nil) }
+            hosting.layoutSubtreeIfNeeded()
+            spin(0.4)
+            var hits: [(x: Int, y: Int, id: String)] = []
+            for x in [262, 306, 356] {
+                for y in stride(from: 70, to: 260, by: 5) {
+                    let before = rig.app.sessions.count
+                    click(panel, hosting, at: CGPoint(x: x, y: y))
+                    // 줄의 클릭은 Task로 가서 한 번 양보해야 닿는다
+                    try? await Task.sleep(for: .milliseconds(15))
+                    if rig.app.sessions.count > before, let last = rig.app.sessions.last { hits.append((x, y, last.id)) }
+                }
+            }
+            #expect(Set(hits.map(\.id)) == [Self.uuid(1), Self.uuid(2)], Comment(rawValue: "key=\(key): 두 줄의 버튼이 각자 자기 세션을 연다"))
+            for n in [1, 2] {
+                let ys = hits.filter { $0.id == Self.uuid(n) }.map(\.y)
+                #expect((ys.max() ?? 0) - (ys.min() ?? 0) >= 12, Comment(rawValue: "key=\(key) 세션 \(n): 버튼 높이만큼 눌린다 (\(ys.min() ?? -1)–\(ys.max() ?? -1))"))
+                #expect(Set(hits.filter { $0.id == Self.uuid(n) }.map(\.x)) == [262, 306, 356], Comment(rawValue: "key=\(key) 세션 \(n): 캡슐의 왼쪽 · 가운데 · 오른쪽 모두"))
+            }
+            #expect(rig.app.opened == 0, "열기가 `.opened`를 돌려주면 앱만 앞으로 가져오지 않는다")
+        }
+    }
+
+    /// 거절 줄이 실제 패널에 그려지는지: 모델의 값이 바뀌면 TimelineView 안의 줄이 다시 그려져야 한다 (그림 바이트로 본다).
+    /// 열렸을 때(`.opened`)는 아무것도 바뀌지 않고, 거절당했을 때만 그림이 달라진다
+    @Test func theRefusalLineIsDrawnInTheRealPanelOnlyWhenTheCLIRefuses() async throws {
+        let rig = make()
+        rig.counter.set([Self.row(1, status: .available, group: "/Users/tester/proj1", client: .claudeDesktop)])
+        await rig.store.refresh()
+        rig.shell.openOnThisMac()
+        let presentation = EdgePanelPresentation()
+        presentation.shown = true
+        let hosting = NSHostingView(rootView: EdgePanelView(shell: rig.shell, presentation: presentation, chat: nil))
+        hosting.frame = NSRect(x: 0, y: 0, width: 380, height: 300)
+        let panel = EdgeKeyPanel(contentRect: hosting.frame, styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView], backing: .buffered, defer: false)
+        panel.isFloatingPanel = true
+        panel.contentView = hosting
+        panel.makeKeyAndOrderFront(nil)
+        defer { panel.orderOut(nil) }
+        hosting.layoutSubtreeIfNeeded()
+        spin(0.4)
+        func picture() throws -> Data {
+            let rep = try #require(hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds))
+            hosting.cacheDisplay(in: hosting.bounds, to: rep)
+            return try #require(rep.representation(using: .png, properties: [:]))
+        }
+        let before = try picture()
+        // 버튼 자리를 찾는다 (열렸다고 답하는 가짜로 한 번 눌리는 곳)
+        rig.app.answer = .opened
+        var buttonY: Int?
+        for y in stride(from: 70, to: 200, by: 4) {
+            click(panel, hosting, at: CGPoint(x: 306, y: y))
+            try? await Task.sleep(for: .milliseconds(15))
+            if !rig.app.sessions.isEmpty {
+                buttonY = y
+                break
+            }
+        }
+        let y = try #require(buttonY, "버튼을 찾았다")
+        spin(0.3)
+        #expect(try picture() == before, "열렸을 때는 줄이 그대로다")
+        rig.app.answer = .openInAnotherTerminal
+        click(panel, hosting, at: CGPoint(x: 306, y: y))
+        try? await Task.sleep(for: .milliseconds(30))
+        spin(0.3)
+        #expect(rig.shell.openNoticeSessionID == Self.uuid(1))
+        #expect(try picture() != before, "거절당하면 둘째 줄이 회색 한 줄로 다시 그려진다")
     }
 
     // MARK: 묶음 머리의 프로젝트 이름

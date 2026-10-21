@@ -41,9 +41,53 @@ extension ExternalSessionSuites {
             for status in quiet { #expect(!line(Self.row(status: status)).highlightsOnHover, "누를 수 없는 줄: \(status)") }
         }
 
+        // MARK: Open in Claude가 보이는 줄 (F4, 사용자 결정 2026-10-21)
+
+        @Test func openInClaudeShowsOnEveryClaudeDesktopRowThatIsRunningInClaudeOrIdle() {
+            let running = line(Self.row(status: .held(.claudeApp), client: .claudeDesktop))
+            #expect(running.action == .openInClaude && running.highlightsOnHover && running.metaText == "Running in Claude · 2 min ago")
+            let idle = line(Self.row(status: .available, client: .claudeDesktop, ageMinutes: 40))
+            #expect(idle.action == .openInClaude && idle.highlightsOnHover, "쉬고 있는 데스크톱 줄에도 버튼")
+            #expect(idle.metaText == "Idle · 40 min ago · Claude desktop" && !idle.statusIsEmphasis, "버튼이 생겨도 줄의 말은 그대로")
+        }
+
+        @Test func openInClaudeStaysOffTheTerminalAndOtherRowsAndEveryRowTheDesktopCannotTakeOver() {
+            for client in [ExternalSessionClient.terminal, .other, nil] {
+                #expect(line(Self.row(status: .available, client: client)).action == nil, "터미널 · 그 밖 출처의 Idle 줄은 그대로: \(String(describing: client))")
+            }
+            #expect(line(Self.row(status: .held(.claudeApp), client: .terminal)).action == .openInClaude, "Claude 앱이 쥔 줄은 출처와 상관없이 지금처럼")
+            let none: [ExternalSessionStatus] = [
+                .held(.terminal), .held(.background), .held(.unknown), .inTaskforce, .couldNotCheck,
+                .cannotResume(.worktree), .cannotResume(.folderNotAllowed), .cannotResume(.unreadable), .cannotResume(.updateClaudeCode),
+            ]
+            for status in none { #expect(line(Self.row(status: status, client: .claudeDesktop)).action == nil, "데스크톱 줄이라도 동작이 없다: \(status)") }
+        }
+
+        @Test func aRefusalNoticeReplacesTheSecondLineWithOneGrayLineAndKeepsTheButton() {
+            let row = Self.row(status: .available, client: .claudeDesktop, ageMinutes: 40)
+            let plain = line(row)
+            let noticed = ExternalSessionLineText.make(row, now: Self.now, timeZone: Self.utc, notice: ExternalSessionCopy.openInAnotherTerminal)
+            #expect(noticed.metaText == ExternalSessionCopy.openInAnotherTerminal && noticed.detail.isEmpty, "둘째 줄은 이 한 줄뿐")
+            #expect(!noticed.statusIsEmphasis, "회색 (굵지 않다)")
+            #expect(noticed.action == .openInClaude && noticed.title == plain.title, "버튼은 그대로: 터미널을 닫고 다시 누를 수 있다")
+            // 굵던 줄("Running in Claude")도 거절 줄은 회색이다
+            let running = Self.row(status: .held(.claudeApp), client: .claudeDesktop)
+            let runningNoticed = ExternalSessionLineText.make(running, now: Self.now, timeZone: Self.utc, notice: ExternalSessionCopy.openInAnotherTerminal)
+            #expect(line(running).statusIsEmphasis && !runningNoticed.statusIsEmphasis && runningNoticed.action == .openInClaude)
+            // 버튼이 없는 줄에는 거절 줄을 얹지 않는다 (그 줄은 이미 자기 상태를 말한다)
+            let terminal = Self.row(status: .held(.terminal), client: .claudeDesktop)
+            #expect(ExternalSessionLineText.make(terminal, now: Self.now, timeZone: Self.utc, notice: ExternalSessionCopy.openInAnotherTerminal) == line(terminal))
+            #expect(ExternalSessionLineText.make(row, now: Self.now, timeZone: Self.utc, notice: nil) == plain, "notice가 없으면 그대로")
+        }
+
+        @Test func theRefusalLineIsAProposalNotYetInTheApprovedList() {
+            // 사용자 승인 전 문구 (노트에 제안): 승인되면 `everyCopyStringIsTheApprovedOne`의 목록으로 옮긴다
+            #expect(ExternalSessionCopy.openInAnotherTerminal == "Open in another terminal")
+        }
+
         @Test func anIdleRowSaysIdleTimeAndSourceWithoutEmphasis() {
             let desktop = line(Self.row(status: .available, client: .claudeDesktop, ageMinutes: 40))
-            #expect(desktop.metaText == "Idle · 40 min ago · Claude desktop" && !desktop.statusIsEmphasis && desktop.action == nil)
+            #expect(desktop.metaText == "Idle · 40 min ago · Claude desktop" && !desktop.statusIsEmphasis && desktop.action == .openInClaude, "데스크톱 줄은 Open in Claude")
             #expect(line(Self.row(status: .available, client: .terminal, ageMinutes: 180)).metaText == "Idle · 3 hr ago · Terminal")
             #expect(line(Self.row(status: .available, client: .other, ageMinutes: 180)).metaText == "Idle · 3 hr ago", "Claude · Terminal 밖 출처는 비워 둔다")
             #expect(line(Self.row(status: .available, client: nil, ageMinutes: 180)).metaText == "Idle · 3 hr ago")
