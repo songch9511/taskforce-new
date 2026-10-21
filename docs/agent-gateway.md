@@ -400,34 +400,34 @@ Mac bridge(11-1절)의 첫 실제 adapter다. 턴마다 사용자의 `claude -p`
 
 검증은 Kit `Tests/TaskforceKitTests/ClaudeCode/`(결정표 · 매퍼 · S0 픽스처 · 실행 인자 · 환경 · probe · 정체 · 소켓 · 가짜 `claude` E1–E23 · 런타임 결합 · 골든 · 검토 반영 `ClaudeReview*Tests` · 재검토 반영 `ClaudeRereview*Tests` · 재검토 2 반영 `ClaudeRereview2*Tests` · 재검토 3 반영 `ClaudeRereview3*Tests` · 재검토 4 반영 · 지킴이 `ClaudeRereview4*Tests` · 재검토 5 반영 `ClaudeRereview5*Tests` · 재검토 6 반영 `ClaudeRereview6*Tests` · 재검토 7 반영 `ClaudeRereview7*Tests` · 재검토 8 반영 `ClaudeRereview8*Tests`) · `Tests/TaskforceAgentWireTests/`(재검토 7 · 8 `HookRereview7Tests`: 절대 기한 · 공통 시계 · 예산) · `Tests/TaskforceAgentKeeperTests/`(지킴이 실행 파일 · 훑기 규칙 · 부른 쪽 확인 · `ended` 보고 · idversion), 앱 `TaskforceTests/ClaudeCodeHostTests.swift` · `BridgeFlagTests.swift`, 서버 쪽 `src/lib/bridge/swift-fixtures.test.ts`(tool-decision · 골든 사건 · registry 버전)와 `tests/db/claude-code-s0-events.test.ts`(S0 사건을 `apply_agent_event`로)에 있다. 실제 `claude` 실행(R1 · R2)은 코디네이터 · 사용자 단계다.
 
-## 13. 외부 세션 목록 (OA 외부 세션 PR1) — 결정 기록과 위치
+## 17. 외부 세션 목록 (OA 외부 세션 PR1) — 결정 기록과 위치
 
 Taskforce 밖에서 시작한 Claude Code 세션을 이 Mac의 레일 "On this Mac"에 보이는 일. 계약 `handoffs/oa-external-sessions-contract.md` 16 · 17장(본문의 "서버에 0"을 16장이 뒤집었다). 이어받기(PR2)는 이 장에 없다.
 
-### 13-1. 서버에 가는 것 · 가지 않는 것
+### 17-1. 서버에 가는 것 · 가지 않는 것
 
 - 가는 것: **제목**(사용자 글에 가깝다) · **상태**(6개 말) · **마지막 활동 시각** · **불투명 id**. 가지 않는 것: 대화 본문 · 경로 · 폴더 이름 · Claude 세션 id.
 - 불투명 id = `hex(HMAC-SHA256(열쇠, "tf-external-session-v1\n" + 소문자 세션 UUID))`. 열쇠 32바이트는 이 Mac의 파티션 폴더(`external-sessions.key`, 0600)에만 있고, id ↔ UUID 대응은 이 Mac의 메모리에서만 만든다. 서버는 이 값에서 Claude 세션을 찾을 수 없고, 다른 Mac의 같은 세션을 이어 볼 수도 없다. 열쇠를 못 두면 목록을 내지 않는다.
 - 상태 6개: `available · running_claude_app · running_terminal · running_elsewhere · unknown · unavailable`. 보이는 이유(폴더 거절 · 버전 · 워크트리 · 읽지 못함)는 서버에 `unavailable` 하나로 접힌다. 이미 이어받은 세션은 `agent_sessions`에 있어 보고하지 않는다.
 
-### 13-2. 표 · 함수 (`20261203000000_external_sessions_list.sql`)
+### 17-2. 표 · 함수 (`20261203000000_external_sessions_list.sql`)
 
 - `external_sessions`: `user_id` + `owner_all` RLS(앱은 읽기만, 쓰기 권한 없음) + `bridges`와 `(id, user_id)` 복합 외래키 + `unique (bridge_id, session_ref)`, `session_ref ~ '^[0-9a-f]{64}$'`, `title` null 또는 1–200자, `state` 6개.
 - `report_external_sessions(p_user_id, p_bridge_id, p_sessions jsonb)`: service role 전용, `search_path=''`. **스냅샷 교체**: 이번 목록에 없는 그 Mac의 행을 지우고 나머지를 넣는다(최대 50, 중복 없음, 모양이 틀리면 예외 · 아무것도 쓰지 않음). bridge가 이 사용자 것이고 active가 아니면 `not_found`(route 404). 같은 bridge의 보고는 advisory lock으로 직렬화한다. 보고마다 `reported_at`을 새로 한다.
 - 보관: ① 스냅샷 교체(7일 창 밖으로 나간 세션 · 사라진 세션의 제목은 다음 보고에 지워진다) ② bridge `revoked`가 되면 트리거 `external_sessions_on_bridge_revoked`가 즉시 삭제, bridge · 계정 삭제는 cascade ③ 보고가 끊긴 지 **14일**이 지난 행은 `/api/cron/retention` → `purge_external_sessions(p_before, p_limit ≤ 5000)`. 함수가 아직 없으면(코드가 먼저 배포) cron은 `external_sessions_ready: false`로 200을 낸다. 제목은 로그 · 지표 · AI 호출 · 관리자 화면에 쓰지 않는다.
 
-### 13-3. route · gate
+### 17-3. route · gate
 
 - `PUT /api/v2/external-sessions`(`authenticateRequest`: Bearer · 쿠키, 쿠키 쓰기는 CSRF). 본문(`externalSessionReportRequestSchema`, strict): `{ bridge_id, sessions: [{ id, title | null, state, last_activity_at }] }`, 제목은 제어 · 서식 글자(방향 바꿈 포함) 없고 앞뒤 공백 없는 1–200자. 본문 128 KiB 넘으면 읽지 않고 400. 응답 `{ kept, removed }`.
 - gate: `CONVERSATIONS_V2_ENABLED` ∧ `AGENT_ADAPTER_CLAUDE_CODE_ENABLED`가 꺼져 있으면 인증 · DB 전에 404, 베타 명단(`agentBetaUserAllowed`) 밖도 404. 모르는 · 남의 · 해제된 bridge도 404(존재를 알리지 않는다). 새 플래그 · 새 rate limit 종류는 만들지 않았다(앱이 바뀐 것만, 30초 안에 다시 보내지 않고, 안 바뀌어도 6시간마다 한 번).
 - 로그는 이벤트 이름 · 오류 이름 · 코드만이다(제목 · id 없음).
 
-### 13-4. 지표
+### 17-4. 지표
 
 - `external_sessions_shown`(`metric_events` 종류 검사는 `20261129000000`의 목록 + 이 type): 레일 목록이 행 1개 이상으로 보인 날 하루 한 번(UTC 날짜별 부분 unique 인덱스). 앱이 **`POST /api/v2/external-sessions/shown`**으로 `{ rows_bucket: 1 | 2-5 | 6-15 | 16+, held_bucket: 0 | 1-2 | 3+ }`(구간 값만, 글 · 수 0, strict)를 알리면 route가 서버 권한으로 남긴다 — 앱의 열 권한(`type` · `action_id`)과 insert 정책(`app_opened` · `assistant_opened`)은 그대로다. 같은 날 두 번째는 23505를 조용히 넘겨 204다. gate · 베타 명단은 13-3과 같다. **v1 `metric-events`는 동결이라 건드리지 않았다**(`contract-v1-freeze.test.ts`가 그 스키마 지문을 지킨다): 새 지표는 v2다.
 - `session_attached` · `session_attach_refused`는 이어받기 PR의 몫이다(남기는 곳 없는 type을 지금 넣으면 등록부 시험이 깨진다).
 
-### 13-5. Mac이 읽는 것 (Kit `Bridge/ExternalSessions/`)
+### 17-5. Mac이 읽는 것 (Kit `Bridge/ExternalSessions/`)
 
 - `~/.claude/projects/<디렉터리>/<소문자 UUID>.jsonl`: 이름 · 시각 · 크기 + 머리 64 KiB에서 `sessionId`가 파일 id와 같은 줄의 `cwd` · `entrypoint` · `version`, 꼬리 256 KiB에서 마지막 `custom-title` · `agent-name`의 제목. `user` · `assistant` · `last-prompt` 줄의 글은 어디에도 담지 않는다. `~/.claude/sessions/<pid>.json`(문서에 없는 내부 형식, 확인 필요 R4): 이름 `^[0-9]{1,10}\.json$`, 64 KiB, 못 읽으면 신호 1을 건너뛰되 다른 신호가 못 찾아도 `unknown`(막는다). 허용 목록 밖(`.credentials.json` · `~/.claude.json` · `sessions/*.key` · 데스크톱 앱 저장소)은 열지도 나열하지도 않는다.
 - 범위: 최근 7일 + 지금 돌고 있는 것(날짜와 무관), 줄 50, 파일 500, 총 읽기 32 MiB, 나열 5만 항목. `sdk-*` 출처(`-p` · SDK)는 뺀다. Taskforce가 띄운 세션(세션 폴더 `state.json`의 Claude id, 앱 데이터 안 cwd)도 뺀다.
