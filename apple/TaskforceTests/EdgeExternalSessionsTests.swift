@@ -505,17 +505,107 @@ struct EdgeExternalSessionsTests {
         #expect(rig.app.opened == 1 && rig.shell.openNoticeSessionID == nil, "그 훑기가 본 줄(데스크톱이 쥠)로 정한다: 앱만 앞으로, 거절 줄 없음")
     }
 
-    /// 열린 뒤에도 다시 훑는다 (P2-1): 줄이 곧 실제 상태(Running in Claude)로 바뀐다. 결과를 기다리는 동안(Opening…)에는 포함하지 않는다
-    @Test func afterTheSessionOpenedTheListIsRescannedInTheBackgroundAndNoNoticeShows() async {
+    /// 열린 뒤에도 다시 훑는다 (P2-1): 줄이 곧 실제 상태(Running in Claude)로 바뀐다.
+    /// 그 훑기가 끝날 때까지 줄은 계속 바쁘다 (보안 재검토 P3): 빠른 두 번째 클릭이 `claude`를 또 띄우지 않는다
+    @Test func afterTheSessionOpenedTheRowStaysBusyUntilThePostOpenRescanFinishesSoASecondClickIsIgnored() async {
         let rig = make()
         let row = desktopRow(1)
         rig.counter.set([Self.row(1, status: .held(.claudeApp), group: "/Users/tester/proj1", client: .claudeDesktop)])
+        rig.gate.holdNext = true
         let scansBefore = rig.counter.scans
-        await rig.shell.openInClaude(row).value
-        #expect(!rig.shell.externalLine(row, now: Date()).isBusy, "결과가 오면 곧바로 풀린다 (다시 훑기를 기다리지 않는다)")
-        #expect(await until { rig.counter.scans == scansBefore + 1 }, "열린 뒤 다시 훑는다")
-        #expect(await until { rig.store.rows.first?.status == .held(.claudeApp) })
+        let first = rig.shell.openInClaude(row)
+        #expect(await until { rig.counter.scans == scansBefore + 1 }, "열린 뒤 다시 훑는다 (붙잡혀 있다)")
+        #expect(rig.app.sessions.count == 1)
+        #expect(rig.shell.externalLine(row, now: Date()).isBusy && rig.shell.openingSessionIDs == [row.id], "열었다는 답이 왔어도 훑기가 끝나기 전에는 계속 바쁘다")
+        let second = rig.shell.openInClaude(row)
+        try? await Task.sleep(for: .milliseconds(40))
+        #expect(rig.app.sessions.count == 1 && rig.recheck.asked.count == 1, "빠른 두 번째 클릭은 아무것도 띄우지 않는다")
+        rig.gate.release()
+        await first.value
+        await second.value
+        #expect(!rig.shell.externalLine(row, now: Date()).isBusy && rig.shell.openingSessionIDs.isEmpty, "훑기가 끝나면 풀린다")
+        #expect(rig.store.rows.first?.status == .held(.claudeApp))
         #expect(rig.shell.openNoticeSessionID == nil && rig.app.opened == 0)
+        await rig.shell.openInClaude(row).value
+        #expect(rig.app.sessions.count == 2, "풀린 뒤에는 다시 누를 수 있다")
+    }
+
+    /// 훑기가 멈춰도 줄이 영영 바쁘지 않다 (보안 재검토 P3): 한도(`busyWaitCapSeconds`)에서 바쁨을 풀고 훑기가 끝나면 줄이 스스로 바뀐다.
+    /// 시간은 가짜 시계로 흘린다
+    struct Timed {
+        let shell: EdgeShellModel
+        let store: ExternalSessionsStore
+        let app: FakeClaudeApp
+        let counter: Counter
+        let gate: ScanGate
+        let time: EdgeShellModelTests.ManualTime
+    }
+
+    func makeTimed() -> Timed {
+        let time = EdgeShellModelTests.ManualTime()
+        let counter = Counter()
+        let gate = ScanGate()
+        let scope = AccountScope(currentAccount: { SampleData.userID })
+        let external = ExternalSessionsStore(
+            scope: scope, scan: { await gate.scan(counter) }, recheck: { _ in .available }, seen: InMemoryExternalSessionSeenStore(), pollInterval: 3600
+        )
+        let shell = EdgeShellModel(
+            schedule: time.schedule, clock: time.clock, chatsEnabled: true, windowsEnabled: true, issues: IssueRuntime(gateway: IssueSampleGateway(), scope: scope), externalSessions: external
+        )
+        let app = FakeClaudeApp()
+        shell.claudeApp = app
+        return Timed(shell: shell, store: external, app: app, counter: counter, gate: gate, time: time)
+    }
+
+    @Test func aStuckRescanNeverKeepsTheRowBusyPastTheCapAfterARefusal() async {
+        let t = makeTimed()
+        let row = desktopRow(1)
+        t.counter.set([row])
+        t.app.answer = .openInAnotherTerminal
+        t.gate.holdNext = true
+        let task = t.shell.openInClaude(row)
+        #expect(await until { t.counter.scans == 1 }, "거절 뒤 훑기가 붙잡혀 있다")
+        #expect(t.shell.externalLine(row, now: Date()).isBusy)
+        t.time.advance(EdgeShellModel.busyWaitCapSeconds - 0.5)
+        try? await Task.sleep(for: .milliseconds(40))
+        #expect(t.shell.externalLine(row, now: Date()).isBusy, "한도 전에는 기다린다")
+        t.time.advance(1)
+        let released = await until { !t.shell.externalLine(row, now: Date()).isBusy }
+        #expect(released, "한도에 바쁨이 풀린다")
+        #expect(t.shell.openNoticeSessionID == row.id && t.app.opened == 0, "터미널이 쥐었다는 것은 이미 안다: 거절 줄은 보인다 (훑기 결과는 기다리지 않는다)")
+        #expect(t.counter.scans == 1, "훑기는 아직 도는 중이다")
+        t.gate.release()
+        await task.value
+        #expect(await until { t.store.rows.first?.id == row.id }, "훑기가 끝나면 목록은 스스로 바뀐다")
+    }
+
+    @Test func aStuckRescanNeverKeepsTheRowBusyPastTheCapAfterTheSessionOpened() async {
+        let t = makeTimed()
+        let row = desktopRow(1)
+        t.counter.set([row])
+        t.app.answer = .opened
+        t.gate.holdNext = true
+        let task = t.shell.openInClaude(row)
+        #expect(await until { t.counter.scans == 1 }, "열린 뒤 훑기가 붙잡혀 있다")
+        #expect(t.shell.externalLine(row, now: Date()).isBusy)
+        t.time.advance(EdgeShellModel.busyWaitCapSeconds + 0.1)
+        let released = await until { !t.shell.externalLine(row, now: Date()).isBusy }
+        #expect(released, "한도에 바쁨이 풀린다")
+        #expect(t.shell.openNoticeSessionID == nil && t.app.opened == 0)
+        t.gate.release()
+        await task.value
+    }
+
+    @Test func aRescanThatFinishesInTimeReleasesTheRowAtOnceAndLeavesNoCapTimerToFire() async {
+        let t = makeTimed()
+        let row = desktopRow(1)
+        t.counter.set([row])
+        t.app.answer = .opened
+        await t.shell.openInClaude(row).value
+        #expect(!t.shell.externalLine(row, now: Date()).isBusy, "훑기가 끝나면 한도를 기다리지 않고 푼다")
+        // 한도가 지나도 아무 일도 없다 (취소된 타이머)
+        t.time.advance(EdgeShellModel.busyWaitCapSeconds + 1)
+        #expect(!t.shell.externalLine(row, now: Date()).isBusy && t.app.opened == 0)
     }
 
     @Test func anUnavailableAnswerFallsBackToActivatingTheAppOnceWithoutAnyNotice() async {

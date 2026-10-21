@@ -691,6 +691,8 @@ final class EdgeShellModel {
 
     /// 거절 줄(회색 한 줄)을 보이는 시간
     static let openNoticeSeconds: TimeInterval = 8
+    /// 열기가 클릭 뒤의 훑기를 기다리는 동안 줄이 바쁜 채로 있는 최대 시간 (보안 재검토 P3)
+    static let busyWaitCapSeconds: TimeInterval = 2
 
     /// 지금 거절 줄을 보이는 세션 (한 줄만). 사용자가 터미널을 닫고 다시 누르거나 시간이 지나면 사라진다
     private(set) var openNoticeSessionID: String?
@@ -735,8 +737,8 @@ final class EdgeShellModel {
         }
         switch await claudeApp.openSession(id: id, folder: folder) {
         case .opened:
-            // 열렸다: 줄은 곧 실제 상태가 된다. 다시 훑기는 뒤에서 (Opening…은 결과에서 끝난다)
-            Task { [weak self] in await self?.externalSessions?.refreshFresh() }
+            // 열렸다: 줄은 곧 실제 상태(Running in Claude)가 된다. 그 훑기가 끝날 때까지 줄은 계속 바쁘다 (빠른 두 번째 클릭이 `claude`를 또 띄우지 않게, 한도까지)
+            await rescanWithinCap()
         case .openInAnotherTerminal:
             await settleAfterHeld(id: id, hold: .held(.terminal))
         case .unavailable:
@@ -744,9 +746,39 @@ final class EdgeShellModel {
         }
     }
 
-    /// 열기 직전의 확인이 쥔 곳을 찾았거나 CLI가 "다른 터미널"로 거절했다: 클릭 뒤에 시작하는 훑기가 끝나기를 기다려 고친 줄로 정한다 (이미 도는 훑기는 클릭 전 모습이다)
+    /// 클릭 뒤에 시작하는 훑기(`refreshFresh`)가 끝나기를 기다린다, 단 `busyWaitCapSeconds`까지만 (보안 재검토 P3: 훑기가 멈춰도 줄이 영영 바쁘지 않게).
+    /// 한도를 넘으면 기다림만 그만둔다: 훑기는 계속 돌고 끝나면 목록이 스스로 바뀐다. 한도 타이머는 모델의 `schedule`이라 시험이 가짜 시계로 흘린다
+    private func rescanWithinCap() async {
+        guard let store = externalSessions else { return }
+        let latch = RescanLatch()
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            latch.continuation = continuation
+            latch.timer = schedule(Self.busyWaitCapSeconds) { latch.finish() }
+            Task {
+                await store.refreshFresh()
+                latch.finish()
+            }
+        }
+    }
+
+    /// 훑기가 끝난 것과 한도가 지난 것 중 먼저 오는 쪽이 기다림을 한 번만 푼다
+    @MainActor
+    private final class RescanLatch {
+        var continuation: CheckedContinuation<Void, Never>?
+        var timer: EdgeTimer?
+
+        func finish() {
+            guard let continuation else { return }
+            self.continuation = nil
+            timer?.cancel()
+            continuation.resume()
+        }
+    }
+
+    /// 열기 직전의 확인이 쥔 곳을 찾았거나 CLI가 "다른 터미널"로 거절했다: 클릭 뒤에 시작하는 훑기가 끝나기를 기다려(한도까지) 고친 줄로 정한다 (이미 도는 훑기는 클릭 전 모습이다).
+    /// 한도를 넘으면 지금 아는 것(확인 · 거절이 말한 쥠)으로 정하고, 훑기가 끝나면 줄이 스스로 바뀐다
     private func settleAfterHeld(id: String, hold: ExternalSessionStatus) async {
-        await externalSessions?.refreshFresh()
+        await rescanWithinCap()
         // 데스크톱 앱이 쥐었다(확인이 말했거나 다시 훑은 줄이 말한다): 앱만 앞으로
         if hold == .held(.claudeApp) || externalSessions?.rows.first(where: { $0.id == id })?.status == .held(.claudeApp) {
             _ = claudeApp.openClaudeApp()

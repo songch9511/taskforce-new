@@ -452,9 +452,9 @@ Taskforce 밖에서 시작한 Claude Code 세션을 이 Mac의 레일 "On this M
   - **`Idle`**: 그 세션을 데스크톱 앱에서 연다. 아래.
 - **누르는 즉시 피드백**: 누른 호출 안에서 그 줄의 **버튼 글자가 `Opening…`**이 되고 눌리지 않는다(`ExternalSessionLineView`가 `content.actionTitle` · `.disabled(content.isBusy)`로 스스로 정한다, 버튼 스타일이 흐리게 그린다). 줄의 둘째 줄은 그대로다. 결과가 오면 풀린다. `Opening…`은 사용자 승인(2026-10-22)을 받은 문구라 `ExternalSessionCopy.opening`이 승인된 문구 목록(`everyCopyStringIsTheApprovedOne`)에 있다.
 - **Idle 줄의 흐름**
-  1. **쥠을 다시 본다**(`ExternalSessionScanner.recheck`: 등록 파일 · argv · 같은 폴더의 claude · 최근 기록 · 이미 이어받음, 그 세션의 기록 시각만 보고 내용은 열지 않는다). 쥔 곳이 있거나 모르면(nil) 띄우지 않는다.
+  1. **쥠을 다시 본다**(`ExternalSessionScanner.recheck`: 등록 파일 · argv · 같은 폴더의 claude · 최근 기록 · 이미 이어받음, 그 세션의 기록 시각만 보고 내용은 열지 않는다). 쥔 곳이 있거나 모르면(nil) 띄우지 않는다. **훑기가 목록에서 빼는 세션은 다시 확인하지 않는다**(nil): 그 사이 Taskforce가 띄운 세션 · SDK 실행(`entrypoint sdk-*`) · 앱 데이터 폴더 안이 cwd인 세션 (보안 재검토 P3).
   2. 비어 있으면 `claude --desktop --resume <id>` (아래 실행 방식).
-  3. **`opened`**: 앱이 앞으로 오는 것은 `claude`가 한다. Opening…은 여기서 끝나고, 목록은 뒤에서 다시 훑는다(줄이 곧 `Running in Claude`가 된다).
+  3. **`opened`**: 앱이 앞으로 오는 것은 `claude`가 한다. 목록을 다시 훑고(줄이 곧 `Running in Claude`가 된다) **그 훑기가 끝날 때까지 줄은 계속 `Opening…`이다** — 빠른 두 번째 클릭이 `claude`를 또 띄우지 않게. 단 최대 2초(`EdgeShellModel.busyWaitCapSeconds`): 훑기가 멈춰도 줄이 영영 바쁘지 않고, 그 뒤에는 훑기가 끝나면 줄이 스스로 바뀐다. 거절 · 쥠 확인 뒤의 "클릭 뒤에 시작하는 훑기" 기다림도 같은 2초 한도다(한도를 넘으면 지금 아는 쥠으로 정한다).
   4. **`openInAnotherTerminal`**(출력에 "open in another terminal"): 스캔과 클릭 사이에 누가 쥐었다는 뜻이다. **클릭 뒤에 시작하는 훑기**(`ExternalSessionsStore.refreshFresh`: 도는 훑기가 있으면 그것이 끝나기를 기다린 뒤 새로 시작 — `refresh()`는 도는 훑기를 그대로 쓰는데 그것은 클릭 전 모습이다)가 끝나면 고친 줄로 정한다. 이제 `Running in Claude`면 앱만 앞으로(거절 줄 없음), 아니면 이미 승인된 **`Running in Terminal`**을 회색 한 줄로 8초 보인다(앱은 앞으로 가져오지 않는다, 버튼은 그대로). 새 문구는 없다.
   5. **`unavailable`**: 앱만 앞으로.
   - 확인에서 쥔 곳이 나온 경우: `Running in Claude`면 앱만 앞으로, 터미널이면 3-4와 같은 "다시 훑고 Running in Terminal", 그 밖의 쥠 · 확인 못 함 · 이미 이어받음은 띄우지 않고 다시 훑을 뿐이다(줄이 제 상태로 바뀐다). 같은 세션을 여는 중에 다시 누른 클릭은 무시한다.

@@ -126,6 +126,57 @@ extension ExternalSessionSuites {
             }
         }
 
+        /// 보안 재검토 P3: 훑기가 목록에서 뺀 세션(Taskforce가 띄운 것 · SDK 실행 · 앱 데이터 폴더 안)은 다시 확인도 하지 않는다 (nil = 모른다: 부른 쪽이 막는다).
+        /// 훑은 뒤에 바뀔 수 있는 것은 Taskforce가 띄운 세션 목록뿐이고, 나머지는 캐시에 남은 기록 머리(entrypoint · cwd)로 같은 규칙을 다시 적용한다
+        @Test func aSessionTaskforceStartedSinceTheScanIsNotRechecked() async throws {
+            final class Started: @unchecked Sendable {
+                private let lock = NSLock()
+                private var _ids: Set<String> = []
+                var ids: Set<String> {
+                    get { lock.withLock { _ids } }
+                    set { lock.withLock { _ids = newValue } }
+                }
+            }
+            try await withWorld { world in
+                try world.session(1, entrypoint: "claude-desktop")
+                let started = Started()
+                let scanner = world.scanner(facts: Facts().facts, tweak: { $0.taskforceSessionIDs = { started.ids } })
+                let scan = await scanner.scan()
+                #expect(scan.rows.map(\.id) == [F.uuid(1)])
+                #expect(await scanner.recheck(id: F.uuid(1)) == .available)
+                started.ids = [F.uuid(1)]
+                #expect(await scanner.recheck(id: F.uuid(1)) == nil, "그 사이 Taskforce가 띄운 세션이다: 외부 세션이 아니다")
+            }
+        }
+
+        @Test func anSDKRunIsNotRechecked() async throws {
+            try await withWorld { world in
+                try world.session(1, entrypoint: "sdk-cli")
+                try world.session(2, entrypoint: "sdk-ts")
+                try world.session(3, entrypoint: "claude-desktop")
+                let scanner = world.scanner(facts: Facts().facts)
+                let scan = await scanner.scan()
+                #expect(scan.rows.map(\.id) == [F.uuid(3)], "SDK 실행은 목록에 없다")
+                #expect(await scanner.recheck(id: F.uuid(1)) == nil)
+                #expect(await scanner.recheck(id: F.uuid(2)) == nil)
+                #expect(await scanner.recheck(id: F.uuid(3)) == .available)
+            }
+        }
+
+        @Test func aSessionInsideAProtectedFolderIsNotRechecked() async throws {
+            try await withWorld { world in
+                try world.session(1, entrypoint: "claude-desktop")
+                let other = world.home.home + "/other"
+                try world.session(2, cwd: other, entrypoint: "claude-desktop")
+                // 앱 데이터 · bridge 폴더: 그 안이 cwd인 세션은 Taskforce가 띄운 것이라 목록에서 빠진다
+                let scanner = world.scanner(facts: Facts().facts, protected: [world.cwd])
+                let scan = await scanner.scan()
+                #expect(scan.rows.map(\.id) == [F.uuid(2)], "보호 폴더 안의 세션은 목록에 없다")
+                #expect(await scanner.recheck(id: F.uuid(1)) == nil)
+                #expect(await scanner.recheck(id: F.uuid(2)) == .available)
+            }
+        }
+
         @Test func aSessionTheLastScanNeverSawOrWhoseTranscriptIsGoneIsUnknown() async throws {
             try await withWorld { world in
                 let path = try world.session(1, entrypoint: "claude-desktop")
