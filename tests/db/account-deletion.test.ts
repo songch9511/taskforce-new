@@ -19,6 +19,7 @@ const USER_TABLES = [
   "actions",
   "agent_artifacts",
   "agent_connections",
+  "agent_execution_grants",
   "agent_path_leases",
   "agent_sessions",
   "agent_tasks",
@@ -80,6 +81,7 @@ let db: PGlite;
 async function seed(userId: string, tokenHex: string) {
   const one = async (sql: string, params: unknown[]) => (await db.query<{ id: string }>(sql, params)).rows[0].id;
 
+  await db.query("insert into public.agent_execution_grants(user_id,adapter) values($1,'agent:claude-code')", [userId]);
   await db.query("insert into billing_accounts(user_id) values($1)",[userId]);
   await db.query("insert into billing_checkout_intents(user_id,plan,accepted_terms_version) values($1,'monthly','2026-10-08')",[userId]);
   await db.query("insert into billing_webhook_events(id,user_id) values($1,$2)",[randomUUID(),userId]);

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { postConversationMessageResponseSchema, type IntentKind } from "@/lib/api/contract";
 import { handlePostConversationMessage } from "@/lib/api/conversations";
@@ -201,6 +201,8 @@ type Models = { decide: ReturnType<typeof fakeDecide>; complete: ReturnType<type
 /** 운영 handler → store → SQL로 메시지를 보낸다 (가짜 모델). 본문은 요청 그대로 */
 function sender(admin: ReturnType<typeof sqlAdmin>, me: string, conversationId: string, models: () => Models) {
   return async (body: Record<string, unknown>) => {
+    vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true");
+    vi.stubEnv("AGENT_BETA_USER_IDS", me);
     const response = await handlePostConversationMessage(
       new Request(`http://localhost/api/v2/conversations/${conversationId}/messages`, { method: "POST", body: JSON.stringify(body) }),
       conversationId,
@@ -232,6 +234,7 @@ function sender(admin: ReturnType<typeof sqlAdmin>, me: string, conversationId: 
 }
 
 export function conversationsTests(db: () => ConversationsDb) {
+  afterEach(() => vi.unstubAllEnvs());
   const f = conversationFixtures(db);
 
   describe("메시지 쓰기 (conversation_post_message)", () => {

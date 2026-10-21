@@ -1,3 +1,4 @@
+import { agentBetaUserAllowed } from "@/lib/flags";
 import { resolvePathConflictRequestSchema, type ResolvePathConflictResponse } from "./contract";
 import { errorResponse, parseBody, unauthorized } from "./respond";
 
@@ -31,6 +32,7 @@ export async function handleResolvePathConflict<User extends AppUser>(request: R
   if (!deps.enabled()) return errorResponse(404, "not_found", NOT_FOUND);
   const user = await deps.authenticate(request);
   if (!user) return unauthorized();
+  if (!agentBetaUserAllowed(user.user.id)) return errorResponse(404, "not_found", "없는 경로입니다.");
   if (!UUID.test(leaseId)) return errorResponse(404, "not_found", CONFLICT_NOT_FOUND);
   const body = await parseBody(request, resolvePathConflictRequestSchema);
   if ("error" in body) return body.error;

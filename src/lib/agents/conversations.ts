@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { conversationWithTargetSchema, type ConversationTargetKind, type ConversationWithTarget } from "@/lib/api/contract";
-import { flagEnabled } from "@/lib/flags";
+import { agentBetaUserAllowed, flagEnabled } from "@/lib/flags";
 
 import { adapterEnabled, AGENT_REGISTRY } from "./registry";
 
@@ -53,6 +53,7 @@ export async function createAgentConversation(
   input: { id?: string; title?: string; contextId: string | null; connectionId: string; sessionId?: string },
   env: Env = process.env,
 ): Promise<CreateAgentConversationResult> {
+  if (!agentBetaUserAllowed(userId, env)) return { status: "not_found" };
   const { data: connectionData } = await admin.from("agent_connections").select("adapter, status").eq("user_id", userId).eq("id", input.connectionId).maybeSingle().throwOnError();
   const connection = connectionData as { adapter: string; status: "active" | "error" | "revoked" } | null;
   if (!connection || connection.status === "revoked" || !Object.hasOwn(AGENT_REGISTRY, connection.adapter) || !adapterEnabled(connection.adapter, env)) return { status: "not_found" };

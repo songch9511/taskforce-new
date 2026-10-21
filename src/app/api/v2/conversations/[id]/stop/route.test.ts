@@ -37,6 +37,7 @@ const queue = (head: { state: string; reason?: string | null; selected?: Record<
 const call = () => POST(new Request(`https://api.example.dev/api/v2/conversations/${CONV}/stop`, { method: "POST", body: "{}" }), { params: Promise.resolve({ id: CONV }) });
 
 beforeEach(() => {
+  vi.stubEnv("AGENT_BETA_USER_IDS", USER);
   mocks.admin.mockReturnValue({ admin: true });
   mocks.auth.mockResolvedValue({ user: { id: USER } });
   mocks.readConversationTarget.mockResolvedValue({ id: CONV, targetKind: "agent", connectionId: CONN, sessionId: SESSION });

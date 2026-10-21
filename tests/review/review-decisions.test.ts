@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { PGlite } from "@electric-sql/pglite";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 // 통과 대역: pendingGroupDto가 예상 못하게 던질 때의 전파를 한 시험에서만 켠다 (평소에는 진짜 함수 그대로)
@@ -42,11 +42,18 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+// These integration worlds exercise admitted beta accounts; membership-denial cases live in agent-beta tests.
+beforeEach(() => vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true"));
+function enrollFixture(user: string): void {
+  const enrolled = process.env.AGENT_BETA_USER_IDS;
+  vi.stubEnv("AGENT_BETA_USER_IDS", enrolled ? `${enrolled},${user}` : user);
+}
+
 const SEOUL = async () => "Asia/Seoul";
 const NOW = new Date();
 const hoursFromNow = (h: number) => new Date(NOW.getTime() + h * 3_600_000).toISOString();
-const decisionsOnly = (user: string, agentAdapters?: readonly string[], client: SupabaseClient = admin) => loadReviewDecisions(client, user, NOW, { agentAdapters });
-const full = (user: string, agentAdapters?: readonly string[], client: SupabaseClient = admin) => loadReview(client, user, NOW, { coordinatorEnabled: false, timeZone: SEOUL, agentAdapters });
+const decisionsOnly = (user: string, agentAdapters?: readonly string[], client: SupabaseClient = admin) => { enrollFixture(user); return loadReviewDecisions(client, user, NOW, { agentAdapters }); };
+const full = (user: string, agentAdapters?: readonly string[], client: SupabaseClient = admin) => { enrollFixture(user); return loadReview(client, user, NOW, { coordinatorEnabled: false, timeZone: SEOUL, agentAdapters }); };
 /** rpc · from 호출 이름을 기록한다 */
 const spy = (client: SupabaseClient) => {
   const rpcs: string[] = [];
@@ -171,6 +178,7 @@ describe("D2 부른 것: 결정 원천 rpc뿐이다 (제안 생산 · 노출 · 
   it("대조: 같은 세계에서 loadReview는 제안 생산 · 노출 rpc와 시간대 읽기(from)를 부른다 (이 spy가 그것을 볼 수 있다)", async () => {
     const r = await richWorld();
     const t = spy(admin);
+    enrollFixture(r.w.user);
     await loadReview(t.admin, r.w.user, NOW, { coordinatorEnabled: false, agentAdapters: BOTH });
     expect(t.rpcs).toEqual(expect.arrayContaining(["suggestions_produce", "suggestions_expose", "coordinator_pending_inputs", "review_agent_inputs"]));
     expect(t.tables).toContain("report_preferences");

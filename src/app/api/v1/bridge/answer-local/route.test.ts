@@ -39,6 +39,7 @@ const logs = () => (["log", "info", "warn", "error", "debug"] as const).map((lev
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.stubEnv("AGENT_BETA_USER_IDS", userId);
   vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true");
   vi.stubEnv("AGENT_ADAPTER_CODEX_ENABLED", "true");
   vi.stubEnv("AGENT_ADAPTER_CLAUDE_CODE_ENABLED", "");
@@ -277,4 +278,14 @@ describe("결과 → 응답 (3A.3)", () => {
     expect(called[0].mock.calls).toEqual([[JSON.stringify({ event: "bridge_answer_local_failed" })]]);
     expect(console.error).toHaveBeenCalledExactlyOnceWith(JSON.stringify({ event: "bridge_answer_local_failed" }));
   });
+});
+
+it("cohort removal denies local answer before body, device or answer side effects", async () => {
+  vi.stubEnv("AGENT_BETA_USER_IDS", "");
+  const req = request();
+  expect((await POST(req)).status).toBe(404);
+  expect(req.bodyUsed).toBe(false);
+  expect(mocks.auth).not.toHaveBeenCalled();
+  expect(mocks.limit).not.toHaveBeenCalled();
+  expect(mocks.answer).not.toHaveBeenCalled();
 });

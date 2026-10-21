@@ -93,3 +93,6 @@ describe("POST /api/v2/conversations/{id}/messages · 에이전트 대상 (route
     expect(mocks.postAgentUserMessage).not.toHaveBeenCalled();
   });
 });
+
+// Enroll this route fixture only; global-off and authentication assertions are unchanged.
+beforeEach(() => vi.stubEnv("AGENT_BETA_USER_IDS", "11111111-0000-4000-8000-000000000001"));

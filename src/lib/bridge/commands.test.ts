@@ -43,11 +43,11 @@ describe("bridge long polling", () => {
 });
 describe("registry intersect bridge report", () => {
   it("narrows registry and never lets bridge claims open verification", () => {
-    expect(bridgeDeliveryAccess("agent:codex", report, "manual", { EXECUTION_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" })).toBe("read_only");
+    expect(bridgeDeliveryAccess("agent:codex", report, "manual", { AGENT_BETA_USER_IDS: id, CONVERSATIONS_V2_ENABLED: "true", EXECUTION_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" })).toBe("read_only");
     expect(bridgeDeliveryAccess("agent:codex", report, "manual", {})).toBeNull();
     expect(bridgeDeliveryAccess("agent:codex", report, "manual", { EXECUTION_ENABLED: "true" })).toBeNull();
     for (const change of [{ installed: false }, { version: "99.0.0" }, { signed_in: "no" }, { managed_settings: true }]) {
-      expect(bridgeDeliveryAccess("agent:codex", { ...report, adapters: { "agent:codex": { ...report.adapters["agent:codex"], ...change } } }, "manual", { EXECUTION_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" })).toBeNull();
+      expect(bridgeDeliveryAccess("agent:codex", { ...report, adapters: { "agent:codex": { ...report.adapters["agent:codex"], ...change } } }, "manual", { AGENT_BETA_USER_IDS: id, CONVERSATIONS_V2_ENABLED: "true", EXECUTION_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" })).toBeNull();
     }
   });
 });
@@ -69,10 +69,16 @@ function ackDb(response: unknown, kind = "message", provider = "agent:codex") {
 const bridge = { id, status: "active" as const, secret_hash: null, capabilities: report };
 describe("bridge acknowledgment rollback safety", () => {
   afterEach(() => vi.restoreAllMocks());
+  it("denies outsider lease even when global execution and adapter are enabled", async () => {
+    const { admin, rpc } = ackDb({ status: "withdrawn", reason: "write_gate_closed" });
+    const result = await ackBridgeCommand(admin, { userId: id, bridge, input: { bridge_id: id, command_id: id, op: "lease" } }, { EXECUTION_ENABLED: "true", CONVERSATIONS_V2_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true", AGENT_BETA_USER_IDS: "20000000-0000-4000-8000-000000000002" });
+    expect(result).toEqual({ status: "withdrawn", reason: "write_gate_closed" });
+    expect(rpc).toHaveBeenCalledWith("lease_bridge_command", expect.objectContaining({ p_access: null }));
+  });
   it("returns an allowed replay payload after supplying current access", async () => {
     const response = { status: "replay", lease_expires_at: timestamp, command: { ...baseCommand, kind: "message", access: "read_only", policy_mode: "manual", message: { id, text: "once" }, close_before: null } };
     const { admin, rpc } = ackDb(response);
-    expect(await ackBridgeCommand(admin, { userId: id, bridge, input: { bridge_id: id, command_id: id, op: "lease" } }, { EXECUTION_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" })).toEqual(response);
+    expect(await ackBridgeCommand(admin, { userId: id, bridge, input: { bridge_id: id, command_id: id, op: "lease" } }, { AGENT_BETA_USER_IDS: id, CONVERSATIONS_V2_ENABLED: "true", EXECUTION_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" })).toEqual(response);
     expect(rpc).toHaveBeenCalledWith("lease_bridge_command", expect.objectContaining({ p_access: "read_only", p_mode: "full" }));
   });
   it.each(["leased", "replay"])("uses Claude turn-and-processes scope for %s cancel with flags off", async (status) => {
@@ -84,7 +90,7 @@ describe("bridge acknowledgment rollback safety", () => {
   it("reports adapter_disabled only for a withdrawn new delivery", async () => {
     const { admin } = ackDb({ status: "withdrawn", reason: "write_gate_closed" });
     vi.spyOn(registry, "adapterEnabled").mockReturnValue(false);
-    expect(await ackBridgeCommand(admin, { userId: id, bridge, input: { bridge_id: id, command_id: id, op: "lease" } }, { EXECUTION_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" })).toEqual({ status: "withdrawn", reason: "adapter_disabled" });
+    expect(await ackBridgeCommand(admin, { userId: id, bridge, input: { bridge_id: id, command_id: id, op: "lease" } }, { AGENT_BETA_USER_IDS: id, CONVERSATIONS_V2_ENABLED: "true", EXECUTION_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" })).toEqual({ status: "withdrawn", reason: "adapter_disabled" });
   });
   it("readback never evaluates current policy or adapter flags", async () => {
     const { admin, from, rpc } = ackDb({ status: "settled", task_state: "accepted" });
@@ -108,18 +114,18 @@ describe("bridge acknowledgment rollback safety", () => {
 describe("bridge capability boundary details", () => {
   it("rejects a disabled adapter even with healthy capabilities and execution enabled", () => {
     const enabled = vi.spyOn(registry, "adapterEnabled").mockReturnValue(false);
-    try { expect(bridgeDeliveryAccess("agent:codex", report, "manual", { EXECUTION_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" })).toBeNull(); }
+    try { expect(bridgeDeliveryAccess("agent:codex", report, "manual", { AGENT_BETA_USER_IDS: id, CONVERSATIONS_V2_ENABLED: "true", EXECUTION_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" })).toBeNull(); }
     finally { enabled.mockRestore(); }
   });
   it.each(["0.162.0", "0.163.0", "0.162.1-beta", "9007199254740992.0.0", null])("fails closed on unsupported version %s", (version) => {
-    expect(bridgeDeliveryAccess("agent:codex", { adapters: { "agent:codex": { ...report.adapters["agent:codex"], version } } }, "manual", { EXECUTION_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" })).toBeNull();
+    expect(bridgeDeliveryAccess("agent:codex", { adapters: { "agent:codex": { ...report.adapters["agent:codex"], version } } }, "manual", { AGENT_BETA_USER_IDS: id, CONVERSATIONS_V2_ENABLED: "true", EXECUTION_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" })).toBeNull();
   });
   it("uses server policy and registry enforcement even when client reports readiness", () => {
     for (const mode of ["manual", "auto", "full"] as const) {
-      expect(bridgeDeliveryAccess("agent:codex", report, mode, { EXECUTION_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" })).toBe("read_only");
-      expect(bridgeDeliveryAccess("agent:claude-code", { adapters: { "agent:claude-code": { ...report.adapters["agent:codex"], version: "2.1.241" } } }, mode, { EXECUTION_ENABLED: "true", AGENT_ADAPTER_CLAUDE_CODE_ENABLED: "true" })).toBeNull();
+      expect(bridgeDeliveryAccess("agent:codex", report, mode, { AGENT_BETA_USER_IDS: id, CONVERSATIONS_V2_ENABLED: "true", EXECUTION_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" })).toBe("read_only");
+      expect(bridgeDeliveryAccess("agent:claude-code", { adapters: { "agent:claude-code": { ...report.adapters["agent:codex"], version: "2.1.241" } } }, mode, { AGENT_BETA_USER_IDS: id, CONVERSATIONS_V2_ENABLED: "true", EXECUTION_ENABLED: "true", AGENT_ADAPTER_CLAUDE_CODE_ENABLED: "true" })).toBeNull();
     }
-    expect(bridgeDeliveryAccess("agent:other", report, "manual", { EXECUTION_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" })).toBeNull();
+    expect(bridgeDeliveryAccess("agent:other", report, "manual", { AGENT_BETA_USER_IDS: id, CONVERSATIONS_V2_ENABLED: "true", EXECUTION_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" })).toBeNull();
   });
 });
 

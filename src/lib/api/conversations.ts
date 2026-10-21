@@ -1,3 +1,4 @@
+import { agentBetaUserAllowed } from "@/lib/flags";
 import { AiBudgetError } from "@/lib/ai/budget-error";
 import { DeadlineExceededError } from "@/lib/ai/deadline";
 import { JevError } from "@/lib/ai/jev";
@@ -69,6 +70,7 @@ export async function handleCreateConversation<User extends AppUser>(request: Re
   if (!deps.enabled()) return errorResponse(404, "not_found", "없는 경로입니다.");
   const user = await deps.authenticate(request);
   if (!user) return unauthorized();
+  if (!agentBetaUserAllowed(user.user.id)) return errorResponse(404, "not_found", "없는 경로입니다.");
   const body = await parseBody(request, createConversationV2RequestSchema);
   if ("error" in body) return body.error;
   const { target, ...input } = body.data;
@@ -137,6 +139,7 @@ export async function handleUpdateConversation<User extends AppUser>(request: Re
   if (!deps.enabled()) return errorResponse(404, "not_found", "없는 경로입니다.");
   const user = await deps.authenticate(request);
   if (!user) return unauthorized();
+  if (!agentBetaUserAllowed(user.user.id)) return errorResponse(404, "not_found", "없는 경로입니다.");
   if (!UUID.test(conversationId)) return errorResponse(404, "not_found", NOT_FOUND);
   const body = await parseBody(request, updateConversationRequestSchema);
   if ("error" in body) return body.error;
@@ -229,6 +232,7 @@ export async function handlePostConversationMessage<User extends AppUser>(
   if (!deps.enabled()) return errorResponse(404, "not_found", "없는 경로입니다.");
   const user = await deps.authenticate(request);
   if (!user) return unauthorized();
+  if (!agentBetaUserAllowed(user.user.id)) return errorResponse(404, "not_found", "없는 경로입니다.");
   if (!UUID.test(conversationId)) return errorResponse(404, "not_found", NOT_FOUND);
   const body = await parseBody(request, postConversationMessageV2RequestSchema);
   if ("error" in body) return body.error;
@@ -412,6 +416,7 @@ async function proposalAction<User extends AppUser>(
   if (!deps.enabled()) return errorResponse(404, "not_found", "없는 경로입니다.");
   const user = await deps.authenticate(request);
   if (!user) return unauthorized();
+  if (!agentBetaUserAllowed(user.user.id)) return errorResponse(404, "not_found", "없는 경로입니다.");
   if (!UUID.test(conversationId) || !UUID.test(proposalId)) return errorResponse(404, "not_found", NOT_FOUND);
   const body = await parseBody(request, proposalActionRequestSchema);
   if ("error" in body) return body.error;

@@ -267,3 +267,5 @@ describe("결정만 읽기 GET review/decisions (R-dec)의 gate는 REVIEW_V2_ENA
     vi.unstubAllEnvs();
   });
 });
+
+beforeEach(() => vi.stubEnv("AGENT_BETA_USER_IDS", USER));

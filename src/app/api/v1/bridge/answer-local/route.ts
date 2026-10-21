@@ -1,3 +1,4 @@
+import { agentBetaUserAllowed } from "@/lib/flags";
 import { openAgentAdapters } from "@/lib/agents/registry";
 import { authenticateRequest } from "@/lib/api/auth";
 import { BRIDGE_ANSWER_LOCAL_MAX_BYTES, bridgeV1AnswerLocalRequestSchema } from "@/lib/api/contract";
@@ -44,6 +45,7 @@ export async function POST(request: Request) {
   try {
     const account = await authenticateRequest(request);
     if (!account) return unauthorized();
+    if (!agentBetaUserAllowed(account.user.id)) return errorResponse(404, "not_found", "Not found.");
     const body = bridgeV1AnswerLocalRequestSchema.safeParse(await readLimitedJson(request));
     if (!body.success) return invalidRequest();
     const auth = await verifyBridgeDevice(request, body.data.bridge_id, account);

@@ -747,7 +747,7 @@ export function agentConversationApiTests(db: () => ConversationAgentDb) {
     const noNewAttempt = async (w: Awaited<ReturnType<typeof raceWorld>>) => {
       expect(await f.msg(w.message)).toMatchObject({ delivery_state: "not_sent", delivery_reason: "spawn_failed" });
       // 후속 자동 시작(플래그가 켜진 뒤): 실패한 머리는 시작하지 않는다 — 새 회차 0
-      expect(await startNextAgentMessage(pgliteAgentAdmin(db()), { userId: w.user, sessionId: w.session }, ON)).toBeNull();
+      expect(await startNextAgentMessage(pgliteAgentAdmin(db()), { userId: w.user, sessionId: w.session }, { ...ON, CONVERSATIONS_V2_ENABLED: "true", AGENT_BETA_USER_IDS: w.user })).toBeNull();
       expect(await count("agent_tasks", w.user)).toBe(w.before.tasks);
       expect(await f.count(`select 1 from public.execution_steps where user_id=$1 and kind='agent_message'`, [w.user])).toBe(w.before.steps);
       expect((await f.metrics(w.user, "agent_message_sent")).length).toBe(w.before.sent);
@@ -755,26 +755,26 @@ export function agentConversationApiTests(db: () => ConversationAgentDb) {
 
     it("실행 플래그 꺼짐 표시(대기열 머리 경로, startNextAgentMessage)", async () => {
       const w = await raceWorld();
-      expect(await startNextAgentMessage(racing(w.message), { userId: w.user, sessionId: w.session }, OFF)).toBeNull();
+      expect(await startNextAgentMessage(racing(w.message), { userId: w.user, sessionId: w.session }, { ...OFF, CONVERSATIONS_V2_ENABLED: "true", AGENT_BETA_USER_IDS: w.user })).toBeNull();
       await noNewAttempt(w);
     });
 
     it("실행 플래그 꺼짐 표시(직접 경로, startAgentMessage)", async () => {
       const w = await raceWorld();
-      expect(await startAgentMessage(racing(w.message), { userId: w.user, conversationId: w.conversation, messageId: w.message }, OFF)).toEqual({ status: "skipped" });
+      expect(await startAgentMessage(racing(w.message), { userId: w.user, conversationId: w.conversation, messageId: w.message }, { ...OFF, CONVERSATIONS_V2_ENABLED: "true", AGENT_BETA_USER_IDS: w.user })).toEqual({ status: "skipped" });
       await noNewAttempt(w);
     });
 
     it("연결 거절 표시(not_connected): 연결이 끊긴 상태에서 읽은 queued 머리도 같다", async () => {
       const w = await raceWorld();
       await f.updateRow("agent_connections", w.connection, { status: "revoked" });
-      expect(await startNextAgentMessage(racing(w.message), { userId: w.user, sessionId: w.session }, ON)).toBeNull();
+      expect(await startNextAgentMessage(racing(w.message), { userId: w.user, sessionId: w.session }, { ...ON, CONVERSATIONS_V2_ENABLED: "true", AGENT_BETA_USER_IDS: w.user })).toBeNull();
       await noNewAttempt(w);
     });
 
     it("대조: 표시가 끼어들지 않으면 같은 TS가 평소처럼 표시한다 (꺼짐 → not_sent/write_gate_closed, 새 회차 0)", async () => {
       const w = await raceWorld();
-      expect(await startNextAgentMessage(pgliteAgentAdmin(db()), { userId: w.user, sessionId: w.session }, OFF)).toEqual({ status: "not_sent", reason: "write_gate_closed" });
+      expect(await startNextAgentMessage(pgliteAgentAdmin(db()), { userId: w.user, sessionId: w.session }, { ...OFF, CONVERSATIONS_V2_ENABLED: "true", AGENT_BETA_USER_IDS: w.user })).toEqual({ status: "not_sent", reason: "write_gate_closed" });
       expect(await f.msg(w.message)).toMatchObject({ delivery_state: "not_sent", delivery_reason: "write_gate_closed" });
       expect(await count("agent_tasks", w.user)).toBe(w.before.tasks);
     });

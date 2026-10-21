@@ -25,9 +25,9 @@ const ACTION2 = "ac000000-0000-4000-8000-000000000002";
 const CONTEXT = "c7000000-0000-4000-8000-000000000001";
 const TASK = "7a000000-0000-4000-8000-000000000001";
 const started = { status: "started", action_id: TASK, run_id: TASK, agent_task_id: TASK, step_id: TASK, turn_seq: 2, created_action: false };
-const ON = { AGENT_ADAPTER_CODEX_ENABLED: "true", EXECUTION_ENABLED: "true" };
-const NO_EXECUTION = { AGENT_ADAPTER_CODEX_ENABLED: "true" };
-const NO_ADAPTER = { EXECUTION_ENABLED: "true" };
+const ON = { AGENT_BETA_USER_IDS: USER, CONVERSATIONS_V2_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true", EXECUTION_ENABLED: "true" };
+const NO_EXECUTION = { AGENT_BETA_USER_IDS: USER, CONVERSATIONS_V2_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" };
+const NO_ADAPTER = { AGENT_BETA_USER_IDS: USER, CONVERSATIONS_V2_ENABLED: "true", EXECUTION_ENABLED: "true" };
 const MIGRATION = readFileSync(path.join(process.cwd(), "supabase/migrations/20261121000000_agent_conversation_api.sql"), "utf8");
 
 type Head = { state: string; reason?: string | null; refs?: Record<string, unknown>; selected?: Record<string, unknown> | null };
@@ -164,7 +164,7 @@ describe("startNextAgentMessage", () => {
 
   it("쓰기 등급을 못 받는 adapter(Claude Code)는 시작 대신 not_sent/write_gate_closed로 표시한다", async () => {
     const fake = world({ state: "queued" }, { adapter: "agent:claude-code" });
-    expect(await run(fake, { AGENT_ADAPTER_CLAUDE_CODE_ENABLED: "true", EXECUTION_ENABLED: "true" })).toEqual({ status: "not_sent", reason: "write_gate_closed" });
+    expect(await run(fake, { AGENT_BETA_USER_IDS: USER, CONVERSATIONS_V2_ENABLED: "true", AGENT_ADAPTER_CLAUDE_CODE_ENABLED: "true", EXECUTION_ENABLED: "true" })).toEqual({ status: "not_sent", reason: "write_gate_closed" });
     expect(fake.rpcCalls("start_agent_turn_auto")).toEqual([]);
   });
 

@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
@@ -267,7 +267,7 @@ describe("[D4b-s] loadPendingDecisions: gate · 두 함수 · 실패는 전체 �
 
   it("켜진 adapter가 없으면(빈 배열) review_agent_inputs를 부르지 않는다 — C2 함수 하나만, 결과도 C2 그대로", async () => {
     const { admin, calls } = fakeAdmin({ coordinator_pending_inputs: [C2_ROW], review_agent_inputs: [AGENT_ROW] });
-    const groups = await loadPendingDecisions(admin, "user-1", NOW, { agentAdapters: [] });
+    const groups = await loadPendingDecisions(admin, "10000000-0000-4000-8000-000000000001", NOW, { agentAdapters: [] });
     expect(calls.map((c) => c.name)).toEqual(["coordinator_pending_inputs"]);
     expect(groups.map((g) => g.kind)).toEqual(["confirm"]);
   });
@@ -277,33 +277,33 @@ describe("[D4b-s] loadPendingDecisions: gate · 두 함수 · 실패는 전체 �
     vi.stubEnv("AGENT_ADAPTER_CODEX_ENABLED", "");
     vi.stubEnv("AGENT_ADAPTER_CLAUDE_CODE_ENABLED", "");
     const off = fakeAdmin({ coordinator_pending_inputs: [C2_ROW], review_agent_inputs: [AGENT_ROW] });
-    await loadPendingDecisions(off.admin, "user-1", NOW);
+    await loadPendingDecisions(off.admin, "10000000-0000-4000-8000-000000000001", NOW);
     expect(off.calls.map((c) => c.name)).toEqual(["coordinator_pending_inputs"]);
 
     vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true");
     vi.stubEnv("AGENT_ADAPTER_CODEX_ENABLED", "true");
     const on = fakeAdmin({ coordinator_pending_inputs: [C2_ROW], review_agent_inputs: [AGENT_ROW] });
-    const groups = await loadPendingDecisions(on.admin, "user-1", NOW);
+    const groups = await loadPendingDecisions(on.admin, "10000000-0000-4000-8000-000000000001", NOW);
     expect(on.calls.map((c) => c.name).sort()).toEqual(["coordinator_pending_inputs", "review_agent_inputs"]);
-    expect(on.calls.find((c) => c.name === "review_agent_inputs")!.args).toEqual({ p_user_id: "user-1", p_adapters: ["agent:codex"] });
+    expect(on.calls.find((c) => c.name === "review_agent_inputs")!.args).toEqual({ p_user_id: "10000000-0000-4000-8000-000000000001", p_adapters: ["agent:codex"] });
     expect(groups.map((g) => g.kind).sort()).toEqual(["agent_question", "confirm"]);
   });
 
   it("켜진 adapter가 있으면 두 함수의 행을 합쳐 한 목록으로 계산한다 (C2 행은 ref 없음, 에이전트 행은 ref 있음)", async () => {
     const { admin } = fakeAdmin({ coordinator_pending_inputs: [C2_ROW], review_agent_inputs: [AGENT_ROW] });
-    const groups = await loadPendingDecisions(admin, "user-1", NOW, { agentAdapters: ["agent:codex", "agent:claude-code"] });
+    const groups = await loadPendingDecisions(admin, "10000000-0000-4000-8000-000000000001", NOW, { agentAdapters: ["agent:codex", "agent:claude-code"] });
     const items = groups.flatMap((g) => g.items);
     expect(items.find((i) => i.kind === "confirm")).not.toHaveProperty("agent");
     expect(items.find((i) => i.kind === "agent_question")).toMatchObject({ id: `agent_question:${TASK}`, runId: RUN, agent: { task_id: TASK, adapter: "agent:codex" } });
   });
 
   it("어느 함수든 실패하면 throw한다 (일부만 보이지 않는다 — 호출한 쪽이 결정 전체를 unavailable로 표시)", async () => {
-    await expect(loadPendingDecisions(fakeAdmin({ coordinator_pending_inputs: new Error("c2 down") }).admin, "u", NOW, { agentAdapters: ["agent:codex"] })).rejects.toThrow("c2 down");
-    await expect(loadPendingDecisions(fakeAdmin({ coordinator_pending_inputs: [C2_ROW], review_agent_inputs: new Error("agent down") }).admin, "u", NOW, { agentAdapters: ["agent:codex"] })).rejects.toThrow("agent down");
+    await expect(loadPendingDecisions(fakeAdmin({ coordinator_pending_inputs: new Error("c2 down") }).admin, "10000000-0000-4000-8000-000000000001", NOW, { agentAdapters: ["agent:codex"] })).rejects.toThrow("c2 down");
+    await expect(loadPendingDecisions(fakeAdmin({ coordinator_pending_inputs: [C2_ROW], review_agent_inputs: new Error("agent down") }).admin, "10000000-0000-4000-8000-000000000001", NOW, { agentAdapters: ["agent:codex"] })).rejects.toThrow("agent down");
   });
 
   it("모르는 종류 · 틀린 ref 모양 · 틀린 열쇠를 받으면 throw한다", async () => {
-    const run = (row: unknown) => loadPendingDecisions(fakeAdmin({ coordinator_pending_inputs: [], review_agent_inputs: [row] }).admin, "u", NOW, { agentAdapters: ["agent:codex"] });
+    const run = (row: unknown) => loadPendingDecisions(fakeAdmin({ coordinator_pending_inputs: [], review_agent_inputs: [row] }).admin, "10000000-0000-4000-8000-000000000001", NOW, { agentAdapters: ["agent:codex"] });
     await expect(run({ ...AGENT_ROW, kind: "from_the_future" })).rejects.toThrow();
     await expect(run({ ...AGENT_ROW, detail: { ...DETAIL.agent_question, task_id: 3 } })).rejects.toThrow();
     await expect(run({ ...AGENT_ROW, detail: {} })).rejects.toThrow();
@@ -316,13 +316,13 @@ describe("[D4b-s] loadPendingDecisions: gate · 두 함수 · 실패는 전체 �
     for (const data of [null, undefined, {}, "[]", 3]) {
       const t = fakeAdmin({ coordinator_pending_inputs: [C2_ROW] });
       const admin = { rpc: (name: string, args: unknown) => (name === "review_agent_inputs" ? { throwOnError: () => Promise.resolve({ data }) } : t.admin.rpc(name, args)) } as unknown as SupabaseClient;
-      await expect(loadPendingDecisions(admin, "u", NOW, { agentAdapters: ["agent:codex"] }), JSON.stringify(data) ?? "undefined").rejects.toThrow();
+      await expect(loadPendingDecisions(admin, "10000000-0000-4000-8000-000000000001", NOW, { agentAdapters: ["agent:codex"] }), JSON.stringify(data) ?? "undefined").rejects.toThrow();
     }
   });
 
   it("빈 배열은 정당한 빈 목록이다 (C2 항목만 나온다)", async () => {
     const { admin } = fakeAdmin({ coordinator_pending_inputs: [C2_ROW], review_agent_inputs: [] });
-    expect((await loadPendingDecisions(admin, "u", NOW, { agentAdapters: ["agent:codex"] })).map((g) => g.kind)).toEqual(["confirm"]);
+    expect((await loadPendingDecisions(admin, "10000000-0000-4000-8000-000000000001", NOW, { agentAdapters: ["agent:codex"] })).map((g) => g.kind)).toEqual(["confirm"]);
   });
 
   it("행이 1,001개여도 하나도 버리지 않는다 (개수 상한 없음 — 잘림은 SQL 반환 형태가 막는다)", async () => {
@@ -331,7 +331,7 @@ describe("[D4b-s] loadPendingDecisions: gate · 두 함수 · 실패는 전체 �
       return { ...AGENT_ROW, kind: "path_conflict", item_ref: lease, version: `conflict:${lease}:1`, detail: { ...DETAIL.path_conflict, lease_id: lease } };
     });
     const { admin } = fakeAdmin({ coordinator_pending_inputs: [], review_agent_inputs: rows });
-    const groups = await loadPendingDecisions(admin, "u", NOW, { agentAdapters: ["agent:codex"] });
+    const groups = await loadPendingDecisions(admin, "10000000-0000-4000-8000-000000000001", NOW, { agentAdapters: ["agent:codex"] });
     expect(groups.flatMap((g) => g.items)).toHaveLength(1001);
   });
 });
@@ -385,3 +385,5 @@ describe("계산은 실제 대기 항목을 하나도 버리지 않는다 (개�
     expect(computePendingDecisions({ rows: [a, b], now: NOW })[0].items).toHaveLength(1);
   });
 });
+
+beforeEach(() => { vi.stubEnv("AGENT_BETA_USER_IDS", "10000000-0000-4000-8000-000000000001"); vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true"); });

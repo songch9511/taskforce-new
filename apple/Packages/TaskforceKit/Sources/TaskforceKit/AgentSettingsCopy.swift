@@ -79,6 +79,9 @@ public enum AgentSettingsCopy {
 
     // MARK: 있는 문장 재사용
 
+    /// Settings의 서버 기능 비활성 문구 (`SettingsRunWithAISection.availability`)
+    public static let notAvailable = "Not available"
+
     /// 실패 줄 (조용한 회색 힌트 톤, 빨강 아님): 기존 문장 · DS 문장
     public static let somethingWentWrong = AgentQuestionFailure.genericReason
     public static let youAreOffline = AgentQuestionFailure.offlineReason

@@ -10,7 +10,7 @@ import { heartbeatBridge } from "./heartbeat";
 import { sweepBridge } from "./sweep";
 let db: PGlite;
 const f = bridgeCommandFixtures(() => ({ query: async (sql, params) => (await db.query<Record<string, unknown>>(sql, params)).rows, asUser: (user, fn) => asUser(db, user, fn) }));
-beforeAll(async () => { db = await createLocalSupabase(); vi.stubEnv("EXECUTION_ENABLED", "true"); vi.stubEnv("AGENT_ADAPTER_CODEX_ENABLED", "true"); }, 60_000);
+beforeAll(async () => { db = await createLocalSupabase(); vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true"); vi.stubEnv("EXECUTION_ENABLED", "true"); vi.stubEnv("AGENT_ADAPTER_CODEX_ENABLED", "true"); }, 60_000);
 afterAll(async () => { vi.unstubAllEnvs(); await db?.close(); });
 // Only the PostgREST operations exercised by these production bridge paths.
 function admin(): SupabaseClient {
@@ -46,6 +46,7 @@ async function counts(user: string) {
 const capabilities = { adapters: { "agent:codex": { installed: true, version: "0.162.1", signed_in: "yes", managed_settings: false } } };
 it("filters a deleted Action chip and delivers the selected message without skipping its FIFO turn", async () => {
   const w = await f.world();
+  vi.stubEnv("AGENT_BETA_USER_IDS", w.user);
   await f.updateRow("agent_sessions", w.session, { status: "bound", external_session_id: `session:${randomUUID()}` });
   await f.updateRow("bridges", w.bridge, { capabilities });
   await f.lease(w);
@@ -74,6 +75,7 @@ it("filters a deleted Action chip and delivers the selected message without skip
 
 it.each(["start", "mark"])("preserves concurrent spawn_failed after selecting a queued head at the %s guard", async (phase) => {
   const w = await f.world();
+  vi.stubEnv("AGENT_BETA_USER_IDS", w.user);
   await f.updateRow("agent_sessions", w.session, { status: "bound", external_session_id: `session:${randomUUID()}` });
   await f.updateRow("bridges", w.bridge, { capabilities });
   await f.lease(w);
@@ -103,6 +105,7 @@ it.each(["start", "mark"])("preserves concurrent spawn_failed after selecting a 
 });
 it.each(["gate", "decline", "preaccept", "not_received"])("%s keeps the failed FIFO head and later messages unchanged through kicks and heartbeat", async (kind) => {
   const w = await f.world();
+  vi.stubEnv("AGENT_BETA_USER_IDS", w.user);
   await f.updateRow("agent_sessions", w.session, { status: "bound", external_session_id: `session:${randomUUID()}` });
   await f.updateRow("bridges", w.bridge, { capabilities });
   if (kind === "gate") expect(await f.lease(w, null)).toMatchObject({ status: "withdrawn", reason: "write_gate_closed" });
@@ -123,13 +126,13 @@ it.each(["gate", "decline", "preaccept", "not_received"])("%s keeps the failed F
   expect(await counts(w.user)).toEqual(before);
   expect(await f.one("select delivery_state from public.conversation_messages where id=$1", [next.message_id])).toEqual({ delivery_state: "queued" });
   if (kind === "gate") {
-    await redeliverBridgeMessages(client, { EXECUTION_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" });
+    await redeliverBridgeMessages(client, { AGENT_BETA_USER_IDS: w.user, CONVERSATIONS_V2_ENABLED: "true", EXECUTION_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" });
     const after = await counts(w.user);
     expect(after.slice(0, 3)).toEqual(before.slice(0, 3).map(n => Number(n) + 1));
-    await redeliverBridgeMessages(client, { EXECUTION_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" });
+    await redeliverBridgeMessages(client, { AGENT_BETA_USER_IDS: w.user, CONVERSATIONS_V2_ENABLED: "true", EXECUTION_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" });
     expect(await counts(w.user)).toEqual(after);
   } else {
-    await redeliverBridgeMessages(client, { EXECUTION_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" });
+    await redeliverBridgeMessages(client, { AGENT_BETA_USER_IDS: w.user, CONVERSATIONS_V2_ENABLED: "true", EXECUTION_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" });
     expect(await counts(w.user)).toEqual(before);
   }
 });
@@ -137,6 +140,7 @@ it.each(["gate", "decline", "preaccept", "not_received"])("%s keeps the failed F
 it.each(["unknown", "cancelled", "stale"])("a reported %s readback does not end long polling", async (state) => {
   const { pollBridgeCommands } = await import("./commands");
   const w = await f.world();
+  vi.stubEnv("AGENT_BETA_USER_IDS", w.user);
   await f.lease(w);
   await f.updateRow("execution_steps", w.step, { lease_expires_at: "2000-01-01T00:00:00Z" });
   await f.q("select public.sweep_agent_step_leases(public.db_now())");
@@ -166,19 +170,21 @@ it.each(["unknown", "cancelled", "stale"])("a reported %s readback does not end 
 
 it("sweeps the actual SQL lease function through the production TS caller", async () => {
   const w = await f.world();
+  vi.stubEnv("AGENT_BETA_USER_IDS", w.user);
   await f.lease(w);
   await f.updateRow("execution_steps", w.step, { lease_expires_at: "2000-01-01" });
   vi.stubEnv("EXECUTION_ENABLED", "false");
   try {
     expect(await sweepBridge(admin())).toEqual({ unreachable: 0, expired_leases: 1, lease_busy: 0, reclaimed: 0, reclaim_busy: 0, redelivered: 0, errors: 0 });
     expect(await f.one("select state from public.execution_steps where id=$1", [w.step])).toEqual({ state: "unknown_outcome" });
-  } finally { vi.stubEnv("EXECUTION_ENABLED", "true"); }
+  } finally { vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true"); vi.stubEnv("EXECUTION_ENABLED", "true"); }
 });
 
 // ─── F1s 항목 3 (D3): 계기 ③은 후보 대화 하나의 머리만 시작한다 (onlyConversationId 필터) ───
 const gateEnv = { EXECUTION_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" };
 it("③: 같은 연결의 세션 없는 대화 둘 중 후보로 넘어온 대화의 머리만 시작한다", async () => {
   const w = await f.world();
+  vi.stubEnv("AGENT_BETA_USER_IDS", w.user);
   await f.updateRow("agent_sessions", w.session, { status: "bound", external_session_id: `session:${randomUUID()}` });
   await f.updateRow("bridges", w.bridge, { capabilities });
   const heads: string[] = [], conversations: string[] = [];
@@ -200,7 +206,7 @@ it("③: 같은 연결의 세션 없는 대화 둘 중 후보로 넘어온 대�
     }
     return originalRpc(...args);
   });
-  expect(await redeliverBridgeMessages(client, gateEnv)).toBe(1);
+  expect(await redeliverBridgeMessages(client, { ...gateEnv, AGENT_BETA_USER_IDS: w.user, CONVERSATIONS_V2_ENABLED: "true" })).toBe(1);
   expect(await f.msg(heads[0])).toMatchObject({ delivery_state: "dispatched", delivery_reason: null });
   expect(await f.msg(heads[1])).toMatchObject({ delivery_state: "not_sent", delivery_reason: "write_gate_closed" });
   expect(rpc.mock.calls.filter(([name]) => name === "start_agent_turn_auto").map(([, args]) => args?.p_message_id)).toEqual([heads[0]]);
@@ -211,6 +217,7 @@ it("③: 같은 연결의 세션 없는 대화 둘 중 후보로 넘어온 대�
 // (FU의 예시 "지워진 context 칩"은 not_found가 아니다: 없는 · 보관한 context는 Ungrouped다. 실제 not_found는 남의 칩, 또는 TS 필터 뒤 SQL 전에 지워진 Action이다)
 it.each(["another user's context chip", "Action deleted just before the start"])("not_found 머리(%s)는 대기열에서 빠지고 다음 kick이 M3을 시작한다", async (kind) => {
   const w = await f.world();
+  vi.stubEnv("AGENT_BETA_USER_IDS", w.user);
   await f.updateRow("agent_sessions", w.session, { status: "bound", external_session_id: `session:${randomUUID()}` });
   await f.updateRow("bridges", w.bridge, { capabilities });
   await f.lease(w);

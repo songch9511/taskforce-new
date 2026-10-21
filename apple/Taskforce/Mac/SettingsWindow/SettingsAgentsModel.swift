@@ -269,7 +269,7 @@ final class AgentSettingsModel {
             target = AgentSettingsRules.target(from: row)
             serverName = row?.deviceName
         case .unavailable:
-            target = .none
+            target = .unavailable
         case .failed:
             break
         }

@@ -458,3 +458,7 @@ describe("POST /api/v2/conversations/{id}/proposals/{proposal_id}/confirm · dis
     expect((await dismiss(actionDeps({ dismiss: vi.fn(async () => Promise.reject(secret)) }))).status).toBe(500);
   });
 });
+
+// Explicit beta fixture; production remains fail-closed.
+beforeEach(() => { vi.stubEnv("AGENT_BETA_USER_IDS", USER.user.id); vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true"); });
+afterEach(() => vi.unstubAllEnvs());

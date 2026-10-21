@@ -32,16 +32,21 @@ afterEach(() => vi.unstubAllEnvs());
 
 const NOW = new Date();
 const HORIZON = NOW.toISOString().replace("Z", "000Z");
-const review = (user: string) => loadReview(admin, user, NOW, { coordinatorEnabled: false, timeZone: async () => "Asia/Seoul", agentAdapters: BOTH });
+function enrollFixture(user: string): void {
+  vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true");
+  vi.stubEnv("AGENT_BETA_USER_IDS", user);
+}
+const review = (user: string) => { enrollFixture(user); return loadReview(admin, user, NOW, { coordinatorEnabled: false, timeZone: async () => "Asia/Seoul", agentAdapters: BOTH }); };
 const summary = (user: string) => loadReturnSummary(admin, user, NOW, { agentAdapters: BOTH, horizon: HORIZON });
 const itemsOf = (response: Awaited<ReturnType<typeof review>>) => (response.decisions ?? []).flatMap((group) => group.items);
 const env = { CONVERSATIONS_V2_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true", AGENT_ADAPTER_CLAUDE_CODE_ENABLED: "true" };
 /** D1d의 실제 답 handler를 PGlite admin 위에서 그대로 돌린다 */
 const answerWith = (user: string) => async (task: string, body: unknown) => {
+  enrollFixture(user);
   const response = await handleAnswerQuestion(new Request(`https://api.example.dev/api/v2/agent-tasks/${task}/answer`, { method: "POST", body: JSON.stringify(body) }), task, {
     enabled: () => true,
     authenticate: async () => ({ user: { id: user } }),
-    sessionAdapter: (_u, sessionId) => loadSessionAdapter(admin, user, sessionId, env),
+    sessionAdapter: (_u, sessionId) => loadSessionAdapter(admin, user, sessionId, { ...env, AGENT_BETA_USER_IDS: user }),
     loadTask: (_u, taskId) => loadAnswerTask(admin, user, taskId),
     answerApproval: (_u, input) => answerAgentApproval(admin, { userId: user, agentTaskId: input.taskId, providerRequestId: input.providerRequestId, answers: input.answers, question: input.question }),
     answer: (_u, input) => answerFromRoute(admin, { userId: user, agentTaskId: input.taskId, providerRequestId: input.providerRequestId, answers: input.answers, question: input.question }),

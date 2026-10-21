@@ -9,8 +9,8 @@ import { BRIDGE_STALE_SECONDS, listAssistantTargets, resolveAgentTarget } from "
 const USER = "10000000-0000-4000-8000-000000000001";
 const OTHER = "20000000-0000-4000-8000-000000000002";
 const NOW = new Date("2026-10-14T12:00:00.000Z");
-const CODEX = { AGENT_ADAPTER_CODEX_ENABLED: "true" };
-const BOTH = { AGENT_ADAPTER_CODEX_ENABLED: "true", AGENT_ADAPTER_CLAUDE_CODE_ENABLED: "true" };
+const CODEX = { AGENT_BETA_USER_IDS: USER, CONVERSATIONS_V2_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true" };
+const BOTH = { AGENT_BETA_USER_IDS: USER, CONVERSATIONS_V2_ENABLED: "true", AGENT_ADAPTER_CODEX_ENABLED: "true", AGENT_ADAPTER_CLAUDE_CODE_ENABLED: "true" };
 const id = (n: number) => `c0000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const secondsAgo = (n: number) => new Date(NOW.getTime() - n * 1000).toISOString();
 

@@ -1,3 +1,4 @@
+import { agentBetaUserAllowed } from "@/lib/flags";
 import "server-only";
 
 import { createHash } from "node:crypto";
@@ -197,7 +198,7 @@ export type PendingLoadOptions = {
  * 어느 함수든 실패하거나 모양이 틀리면 throw한다 — 호출한 쪽이 결정 전체를 unavailable로 표시한다 (일부만 보이지 않는다).
  */
 export async function loadPendingDecisions(admin: SupabaseClient, userId: string, now: Date = new Date(), options: PendingLoadOptions = {}): Promise<PendingGroup[]> {
-  const adapters = options.agentAdapters ?? openAgentAdapters();
+  const adapters = agentBetaUserAllowed(userId) ? (options.agentAdapters ?? openAgentAdapters()) : [];
   const [c2, agent] = await Promise.all([
     admin.rpc("coordinator_pending_inputs", { p_user_id: userId }).throwOnError(),
     adapters.length > 0 ? admin.rpc("review_agent_inputs", { p_user_id: userId, p_adapters: [...adapters] }).throwOnError() : null,

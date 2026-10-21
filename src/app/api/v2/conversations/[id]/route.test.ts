@@ -43,3 +43,6 @@ describe("PATCH /api/v2/conversations/{id} (route)", () => {
     expect(setConversationContext).toHaveBeenCalledTimes(1);
   });
 });
+
+// Enroll this route fixture only; global-off and authentication assertions are unchanged.
+beforeEach(() => vi.stubEnv("AGENT_BETA_USER_IDS", "11111111-0000-4000-8000-000000000001"));

@@ -1,3 +1,4 @@
+import { agentBetaUserAllowed } from "@/lib/flags";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 
@@ -46,7 +47,7 @@ export async function resolveAgentTarget(admin: SupabaseClient, userId: string, 
     capability: AGENT_REGISTRY[connection.adapter],
     mode: await loadPolicyMode(admin, userId),
     connectionStatus: connection.status === "active" ? "active" : "not_connected",
-    enabled: adapterEnabled(connection.adapter, env),
+    enabled: agentBetaUserAllowed(userId, env) && adapterEnabled(connection.adapter, env),
   };
 }
 
@@ -61,7 +62,7 @@ type BridgeRow = { id: string; status: "active" | "revoked"; last_heartbeat_at: 
  * F1s: 행마다 device_name(그 연결 bridge의 표시용 이름, 모르면 null)과 bridge_id(연결의 bridge, 연결이 없으면 null)를 더한다 — 이름은 상태 계산에 쓰지 않는다
  */
 export async function listAssistantTargets(admin: SupabaseClient, userId: string, env: Env = process.env, now: Date = new Date()): Promise<AssistantTargetWithDevice[]> {
-  const enabled = ADAPTERS.filter((adapter) => adapterEnabled(adapter, env));
+  const enabled = (agentBetaUserAllowed(userId, env) ? ADAPTERS : []).filter((adapter) => adapterEnabled(adapter, env));
   const targets: AssistantTargetWithDevice[] = [{ kind: "taskforce" }];
   if (!enabled.length) return targets;
 

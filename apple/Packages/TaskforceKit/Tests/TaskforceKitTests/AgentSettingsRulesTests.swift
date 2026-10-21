@@ -80,6 +80,22 @@ struct AgentSettingsRulesTests {
         #expect(AgentSettingsRules.line(Self.facts(status: .revoked, canRun: false)).kind == .unavailable, "폐기 상태도 이 빌드의 한계가 먼저다")
     }
 
+    @Test func aServerThatDoesNotOfferAgentsDoesNotClaimAConnectionOrOfferRegistration() {
+        for status in [BridgeStatus.connected, .revoked, .credentialRejected, .tooManyBridges, .offline] {
+            let facts = Self.facts(status: status, target: .unavailable)
+            let line = AgentSettingsRules.line(facts)
+            #expect(line.kind == .serverUnavailable && line.detail == "Not available" && line.control == .none && !line.bold)
+            #expect(line.accessibilityLabel == "Claude Code, Not available")
+            let detail = AgentSettingsRules.detail(facts)
+            #expect(detail.signIn == AgentSettingsValue("Signed in") && detail.version == "2.1.241")
+            #expect(detail.openNow == nil && detail.accessFootnote == nil && detail.statusFootnote == nil)
+            #expect(detail.showsFolders && !detail.showsDisconnect)
+        }
+        #expect(AgentSettingsRules.line(Self.facts(report: nil, target: .unavailable)).kind == .serverUnavailable, "서버가 이미 답했으면 로컬 probe를 기다리는 말로 가리지 않는다")
+        let disabledBuild = AgentSettingsRules.line(Self.facts(canRun: false, target: .unavailable))
+        #expect(disabledBuild.kind == .unavailable && disabledBuild.detail == "Can't run agents in this build", "빌드 한계는 별개다")
+    }
+
     @Test func row2RevokedOrRejectedIsABoldNotConnectedWithReconnect() {
         for status in [BridgeStatus.revoked, .credentialRejected] {
             let line = AgentSettingsRules.line(Self.facts(status: status))

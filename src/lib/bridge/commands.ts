@@ -1,3 +1,4 @@
+import { agentBetaUserAllowed } from "@/lib/flags";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import { bridgeV1AckRequestSchema, bridgeV1AckResponseSchema, bridgeV1AdapterReportSchema, bridgeV1CommandsResponseSchema, type BridgeV1AckRequest } from "@/lib/api/contract";
@@ -63,7 +64,7 @@ export async function ackBridgeCommand(admin: SupabaseClient, input: { userId: s
     const mode = await bridgePolicyMode(admin, input.userId);
     disabled = command.kind !== "cancel" && !adapterEnabled(step.provider, env);
     ({ data } = await admin.rpc("lease_bridge_command", { p_user_id: input.userId, p_bridge_id: input.bridge.id, p_command_id: body.command_id,
-      p_access: bridgeDeliveryAccess(step.provider, input.bridge.capabilities, mode, env), p_mode: mode,
+      p_access: agentBetaUserAllowed(input.userId, env) ? bridgeDeliveryAccess(step.provider, input.bridge.capabilities, mode, env) : null, p_mode: mode,
     }).throwOnError());
   } else {
     ({ data } = await admin.rpc("settle_bridge_command", { p_user_id: input.userId, p_bridge_id: input.bridge.id, p_command_id: body.command_id,
