@@ -91,7 +91,7 @@ public struct ExternalSessionProcessFacts: Sendable {
 }
 
 /// 그 세션을 이미 쥔 곳이 있나 (OA 외부 세션 PR1, 계약 5.4). **모르면 막는다(fail-closed).**
-/// 신호 순서: ① 세션 등록 파일(pid가 살아 있고 같은 사용자이고 시작 시각이 `procStart`와 1초 안) ② argv ③ 같은 cwd의 등록 안 된 `claude` ④ 기록이 60초 안에 쓰임.
+/// 신호 순서: ① 세션 등록 파일(pid가 살아 있고 같은 사용자이고 시작 시각이 `procStart`와 1초 안 — 시간대 없는 `lstart`는 이 Mac · UTC 두 가지로 읽는다) ② argv ③ 같은 cwd의 등록 안 된 `claude` ④ 기록이 60초 안에 쓰임.
 /// ⑤ 백그라운드(agent view)는 R7 전까지 등록 파일의 `kind`만 본다.
 enum ExternalSessionHold {
     enum Result: Equatable, Sendable {
@@ -122,11 +122,13 @@ enum ExternalSessionHold {
         var now: Date
     }
 
-    static func snapshot(facts: ExternalSessionProcessFacts, fileSystem: ExternalSessionFileSystem, sessionsDirectory: String, ownPIDs: Set<Int32>, now: Date) -> Snapshot {
+    static func snapshot(
+        facts: ExternalSessionProcessFacts, fileSystem: ExternalSessionFileSystem, sessionsDirectory: String, ownPIDs: Set<Int32>, now: Date, localZone: TimeZone = .current
+    ) -> Snapshot {
         var live: [LiveEntry] = []
         var registeredPIDs = Set<Int32>()
         var unavailable = false
-        switch ExternalSessionRegistry.read(fileSystem: fileSystem, sessionsDirectory: sessionsDirectory, now: now) {
+        switch ExternalSessionRegistry.read(fileSystem: fileSystem, sessionsDirectory: sessionsDirectory, now: now, localZone: localZone) {
         case .unavailable:
             unavailable = true
         case .entries(let entries):
@@ -142,7 +144,8 @@ enum ExternalSessionHold {
         )
     }
 
-    /// 살아 있다 · 같은 사용자 · 시작 시각이 맞다 (pid 재사용이면 stale). 시작 시각을 모르거나 조회가 실패하면 살아 있는 것으로 본다 (fail-closed)
+    /// 살아 있다 · 같은 사용자 · 시작 시각이 맞다 (pid 재사용이면 stale). 시작 시각을 모르거나 조회가 실패하면 살아 있는 것으로 본다 (fail-closed).
+    /// 시간대 없는 `lstart` 글은 두 가지로 읽었다 (`procStartAlternate`): 어느 쪽이든 1초 안이면 같은 프로세스다. 둘 다 아니어야 pid 재사용이다
     static func isAlive(_ entry: ExternalSessionRegistry.Entry, facts: ExternalSessionProcessFacts) -> Bool {
         switch facts.lookup(entry.pid) {
         case .gone: return false
@@ -150,7 +153,7 @@ enum ExternalSessionHold {
         case .present(let start, let uid):
             guard uid == facts.userID else { return false }
             guard let recorded = entry.procStart else { return true }
-            return abs(start.timeIntervalSince(recorded)) <= startTolerance
+            return [recorded, entry.procStartAlternate].compactMap { $0 }.contains { abs(start.timeIntervalSince($0)) <= startTolerance }
         }
     }
 

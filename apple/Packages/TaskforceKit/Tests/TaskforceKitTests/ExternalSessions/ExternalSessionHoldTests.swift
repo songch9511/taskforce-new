@@ -31,10 +31,10 @@ extension ExternalSessionSuites {
         /// 가짜 홈에 등록 파일을 쓰고 한 번 훑은 스냅샷으로 판정한다
         private func decide(
             _ home: ExternalHome, files: [(Int, String)], facts: ExternalSessionProcessFacts, cwd: String? = "/Users/tester/proj", modified: Date? = nil, own: Set<Int32> = [],
-            fileSystem: ExternalSessionFileSystem = .live
+            fileSystem: ExternalSessionFileSystem = .live, zone: TimeZone = .current
         ) -> ExternalSessionHold.Result {
             for (pid, json) in files { try! home.registry(pid: pid, json: json) }
-            let snapshot = ExternalSessionHold.snapshot(facts: facts, fileSystem: fileSystem, sessionsDirectory: home.sessions, ownPIDs: own, now: now)
+            let snapshot = ExternalSessionHold.snapshot(facts: facts, fileSystem: fileSystem, sessionsDirectory: home.sessions, ownPIDs: own, now: now, localZone: zone)
             return ExternalSessionHold.decide(id: id, cwd: cwd, modified: modified ?? now.addingTimeInterval(-3600), snapshot: snapshot)
         }
 
@@ -237,6 +237,93 @@ extension ExternalSessionSuites {
                 #expect(result == .unavailable, "읽을 수 있는 것이 하나도 없다")
                 #expect(recording.reads.isEmpty)
             }
+        }
+
+        // MARK: 데스크톱 앱 등록 파일의 실제 모양 (2.1.304: 이 Mac에서 본 키 그대로, 값은 가짜)
+
+        /// 시험하는 Mac 시간대들. 판정은 이 Mac의 시간대가 무엇이든 같아야 한다 (시험이 시간대를 직접 정한다: CI는 UTC라 `.current`만으로는 빨갛게 되지 않는다)
+        private var zones: [TimeZone] { ["Asia/Seoul", "America/Los_Angeles", "Asia/Kolkata", "UTC"].compactMap(TimeZone.init(identifier:)) }
+        private var utc: TimeZone { TimeZone(identifier: "UTC")! }
+
+        /// `ps -o lstart` 모양의 글 (`Wed Oct 21 04:57:32 2026`): 시간대가 글에 없다
+        private func lstart(_ date: Date, in zone: TimeZone) -> String {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = zone
+            formatter.dateFormat = "EEE MMM d HH:mm:ss yyyy"
+            return formatter.string(from: date)
+        }
+
+        /// 데스크톱 앱이 띄운 번들 `claude`(2.1.304)의 `~/.claude/sessions/<pid>.json` 키 전부. `procStart`는 `ps lstart` 글인데 **UTC로 적힌다**
+        /// (KST Mac에서 같은 pid의 `ps lstart`는 9시간 뒤 시각이다). 이 Mac의 시간대로만 읽으면 9시간 어긋나 pid 재사용(stale)으로 보이고,
+        /// 데스크톱이 쥔 세션이 argv의 `--resume=`에서 Terminal로 떨어지거나(argv가 없으면) 비어 있는 것으로 보인다
+        private func desktopRecord(pid: Int, procStart: String, status: String = "idle") -> String {
+            F.json([
+                "pid": pid, "sessionId": id, "cwd": cwd, "entrypoint": "claude-desktop", "kind": "interactive", "version": "2.1.304", "status": status, "pidDomain": "darwin",
+                "procStart": procStart, "hostSessionId": "local_5e5e5e5e-0000-4000-8000-0000000000aa", "messagingSocketPath": "/tmp/tf-test-peer.sock",
+                "name": "SENTINEL-NAME-\(F.userSentinel)", "nameSince": 1_800_000_100, "nameSource": "auto", "peerFeatures": ["a", "b", "c"], "peerProtocol": 1,
+                "startedAt": 1_799_990_000_000, "statusUpdatedAt": 1_800_000_000_000, "updatedAt": 1_800_000_000_000,
+            ])
+        }
+
+        @Test func aDesktopSessionWhoseLstartIsWrittenInUTCIsHeldInClaudeWhateverTheMacTimeZone() throws {
+            try withHome { home in
+                let json = desktopRecord(pid: 4242, procStart: lstart(started, in: utc))
+                for zone in zones {
+                    // 실제로 본 두 모양: argv에 `--resume=<id>`가 있다(Terminal로 오판) · 없다(비어 있다고 오판)
+                    for argv: Set<String> in [[id], []] {
+                        let result = decide(home, files: [(4242, json)], facts: Self.facts(lookups: [4242: alive], argv: argv), zone: zone)
+                        #expect(result == .held(.claudeApp), "\(zone.identifier) argv=\(argv.count)")
+                    }
+                }
+            }
+        }
+
+        @Test func anLstartWrittenInTheMacsOwnZoneStillMatches() throws {
+            try withHome { home in
+                for zone in zones {
+                    let json = desktopRecord(pid: 4242, procStart: lstart(started, in: zone))
+                    #expect(decide(home, files: [(4242, json)], facts: Self.facts(lookups: [4242: alive]), zone: zone) == .held(.claudeApp), "\(zone.identifier)")
+                }
+            }
+        }
+
+        /// 시간대를 모르는 글이라 두 가지로 읽어도 pid 재사용은 여전히 stale이다 (T10): 어느 쪽으로 읽어도 1초 안이 아니면 쥔 것이 아니다
+        @Test func aReusedPidIsStillStaleWhicheverZoneTheLstartWasWrittenIn() throws {
+            try withHome { home in
+                for zone in zones {
+                    for written in [utc, zone] {
+                        let json = desktopRecord(pid: 4242, procStart: lstart(started, in: written))
+                        for drift: TimeInterval in [5, -5, 3 * 3600, -3 * 3600] {
+                            let reused = Self.facts(lookups: [4242: .present(start: started.addingTimeInterval(drift), uid: 501)])
+                            #expect(decide(home, files: [(4242, json)], facts: reused, zone: zone) == .free, "\(zone.identifier) \(written.identifier) \(drift)")
+                        }
+                    }
+                }
+            }
+        }
+
+        /// 읽은 결과: 시간대 없는 `lstart`만 두 가지(이 Mac · UTC)로 읽고, 숫자 · ISO 8601처럼 시각이 정해진 모양은 하나다. 두 읽기가 같으면(UTC Mac) 하나다
+        @Test func aZonelessLstartIsReadInTheLocalZoneAndInUTCOthersOnce() throws {
+            let seoul = TimeZone(identifier: "Asia/Seoul")!
+            let iso = ISO8601DateFormatter()
+            iso.formatOptions = [.withInternetDateTime]
+            let text = lstart(started, in: utc)
+            let both = try #require(readEntry(text, zone: seoul))
+            #expect(Set([both.procStart, both.procStartAlternate]) == [started, started.addingTimeInterval(-9 * 3600)])
+            #expect(readEntry(text, zone: utc)?.procStart == started && readEntry(text, zone: utc)?.procStartAlternate == nil)
+            for form in [started.timeIntervalSince1970, started.timeIntervalSince1970 * 1000, iso.string(from: started)] as [Any] {
+                let entry = try #require(readEntry(form, zone: seoul), "\(form)")
+                #expect(entry.procStart == started && entry.procStartAlternate == nil, "\(form)")
+            }
+        }
+
+        private func readEntry(_ procStart: Any, zone: TimeZone) -> ExternalSessionRegistry.Entry? {
+            guard let home = try? ExternalHome() else { return nil }
+            defer { home.cleanup() }
+            try? home.registry(pid: 4242, json: entry(pid: 4242, procStart: procStart))
+            if case .entries(let entries) = ExternalSessionRegistry.read(fileSystem: .live, sessionsDirectory: home.sessions, now: now, localZone: zone) { return entries.first }
+            return nil
         }
 
         // MARK: procStart 믿기 (fail-closed)

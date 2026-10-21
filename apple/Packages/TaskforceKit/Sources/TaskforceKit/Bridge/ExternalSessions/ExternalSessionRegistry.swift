@@ -16,6 +16,9 @@ enum ExternalSessionRegistry {
         var cwd: String?
         /// 프로세스 시작 시각. 값이 없거나 읽지 못하면 nil (그때는 pid 재사용을 가릴 수 없어 살아 있으면 쥔 것으로 본다)
         var procStart: Date?
+        /// 시간대가 없는 `lstart` 글을 다른 시간대로 읽은 값 (`procStart`는 이 Mac의 시간대, 이것은 UTC). 두 읽기가 같거나 시각이 정해진 모양이면 nil.
+        /// 데스크톱이 띄운 번들 `claude`(2.1.304)는 `lstart`를 UTC로 적는다 — 이 Mac의 시간대로만 읽으면 시간대 차이만큼 어긋나 살아 있는 세션이 stale로 보인다
+        var procStartAlternate: Date? = nil
         var entrypoint: String?
         var kind: String?
     }
@@ -65,7 +68,7 @@ enum ExternalSessionRegistry {
         }
     }
 
-    static func read(fileSystem: ExternalSessionFileSystem, sessionsDirectory: String, now: Date = Date(), limit: Int = maxListed) -> Read {
+    static func read(fileSystem: ExternalSessionFileSystem, sessionsDirectory: String, now: Date = Date(), limit: Int = maxListed, localZone: TimeZone = .current) -> Read {
         let items: [ExternalSessionFileSystem.Entry]
         // 상한보다 하나 더 요청해 넘쳤는지 안다: 다 보지 못한 폴더로는 쥔 곳이 없다고 말할 수 없다
         switch fileSystem.list(sessionsDirectory, limit + 1) {
@@ -84,8 +87,9 @@ enum ExternalSessionRegistry {
                 undecodable += 1
                 continue
             }
+            let starts = file.procStart.map { parseProcStart($0, now: now, localZone: localZone) } ?? []
             entries.append(Entry(
-                pid: Int32(pid), sessionID: id, cwd: file.cwd.flatMap { $0.utf8.count <= 4096 ? $0 : nil }, procStart: file.procStart.flatMap { parseProcStart($0, now: now) },
+                pid: Int32(pid), sessionID: id, cwd: file.cwd.flatMap { $0.utf8.count <= 4096 ? $0 : nil }, procStart: starts.first, procStartAlternate: starts.dropFirst().first,
                 entrypoint: file.entrypoint.flatMap { $0.utf8.count <= 64 ? $0 : nil }, kind: file.kind.flatMap { $0.utf8.count <= 64 ? $0 : nil }
             ))
         }
@@ -104,31 +108,41 @@ enum ExternalSessionRegistry {
         return date
     }
 
-    /// `procStart`의 모양은 문서에 없다 (R4): 초 · 밀리초 숫자(글자 포함), ISO 8601, `ps`의 `lstart`(`Wed Oct 21 10:00:00 2026`)를 읽는다. 못 읽거나 믿을 범위 밖이면 nil
-    private static func parseProcStart(_ value: Scalar, now: Date) -> Date? {
-        plausible(parseProcStartRaw(value), now: now)
+    /// `procStart`의 모양은 문서에 없다 (R4): 초 · 밀리초 숫자(글자 포함), ISO 8601, `ps`의 `lstart`(`Wed Oct 21 10:00:00 2026`)를 읽는다. 못 읽거나 믿을 범위 밖이면 빈 목록.
+    /// `lstart`에는 시간대가 없다: 데스크톱 번들 `claude`(2.1.304)는 UTC로 적는다 (KST Mac의 `ps lstart`보다 9시간 앞선 글). 터미널 쪽 형식은 실측 전이라 이 Mac의 시간대로도 읽는다 — 둘을 차례로(이 Mac, UTC) 돌려준다
+    private static func parseProcStart(_ value: Scalar, now: Date, localZone: TimeZone) -> [Date] {
+        parseProcStartRaw(value, localZone: localZone).compactMap { plausible($0, now: now) }
     }
 
-    private static func parseProcStartRaw(_ value: Scalar) -> Date? {
+    private static func parseProcStartRaw(_ value: Scalar, localZone: TimeZone) -> [Date] {
         switch value {
-        case .number(let number): return fromEpoch(number)
+        case .number(let number): return fromEpoch(number).map { [$0] } ?? []
         case .text(let text):
             let trimmed = text.trimmingCharacters(in: .whitespaces)
-            if let number = Double(trimmed) { return fromEpoch(number) }
+            if let number = Double(trimmed) { return fromEpoch(number).map { [$0] } ?? [] }
             for options: ISO8601DateFormatter.Options in [[.withInternetDateTime, .withFractionalSeconds], [.withInternetDateTime]] {
                 let formatter = ISO8601DateFormatter()
                 formatter.formatOptions = options
-                if let date = formatter.date(from: trimmed) { return date }
+                if let date = formatter.date(from: trimmed) { return [date] }
             }
-            for format in ["EEE MMM d HH:mm:ss yyyy", "EEE MMM  d HH:mm:ss yyyy"] {
-                let formatter = DateFormatter()
-                formatter.locale = Locale(identifier: "en_US_POSIX")
-                formatter.timeZone = .current
-                formatter.dateFormat = format
-                if let date = formatter.date(from: trimmed) { return date }
+            var readings: [Date] = []
+            for zone in [localZone, TimeZone(identifier: "UTC") ?? TimeZone(secondsFromGMT: 0)!] {
+                guard let date = lstart(trimmed, in: zone), !readings.contains(date) else { continue }
+                readings.append(date)
             }
-            return nil
+            return readings
         }
+    }
+
+    private static func lstart(_ text: String, in zone: TimeZone) -> Date? {
+        for format in ["EEE MMM d HH:mm:ss yyyy", "EEE MMM  d HH:mm:ss yyyy"] {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = zone
+            formatter.dateFormat = format
+            if let date = formatter.date(from: text) { return date }
+        }
+        return nil
     }
 
     private static func fromEpoch(_ number: Double) -> Date? {
