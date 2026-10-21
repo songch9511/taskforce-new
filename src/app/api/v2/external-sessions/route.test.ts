@@ -20,6 +20,7 @@ const call = (body: unknown = { bridge_id: BRIDGE, sessions: [row] }) =>
 function open() {
   vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true");
   vi.stubEnv("AGENT_ADAPTER_CLAUDE_CODE_ENABLED", "true");
+  vi.stubEnv("EXTERNAL_SESSIONS_REPORT_ENABLED", "true");
   vi.stubEnv("AGENT_BETA_USER_IDS", USER);
 }
 
@@ -40,11 +41,19 @@ describe("PUT /api/v2/external-sessions", () => {
     expect(mocks.admin).not.toHaveBeenCalled();
   });
 
-  it.each(["CONVERSATIONS_V2_ENABLED", "AGENT_ADAPTER_CLAUDE_CODE_ENABLED"])("%s 하나만 꺼져도 404", async (flag) => {
+  it.each(["CONVERSATIONS_V2_ENABLED", "AGENT_ADAPTER_CLAUDE_CODE_ENABLED", "EXTERNAL_SESSIONS_REPORT_ENABLED"])("%s 하나만 꺼져도 404 (제목 보고는 전용 gate가 따로 필요하다)", async (flag) => {
     open();
     vi.stubEnv(flag, "false");
     expect((await call()).status).toBe(404);
     expect(mocks.auth).not.toHaveBeenCalled();
+  });
+
+  it.each(["false", "TRUE", "1", " true", ""])("전용 gate 값이 %j이면 꺼진 것이다 (정확히 \"true\"만 켠다)", async (value) => {
+    open();
+    vi.stubEnv("EXTERNAL_SESSIONS_REPORT_ENABLED", value);
+    expect((await call()).status).toBe(404);
+    expect(mocks.auth).not.toHaveBeenCalled();
+    expect(mocks.admin).not.toHaveBeenCalled();
   });
 
   it("베타 명단 밖 사용자는 404 (DB 0)", async () => {

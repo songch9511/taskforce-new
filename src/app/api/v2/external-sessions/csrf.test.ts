@@ -22,6 +22,7 @@ const request = (headers: Record<string, string>) =>
 beforeEach(() => {
   vi.stubEnv("CONVERSATIONS_V2_ENABLED", "true");
   vi.stubEnv("AGENT_ADAPTER_CLAUDE_CODE_ENABLED", "true");
+  vi.stubEnv("EXTERNAL_SESSIONS_REPORT_ENABLED", "true");
   vi.stubEnv("AGENT_BETA_USER_IDS", USER);
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://project.example.test");
   vi.stubEnv("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY", "sb_publishable_local-test");

@@ -58,7 +58,7 @@ grant select on public.external_sessions to authenticated;
 -- 2) report_external_sessions: 한 Mac의 목록 스냅샷 교체
 -- ─────────────────────────────────────────────
 -- p_sessions: [{ id, title, state, last_activity_at }] 최대 50개, id(= session_ref) 중복 없음. 모양이 틀리면 예외(22023 또는 열 제약)이고 아무것도 쓰지 않는다.
--- bridge가 이 사용자 것이고 active가 아니면 not_found (route가 404). 같은 bridge의 보고는 직렬화한다.
+-- bridge가 이 사용자 것이고 active가 아니면 not_found (route가 404). 소유를 확인한 뒤에 같은 bridge의 보고를 직렬화한다 (잠금은 확인 뒤).
 create function public.report_external_sessions(p_user_id uuid, p_bridge_id uuid, p_sessions jsonb) returns jsonb
 language plpgsql set search_path = '' as $$
 declare
@@ -79,11 +79,12 @@ begin
     raise exception 'report_external_sessions: duplicate or missing id' using errcode = '22023';
   end if;
 
-  perform pg_advisory_xact_lock(hashtext('external_sessions:' || p_bridge_id::text));
+  -- 소유 확인이 먼저다: 없는 · 남의 · 해제된 bridge id로는 잠금을 잡지 못한다. 확인한 행은 for share로 쥐고 있어 그 사이 해제(update)가 끼어들지 못한다.
   perform 1 from public.bridges where id = p_bridge_id and user_id = p_user_id and status = 'active' for share;
   if not found then
     return jsonb_build_object('status', 'not_found');
   end if;
+  perform pg_advisory_xact_lock(hashtext('external_sessions:' || p_bridge_id::text));
 
   insert into public.external_sessions (user_id, bridge_id, session_ref, title, state, last_activity_at, reported_at)
   select p_user_id, p_bridge_id, e ->> 'id', e ->> 'title', e ->> 'state', (e ->> 'last_activity_at')::timestamptz, now()

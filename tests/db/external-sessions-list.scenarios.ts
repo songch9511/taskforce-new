@@ -138,6 +138,26 @@ export function externalSessionsTests(db: () => ExternalSessionsDb) {
     expect(await refs(aBridge)).toEqual([ref(1)]);
   });
 
+  it("소유를 확인한 뒤에야 bridge 잠금을 잡는다: 없는 · 남의 · 해제된 bridge로는 잠금을 잡지 못한다 (아무 id로나 잠금을 쥐게 하지 않는다)", async () => {
+    const alice = await user();
+    const bob = await user();
+    const aBridge = await bridge(alice);
+    const revoked = await bridge(alice, "revoked");
+    const advisory = async () => (await one("select count(*)::int as n from pg_locks where locktype = 'advisory' and pid = pg_backend_pid()")).n;
+    await q("begin");
+    try {
+      expect(await advisory()).toBe(0);
+      expect(await report(alice, randomUUID(), [row(1)])).toEqual({ status: "not_found" });
+      expect(await report(bob, aBridge, [row(1)])).toEqual({ status: "not_found" });
+      expect(await report(alice, revoked, [row(1)])).toEqual({ status: "not_found" });
+      expect(await advisory()).toBe(0);
+      expect(await report(alice, aBridge, [row(1)])).toMatchObject({ status: "ok" });
+      expect(await advisory()).toBe(1);
+    } finally {
+      await q("rollback");
+    }
+  });
+
   it("잘못된 본문은 거절하고 기존 행을 그대로 둔다 (배열 아님 · 50개 초과 · id 중복 · 모양 틀림)", async () => {
     const owner = await user();
     const b = await bridge(owner);

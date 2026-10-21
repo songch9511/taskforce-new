@@ -14,12 +14,28 @@ function deps(over: Partial<ExternalSessionsDeps<{ user: { id: string } }>> = {}
   const report = vi.fn(async (): Promise<ExternalSessionReportOutcome> => ({ status: "ok", kept: 1, removed: 0 }));
   const recordShown = vi.fn(async (): Promise<"recorded" | "duplicate"> => "recorded");
   const authenticate = vi.fn(async () => ({ user: { id: USER } }));
-  const value: ExternalSessionsDeps<{ user: { id: string } }> = { enabled: () => true, authenticate, betaAllowed: () => true, report, recordShown, ...over };
+  const value: ExternalSessionsDeps<{ user: { id: string } }> = { enabled: () => true, reportEnabled: () => true, authenticate, betaAllowed: () => true, report, recordShown, ...over };
   return { value, report, recordShown, authenticate };
 }
 
 const put = (body: unknown, headers: Record<string, string> = {}) =>
   new Request("https://api.example.dev/api/v2/external-sessions", { method: "PUT", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body) });
+
+/** 끝나지 않는 본문: 한 번에 chunk 바이트씩 내고, 읽힌 횟수를 센다 */
+function endless(chunk: number, pulled: { n: number }) {
+  const bytes = new TextEncoder().encode(" ".repeat(chunk));
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      pulled.n += 1;
+      if (pulled.n > 10_000) controller.close();
+      else controller.enqueue(bytes);
+    },
+  });
+}
+const putStream = (body: ReadableStream<Uint8Array>) =>
+  new Request("https://api.example.dev/api/v2/external-sessions", { method: "PUT", headers: { "content-type": "application/json" }, body, duplex: "half" } as RequestInit);
+const postStream = (body: ReadableStream<Uint8Array>) =>
+  new Request("https://api.example.dev/api/v2/external-sessions/shown", { method: "POST", headers: { "content-type": "application/json" }, body, duplex: "half" } as RequestInit);
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -27,6 +43,14 @@ describe("handleReportExternalSessions", () => {
   it("꺼져 있으면 404: 인증 · 저장 0", async () => {
     const d = deps({ enabled: () => false });
     expect((await handleReportExternalSessions(put({ bridge_id: BRIDGE, sessions: [] }), d.value)).status).toBe(404);
+    expect(d.authenticate).not.toHaveBeenCalled();
+    expect(d.report).not.toHaveBeenCalled();
+  });
+
+  it("제목 보고 전용 gate(EXTERNAL_SESSIONS_REPORT_ENABLED)가 꺼져 있으면 404: 인증 · 저장 0, 목록 gate가 켜져 있어도", async () => {
+    const d = deps({ reportEnabled: () => false });
+    const response = await handleReportExternalSessions(put({ bridge_id: BRIDGE, sessions: [session(1)] }), d.value);
+    expect(response.status).toBe(404);
     expect(d.authenticate).not.toHaveBeenCalled();
     expect(d.report).not.toHaveBeenCalled();
   });
@@ -101,6 +125,24 @@ describe("handleReportExternalSessions", () => {
     const response = await handleReportExternalSessions(put({ bridge_id: BRIDGE, sessions: [] }, { "content-length": String(200 * 1024) }), d.value);
     expect(response.status).toBe(400);
     expect(d.report).not.toHaveBeenCalled();
+  });
+
+  it("Content-Length가 없어도 본문을 상한(128 KiB)까지만 읽고 400: 끝없는 본문을 다 읽지 않는다", async () => {
+    const d = deps();
+    const pulled = { n: 0 };
+    const response = await handleReportExternalSessions(putStream(endless(16 * 1024, pulled)), d.value);
+    expect(response.status).toBe(400);
+    expect(d.report).not.toHaveBeenCalled();
+    expect(pulled.n).toBeLessThanOrEqual(12);
+  });
+
+  it("Content-Length가 없는 큰 문자열 본문도 400, 상한 안의 본문은 그대로 받는다", async () => {
+    const d = deps();
+    const big = new Request("https://api.example.dev/api/v2/external-sessions", { method: "PUT", headers: { "content-type": "application/json" }, body: " ".repeat(200 * 1024) + JSON.stringify({ bridge_id: BRIDGE, sessions: [] }) });
+    expect(big.headers.get("content-length")).toBeNull();
+    expect((await handleReportExternalSessions(big, d.value)).status).toBe(400);
+    expect(d.report).not.toHaveBeenCalled();
+    expect((await handleReportExternalSessions(put({ bridge_id: BRIDGE, sessions: [session(1)] }), d.value)).status).toBe(200);
   });
 
   it("저장이 실패하면 500이고 로그에 제목 · id가 없다", async () => {
@@ -180,6 +222,23 @@ describe("handleExternalSessionsShown", () => {
   it.each([{}, { rows_bucket: "12", held_bucket: "0" }, { rows_bucket: "1", held_bucket: "0", title: "x" }])("잘못된 본문은 400 (저장 0): %j", async (body) => {
     const d = deps();
     expect((await handleExternalSessionsShown(post(body), d.value)).status).toBe(400);
+    expect(d.recordShown).not.toHaveBeenCalled();
+  });
+
+  it("제목 보고 gate가 꺼져 있어도 열린다: 구간 값만 받는 지표라 제목 보고와 따로 간다", async () => {
+    const d = deps({ reportEnabled: () => false });
+    expect((await handleExternalSessionsShown(post(shown), d.value)).status).toBe(204);
+    expect(d.recordShown).toHaveBeenCalledTimes(1);
+  });
+
+  it("본문은 1 KiB까지만 읽는다: Content-Length가 없어도 끝없는 본문에 400 (저장 0)", async () => {
+    const d = deps();
+    const pulled = { n: 0 };
+    expect((await handleExternalSessionsShown(postStream(endless(512, pulled)), d.value)).status).toBe(400);
+    expect(d.recordShown).not.toHaveBeenCalled();
+    expect(pulled.n).toBeLessThanOrEqual(6);
+    const big = new Request("https://api.example.dev/api/v2/external-sessions/shown", { method: "POST", headers: { "content-type": "application/json" }, body: " ".repeat(4096) + JSON.stringify(shown) });
+    expect((await handleExternalSessionsShown(big, d.value)).status).toBe(400);
     expect(d.recordShown).not.toHaveBeenCalled();
   });
 
