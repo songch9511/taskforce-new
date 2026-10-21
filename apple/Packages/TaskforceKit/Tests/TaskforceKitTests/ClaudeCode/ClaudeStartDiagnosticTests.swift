@@ -108,6 +108,21 @@ struct ClaudeStartDiagnosticTests {
         for text in [fake.workspace, fake.box.root.path, "PATH", "HOME"] { #expect(!diagnostic.contains(text), "\(text)") }
     }
 
+    /// 종료 코드 · 신호가 없으면 -1이라는 숫자로 위장하지 않고 고정 코드 `none`으로 적는다
+    @Test func aMissingExitCodeOrSignalIsLoggedAsNoneNotMinusOne() async throws {
+        let killed = try FakeClaude(keeper: try keeper("kill -9 $$"))
+        try killed.scenario(["runs": [["steps": [["text": "ok"]]]]])
+        await #expect(throws: AgentStartError.self) { _ = try await killed.turn(events: EventLog()) }
+        let signalled = try #require(killed.log.lines.first { $0.hasPrefix("claude_start_diagnostic") })
+        #expect(signalled.contains("exit_code=code(\"none\")") && signalled.contains("signal=count(9)"), "\(signalled)")
+        #expect(!signalled.contains("count(-1)"))
+        let exited = try FakeClaude(keeper: try keeper("exit 0"))
+        try exited.scenario(["runs": [["steps": [["text": "ok"]]]]])
+        await #expect(throws: AgentStartError.self) { _ = try await exited.turn(events: EventLog()) }
+        let normal = try #require(exited.log.lines.first { $0.hasPrefix("claude_start_diagnostic") })
+        #expect(normal.contains("exit_code=count(0)") && normal.contains("signal=code(\"none\")"), "\(normal)")
+    }
+
     /// 지킴이가 알린 뿌리를 앱이 다시 읽지 못하면(조회 실패) 문서대로 `root_id`다 (`claude_lineage_unrecorded {reason: root_id}`)
     @Test func anIdentityMismatchKeepsTheDocumentedRootIDReason() {
         #expect(ClaudeStartFailureCause.rootGeneration.launchReason == "root_id")

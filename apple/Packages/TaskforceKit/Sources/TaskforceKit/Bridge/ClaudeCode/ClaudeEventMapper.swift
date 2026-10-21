@@ -102,8 +102,8 @@ public enum ClaudeToolRefusal: String, Equatable, Sendable {
 
 public enum ClaudeMapperAction: Equatable, Sendable {
     case emit(AgentEvent)
-    /// 훅 답 없는 오류 결과를 ④ 실패로 보지 않고 넘겼다 (모델이 오류를 보고 이어 간다)
-    case toolRefusedBeforeHook(ClaudeToolRefusal)
+    /// 훅 답 없는 오류 결과를 ④ 실패로 보지 않고 넘겼다 (모델이 오류를 보고 이어 간다). `hookStarted`: 그 호출에 훅 시작 사건이 있었다 (훅이 돌다 답 없이 끝난 호출)
+    case toolRefusedBeforeHook(ClaudeToolRefusal, hookStarted: Bool)
     /// SIGINT를 보낸다
     case interrupt(ClaudeInterruptCause)
     /// `result.deferred_tool_use`가 기록한 보류를 보고했다: 상태 파일에 적는다 (질문 사건은 프로세스가 끝날 때 낸다)
@@ -132,8 +132,14 @@ public struct ClaudeEventMapper: Sendable {
     private var lastProgress: Date?
     private var text: (messageID: String?, value: String)?
     private var hookStarted: [String: Int] = [:]
-    /// init이 알린 도구 집합 (④ 예외: 없는 도구의 거절). init을 보기 전에는 nil
+    /// init이 알린 도구 집합 (④ 예외: 없는 도구의 거절). init을 보기 전이거나 init이 목록을 주지 않았으면 nil — "아무것도 광고되지 않음"과 다르다
     private var advertisedTools: Set<String>?
+    /// 결과를 아직 받지 못한 tool_use (id → 도구 이름). 훅 시작 계수가 이 호출들의 것인지 가를 때 쓴다
+    private var outstanding: [String: String] = [:]
+    /// 넘긴 거절 수 (한 spawn). 상한을 넘으면 ④로 막는다
+    private var tolerated = 0
+    /// 거절로 넘기는 오류 결과의 spawn당 상한: 거절 오류로 파일 · 도구의 존재를 더듬는 것을 막는다
+    static let toleratedRefusals = 5
     private var toolUseNames: [String: String] = [:]
     private var toolUseFiles: [String: String] = [:]
     private var artifacts: [ClaudeArtifactCandidate] = []
@@ -202,6 +208,7 @@ public struct ClaudeEventMapper: Sendable {
                 case .toolUse(let id, let name, let filePath):
                     out += flushText()
                     toolUseNames[id] = name
+                    outstanding[id] = name
                     if let filePath { toolUseFiles[id] = filePath }
                     out += progress(now)
                 case .thinking, .other:
@@ -212,10 +219,22 @@ public struct ClaudeEventMapper: Sendable {
             out += flushText()
             for result in results {
                 let known = toolUseNames[result.toolUseID] ?? facts.toolNames[result.toolUseID]
+                // 이 호출 말고 같은 도구로 결과를 기다리는 호출 수 (훅 시작 계수 중 이 호출 몫을 가를 때)
+                let others = outstanding.filter { $0.key != result.toolUseID && $0.value == known }.count
+                outstanding[result.toolUseID] = nil
                 // ④의 예외: 훅 답이 **없는 오류** 결과인데 아무것도 실행되지 않았다고 볼 수 있다 (CLI가 훅 앞에서 입력을 검증해 거절한 것, R1-02 · R1-03).
-                // 성공 결과나 그 밖 도구의 오류 결과는 훅을 건너뛴 실행일 수 있으므로 아래 ④가 그대로 막는다
+                // 성공 결과나 그 밖 도구의 오류 결과는 훅을 건너뛴 실행일 수 있으므로 아래 ④가 그대로 막는다. 상한을 넘은 거절도 막는다
                 if !facts.answered.contains(result.toolUseID), let known, let refusal = refusalBeforeHook(tool: known, isError: result.isError) {
-                    out.append(.toolRefusedBeforeHook(refusal))
+                    guard tolerated < Self.toleratedRefusals else { return out + fail(4) }
+                    tolerated += 1
+                    // 훅이 시작됐으나 답 없이 끝난 호출이면 그 시작을 계수에서 뺀다 (남기면 뒤의 "답은 있으나 훅 시작이 없는" 결과가 그 계수로 ④를 통과한다).
+                    // 같은 도구의 다른 호출이 결과를 기다리고 있으면 그 시작이 누구 것인지 알 수 없어 그 호출 몫만큼은 남긴다
+                    var leaked = false
+                    if let started = hookStarted[known], started > others {
+                        hookStarted[known] = started - 1
+                        leaked = true
+                    }
+                    out.append(.toolRefusedBeforeHook(refusal, hookStarted: leaked))
                     continue
                 }
                 // ④: 이 프로세스에서 그 결과보다 먼저 `hook_started PreToolUse:<tool>`이 있었고 bridge가 그 id에 소켓 답을 줬다
@@ -316,7 +335,8 @@ public struct ClaudeEventMapper: Sendable {
 
     /// CLI가 입력 검증으로 거절한 오류 결과인가. init `tools`에 없는 도구가 먼저, 아니면 CLI가 훅 앞에서 검증하는 파일 도구 다섯. 성공 결과는 어느 쪽도 아니다
     private func refusalBeforeHook(tool: String, isError: Bool) -> ClaudeToolRefusal? {
-        guard isError else { return nil }
+        // Bash는 어떤 경우에도 예외가 아니다 (광고되지 않아도): 훅이 판정하는 도구이고, 훅을 건너뛴 셸 실행을 가리지 않는다
+        guard isError, tool != "Bash" else { return nil }
         if let advertisedTools, !advertisedTools.contains(tool) { return .notAdvertised }
         return Self.validatedBeforeHook.contains(tool) ? .cliValidated : nil
     }

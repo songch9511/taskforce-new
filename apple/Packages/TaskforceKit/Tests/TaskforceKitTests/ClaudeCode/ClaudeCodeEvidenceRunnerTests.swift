@@ -1,4 +1,5 @@
 #if os(macOS) && DEBUG
+import Darwin
 import Foundation
 import Testing
 @testable import TaskforceKit
@@ -41,6 +42,28 @@ struct ClaudeCodeEvidenceRunnerTests {
         let near = fake.box.file("Documents-old/tf-agent-keeper", in: fake.box.home)
         _ = try runner(fake, helpers: ClaudeCodeHelpers(hook: fake.helpers.hook, mcp: fake.helpers.mcp, keeper: near.path))
         _ = try runner(fake)
+    }
+
+    /// 실제 계정 홈(`getpwuid`)도 본다 — 환경의 HOME이 다른 값이어도 거기 있는 Documents 등은 보호 폴더다 — 그리고 `Library/CloudStorage`(파일 제공자 폴더)도 보호 폴더다
+    @Test func theAccountHomeFromThePasswordDatabaseAndCloudStorageAreProtectedToo() throws {
+        let fake = try FakeClaude()
+        fake.box.file(ClaudeCodeEvidenceRunner.disposableMarker)
+        let account = try #require(getpwuid(getuid())).pointee.pw_dir.map { String(cString: $0) }
+        for folder in ["Documents", "Desktop", "Downloads", "Library/Mobile Documents", "Library/CloudStorage"] {
+            // 환경 HOME(시험 홈) 아래
+            let inEnvironmentHome = fake.box.file("\(folder)/x/tf-agent-keeper", in: fake.box.home)
+            #expect(throws: ClaudeCodeEvidenceRunner.ProtectedFolder.self, "env \(folder)") {
+                try runner(fake, helpers: ClaudeCodeHelpers(hook: fake.helpers.hook, mcp: fake.helpers.mcp, keeper: inEnvironmentHome.path))
+            }
+            // 계정 홈 아래 (만들지 않는다: 없는 경로도 거절해야 한다)
+            let inAccountHome = "\(try #require(account))/\(folder)/tf-r1-never-created/tf-agent-keeper"
+            #expect(throws: ClaudeCodeEvidenceRunner.ProtectedFolder.self, "account \(folder)") {
+                try runner(fake, helpers: ClaudeCodeHelpers(hook: fake.helpers.hook, mcp: inAccountHome, keeper: fake.helpers.keeper))
+            }
+        }
+        // 접두어만 같은 이름은 보호 폴더가 아니다
+        let near = try #require(account) + "/Library/CloudStorage-old/tf-agent-keeper"
+        _ = try runner(fake, helpers: ClaudeCodeHelpers(hook: fake.helpers.hook, mcp: fake.helpers.mcp, keeper: near))
     }
 
     @Test func aQuestionAndAnswerRunIsSummarisedWithoutAnyText() async throws {

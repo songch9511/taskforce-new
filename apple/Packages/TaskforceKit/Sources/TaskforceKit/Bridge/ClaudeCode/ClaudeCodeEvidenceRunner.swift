@@ -1,4 +1,5 @@
 #if os(macOS) && DEBUG
+import Darwin
 import Foundation
 import Synchronization
 
@@ -66,7 +67,7 @@ public actor ClaudeCodeEvidenceRunner {
 
     public struct NotDisposable: Error {}
 
-    /// helper 또는 작업 폴더가 macOS 보호 폴더(Desktop · Documents · Downloads · iCloud Drive) 안이다 (R1-01 실패 원인). 지킴이는 자기 책임 프로세스라 macOS가 그 이름으로
+    /// helper 또는 작업 폴더가 macOS 보호 폴더(Desktop · Documents · Downloads · iCloud Drive · CloudStorage) 안이다 (R1-01 실패 원인). 지킴이는 자기 책임 프로세스라 macOS가 그 이름으로
     /// 폴더 접근을 묻고 답이 올 때까지 막는다 → 첫 보고가 기한을 넘겨 `spawn_failed`. `role`: `workspace` · `hook` · `mcp` · `keeper`, `folder`: 보호 폴더 이름
     public struct ProtectedFolder: Error, CustomStringConvertible {
         public let role: String
@@ -77,12 +78,24 @@ public actor ClaudeCodeEvidenceRunner {
     }
 
     /// macOS가 앱별로 접근을 묻는 홈 아래 폴더 (TCC). 원격 · 이동식 볼륨은 여기서 가르지 않는다
-    static let protectedFolders = ["Desktop", "Documents", "Downloads", "Library/Mobile Documents"]
+    static let protectedFolders = ["Desktop", "Documents", "Downloads", "Library/Mobile Documents", "Library/CloudStorage"]
 
     /// `path`가 `home`의 보호 폴더 안(또는 그 폴더 자체)이면 그 이름. `home`은 실제 경로여야 한다
     static func protectedFolder(containing path: String, home: String) -> String? {
         guard !home.isEmpty else { return nil }
         return protectedFolders.first { path == "\(home)/\($0)" || path.hasPrefix("\(home)/\($0)/") }
+    }
+
+    /// 보호 폴더를 가를 홈: 환경의 HOME과 계정 데이터베이스(`getpwuid`)의 홈 (환경이 다른 값이어도 실제 계정의 폴더는 보호된다). 실제 경로로 풀어 중복을 뺀다
+    static func homes(environment: [String: String]) -> [String] {
+        var found: [String] = []
+        let account = getpwuid(getuid()).flatMap { $0.pointee.pw_dir.map { String(cString: $0) } }
+        for candidate in [environment["HOME"], account] {
+            guard let candidate, !candidate.isEmpty else { continue }
+            let real = GateFileSystem.realpath(candidate) ?? candidate
+            if !found.contains(real) { found.append(real) }
+        }
+        return found
     }
 
     /// 한 단계가 끝나기를(`ended`) 기다리는 상한 (R1: 실제 `claude` 턴은 길다)
@@ -96,9 +109,10 @@ public actor ClaudeCodeEvidenceRunner {
         timing: ClaudeCodeTiming = .standard, stepTimeout: TimeInterval = 600
     ) throws {
         guard let real = GateFileSystem.realpath(workspace), FileManager.default.fileExists(atPath: real + "/" + Self.disposableMarker) else { throw NotDisposable() }
-        let home = environment["HOME"].map { GateFileSystem.realpath($0) ?? $0 } ?? ""
+        let homes = Self.homes(environment: environment)
         for (role, path) in [("workspace", real), ("hook", helpers.hook), ("mcp", helpers.mcp), ("keeper", helpers.keeper)] {
-            if let folder = Self.protectedFolder(containing: GateFileSystem.realpath(path) ?? path, home: home) { throw ProtectedFolder(role: role, folder: folder) }
+            let resolved = GateFileSystem.realpath(path) ?? path
+            if let folder = homes.lazy.compactMap({ Self.protectedFolder(containing: resolved, home: $0) }).first { throw ProtectedFolder(role: role, folder: folder) }
         }
         self.workspace = real
         self.stepTimeout = stepTimeout
