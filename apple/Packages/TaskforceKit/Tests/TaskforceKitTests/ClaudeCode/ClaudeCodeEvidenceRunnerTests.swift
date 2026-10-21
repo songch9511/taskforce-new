@@ -9,10 +9,10 @@ struct ClaudeCodeEvidenceRunnerTests {
     /// 단계마다 끝을 기다리는 상한 (실제 실행은 600초): 실패해도 그 안에 끝나고 아래 진단을 남긴다 (18장)
     static let stepTimeout: TimeInterval = 45
 
-    func runner(_ fake: FakeClaude) throws -> ClaudeCodeEvidenceRunner {
+    func runner(_ fake: FakeClaude, workspace: String? = nil, helpers: ClaudeCodeHelpers? = nil) throws -> ClaudeCodeEvidenceRunner {
         try ClaudeCodeEvidenceRunner(
-            workspace: fake.workspace, sessionsRoot: fake.box.sessionsRoot, hookServer: fake.server,
-            helpers: fake.helpers,
+            workspace: workspace ?? fake.workspace, sessionsRoot: fake.box.sessionsRoot, hookServer: fake.server,
+            helpers: helpers ?? fake.helpers,
             locator: ClaudeCodeLocator(candidates: [fake.claude.path], confinedTo: fake.box.root.path), decide: fake.decider.function,
             environment: ["HOME": fake.box.home.path, "USER": NSUserName(), "PATH": "/usr/bin:/bin"], timing: fake.timing, stepTimeout: Self.stepTimeout
         )
@@ -21,6 +21,26 @@ struct ClaudeCodeEvidenceRunnerTests {
     @Test func aWorkspaceWithoutTheDisposableMarkerIsRefused() throws {
         let fake = try FakeClaude()
         #expect(throws: ClaudeCodeEvidenceRunner.NotDisposable.self) { try runner(fake) }
+    }
+
+    /// R1-01 실패의 원인: 지킴이 helper가 `~/Documents` 안에 있었다. 지킴이는 disclaim으로 자기 책임 프로세스라 macOS가 그 이름으로 폴더 접근을 묻고(TCC 확인 창),
+    /// 답이 올 때까지 막혀 첫 보고가 기한(5초)을 넘긴다 → `spawn_failed`. 보호 폴더 안 helper · 작업 폴더는 실제 실행 전에 거절한다
+    @Test func helpersOrAWorkspaceInAProtectedFolderAreRefusedBeforeAnyRealRun() throws {
+        let fake = try FakeClaude()
+        fake.box.file(ClaudeCodeEvidenceRunner.disposableMarker)
+        for folder in ["Documents", "Desktop", "Downloads", "Library/Mobile Documents", "Documents/Life Design/helpers"] {
+            let keeper = fake.box.file("\(folder)/tf-agent-keeper", in: fake.box.home)
+            let moved = ClaudeCodeHelpers(hook: fake.helpers.hook, mcp: fake.helpers.mcp, keeper: keeper.path)
+            #expect(throws: ClaudeCodeEvidenceRunner.ProtectedFolder.self, "\(folder)") { try runner(fake, helpers: moved) }
+            let hook = ClaudeCodeHelpers(hook: keeper.path, mcp: fake.helpers.mcp, keeper: fake.helpers.keeper)
+            #expect(throws: ClaudeCodeEvidenceRunner.ProtectedFolder.self, "\(folder) hook") { try runner(fake, helpers: hook) }
+        }
+        let marker = fake.box.file(ClaudeCodeEvidenceRunner.disposableMarker, in: fake.box.home.appending(path: "Documents/proj"))
+        #expect(throws: ClaudeCodeEvidenceRunner.ProtectedFolder.self) { try runner(fake, workspace: marker.deletingLastPathComponent().path) }
+        // 보호 폴더가 아닌 이름 (접두어만 같다) · 홈 밖은 거절하지 않는다
+        let near = fake.box.file("Documents-old/tf-agent-keeper", in: fake.box.home)
+        _ = try runner(fake, helpers: ClaudeCodeHelpers(hook: fake.helpers.hook, mcp: fake.helpers.mcp, keeper: near.path))
+        _ = try runner(fake)
     }
 
     @Test func aQuestionAndAnswerRunIsSummarisedWithoutAnyText() async throws {

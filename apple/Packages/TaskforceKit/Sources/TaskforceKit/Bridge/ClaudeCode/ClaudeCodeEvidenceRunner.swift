@@ -66,6 +66,25 @@ public actor ClaudeCodeEvidenceRunner {
 
     public struct NotDisposable: Error {}
 
+    /// helper 또는 작업 폴더가 macOS 보호 폴더(Desktop · Documents · Downloads · iCloud Drive) 안이다 (R1-01 실패 원인). 지킴이는 자기 책임 프로세스라 macOS가 그 이름으로
+    /// 폴더 접근을 묻고 답이 올 때까지 막는다 → 첫 보고가 기한을 넘겨 `spawn_failed`. `role`: `workspace` · `hook` · `mcp` · `keeper`, `folder`: 보호 폴더 이름
+    public struct ProtectedFolder: Error, CustomStringConvertible {
+        public let role: String
+        public let folder: String
+        public var description: String {
+            "\(role) is inside ~/\(folder), which macOS protects: it would ask permission for the disclaimed keeper and block the start. Use a path outside Desktop, Documents, Downloads and iCloud Drive."
+        }
+    }
+
+    /// macOS가 앱별로 접근을 묻는 홈 아래 폴더 (TCC). 원격 · 이동식 볼륨은 여기서 가르지 않는다
+    static let protectedFolders = ["Desktop", "Documents", "Downloads", "Library/Mobile Documents"]
+
+    /// `path`가 `home`의 보호 폴더 안(또는 그 폴더 자체)이면 그 이름. `home`은 실제 경로여야 한다
+    static func protectedFolder(containing path: String, home: String) -> String? {
+        guard !home.isEmpty else { return nil }
+        return protectedFolders.first { path == "\(home)/\($0)" || path.hasPrefix("\(home)/\($0)/") }
+    }
+
     /// 한 단계가 끝나기를(`ended`) 기다리는 상한 (R1: 실제 `claude` 턴은 길다)
     let stepTimeout: TimeInterval
 
@@ -77,6 +96,10 @@ public actor ClaudeCodeEvidenceRunner {
         timing: ClaudeCodeTiming = .standard, stepTimeout: TimeInterval = 600
     ) throws {
         guard let real = GateFileSystem.realpath(workspace), FileManager.default.fileExists(atPath: real + "/" + Self.disposableMarker) else { throw NotDisposable() }
+        let home = environment["HOME"].map { GateFileSystem.realpath($0) ?? $0 } ?? ""
+        for (role, path) in [("workspace", real), ("hook", helpers.hook), ("mcp", helpers.mcp), ("keeper", helpers.keeper)] {
+            if let folder = Self.protectedFolder(containing: GateFileSystem.realpath(path) ?? path, home: home) { throw ProtectedFolder(role: role, folder: folder) }
+        }
         self.workspace = real
         self.stepTimeout = stepTimeout
         let lines = Lines()
