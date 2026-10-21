@@ -5,20 +5,40 @@ import TaskforceKit
 import TaskforceUI
 
 // 레일 "On this Mac" (OA 외부 세션 PR1, DZ 승인 2026-10-21 · 계약 16–17장): 이 Mac의 Claude Code 세션 중 Taskforce 밖에서 시작한 것을 폴더별로 보인다.
-// 판정 · 읽기는 Kit(`ExternalSessionScanner`)이 하고 여기는 패널 화면 · 이 Mac의 값을 대는 일 · Claude 앱 열기뿐이다. 이어받기(Resume here · 확인 줄)는 다음 PR이라 줄에 없다.
+// 판정 · 읽기는 Kit(`ExternalSessionScanner`)이 하고 여기는 패널 화면 · 이 Mac의 값을 대는 일 · Claude 앱 열기(Open in Claude: 그 세션을 데스크톱 앱에서 연다, F4)뿐이다. 이어받기(Resume here · 확인 줄)는 다음 PR이라 줄에 없다.
 // 글 · 경로 · 세션 id를 로그에 남기지 않는다.
 
-/// Claude 데스크톱 앱만 앞으로 가져온다 (인자 0, 그 세션을 열지는 않는다). 시험은 가짜로 바꾼다
+/// Claude 데스크톱 앱 열기. 시험은 가짜로 바꾼다
 @MainActor
 protocol ClaudeAppOpening {
-    /// 앱을 앞으로 가져왔으면 true (설치되어 있지 않거나 열지 못하면 false)
+    /// 앱만 앞으로 가져왔으면 true (설치되어 있지 않거나 열지 못하면 false). 세션을 열지 못했을 때 물러나는 길이다
     func openClaudeApp() -> Bool
+    /// 그 세션을 데스크톱 앱에서 연다: 사용자의 `claude --desktop --resume <id>`를 그 세션의 폴더에서 (`ClaudeDesktopSessionOpener`). 앱이 앞으로 오는 것은 `claude`가 한다.
+    /// `.unavailable`이면 부른 쪽이 `openClaudeApp()`으로 물러난다
+    func openSession(id: String, folder: String?) async -> ClaudeDesktopOpenResult
 }
 
 @MainActor
 struct LiveClaudeAppOpener: ClaudeAppOpening {
     /// Claude 데스크톱 앱의 번들 id (이 Mac의 앱 메타데이터로 확인)
-    static let bundleID = "com.anthropic.claudefordesktop"
+    nonisolated static let bundleID = "com.anthropic.claudefordesktop"
+
+    /// 이 Mac의 `claude` · 실제 폴더 규칙으로 만든 열기 (시험은 바꾼다). nil이면 열지 않는다 (fail-closed)
+    var makeOpener: @MainActor () -> ClaudeDesktopSessionOpener? = { LiveClaudeAppOpener.standardOpener() }
+
+    /// Claude 데스크톱 앱이 이 Mac에 있나 (보안 검토 P2-2): 없으면 `claude --desktop`을 띄우지 않는다. 막을 수 있는 호출이 아니라 아무 스레드에서나 부른다
+    nonisolated static func isClaudeAppInstalled() -> Bool {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) != nil
+    }
+
+    /// 폴더 규칙은 사용자가 폴더를 고를 때와 같은 `.standard`: 앱 데이터 · bridge 폴더 보호 목록은 지금 계정의 것이다. **그 목록을 모르면(이 계정의 bridge가 없다) 규칙을 세울 수 없다: 열지 않는다 (fail-closed).**
+    /// 로그는 고정 코드뿐 (id · 경로 · 출력 글 0)
+    static func standardOpener(home: String = NSHomeDirectory()) -> ClaudeDesktopSessionOpener? {
+        guard let paths = BridgeHost.shared?.externalSessionPaths() else { return nil }
+        return ClaudeDesktopSessionOpener(
+            locator: .standard(home: home), folderRules: .standard(home: home, protectedRoots: paths.protectedRoots), desktopInstalled: { isClaudeAppInstalled() }, log: BridgeOSLog()
+        )
+    }
 
     func openClaudeApp() -> Bool {
         guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: Self.bundleID) else { return false }
@@ -26,6 +46,11 @@ struct LiveClaudeAppOpener: ClaudeAppOpening {
         configuration.activates = true
         NSWorkspace.shared.openApplication(at: url, configuration: configuration)
         return true
+    }
+
+    func openSession(id: String, folder: String?) async -> ClaudeDesktopOpenResult {
+        guard let opener = makeOpener() else { return .unavailable }
+        return await opener.open(sessionID: id, folder: folder)
     }
 }
 
@@ -82,9 +107,10 @@ struct ExternalSessionsPanelBody: View {
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(ExternalSessionGrouping.visibleRows(group, expanded: open)) { row in
-                        ExternalSessionLineView(content: ExternalSessionLineText.make(row, now: now)) { action in
+                        // 여는 동안(`isBusy`)의 "Opening…" 글자와 비활성은 줄 그림이 `content`에서 스스로 정한다
+                        ExternalSessionLineView(content: shell.externalLine(row, now: now)) { action in
                             switch action {
-                            case .openInClaude: shell.openInClaude()
+                            case .openInClaude: shell.openInClaude(row)
                             }
                         }
                     }
@@ -182,6 +208,12 @@ final class ExternalSessionsEnvironment: @unchecked Sendable {
         return ExternalSessionOrigin(partition: context.paths.partition.id, bridgeID: bridge)
     }
 
+    /// 열기 직전(F4): 마지막 훑기가 본 그 세션의 쥠을 지금 사실로 다시 본다. 같은 계정의 훑기가 아직 없거나 모르면 nil (부른 쪽이 막는다)
+    func recheck(_ id: String) async -> ExternalSessionStatus? {
+        guard let context = await context(), let existing = lock.withLock({ scanner }), existing.partition == context.paths.partition.id else { return nil }
+        return await existing.scanner.recheck(id: id)
+    }
+
     /// 지금의 계정 · bridge (로그아웃 · 다른 계정이면 nil 또는 다른 값)
     func currentOrigin() async -> ExternalSessionOrigin? {
         guard let context = await context() else { return nil }
@@ -246,7 +278,7 @@ enum ExternalSessionsRuntime {
         return ExternalSessionsStore(
             scope: scope, scan: { await environment.scan() }, isInstalled: { await environment.isInstalled() },
             report: { rows, origin in await environment.report(rows, origin: origin, via: reporter) },
-            shown: { rows, held in (try? await api.externalSessionsShown(rowsBucket: rows, heldBucket: held)) != nil }, seen: seen, log: log
+            shown: { rows, held in (try? await api.externalSessionsShown(rowsBucket: rows, heldBucket: held)) != nil }, recheck: { id in await environment.recheck(id) }, seen: seen, log: log
         )
     }
 }

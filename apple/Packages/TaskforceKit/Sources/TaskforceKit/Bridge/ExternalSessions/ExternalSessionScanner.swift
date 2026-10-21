@@ -174,6 +174,28 @@ public actor ExternalSessionScanner {
         return ExternalSessionScan(rows: rows, failure: nil, truncated: truncated)
     }
 
+    /// 열기 직전의 다시 확인 (F4 · 보안 검토 P3): 마지막 훑기가 본 세션 하나에 같은 쥠 판정(등록 파일 · argv · 같은 폴더의 claude · 최근 기록)을 지금 사실로 다시 돌린다.
+    /// 기록은 시각만 본다(열어 읽지 않는다). 훑은 적 없는 id · 기록이 사라진 세션은 nil(모른다): 부른 쪽이 막는다. `.available`은 지금 쥔 곳이 없다는 뜻이다.
+    /// **훑기가 목록에서 빼는 세션은 다시 확인하지 않는다**(보안 재검토 P3, nil): Taskforce가 띄운 세션 · SDK 실행 · 앱 데이터 폴더 안이 cwd인 세션
+    public func recheck(id: String) -> ExternalSessionStatus? {
+        guard let cached = cache[id], let entry = fileSystem.lstat(cached.path), entry.kind == .regular, entry.owner == fileSystem.userID else { return nil }
+        if configuration.taskforceSessionIDs().contains(id) || ExternalSessionRules.isSDKEntrypoint(cached.meta?.entrypoint) { return nil }
+        if let cwd = cached.meta?.cwd, ExternalSessionRules.isPlainAbsolutePath(cwd), configuration.protectedRoots.contains(where: { GateFileSystem.isInside(cwd, root: $0) }) { return nil }
+        if configuration.attachedSessionIDs().contains(id) { return .inTaskforce }
+        let root = fileSystem.realpath(configuration.claudeDirectory) ?? configuration.claudeDirectory
+        let hold = ExternalSessionHold.snapshot(facts: processFacts, fileSystem: fileSystem, sessionsDirectory: root + "/sessions", ownPIDs: configuration.ownPIDs(), now: clock())
+        // 훑을 때와 같은 신뢰: 기록 안의 cwd는 평범한 절대 경로이고 부모 디렉터리 이름과 같을 때만 힌트로 쓴다
+        let directory = ((cached.path as NSString).deletingLastPathComponent as NSString).lastPathComponent
+        var cwd: String?
+        if let hint = cached.meta?.cwd, ExternalSessionRules.isPlainAbsolutePath(hint), ExternalSessionRules.projectDirectoryName(forCwd: hint) == directory { cwd = hint }
+        switch ExternalSessionHold.decide(id: id, cwd: cwd, modified: entry.modified, snapshot: hold) {
+        case .free: return .available
+        case .held(let holder): return .held(holder)
+        case .unknown: return .couldNotCheck
+        case .cwdMismatch: return .cannotResume(.unreadable)
+        }
+    }
+
     private enum CwdState {
         case ok
         case worktree

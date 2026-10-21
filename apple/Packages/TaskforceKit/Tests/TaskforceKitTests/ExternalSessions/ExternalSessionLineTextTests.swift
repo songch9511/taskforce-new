@@ -41,9 +41,73 @@ extension ExternalSessionSuites {
             for status in quiet { #expect(!line(Self.row(status: status)).highlightsOnHover, "누를 수 없는 줄: \(status)") }
         }
 
+        // MARK: Open in Claude가 보이는 줄 (F4, 사용자 결정 2026-10-21)
+
+        @Test func openInClaudeShowsOnEveryClaudeDesktopRowThatIsRunningInClaudeOrIdle() {
+            let running = line(Self.row(status: .held(.claudeApp), client: .claudeDesktop))
+            #expect(running.action == .openInClaude && running.highlightsOnHover && running.metaText == "Running in Claude · 2 min ago")
+            let idle = line(Self.row(status: .available, client: .claudeDesktop, ageMinutes: 40))
+            #expect(idle.action == .openInClaude && idle.highlightsOnHover, "쉬고 있는 데스크톱 줄에도 버튼")
+            #expect(idle.metaText == "Idle · 40 min ago · Claude desktop" && !idle.statusIsEmphasis, "버튼이 생겨도 줄의 말은 그대로")
+        }
+
+        @Test func openInClaudeStaysOffTheTerminalAndOtherRowsAndEveryRowTheDesktopCannotTakeOver() {
+            for client in [ExternalSessionClient.terminal, .other, nil] {
+                #expect(line(Self.row(status: .available, client: client)).action == nil, "터미널 · 그 밖 출처의 Idle 줄은 그대로: \(String(describing: client))")
+            }
+            #expect(line(Self.row(status: .held(.claudeApp), client: .terminal)).action == .openInClaude, "Claude 앱이 쥔 줄은 출처와 상관없이 지금처럼")
+            let none: [ExternalSessionStatus] = [
+                .held(.terminal), .held(.background), .held(.unknown), .inTaskforce, .couldNotCheck,
+                .cannotResume(.worktree), .cannotResume(.folderNotAllowed), .cannotResume(.unreadable), .cannotResume(.updateClaudeCode),
+            ]
+            for status in none { #expect(line(Self.row(status: status, client: .claudeDesktop)).action == nil, "데스크톱 줄이라도 동작이 없다: \(status)") }
+        }
+
+        @Test func aRefusalNoticeReplacesTheSecondLineWithOneGrayLineAndKeepsTheButton() {
+            let row = Self.row(status: .available, client: .claudeDesktop, ageMinutes: 40)
+            let plain = line(row)
+            let noticed = ExternalSessionLineText.make(row, now: Self.now, timeZone: Self.utc, notice: ExternalSessionCopy.runningInTerminal)
+            #expect(noticed.metaText == "Running in Terminal" && noticed.detail.isEmpty, "둘째 줄은 이미 승인된 말 한 줄뿐")
+            #expect(!noticed.statusIsEmphasis, "회색 (굵지 않다)")
+            #expect(noticed.action == .openInClaude && noticed.title == plain.title, "버튼은 그대로: 터미널을 닫고 다시 누를 수 있다")
+            // 굵던 줄("Running in Claude")도 거절 줄은 회색이다
+            let running = Self.row(status: .held(.claudeApp), client: .claudeDesktop)
+            let runningNoticed = ExternalSessionLineText.make(running, now: Self.now, timeZone: Self.utc, notice: ExternalSessionCopy.runningInTerminal)
+            #expect(line(running).statusIsEmphasis && !runningNoticed.statusIsEmphasis && runningNoticed.action == .openInClaude)
+            // 버튼이 없는 줄에는 거절 줄을 얹지 않는다 (그 줄은 이미 자기 상태를 말한다)
+            let terminal = Self.row(status: .held(.terminal), client: .claudeDesktop)
+            #expect(ExternalSessionLineText.make(terminal, now: Self.now, timeZone: Self.utc, notice: ExternalSessionCopy.runningInTerminal) == line(terminal))
+            #expect(ExternalSessionLineText.make(row, now: Self.now, timeZone: Self.utc, notice: nil) == plain, "notice가 없으면 그대로")
+        }
+
+        /// 누른 바로 그 순간의 피드백 (F4, 사용자 승인 2026-10-22): 여는 동안 **버튼 글자가 "Opening…"**이 되고 눌리지 않는다 (줄을 그리는 쪽이 `isBusy`로 비활성).
+        /// 줄의 둘째 줄은 그대로다 (같은 말을 두 번 하지 않는다)
+        @Test func aBusyRowKeepsItsSecondLineAndTheButtonTitleSaysOpeningUntilItIsDone() {
+            let row = Self.row(status: .available, client: .claudeDesktop, ageMinutes: 40)
+            let plain = line(row)
+            let busy = ExternalSessionLineText.make(row, now: Self.now, timeZone: Self.utc, busy: true)
+            #expect(plain.isBusy == false && plain.actionTitle == "Open in Claude")
+            #expect(busy.isBusy && busy.actionTitle == "Opening…" && busy.action == .openInClaude, "버튼 글자만 바뀐다")
+            #expect(busy.metaText == plain.metaText && busy.statusIsEmphasis == plain.statusIsEmphasis && busy.title == plain.title, "둘째 줄 · 제목은 그대로")
+            // 굵던 줄(Running in Claude)도 그대로
+            let running = Self.row(status: .held(.claudeApp), client: .claudeDesktop)
+            let runningBusy = ExternalSessionLineText.make(running, now: Self.now, timeZone: Self.utc, busy: true)
+            #expect(runningBusy.metaText == line(running).metaText && runningBusy.statusIsEmphasis && runningBusy.actionTitle == "Opening…")
+            // 거절 줄과 겹쳐도 각자: 둘째 줄은 거절 줄, 버튼은 Opening…
+            let both = ExternalSessionLineText.make(row, now: Self.now, timeZone: Self.utc, notice: ExternalSessionCopy.runningInTerminal, busy: true)
+            #expect(both.metaText == "Running in Terminal" && both.actionTitle == "Opening…" && both.isBusy)
+            // 버튼이 없는 줄은 바쁠 수 없다
+            let terminal = Self.row(status: .held(.terminal), client: .claudeDesktop)
+            let idleTerminalOrigin = Self.row(status: .available, client: .terminal)
+            for quiet in [terminal, idleTerminalOrigin] {
+                let content = ExternalSessionLineText.make(quiet, now: Self.now, timeZone: Self.utc, busy: true)
+                #expect(content == line(quiet) && !content.isBusy, "버튼이 없는 줄에는 여는 중이 없다")
+            }
+        }
+
         @Test func anIdleRowSaysIdleTimeAndSourceWithoutEmphasis() {
             let desktop = line(Self.row(status: .available, client: .claudeDesktop, ageMinutes: 40))
-            #expect(desktop.metaText == "Idle · 40 min ago · Claude desktop" && !desktop.statusIsEmphasis && desktop.action == nil)
+            #expect(desktop.metaText == "Idle · 40 min ago · Claude desktop" && !desktop.statusIsEmphasis && desktop.action == .openInClaude, "데스크톱 줄은 Open in Claude")
             #expect(line(Self.row(status: .available, client: .terminal, ageMinutes: 180)).metaText == "Idle · 3 hr ago · Terminal")
             #expect(line(Self.row(status: .available, client: .other, ageMinutes: 180)).metaText == "Idle · 3 hr ago", "Claude · Terminal 밖 출처는 비워 둔다")
             #expect(line(Self.row(status: .available, client: nil, ageMinutes: 180)).metaText == "Idle · 3 hr ago")
@@ -104,14 +168,14 @@ extension ExternalSessionSuites {
         @Test func everyCopyStringIsTheApprovedOne() {
             let approved: [String] = [
                 "On this Mac", "On this Mac — new sessions", "Running in Claude", "Running in Terminal", "Running elsewhere", "Couldn't check", "Can't resume here", "Idle", "In Taskforce", "Worktree",
-                "Folder isn't allowed", "Unreadable", "Update Claude Code", "Claude desktop", "Terminal", "Untitled", "Open in Claude", "Show all", "Show less", "Checking…",
+                "Folder isn't allowed", "Unreadable", "Update Claude Code", "Claude desktop", "Terminal", "Untitled", "Open in Claude", "Opening…", "Show all", "Show less", "Checking…",
                 "No recent Claude Code sessions", "Claude Code isn't installed", "Get Claude Code", "Couldn't check sessions", "Try again",
             ]
             let used: [String] = [
                 ExternalSessionCopy.sectionTitle, ExternalSessionCopy.accessibilityNewSessions, ExternalSessionCopy.runningInClaude, ExternalSessionCopy.runningInTerminal,
                 ExternalSessionCopy.runningElsewhere, ExternalSessionCopy.couldNotCheck, ExternalSessionCopy.cannotResume, ExternalSessionCopy.idle, ExternalSessionCopy.inTaskforce,
                 ExternalSessionCopy.worktree, ExternalSessionCopy.folderNotAllowed, ExternalSessionCopy.unreadable, ExternalSessionCopy.updateClaudeCode, ExternalSessionCopy.claudeDesktop,
-                ExternalSessionCopy.terminal, ExternalSessionCopy.untitled, ExternalSessionCopy.openInClaude, ExternalSessionCopy.showAll, ExternalSessionCopy.showLess, ExternalSessionCopy.checking,
+                ExternalSessionCopy.terminal, ExternalSessionCopy.untitled, ExternalSessionCopy.openInClaude, ExternalSessionCopy.opening, ExternalSessionCopy.showAll, ExternalSessionCopy.showLess, ExternalSessionCopy.checking,
                 ExternalSessionCopy.empty, ExternalSessionCopy.notInstalled, ExternalSessionCopy.getClaudeCode, ExternalSessionCopy.couldNotCheckSessions, ExternalSessionCopy.tryAgain,
             ]
             #expect(used == approved)

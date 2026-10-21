@@ -3,7 +3,7 @@ import SwiftUI
 import TaskforceKit
 
 /// 외부 세션 줄 (OA 외부 세션 PR1, DS 승인 2026-10-21 · SessionRow 모양): Claude Code 마크 20 · 제목(callout, 한 줄 끝 줄임) · 둘째 줄(footnote, 굵은 상태 말 + 회색 조각) · 오른쪽 동작.
-/// 줄 전체는 누르는 곳이 아니다: 동작은 오른쪽 버튼 하나("Open in Claude")뿐이다 (이어받기는 다음 PR). 호버의 `bg/selected`는 버튼이 있는 줄에만 칠한다 (`highlightsOnHover`): 누를 수 없는 줄은 반응하지 않는다.
+/// 줄 전체는 누르는 곳이 아니다: 동작은 오른쪽 버튼 하나("Open in Claude", 여는 동안은 "Opening…" 비활성)뿐이다 (이어받기는 다음 PR). 호버의 `bg/selected`는 버튼이 있는 줄에만 칠한다 (`highlightsOnHover`): 누를 수 없는 줄은 반응하지 않는다.
 /// 링은 이어받은 줄에만 있고(이어받기 PR) 이 줄에는 없다. 접근성 이름은 "{제목} — {둘째 줄}"
 public struct ExternalSessionLineView: View {
     let content: ExternalSessionLineContent
@@ -37,8 +37,10 @@ public struct ExternalSessionLineView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             if let action = content.action {
-                Button(ExternalSessionCopy.openInClaude) { onAction(action) }
+                // 여는 동안(`isBusy`)은 글자가 "Opening…"이 되고 눌리지 않는다 (버튼 스타일이 비활성 모양으로 흐리게 그린다)
+                Button(content.actionTitle) { onAction(action) }
                     .buttonStyle(TFButtonStyle(.secondary, size: .sm))
+                    .disabled(content.isBusy)
                     .padding(.top, -1)
             }
         }
