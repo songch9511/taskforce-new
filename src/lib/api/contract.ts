@@ -288,11 +288,51 @@ export const handoffResponseSchema = z.object({
 });
 export type HandoffResponse = z.infer<typeof handoffResponseSchema>;
 
-// POST /api/v1/metric-events — 앱이 직접 남기는 지표. action_started · handoff_used는 해당 API가 서버에서 남긴다 (중복 집계 방지).
-export const metricEventRequestSchema = z.object({
-  type: z.enum(["app_opened"]),
-  action_id: z.uuid().optional(),
+// POST /api/v1/metric-events — 앱이 알리는 지표. action_started · handoff_used는 해당 API가 서버에서 남긴다 (중복 집계 방지).
+// external_sessions_shown(OA 외부 세션 PR1): 값은 구간 문자열뿐이다 (글 · 수 0). 앱이 열 권한 없이도 route가 서버 권한으로 남긴다 (20261203000000).
+export const EXTERNAL_ROWS_BUCKETS = ["1", "2-5", "6-15", "16+"] as const;
+export const EXTERNAL_HELD_BUCKETS = ["0", "1-2", "3+"] as const;
+export const metricEventRequestSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("app_opened"), action_id: z.uuid().optional() }),
+  z.strictObject({
+    type: z.literal("external_sessions_shown"),
+    props: z.strictObject({ rows_bucket: z.enum(EXTERNAL_ROWS_BUCKETS), held_bucket: z.enum(EXTERNAL_HELD_BUCKETS) }),
+  }),
+]);
+export type MetricEventRequest = z.infer<typeof metricEventRequestSchema>;
+
+// PUT /api/v2/external-sessions — Mac이 Taskforce 밖에서 시작한 Claude Code 세션의 목록을 알린다 (OA 외부 세션 PR1, 계약 16장). 스냅샷 교체: 이번 목록에 없는 그 Mac의 행은 지운다.
+// 서버에 가는 것은 제목 · 상태 · 마지막 활동 시각 · 불투명 id뿐이다. 대화 본문 · 경로 · 폴더 이름 · Claude 세션 id는 보내지 않는다.
+// id = Mac이 세션 UUID에서 Mac에만 있는 열쇠로 만든 HMAC-SHA256의 hex 64자 (서버는 UUID를 알 수 없다).
+export const EXTERNAL_SESSION_STATES = ["available", "running_claude_app", "running_terminal", "running_elsewhere", "unknown", "unavailable"] as const;
+export const externalSessionStateSchema = z.enum(EXTERNAL_SESSION_STATES);
+export type ExternalSessionState = z.infer<typeof externalSessionStateSchema>;
+export const EXTERNAL_SESSIONS_MAX = 50;
+export const EXTERNAL_TITLE_MAX = 200;
+export const externalSessionRefSchema = z.string().regex(/^[0-9a-f]{64}$/);
+// 제어 글자 · 서식 글자(방향 바꿈 포함) · 줄 구분자는 앱이 지워서 보낸다. 서버는 그런 제목을 받지 않는다
+export const externalSessionTitleSchema = z
+  .string()
+  .min(1)
+  .max(EXTERNAL_TITLE_MAX)
+  .refine((title) => !/[\p{Cc}\p{Cf}\u2028\u2029]/u.test(title) && title.trim() === title, { message: "invalid title" });
+export const externalSessionReportRequestSchema = z.strictObject({
+  bridge_id: z.uuid(),
+  sessions: z
+    .array(
+      z.strictObject({
+        id: externalSessionRefSchema,
+        title: externalSessionTitleSchema.nullable(),
+        state: externalSessionStateSchema,
+        last_activity_at: z.iso.datetime({ offset: true }),
+      }),
+    )
+    .max(EXTERNAL_SESSIONS_MAX)
+    .refine((rows) => new Set(rows.map((row) => row.id)).size === rows.length, { message: "duplicate id" }),
 });
+export type ExternalSessionReportRequest = z.infer<typeof externalSessionReportRequestSchema>;
+export const externalSessionReportResponseSchema = z.strictObject({ kept: z.number().int().min(0), removed: z.number().int().min(0) });
+export type ExternalSessionReportResponse = z.infer<typeof externalSessionReportResponseSchema>;
 
 // 연동: 데이터베이스(Notion 데이터 소스)마다 역할과 속성 매핑 (connections.settings.dataSources[id], docs/INTEGRATIONS.md)
 export const taskStatusSchema = actionStatusSchema;

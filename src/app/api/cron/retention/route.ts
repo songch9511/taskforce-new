@@ -3,6 +3,7 @@ import { cronAuthorized, cronUnauthorized } from "@/lib/api/cron";
 import { checkSlackConnectionTokens } from "@/lib/connectors/slack/run";
 import { EXECUTION_TEXT_RETENTION_DAYS, retentionCutoff, SLACK_PENDING_RETENTION_DAYS, SLACK_THREAD_RETENTION_DAYS } from "@/lib/retention";
 import { BRIDGE_COMMAND_RETENTION_DAYS, PATH_LEASE_RETENTION_DAYS } from "@/lib/execution/limits";
+import { EXTERNAL_SESSION_RETENTION_DAYS } from "@/lib/api/external-sessions";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 // 원문 보관 기간 정리 (Vercel Cron, 매일). Authorization: Bearer $CRON_SECRET 인 요청만 받는다.
@@ -15,6 +16,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 // 둘 다 실패해도 나머지 정리 · Slack 토큰 확인은 하고, 응답을 500으로 해 cron 기록에 남긴다 (실패한 칸은 null).
 // 코드를 요청하고 24시간 안에 넣지 않은 이메일 가입(미확인 행)도 여기서 지운다 (purge_unconfirmed_email_signups, 한 번에 1,000행. 로그 · 응답에는 지운 수뿐, 이메일은 남기지 않는다).
 // 그 함수는 마이그레이션 20261201000000이 만든다. 코드가 먼저 배포되어 함수가 아직 없으면(PGRST202만) 실패가 아니라 준비 전(unconfirmed_email_signups_ready: false)으로 보고 200을 낸다. 42883(undefined_function)은 경고를 남기고 실패(500)로, 그 밖의 오류도 500으로 보고한다.
+// Mac이 보고를 멈춘 외부 세션 목록(제목)도 여기서 지운다 (purge_external_sessions: 마지막 보고 뒤 14일, 한 번에 PURGE_LIMIT개, 마이그레이션 20261203000000). 코드가 먼저 배포되어 함수가 아직 없으면(PGRST202만) 실패가 아니라 준비 전(external_sessions_ready: false)으로 보고 200을 낸다. 로그 · 응답에는 지운 수뿐, 제목은 남기지 않는다.
 // 한 번에 최대 PURGE_LIMIT건씩 지우므로, 밀린 게 있으면(어느 하나라도 한도만큼 지워졌으면) 시간 한도 안에서 반복해서 부른다.
 export const maxDuration = 60;
 
@@ -56,7 +58,7 @@ export async function GET(request: Request) {
   const started = Date.now();
   const tokenDeadline = started + TIME_BUDGET_MS - SLACK_CALL_TIMEOUT_MS;
   const purgeDeadline = tokenDeadline - SLACK_TOKEN_CHECK_MS;
-  let calls = 5; // artifacts · execution text · bridge commands · path leases · unconfirmed email sign-ups
+  let calls = 6; // artifacts · execution text · bridge commands · path leases · unconfirmed email sign-ups · external sessions
   const artifactsPurged = await admin
     .rpc("purge_expired_artifacts")
     .throwOnError()
@@ -121,6 +123,22 @@ export async function GET(request: Request) {
       },
     );
   const unconfirmedEmailSignupsDeleted = unconfirmedEmailSignups.deleted;
+  const externalSessions = await admin
+    .rpc("purge_external_sessions", {
+      p_before: retentionCutoff(now, EXTERNAL_SESSION_RETENTION_DAYS).toISOString(),
+      p_limit: PURGE_LIMIT,
+    })
+    .throwOnError()
+    .then(
+      ({ data }) => ({ ready: true, deleted: data as number | null }),
+      (error: unknown) => {
+        // 마이그레이션 20261203000000을 적용하기 전(코드가 먼저 배포된 동안)에는 함수가 없다: 지울 것도 없으니 실패가 아니다
+        if (isMissingFunction(error)) return { ready: false, deleted: 0 };
+        console.error(JSON.stringify({ event: "external_session_purge_failed" }));
+        return { ready: true, deleted: null };
+      },
+    );
+  const externalSessionsDeleted = externalSessions.deleted;
   for (;;) {
     calls++;
     const { data } = await admin
@@ -163,6 +181,8 @@ export async function GET(request: Request) {
       path_leases_purged: pathLeasesPurged,
       unconfirmed_email_signups_deleted: unconfirmedEmailSignupsDeleted,
       unconfirmed_email_signups_ready: unconfirmedEmailSignups.ready,
+      external_sessions_purged: externalSessionsDeleted,
+      external_sessions_ready: externalSessions.ready,
       slack_tokens_checked: slackTokens?.checked ?? 0,
       slack_tokens_revoked: slackTokens?.revoked ?? 0,
       slack_messages_deleted: slack.messages_deleted,
@@ -170,6 +190,6 @@ export async function GET(request: Request) {
       slack_sources_repurged: slack.sources_repurged,
       calls,
     },
-    { status: billingCleanup === null || artifactsPurged === null || executionTextPurged === null || bridgeCommandsPurged === null || pathLeasesPurged === null || unconfirmedEmailSignupsDeleted === null ? 500 : 200 },
+    { status: billingCleanup === null || artifactsPurged === null || executionTextPurged === null || bridgeCommandsPurged === null || pathLeasesPurged === null || unconfirmedEmailSignupsDeleted === null || externalSessionsDeleted === null ? 500 : 200 },
   );
 }

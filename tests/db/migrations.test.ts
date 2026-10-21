@@ -84,6 +84,7 @@ describe("초기 마이그레이션", () => {
       "execution_steps",
       "execution_tools",
       "execution_usage",
+      "external_sessions",
       "identity_links",
       "inbox_events",
       "judge_logs",
