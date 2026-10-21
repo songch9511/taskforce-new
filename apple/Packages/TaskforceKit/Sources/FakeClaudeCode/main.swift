@@ -13,23 +13,48 @@ nonisolated(unsafe) var fakeInterrupted: sig_atomic_t = 0
 enum Fake {
     static let prompt = "When you need the user's input, call mcp__tf__ask_user (1–4 questions). Make one such call at a time and wait for its result."
 
-    static let projectOpen = "<<<PROJECT INSTRUCTIONS: "
+    static let projectOpen = "<<<PROJECT INSTRUCTIONS #"
 
-    /// `--append-system-prompt`가 `prompt`로 시작해 고른 작업 폴더를 `--add-dir` 값 그대로 말하는가 (Kit `ClaudeCodePrompts.v2`의 앞부분).
-    /// 첫 줄(질문 안내 + 폴더 줄 + 안내 문장)은 한 줄이다. 경로에 제어 글자가 있으면 폴더 줄이 없다(질문 안내만).
-    /// 그 뒤는 비었거나, 빈 줄 다음에 Taskforce가 읽어 붙인 프로젝트 지침 블록이어야 한다 (소개 문장 + `<<<PROJECT INSTRUCTIONS: …>>>` 블록, 마지막은 닫는 표지나 `[Not included: …]`)
+    /// 프롬프트에 글로 넣어도 되는 경로인가 (Kit `ClaudeProjectInstructions.isPlain`과 같은 규칙: 제어 Cc · 서식 Cf · 줄 Zl · 문단 Zp 구분 글자가 없다)
+    static func isPlain(_ path: String) -> Bool {
+        !path.isEmpty && !path.unicodeScalars.contains { scalar in
+            switch scalar.properties.generalCategory {
+            case .control, .format, .lineSeparator, .paragraphSeparator: true
+            default: false
+            }
+        }
+    }
+
+    /// `--append-system-prompt-file`의 글이 `prompt`로 시작해 고른 작업 폴더를 `--add-dir` 값 그대로 말하는가 (Kit `ClaudeCodePrompts.v2`의 앞부분).
+    /// 첫 줄(질문 안내 + 폴더 줄 + 안내 문장)은 한 줄이다. 경로가 평범하지 않으면 폴더 줄이 없다(질문 안내만).
+    /// 그 뒤는 비었거나, 빈 줄 다음에 Taskforce가 읽어 붙인 프로젝트 지침 블록이어야 한다 (소개 문장 + `<<<PROJECT INSTRUCTIONS #꼬리표: …>>>` 블록, 마지막은 닫는 표지나 `[Not included: …]`)
     static func promptNamesWorkspace(_ text: String, addDir: String) -> Bool {
         let parts = text.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
         let head = String(parts[0])
         let rest = parts.count > 1 ? String(parts[1]) : ""
         guard !head.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }), head.hasPrefix(prompt) else { return false }
-        if addDir.isEmpty || addDir.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }) {
+        if !isPlain(addDir) {
             guard head == prompt else { return false }
         } else {
             guard head.hasPrefix(prompt + " The user's chosen workspace folder for this session is: \(addDir) (absolute path).") else { return false }
         }
         if parts.count == 1 { return true }
         return rest.hasPrefix("\nThe workspace folder has its own project instructions.") && rest.contains("\n\n" + projectOpen) && (rest.hasSuffix(">>>") || rest.hasSuffix("in total.)]"))
+    }
+
+    /// 프롬프트 파일을 읽고 검사한다: 정규 파일 · 0600 · `--settings`와 같은 폴더(spawn 설정 폴더) · UTF-8. 시험이 `HOME/.fake-claude/expected-prompt.txt`를 두면 글자까지 같아야 한다.
+    /// 아니면 nil (exit 3)
+    static func loadPrompt(_ flags: inout Flags) -> String? {
+        var info = stat()
+        guard !flags.promptFile.isEmpty, lstat(flags.promptFile, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, (info.st_mode & 0o777) == 0o600,
+              URL(fileURLWithPath: flags.promptFile).deletingLastPathComponent().path == URL(fileURLWithPath: flags.settings).deletingLastPathComponent().path,
+              let data = FileManager.default.contents(atPath: flags.promptFile), let text = String(data: data, encoding: .utf8) else { return nil }
+        flags.promptMode = Int(info.st_mode & 0o777)
+        if let home = ProcessInfo.processInfo.environment["HOME"],
+           let expected = FileManager.default.contents(atPath: URL(fileURLWithPath: home).appending(path: ".fake-claude/expected-prompt.txt").path) {
+            guard data == expected else { return nil }
+        }
+        return text
     }
 
     nonisolated(unsafe) static var report: [String: Any] = [:]
@@ -44,7 +69,10 @@ enum Fake {
         var tools = ""
         var mcpConfig = ""
         var addDir = ""
+        /// `--append-system-prompt-file` 경로 · 읽은 글 · 파일 모드
+        var promptFile = ""
         var systemPrompt = ""
+        var promptMode = 0
         var settings = ""
         var sessionID: String?
         var resume: String?
@@ -317,7 +345,7 @@ enum Fake {
             case "--settings": guard let path = value() else { return nil }; flags.settings = path
             case "--setting-sources": guard value() == "project" else { return nil }
             case "--permission-mode": guard value() == "manual" else { return nil }
-            case "--append-system-prompt": guard let text = value() else { return nil }; flags.systemPrompt = text
+            case "--append-system-prompt-file": guard let path = value() else { return nil }; flags.promptFile = path
             case "--session-id": flags.sessionID = value()
             case "--resume": flags.resume = value()
             default: return nil
@@ -325,10 +353,11 @@ enum Fake {
             index += 1
         }
         let required: Set<String> = ["-p", "--output-format", "--verbose", "--include-hook-events", "--max-budget-usd", "--tools", "--strict-mcp-config", "--mcp-config", "--add-dir",
-                                     "--settings", "--setting-sources", "--permission-mode", "--append-system-prompt"]
+                                     "--settings", "--setting-sources", "--permission-mode", "--append-system-prompt-file"]
         guard required.isSubset(of: seen), (flags.sessionID == nil) != (flags.resume == nil) else { return nil }
         // 프롬프트는 `--add-dir`과 순서가 정해져 있지 않으므로 다 읽은 뒤에 대조한다
-        guard promptNamesWorkspace(flags.systemPrompt, addDir: flags.addDir) else { return nil }
+        guard let text = loadPrompt(&flags), promptNamesWorkspace(text, addDir: flags.addDir) else { return nil }
+        flags.systemPrompt = text
         return flags
     }
 
@@ -461,7 +490,8 @@ enum Fake {
         let cwd = FileManager.default.currentDirectoryPath
         let stdin = readStdin()
         report = [
-            "args_ok": true, "project_instructions": flags.systemPrompt.contains(projectOpen), "fds": openFDs.map(Int.init), "env_keys": environmentKeys.sorted(), "stdin_bytes": stdin.count, "resume": flags.resume != nil,
+            "args_ok": true, "project_instructions": flags.systemPrompt.contains(projectOpen), "prompt_file_mode": flags.promptMode, "prompt_file_beside_settings": true,
+            "argv_has_prompt_text": CommandLine.arguments.contains { $0.contains("PROJECT INSTRUCTIONS") || $0.contains(prompt) }, "fds": openFDs.map(Int.init), "env_keys": environmentKeys.sorted(), "stdin_bytes": stdin.count, "resume": flags.resume != nil,
             "session_id": sessionID, "cwd": cwd, "tools": flags.tools, "pid": Int(getpid()), "pgid": Int(getpgrp()),
             "argv0": CommandLine.arguments.first ?? "", "exec_path": executablePath(), "started_at": Date().timeIntervalSince1970,
         ]

@@ -51,14 +51,15 @@ public enum ClaudeCodeSupport {
 public enum ClaudeCodePrompts {
     static let askUser = "When you need the user's input, call mcp__tf__ask_user (1–4 questions). Make one such call at a time and wait for its result."
 
-    /// 첫 턴 · 다음 턴 · 답 · 닫기 모두 같은 글이다 (`--append-system-prompt`는 spawn마다 준다).
-    /// 경로에 제어 글자(줄바꿈 포함)가 있으면 싣지 않는다: 폴더 이름으로 프롬프트에 글을 끼워 넣을 수 없게 한다. 첫 줄은 늘 한 줄이고, 지침 블록은 빈 줄 뒤에 온다
-    public static func v2(workspace: String, instructions: ClaudeProjectInstructions = ClaudeProjectInstructions()) -> String {
-        guard !workspace.isEmpty, !workspace.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }) else { return askUser }
+    /// 첫 턴 · 다음 턴 · 답 · 닫기 모두 같은 글이다 (spawn마다 0600 파일로 준다: `--append-system-prompt-file`. 인자에 글을 싣지 않는다).
+    /// 경로에 제어(Cc) · 서식(Cf) · 줄(Zl) · 문단(Zp) 구분 글자가 있으면 싣지 않는다: 폴더 이름으로 프롬프트에 글을 끼워 넣을 수 없게 한다.
+    /// 첫 줄은 늘 한 줄이고, 지침 블록은 빈 줄 뒤에 온다. 블록 표지의 `tag`는 spawn마다 무작위라(`ClaudeProjectInstructions.newTag`) 파일 글이 닫는 표지를 흉내 낼 수 없다
+    public static func v2(workspace: String, instructions: ClaudeProjectInstructions = ClaudeProjectInstructions(), tag: String = ClaudeProjectInstructions.newTag()) -> String {
+        guard ClaudeProjectInstructions.isPlain(path: workspace) else { return askUser }
         let head = askUser + " The user's chosen workspace folder for this session is: \(workspace) (absolute path)."
             + " When the user says \"this folder\", \"here\" or \"the project\", they mean that folder."
             + " Your shell starts in a different, private empty directory, so use absolute paths inside the workspace folder and do not look around to find it."
-        return instructions.isEmpty ? head : ([head, projectIntro] + projectBlocks(instructions)).joined(separator: "\n\n")
+        return instructions.isEmpty ? head : ([head, projectIntro] + projectBlocks(instructions, tag: tag)).joined(separator: "\n\n")
     }
 
     static let projectIntro = "The workspace folder has its own project instructions. Taskforce read them from the files below and passes them on as the project's own text;"
@@ -66,15 +67,15 @@ public enum ClaudeCodePrompts {
 
     private static let cutNote = "project instructions are limited to \(ClaudeProjectInstructions.limitBytes / 1024) KiB in total."
 
-    /// 파일마다 이름 붙인 블록. 글 속에 우리 표지와 같은 줄이 있어도 블록을 닫지 못하게 표지 모양만 한 칸 띄워 둔다 (글은 지우지 않는다)
-    private static func projectBlocks(_ instructions: ClaudeProjectInstructions) -> [String] {
+    /// 파일마다 이름 붙인 블록. 표지에 무작위 꼬리표를 넣고, 글 속에 우리 표지와 같은 모양이 있어도 한 칸 띄워 둔다 (글은 지우지 않는다: 이중 방어)
+    private static func projectBlocks(_ instructions: ClaudeProjectInstructions, tag: String) -> [String] {
         func neutral(_ text: String) -> String {
             text.replacingOccurrences(of: "<<<PROJECT INSTRUCTIONS", with: "<<< PROJECT INSTRUCTIONS")
                 .replacingOccurrences(of: "<<<END PROJECT INSTRUCTIONS", with: "<<< END PROJECT INSTRUCTIONS")
         }
         let files = instructions.files.map { file in
-            "<<<PROJECT INSTRUCTIONS: \(file.name)>>>\n" + neutral(file.text) + "\n" + (file.truncated ? "[Cut here: \(cutNote)]\n" : "")
-                + "<<<END PROJECT INSTRUCTIONS: \(file.name)>>>"
+            "<<<PROJECT INSTRUCTIONS #\(tag): \(file.name)>>>\n" + neutral(file.text) + "\n" + (file.truncated ? "[Cut here: \(cutNote)]\n" : "")
+                + "<<<END PROJECT INSTRUCTIONS #\(tag): \(file.name)>>>"
         }
         return files + instructions.omitted.map { "[Not included: \($0) (\(cutNote))]" }
     }
@@ -140,15 +141,14 @@ public enum ClaudeCodeLaunch {
         case resume(String)
     }
 
-    /// 첫 턴 · resume 인자 (13.2 :482, Q6: `--model` 생략 · 예산 상한)
-    public static func arguments(
-        access: AgentAccess, workspace: String, settings: String, mcp: String, session: SessionArgument, instructions: ClaudeProjectInstructions = ClaudeProjectInstructions()
-    ) -> [String] {
+    /// 첫 턴 · resume 인자 (13.2 :482, Q6: `--model` 생략 · 예산 상한).
+    /// 시작 프롬프트는 글이 아니라 **파일 경로**로 준다(`--append-system-prompt-file`, 2.1.306 `-p`에서 실제 확인): macOS `ps`는 setuid root라
+    /// 어느 로컬 계정 · EDR이든 인자를 읽는다 — 작업 폴더 경로 · 프로젝트 지침 글이 인자에 있으면 안 된다 (검토 보안 P2)
+    public static func arguments(access: AgentAccess, workspace: String, settings: String, mcp: String, promptFile: String, session: SessionArgument) -> [String] {
         var arguments = [
             "-p", "--output-format", "stream-json", "--verbose", "--include-hook-events", "--max-budget-usd", ClaudeCodeSupport.maxBudgetUSD,
             "--tools", ClaudeCodeSupport.tools(for: access).joined(separator: ","), "--strict-mcp-config", "--mcp-config", mcp, "--add-dir", workspace,
-            "--settings", settings, "--setting-sources", "project", "--permission-mode", "manual", "--append-system-prompt",
-            ClaudeCodePrompts.v2(workspace: workspace, instructions: instructions),
+            "--settings", settings, "--setting-sources", "project", "--permission-mode", "manual", "--append-system-prompt-file", promptFile,
         ]
         switch session {
         case .new(let id): arguments += ["--session-id", id]
@@ -189,33 +189,61 @@ public enum ClaudeCodeLaunch {
     public struct ConfigFiles: Equatable, Sendable {
         public var settings: URL
         public var mcp: URL
+        /// 시작 프롬프트 (`--append-system-prompt-file`)
+        public var prompt: URL
     }
 
-    /// spawn마다 새 파일 둘 (0600, 원자적 쓰기). 이름은 spawn id(UUID)뿐이다
-    public static func writeConfig(directory: URL, spawnID: String, settings: WireJSON, mcp: WireJSON) throws -> ConfigFiles {
+    /// spawn마다 새 파일 셋 (0600). 이름은 spawn id(UUID)뿐이다. settings · mcp는 원자적 쓰기, 프롬프트는 `O_CREAT|O_EXCL|O_NOFOLLOW`로 0600에서 바로 만든다
+    /// (이미 있는 파일 · 심어 둔 링크는 따라가지도 덮지도 않는다). 실패하면 **내가 만든 파일만** 지운다
+    public static func writeConfig(directory: URL, spawnID: String, settings: WireJSON, mcp: WireJSON, prompt: String) throws -> ConfigFiles {
         guard UUID(uuidString: spawnID) != nil else { throw AgentStartError(.spawnFailed) }
-        let files = ConfigFiles(settings: directory.appending(path: "\(spawnID).settings.json"), mcp: directory.appending(path: "\(spawnID).mcp.json"))
+        let files = ConfigFiles(
+            settings: directory.appending(path: "\(spawnID).settings.json"), mcp: directory.appending(path: "\(spawnID).mcp.json"),
+            prompt: directory.appending(path: "\(spawnID).prompt.txt")
+        )
+        var created: [URL] = []
         do {
             for (url, value) in [(files.settings, settings), (files.mcp, mcp)] {
+                created.append(url)
                 try value.canonicalData.write(to: url, options: [.atomic])
                 try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
             }
+            try writeExclusively(Data(prompt.utf8), to: files.prompt)
+            created.append(files.prompt)
         } catch {
-            removeConfig(files)
+            for url in created { try? FileManager.default.removeItem(at: url) }
             throw AgentStartError(.spawnFailed)
         }
         return files
     }
 
-    /// ①: 쓴 파일을 다시 읽어 기대 값과 같은지 (깨진 `--settings`는 오류 없이 훅 없이 돈다, CC-13 · 사례 8-03)
-    public static func verifyConfig(_ files: ConfigFiles, settings: WireJSON, mcp: WireJSON) -> Bool {
-        guard let readSettings = try? WireJSON.parse(Data(contentsOf: files.settings)), let readMCP = try? WireJSON.parse(Data(contentsOf: files.mcp)) else { return false }
-        return readSettings == settings && readMCP == mcp
+    private static func writeExclusively(_ data: Data, to url: URL) throws {
+        let fd = open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw AgentStartError(.spawnFailed) }
+        defer { close(fd) }
+        var offset = 0
+        while offset < data.count {
+            let written = data.withUnsafeBytes { write(fd, $0.baseAddress!.advanced(by: offset), data.count - offset) }
+            if written < 0, errno == EINTR { continue }
+            guard written > 0 else {
+                try? FileManager.default.removeItem(at: url)
+                throw AgentStartError(.spawnFailed)
+            }
+            offset += written
+        }
+    }
+
+    /// ①: 쓴 파일을 다시 읽어 기대 값과 같은지 (깨진 `--settings`는 오류 없이 훅 없이 돈다, CC-13 · 사례 8-03). 프롬프트 파일도 글자까지 같아야 한다
+    public static func verifyConfig(_ files: ConfigFiles, settings: WireJSON, mcp: WireJSON, prompt: String) -> Bool {
+        guard let readSettings = try? WireJSON.parse(Data(contentsOf: files.settings)), let readMCP = try? WireJSON.parse(Data(contentsOf: files.mcp)),
+              let readPrompt = try? Data(contentsOf: files.prompt) else { return false }
+        return readSettings == settings && readMCP == mcp && readPrompt == Data(prompt.utf8)
     }
 
     public static func removeConfig(_ files: ConfigFiles) {
         try? FileManager.default.removeItem(at: files.settings)
         try? FileManager.default.removeItem(at: files.mcp)
+        try? FileManager.default.removeItem(at: files.prompt)
     }
 
     /// spawn마다 32바이트 무작위 값 (base64url 43자)

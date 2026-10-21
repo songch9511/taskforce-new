@@ -15,6 +15,19 @@ import TaskforceAgentWire
 // - **writer 하나:** 같은 세션의 앞 프로세스가 끝난 뒤에만 다음 프로세스를 띄운다 (닫기 · 답 resume 포함).
 // - **init은 부수 효과 0:** probe · 폴더 만들기 · 소켓 없음. 런타임이 부를 때만 한다.
 
+/// `withDeadline`의 한 번만 깨우기: 일이 끝나거나 기한이 지나거나, 먼저 온 쪽만 이어 간다
+private final class DeadlineOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fired = false
+
+    func claim() -> Bool {
+        lock.withLock {
+            defer { fired = true }
+            return !fired
+        }
+    }
+}
+
 /// 시험 전용 끼어들기 (Release에는 없다)
 public struct ClaudeCodeTestHooks: Sendable {
     /// 설정 파일을 쓴 직후 (① 변조 시험, E8)
@@ -35,12 +48,16 @@ public struct ClaudeCodeTestHooks: Sendable {
     public var beforeInstructionsRead: (@Sendable () async -> Void)?
     /// 프로젝트 지침 표지에 쓰는 무작위 꼬리표를 정한다 (시험이 프롬프트 전문을 글자까지 대조하게. 없으면 spawn마다 무작위)
     public var instructionsTag: (@Sendable () -> String)?
+    /// 프로젝트 지침 읽기를 바꾼다 (막힌 볼륨 · 늦은 읽기를 흉내 내 기한을 보는 시험)
+    public var readInstructions: (@Sendable (String) -> ClaudeProjectInstructions.Outcome)?
 
     public init(
         afterConfigWrite: (@Sendable (URL) -> Void)? = nil, gateDelay: Duration? = nil, terminateOverride: (@Sendable (AgentProcessIdentity) -> AgentLiveness?)? = nil,
         beforeFinishClose: (@Sendable () async -> Void)? = nil, beforeHookReturn: (@Sendable () async -> Void)? = nil, inputBytes: (@Sendable (Int) -> Void)? = nil,
-        afterUnregister: (@Sendable () async -> Void)? = nil, beforeInstructionsRead: (@Sendable () async -> Void)? = nil, instructionsTag: (@Sendable () -> String)? = nil
+        afterUnregister: (@Sendable () async -> Void)? = nil, beforeInstructionsRead: (@Sendable () async -> Void)? = nil, instructionsTag: (@Sendable () -> String)? = nil,
+        readInstructions: (@Sendable (String) -> ClaudeProjectInstructions.Outcome)? = nil
     ) {
+        self.readInstructions = readInstructions
         self.beforeInstructionsRead = beforeInstructionsRead
         self.instructionsTag = instructionsTag
         self.afterConfigWrite = afterConfigWrite
@@ -214,7 +231,15 @@ public actor ClaudeCodeProcess: AgentProcess {
     /// 못 읽은 파일은 조용히 건너뛴다: 로그에는 고정 코드와 수만 남기고 글 · 이름 · 경로는 어디에도 가지 않는다
     private func loadInstructions(workspace: String) async -> ClaudeProjectInstructions {
         await testHooks.beforeInstructionsRead?()
-        let outcome = await offActor { ClaudeProjectInstructions.read(workspace: workspace) }
+        // 기한을 둔다: 막힌 볼륨이 턴 시작을 영원히 막지 않게. 막힌 읽기 스레드는 그대로 두고(되돌릴 수 없다) 결과만 버린다
+        let reader = testHooks.readInstructions
+        let result: ClaudeProjectInstructions.Outcome? = await Self.withDeadline(timing.instructionsDeadline) {
+            reader?(workspace) ?? ClaudeProjectInstructions.read(workspace: workspace)
+        }
+        guard let outcome = result else {
+            log.log("claude_instructions_skipped", ["count": .count(1), "why": .code("timeout")])
+            return ClaudeProjectInstructions()
+        }
         if outcome.skipped > 0 { log.log("claude_instructions_skipped", ["count": .count(outcome.skipped), "why": .code("unusable")]) }
         let read = outcome.instructions
         if !read.isEmpty { log.log("claude_instructions", ["files": .count(read.files.count), "bytes": .count(read.byteCount), "cut": .count(read.wasCut ? 1 : 0)]) }
@@ -578,6 +603,21 @@ public actor ClaudeCodeProcess: AgentProcess {
         }
     }
 
+    /// 막힐 수 있는 일을 다른 스레드에서 돌리고 `seconds` 안에 끝나지 않으면 nil. 일은 끝까지 돌게 두고 결과만 버린다
+    /// (막힌 파일 읽기 스레드를 되돌릴 방법은 없다. 구조화된 동시성 그룹은 그 자식을 기다리므로 쓰지 않는다)
+    nonisolated static func withDeadline<T: Sendable>(_ seconds: TimeInterval, _ work: @escaping @Sendable () -> T) async -> T? {
+        await withCheckedContinuation { (continuation: CheckedContinuation<T?, Never>) in
+            let once = DeadlineOnce()
+            DispatchQueue.global(qos: .userInitiated).async {
+                let value = work()
+                if once.claim() { continuation.resume(returning: value) }
+            }
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + seconds) {
+                if once.claim() { continuation.resume(returning: nil) }
+            }
+        }
+    }
+
     // MARK: 띄우기
 
     /// 작업 폴더: `realpath(3)`, 디렉터리이고 소유자가 이 사용자 (계약 2.4)
@@ -634,10 +674,12 @@ public actor ClaudeCodeProcess: AgentProcess {
         let socket = hookServer?.path ?? folder.config.appending(path: "no-socket").path
         let settings = try ClaudeCodeLaunch.settingsJSON(hook: helpers.hook, socket: socket, session: agentSessionID, nonce: nonce)
         let mcp = ClaudeCodeLaunch.mcpJSON(helper: helpers.mcp, session: agentSessionID)
-        let files = try ClaudeCodeLaunch.writeConfig(directory: folder.config, spawnID: spawnID, settings: settings, mcp: mcp)
+        // 시작 프롬프트(작업 폴더 줄 + 프로젝트 지침)는 인자가 아니라 0600 파일로 준다: `ps`가 인자를 읽는다 (검토 보안 P2). 표지 꼬리표는 spawn마다 무작위
+        let prompt = ClaudeCodePrompts.v2(workspace: workspace, instructions: instructions, tag: testHooks.instructionsTag?() ?? ClaudeProjectInstructions.newTag())
+        let files = try ClaudeCodeLaunch.writeConfig(directory: folder.config, spawnID: spawnID, settings: settings, mcp: mcp, prompt: prompt)
         testHooks.afterConfigWrite?(files.settings)
         // ①: 쓴 파일을 다시 읽어 기대 값과 같고, 격리 `cwd/`가 비어 있을 때만 띄운다 (11장 10: 누가 project 설정을 심어 두지 않았다. 남은 것은 위에서 격리했다, 12장 13)
-        guard ClaudeCodeLaunch.verifyConfig(files, settings: settings, mcp: mcp), (try? FileManager.default.contentsOfDirectory(atPath: folder.cwd.path))?.isEmpty == true else {
+        guard ClaudeCodeLaunch.verifyConfig(files, settings: settings, mcp: mcp, prompt: prompt), (try? FileManager.default.contentsOfDirectory(atPath: folder.cwd.path))?.isEmpty == true else {
             ClaudeCodeLaunch.removeConfig(files)
             log.log("claude_selfcheck_failed", ["check": .count(1)])
             throw AgentStartError(.spawnFailed)
@@ -693,7 +735,7 @@ public actor ClaudeCodeProcess: AgentProcess {
         sessionSpawn[agentSessionID] = spawnID
         taskSpawn[taskID] = spawnID
         let arguments = ClaudeCodeLaunch.arguments(
-            access: access, workspace: workspace, settings: files.settings.path, mcp: files.mcp.path, session: session, instructions: instructions
+            access: access, workspace: workspace, settings: files.settings.path, mcp: files.mcp.path, promptFile: files.prompt.path, session: session
         )
         // 지킴이를 disclaim으로 띄우고 지킴이가 `claude`를 띄운다 (13장 1). 검사한 실제 파일(realpath)로 띄우고, 자식이 보는 argv[0]은 후보 경로 그대로 (8장 8).
         // 지킴이가 알린 `claude` · 지킴이 id를 앱이 다시 대조하지 못하면 정체 commit · stdin 전에 멈춘다 (12장 6). 막히는 일은 actor 밖에서 (14장 9)
