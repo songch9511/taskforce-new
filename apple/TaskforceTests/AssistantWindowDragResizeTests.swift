@@ -12,7 +12,14 @@ struct AssistantWindowDragResizeTests {
     let visible = CGRect(x: -20000, y: -20000, width: 1440, height: 875)
     var rail: CGRect { CGRect(x: visible.maxX - 44, y: visible.minY + 400, width: 44, height: 319) }
 
+    /// 화면 크기가 바뀌는 모형 (해상도 · 모니터 연결 변경)
+    final class ScreenBox {
+        var visible: CGRect
+        init(_ visible: CGRect) { self.visible = visible }
+    }
+
     struct Rig {
+        let screen: ScreenBox
         let manager: AssistantWindowManager
         let controller: AssistantWindowController
         let windowID: UUID
@@ -29,16 +36,19 @@ struct AssistantWindowDragResizeTests {
         let runtime = ChatRuntime(gateway: WindowTestGateway(), scope: account.scope, now: { Date() })
         let shell = EdgeShellModel(schedule: { _, _ in EdgeTimer() }, chatsEnabled: true, windowsEnabled: true)
         let store = try defaults ?? TestDefaults()
-        let screen = customVisible ?? visible
-        let railFrame = CGRect(x: screen.maxX - 44, y: screen.minY + 400, width: 44, height: 319)
+        let screen = ScreenBox(customVisible ?? visible)
         let manager = AssistantWindowManager(
             runtime: runtime, shell: shell, store: AssistantWindowPositionStore(defaults: store.defaults),
-            environment: .init(visibleFrame: { screen }, railFrame: { railFrame }, panelFrame: { nil }, display: { display }, extraScreens: { extraScreens })
+            environment: .init(
+                visibleFrame: { screen.visible },
+                railFrame: { CGRect(x: screen.visible.maxX - 44, y: screen.visible.minY + 400, width: 44, height: 319) },
+                panelFrame: { nil }, display: { display }, extraScreens: { extraScreens }
+            )
         )
         manager.presents = false
         let id = try #require(conversation.flatMap { manager.openWindow(for: $0) } ?? manager.openNewWindow())
         let controller = try #require(manager.controllers[id])
-        return Rig(manager: manager, controller: controller, windowID: id, defaults: store, runtime: runtime, shell: shell, account: account)
+        return Rig(screen: screen, manager: manager, controller: controller, windowID: id, defaults: store, runtime: runtime, shell: shell, account: account)
     }
 
     /// 창을 (화면 밖에) 올리고 SwiftUI가 머리 · 입력 영역의 높이를 알릴 때까지 기다린다
@@ -92,30 +102,44 @@ struct AssistantWindowDragResizeTests {
 
     // MARK: 끌기 (창 끌기를 시작하는 길)
 
-    /// 창 안의 한 점을 누르는 왼쪽 마우스 이벤트 (위가 0)
-    private func mouseDown(_ controller: AssistantWindowController, x: CGFloat, y: CGFloat, clickCount: Int = 1) throws -> NSEvent {
+    /// 창 안의 한 점에서의 왼쪽 마우스 이벤트 (위가 0)
+    private func mouseEvent(_ type: NSEvent.EventType = .leftMouseDown, _ controller: AssistantWindowController, x: CGFloat, y: CGFloat, clickCount: Int = 1) throws -> NSEvent {
         try #require(NSEvent.mouseEvent(
-            with: .leftMouseDown, location: NSPoint(x: x, y: controller.panel.frame.height - y), modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            with: type, location: NSPoint(x: x, y: controller.panel.frame.height - y), modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
             windowNumber: controller.panel.windowNumber, context: nil, eventNumber: 0, clickCount: clickCount, pressure: 1
         ))
     }
 
-    @Test func pressingTheHandleStartsAWindowDragAndADragLeavesTheKeyAlone() async throws {
+    private func mouseDown(_ controller: AssistantWindowController, x: CGFloat, y: CGFloat, clickCount: Int = 1) throws -> NSEvent {
+        try mouseEvent(.leftMouseDown, controller, x: x, y: y, clickCount: clickCount)
+    }
+
+    /// 끌기 이벤트를 큐에 미리 넣고(끄는 이벤트 `count`개 + 놓기) 마우스 자리 순서를 정한다: 시험이 실제 끌기 따라가기(`AssistantMouseTracker`)를 그대로 돈다
+    private func scriptMouse(_ tracker: inout AssistantMouseTracker, _ controller: AssistantWindowController, points: [CGPoint]) throws {
+        var queue = points
+        tracker.locate = { _ in queue.removeFirst() }
+        tracker.timeout = 2
+        tracker.buttonIsDown = { true }
+        for index in 0..<(points.count - 1) {
+            let type: NSEvent.EventType = index == points.count - 2 ? .leftMouseUp : .leftMouseDragged
+            NSApp.postEvent(try mouseEvent(type, controller, x: 0, y: 0), atStart: false)
+        }
+    }
+
+    @Test func pressingTheHandleMovesTheWindowByTheMouseAndLeavesTheKeyAlone() async throws {
         let r = try rig()
         defer { r.defaults.cleanup() }
         try await layOut(r.controller)
         defer { r.controller.panel.orderOut(nil) }
         let panel = r.controller.panel
         let view = try #require(hit(r.controller, x: panel.frame.width / 2, y: 8) as? AssistantDragRegion.DragNSView)
-        var started: [NSWindow] = []
-        view.performDrag = { window, _ in
-            started.append(window)
-            window.setFrameOrigin(NSPoint(x: window.frame.minX + 40, y: window.frame.minY - 20))   // 끌어서 옮겨졌다
-        }
+        let before = panel.frame.origin
+        // 누른 곳 → (+40, −20) → (+90, −50) → 놓음 (화면 좌표, 아래가 0)
+        try scriptMouse(&view.tracker, r.controller, points: [CGPoint(x: 500, y: 500), CGPoint(x: 540, y: 480), CGPoint(x: 590, y: 450), CGPoint(x: 590, y: 450)])
         #expect(!panel.isKeyWindow, "시작: 키 창이 아니다")
         view.mouseDown(with: try mouseDown(r.controller, x: panel.frame.width / 2, y: 8))
-        #expect(started == [panel], "누르면 창 끌기를 시작한다")
-        #expect(!panel.isKeyWindow, "끌기만으로는 키를 가져가지 않는다 (옮기려다 다른 앱에 치던 글이 입력창으로 들어가지 않게)")
+        #expect(panel.frame.origin == CGPoint(x: before.x + 90, y: before.y - 50), "마우스가 움직인 만큼 창이 따라온다")
+        #expect(!panel.isKeyWindow, "끌기는 키를 가져가지 않는다 (옮기려다 다른 앱에 치던 글이 입력창으로 들어가지 않게)")
     }
 
     @Test func aPressWithoutMovingIsAClickAndTheWindowBecomesKey() async throws {
@@ -125,15 +149,30 @@ struct AssistantWindowDragResizeTests {
         defer { r.controller.panel.orderOut(nil) }
         let panel = r.controller.panel
         let view = try #require(hit(r.controller, x: 200, y: 34) as? AssistantDragRegion.DragNSView)
-        var clicks = 0
-        view.onClick = { clicks += 1 }
-        view.performDrag = { _, _ in }   // 움직이지 않았다
+        let before = panel.frame.origin
+        // 2pt 흔들렸다: 끌기 문턱(3pt) 아래라 클릭이다
+        try scriptMouse(&view.tracker, r.controller, points: [CGPoint(x: 500, y: 500), CGPoint(x: 501, y: 499), CGPoint(x: 501, y: 499)])
         view.mouseDown(with: try mouseDown(r.controller, x: 200, y: 34))
+        #expect(panel.frame.origin == before, "작게 흔들린 누름은 창을 옮기지 않는다")
         #expect(panel.isKeyWindow, "클릭: 창이 키 창이 된다 (Esc가 듣는다)")
-        #expect(clicks == 1, "클릭을 알린다: 핸들은 여기서 포커스를 가져가 화살표 키 이동이 시작된다")
-        view.performDrag = { window, _ in window.setFrameOrigin(NSPoint(x: window.frame.minX + 10, y: window.frame.minY)) }
+    }
+
+    @Test func aLostMouseUpEndsAWindowDragToo() async throws {
+        let r = try rig()
+        defer { r.defaults.cleanup() }
+        try await layOut(r.controller)
+        defer { r.controller.panel.orderOut(nil) }
+        let panel = r.controller.panel
+        let view = try #require(hit(r.controller, x: 200, y: 34) as? AssistantDragRegion.DragNSView)
+        let before = panel.frame.origin
+        var points = [CGPoint(x: 500, y: 500), CGPoint(x: 560, y: 500)]
+        view.tracker.locate = { _ in points.removeFirst() }
+        view.tracker.timeout = 0.05
+        var polls = 0
+        view.tracker.buttonIsDown = { polls += 1; return polls < 3 }
+        NSApp.postEvent(try mouseEvent(.leftMouseDragged, r.controller, x: 0, y: 0), atStart: false)   // 끄는 이벤트 하나, 놓는 이벤트는 없다
         view.mouseDown(with: try mouseDown(r.controller, x: 200, y: 34))
-        #expect(clicks == 1, "끈 뒤에는 클릭이 아니다")
+        #expect(polls >= 3 && panel.frame.origin == CGPoint(x: before.x + 60, y: before.y), "버튼이 올라간 것을 보고 끝맺는다 (창이 마우스에 영영 붙어 다니지 않는다)")
     }
 
     @Test func onlyTheHandleAndTheHeaderDragNotTheWindowBackground() throws {
@@ -289,6 +328,28 @@ struct AssistantWindowDragResizeTests {
         #expect(r.controller.panel.frame.height == 560, "놓으면 새 폭의 내용에 맞춘다")
     }
 
+    @Test func aLostMouseUpEndsTheResizeOnceTheButtonIsSeenToBeUp() async throws {
+        let r = try rig()
+        defer { r.defaults.cleanup() }
+        _ = centered(r)
+        let container = try #require(r.controller.panel.contentView as? AssistantWindowContentView)
+        let view = try #require(container.edgeViews[.right])
+        var points = [CGPoint(x: 1000, y: 500), CGPoint(x: 1070, y: 500)]
+        view.tracker.locate = { _ in points.removeFirst() }
+        view.tracker.timeout = 0.05
+        var polls = 0
+        view.tracker.buttonIsDown = {
+            polls += 1
+            return polls < 3   // 두 번 보는 동안은 눌려 있고, 그다음 버튼이 올라가 있다 (놓는 이벤트는 오지 않았다)
+        }
+        let before = r.controller.panel.frame
+        NSApp.postEvent(try mouseEvent(.leftMouseDragged, r.controller, x: 0, y: 0), atStart: false)   // 끄는 이벤트 하나, 놓는 이벤트는 없다
+        view.mouseDown(with: try mouseDown(r.controller, x: before.width - 2, y: 200))
+        #expect(polls >= 3, "버튼 상태를 다시 보았다")
+        #expect(r.controller.panel.frame.width == before.width + 70 && r.controller.preferredSize == AssistantWindowSize(width: before.width + 70, height: nil), "끝맺었다: 끈 만큼 크기가 정해졌다")
+        #expect(saved(r) == r.controller.preferredSize, "기억도 했다 (끌기가 영영 이어지지 않는다)")
+    }
+
     @Test func aWindowClosedInTheMiddleOfAResizeRemembersNothingWhenTheMouseComesUp() throws {
         let r = try rig()
         defer { r.defaults.cleanup() }
@@ -395,8 +456,8 @@ struct AssistantWindowDragResizeTests {
         let view = try #require(container.edgeViews[.bottomRight])
         // 화면 좌표(아래가 0)의 마우스: 누른 곳, 끄는 두 곳, 놓은 곳
         var points = [CGPoint(x: 1000, y: 500), CGPoint(x: 1040, y: 480), CGPoint(x: 1100, y: 430), CGPoint(x: 1100, y: 430)]
-        view.locate = { _ in points.removeFirst() }
-        view.trackTimeout = 2
+        view.tracker.locate = { _ in points.removeFirst() }
+        view.tracker.timeout = 2
         let before = r.controller.panel.frame
         let down = try mouseDown(r.controller, x: 370, y: 430)
         // 끌기 두 번과 놓기를 이벤트 큐에 미리 넣는다
@@ -500,5 +561,276 @@ struct AssistantWindowDragResizeTests {
         r.controller.windowDidMove(Notification(name: NSWindow.didMoveNotification))
         for _ in 0..<400 where r.controller.panel.frame.maxX > rail.minX { try await Task.sleep(for: .milliseconds(5)) }
         #expect(r.controller.panel.frame.maxX <= rail.minX && r.controller.panel.frame.width == width, "넓어진 창도 레일 앞까지 들어가고 크기는 그대로")
+    }
+
+    // MARK: 진짜 이벤트 경로 (`NSWindow.sendEvent`): 키를 가져가지 않는다
+
+    // 시험 하네스 메모: 앞의 시험들은 `view.mouseDown` · `beginResize`를 직접 불러 `sendEvent`를 건너뛰었다. 비활성 패널은 `sendEvent`에서
+    // 왼쪽 누름이 오면 뷰의 `mouseDown`보다 **먼저** 키 창이 되므로 그 시험들은 이 결함을 못 본다. 실제 하네스(CGEvent)는 창이 이미 키 창인 채 시작했다.
+    // 아래는 키 창이 아닌 창에 이벤트를 `panel.sendEvent`로 넣는다.
+
+    /// 입력창의 글 영역 (AppKit `NSTextView`)
+    private func composerTextView(_ controller: AssistantWindowController) -> NSTextView? {
+        func find(_ view: NSView?) -> NSTextView? {
+            guard let view else { return nil }
+            if let text = view as? NSTextView, text.isEditable { return text }
+            for sub in view.subviews { if let found = find(sub) { return found } }
+            return nil
+        }
+        return find(controller.panel.contentView)
+    }
+
+    @Test func aRealPressOnTheHandleOfAWindowThatIsNotKeyDragsWithoutTakingTheKey() async throws {
+        let r = try rig()
+        defer { r.defaults.cleanup() }
+        try await layOut(r.controller)
+        defer { r.controller.panel.orderOut(nil) }
+        let panel = r.controller.panel
+        #expect(!panel.isKeyWindow, "시작: 키 창이 아니다")
+        let view = try #require(hit(r.controller, x: panel.frame.width / 2, y: 8) as? AssistantDragRegion.DragNSView)
+        let before = panel.frame.origin
+        try scriptMouse(&view.tracker, r.controller, points: [CGPoint(x: 500, y: 500), CGPoint(x: 530, y: 490), CGPoint(x: 530, y: 490)])
+        panel.sendEvent(try mouseDown(r.controller, x: panel.frame.width / 2, y: 8))
+        #expect(panel.frame.origin == CGPoint(x: before.x + 30, y: before.y - 10), "끌기 영역이 누름을 받아 창이 옮겨진다")
+        #expect(!panel.isKeyWindow, "끌기는 키를 가져가지 않는다 (다른 앱에 치던 글이 입력창으로 들어가지 않게)")
+    }
+
+    @Test func aRealPressOnAnEdgeOfAWindowThatIsNotKeyResizesWithoutTakingTheKey() async throws {
+        let r = try rig()
+        defer { r.defaults.cleanup() }
+        _ = centered(r)
+        try await layOut(r.controller)
+        defer { r.controller.panel.orderOut(nil) }
+        let panel = r.controller.panel
+        let container = try #require(panel.contentView as? AssistantWindowContentView)
+        let view = try #require(container.edgeViews[.right])
+        var points = [CGPoint(x: 1000, y: 500), CGPoint(x: 1050, y: 500), CGPoint(x: 1050, y: 500)]
+        view.tracker.locate = { _ in points.removeFirst() }
+        view.tracker.timeout = 2
+        let before = panel.frame
+        #expect(!panel.isKeyWindow)
+        for type in [NSEvent.EventType.leftMouseDragged, .leftMouseUp] {
+            NSApp.postEvent(try mouseEvent(type, r.controller, x: 0, y: 0), atStart: false)
+        }
+        panel.sendEvent(try mouseDown(r.controller, x: panel.frame.width - 2, y: 200))
+        #expect(panel.frame.width == before.width + 50, "가장자리가 누름을 받아 크기가 바뀐다")
+        #expect(!panel.isKeyWindow, "크기를 바꾸려다 키를 가져가지 않는다")
+    }
+
+    @Test func aRealClickOnTheHandleMakesTheWindowKeyButLeavesTheComposersFocusAlone() async throws {
+        let r = try rig()
+        defer { r.defaults.cleanup() }
+        try await layOut(r.controller)
+        defer { r.controller.panel.orderOut(nil) }
+        let panel = r.controller.panel
+        let field = try #require(composerTextView(r.controller))
+        #expect(panel.makeFirstResponder(field))
+        let responder = try #require(panel.firstResponder)
+        let view = try #require(hit(r.controller, x: panel.frame.width / 2, y: 8) as? AssistantDragRegion.DragNSView)
+        try scriptMouse(&view.tracker, r.controller, points: [CGPoint(x: 500, y: 500), CGPoint(x: 500, y: 500)])   // 움직이지 않은 누름 = 클릭
+        panel.sendEvent(try mouseDown(r.controller, x: panel.frame.width / 2, y: 8))
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(panel.isKeyWindow, "클릭: 창이 키 창이 된다 (Esc · ⌘W가 듣는다)")
+        #expect(panel.firstResponder === responder, "핸들을 눌렀다고 입력창의 포커스를 빼앗지 않는다 (이어 치던 글이 사라지지 않게)")
+    }
+
+    @Test func aRealClickOnAHeaderButtonStillMakesTheWindowKey() async throws {
+        let r = try rig()
+        defer { r.defaults.cleanup() }
+        try await layOut(r.controller)
+        defer { r.controller.panel.orderOut(nil) }
+        let panel = r.controller.panel
+        // 오른쪽의 History 단추: 끌기 영역이 아닌 첫 곳
+        let x = try #require(stride(from: panel.frame.width - 100, through: panel.frame.width - 12, by: 2).first { !(hit(r.controller, x: $0, y: 34) is AssistantDragRegion.DragNSView) })
+        #expect(!panel.isKeyWindow)
+        panel.sendEvent(try mouseDown(r.controller, x: x, y: 34))
+        #expect(panel.isKeyWindow, "SwiftUI 단추를 누르면 창이 키 창이 된다")
+        panel.sendEvent(try mouseEvent(.leftMouseUp, r.controller, x: x, y: 34))
+    }
+
+    // MARK: 저장한 폭 · 화면 변경 · 정착 · 새 화면 · 쓰기 횟수
+
+    @Test func resizingOnlyTheHeightOnASmallerScreenKeepsTheLargerSavedWidth() throws {
+        let side = AssistantScreen(id: "2", visible: CGRect(x: visible.maxX + 100, y: visible.minY, width: 800, height: 600))
+        let r = try rig(extraScreens: [side])
+        defer { r.defaults.cleanup() }
+        _ = centered(r)
+        dragEdge(r, .bottomRight, dx: 500, dy: -100)
+        #expect(r.controller.preferredSize == AssistantWindowSize(width: 880, height: 540))
+        r.controller.place(topLeft: CGPoint(x: side.visible.minX + 20, y: side.visible.maxY - 20), onScreen: "2")
+        #expect(r.controller.panel.frame.width == 800, "작은 화면에서는 800으로 줄어 보인다")
+        dragEdge(r, .bottom, dy: 20)
+        #expect(r.controller.preferredSize.width == 880, "폭 가장자리를 끌지 않았다: 큰 화면에서 정한 폭을 덮어쓰지 않는다")
+        #expect(saved(r, display: "2")?.width == 880)
+        dragEdge(r, .right, dx: -100)
+        #expect(r.controller.preferredSize.width == 700, "폭 가장자리를 끌면 그 폭")
+    }
+
+    @Test func aChangeOfTheDisplaysPullsEveryVisibleWindowBackOntoItsScreen() async throws {
+        let r = try rig()
+        defer { r.defaults.cleanup() }
+        r.manager.start()
+        defer { r.manager.stop() }
+        _ = centered(r)
+        dragEdge(r, .bottomRight, dx: 300, dy: -100)
+        try await layOut(r.controller)
+        defer { r.controller.panel.orderOut(nil) }
+        try await Task.sleep(for: .milliseconds(300))   // 내용 높이 맞춤이 끝난 뒤: 이 시험은 화면 변경 알림만이 창을 옮긴다
+        let chosen = r.controller.preferredSize
+        // 해상도가 낮아졌다: 보이는 영역이 600 × 400으로 줄었다
+        let smaller = CGRect(x: visible.minX, y: visible.minY, width: 600, height: 400)
+        r.screen.visible = smaller
+        NotificationCenter.default.post(name: NSApplication.didChangeScreenParametersNotification, object: NSApp)
+        for _ in 0..<200 where r.controller.panel.frame.maxX > smaller.maxX - 44 { try await Task.sleep(for: .milliseconds(5)) }
+        let frame = r.controller.panel.frame
+        #expect(frame.minX >= smaller.minX && frame.maxX <= smaller.maxX - 44 && frame.minY >= smaller.minY && frame.maxY <= smaller.maxY, "새 화면 안 · 레일 앞: \(frame)")
+        #expect(r.controller.preferredSize == chosen, "정한 크기 값은 그대로 (화면이 돌아오면 다시 그 크기)")
+    }
+
+    @Test func startingAResizeWhileAMoveIsStillSettlingFinishesTheMoveFirst() throws {
+        let r = try rig()
+        defer { r.defaults.cleanup() }
+        let conversation = try #require(r.manager.registry.conversationID(of: r.windowID))
+        _ = centered(r)
+        r.controller.moveSettleDelay = .seconds(60)   // 정착은 부르지 않으면 오지 않는다
+        r.controller.mouseIsDown = { false }
+        r.controller.panel.setFrameOrigin(CGPoint(x: rail.minX - 100, y: r.controller.panel.frame.minY))   // 레일 쪽으로 끌어다 놓았다
+        r.controller.windowDidMove(Notification(name: NSWindow.didMoveNotification))
+        r.controller.beginResize(.bottom)
+        #expect(r.controller.panel.frame.maxX <= rail.minX, "끌기 정착(레일 밖으로 보정)이 먼저 끝난다 (취소되지 않는다)")
+        let position = AssistantWindowPositionStore(defaults: r.defaults.defaults).load().position(conversation: conversation, display: "1")
+        #expect(position == r.controller.topLeft, "그 자리를 기억한다")
+        r.controller.resize(by: CGPoint(x: 0, y: -30))
+        r.controller.endResize()
+        #expect(r.controller.panel.frame.maxX <= rail.minX)
+    }
+
+    @Test func aWindowMovedToAnotherDisplayRemembersItsSizeThereToo() throws {
+        let side = AssistantScreen(id: "2", visible: CGRect(x: visible.maxX + 100, y: visible.minY, width: 1200, height: 800))
+        let r = try rig(extraScreens: [side])
+        defer { r.defaults.cleanup() }
+        _ = centered(r)
+        dragEdge(r, .bottomRight, dx: 100, dy: -100)
+        let chosen = r.controller.preferredSize
+        #expect(saved(r, display: "2") == nil)
+        r.controller.moveSettleDelay = .seconds(60)
+        r.controller.mouseIsDown = { false }
+        r.controller.panel.setFrameOrigin(CGPoint(x: side.visible.minX + 50, y: side.visible.minY + 50))
+        r.controller.windowDidMove(Notification(name: NSWindow.didMoveNotification))
+        r.controller.finishMove()
+        #expect(saved(r, display: "2") == chosen, "옮겨 간 화면에서도 마지막으로 쓴 크기로 연다")
+        #expect(saved(r, display: "1") == chosen)
+    }
+
+    @Test func aMovedDefaultSizeWindowDoesNotWipeTheSizeSavedForThatDisplay() throws {
+        let side = AssistantScreen(id: "2", visible: CGRect(x: visible.maxX + 100, y: visible.minY, width: 1200, height: 800))
+        let r = try rig(extraScreens: [side])
+        defer { r.defaults.cleanup() }
+        let conversation = try #require(r.manager.registry.conversationID(of: r.windowID))
+        // 화면 2에는 사용자가 정한 크기가 있다
+        var memory = AssistantWindowPositions()
+        memory.rememberSize(AssistantWindowSize(width: 500, height: 600), display: "2")
+        AssistantWindowPositionStore(defaults: r.defaults.defaults).save(memory)
+        let again = try rig(defaults: r.defaults, conversation: conversation, extraScreens: [side])
+        again.controller.moveSettleDelay = .seconds(60)
+        again.controller.mouseIsDown = { false }
+        again.controller.panel.setFrameOrigin(CGPoint(x: side.visible.minX + 50, y: side.visible.minY + 50))
+        again.controller.windowDidMove(Notification(name: NSWindow.didMoveNotification))
+        again.controller.finishMove()
+        #expect(saved(again, display: "2") == AssistantWindowSize(width: 500, height: 600), "기본 크기 창을 옮겼다고 그 화면의 기억을 지우지 않는다")
+    }
+
+    /// 쓰기 횟수를 세는 설정 (격리 suite)
+    final class CountingDefaults: UserDefaults, @unchecked Sendable {
+        nonisolated(unsafe) var writes = 0
+        override func set(_ value: Any?, forKey defaultName: String) {
+            writes += 1
+            super.set(value, forKey: defaultName)
+        }
+    }
+
+    @Test func endingAResizeWritesTheMemoryOnce() throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: "TaskforceCountingDefaults-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let suite = directory.appending(path: "defaults").path
+        let counting = try #require(CountingDefaults(suiteName: suite))
+        defer {
+            counting.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let r = try rig()
+        defer { r.defaults.cleanup() }
+        let manager = AssistantWindowManager(
+            runtime: r.runtime, shell: r.shell, store: AssistantWindowPositionStore(defaults: counting),
+            environment: .init(visibleFrame: { r.screen.visible }, railFrame: { rail }, panelFrame: { nil }, display: { "1" })
+        )
+        manager.presents = false
+        let id = try #require(manager.openNewWindow())
+        let controller = try #require(manager.controllers[id])
+        controller.place(topLeft: CGPoint(x: visible.minX + 400, y: visible.maxY - 100))
+        let before = counting.writes
+        controller.beginResize(.bottomRight)
+        controller.resize(by: CGPoint(x: 40, y: -40))
+        controller.endResize()
+        #expect(counting.writes - before == 1, "크기와 자리를 한 번에 쓴다 (⌥ + 화살표를 누르고 있는 동안 두 번씩 쓰지 않는다)")
+        let step = counting.writes
+        controller.resize(by: .right)
+        #expect(counting.writes - step == 1)
+        controller.resetSize()
+        #expect(counting.writes - step == 2)
+    }
+
+    // MARK: 스크롤 · 모서리
+
+    @Test func scrollingOverAnEdgeStripReachesTheContentBelow() async throws {
+        final class SpyView: NSView {
+            var scrolls = 0
+            override func scrollWheel(with event: NSEvent) { scrolls += 1 }
+        }
+        let spy = SpyView(frame: NSRect(x: 0, y: 0, width: 380, height: 440))
+        let container = AssistantWindowContentView(content: spy)
+        let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 380, height: 440), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = container
+        container.layoutSubtreeIfNeeded()
+        let cg = try #require(CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: 12, wheel2: 0, wheel3: 0))
+        let event = try #require(NSEvent(cgEvent: cg))
+        for edge in AssistantWindowGeometry.ResizeEdge.allCases {
+            let view = try #require(container.edgeViews[edge])
+            view.scrollWheel(with: event)
+        }
+        #expect(spy.scrolls == 8, "5pt 띠 위에서 굴려도 본문이 스크롤한다")
+    }
+
+    @Test func theCornerStripsLeaveTheComposerAndTheHeaderButtonsClickable() async throws {
+        let r = try rig()
+        defer { r.defaults.cleanup() }
+        try await layOut(r.controller)
+        defer { r.controller.panel.orderOut(nil) }
+        let w = r.controller.panel.frame.width, h = r.controller.panel.frame.height
+        func edge(_ x: CGFloat, _ y: CGFloat) -> AssistantWindowGeometry.ResizeEdge? { (hit(r.controller, x: x, y: y) as? AssistantResizeEdgeView)?.edge }
+        let c = AssistantWindowContentView.cornerSize
+        // 보내기 단추: 입력 영역 안쪽 여백(12) + 입력창 안쪽 여백(6) 안쪽에 있다 → 모서리 띠(15)에 닿지 않는다
+        let sendInset = TFSpace.md + PromptBox.inset.trailing
+        let sendBottom = TFSpace.md + PromptBox.inset.bottom
+        #expect(sendInset >= c && sendBottom >= c, "보내기 단추가 모서리 띠 밖")
+        #expect(edge(w - sendInset - 1, h - sendBottom - 1) == nil && edge(w - sendInset - PromptBox.sendSize / 2, h - sendBottom - PromptBox.sendSize / 2) == nil)
+        // 머리의 New chat 단추는 머리 위(핸들 14 + 2)보다 아래에서 시작한다 → 위쪽 모서리 띠(15)에 닿지 않는다
+        #expect(AssistantDragHandle.height + 2 >= c)
+        #expect(edge(w - 20, c + 2) == nil && edge(20, c + 2) == nil)
+        // 입력창의 둥근 모서리(반지름 12, 창 가장자리에서 12pt 안쪽)가 모서리 띠(15)에 걸치는 넓이: 0
+        var covered = 0.0
+        let step = 0.1
+        var x = 0.0
+        while x < Double(c) {
+            var y = 0.0
+            while y < Double(c) {
+                let center = Double(TFSpace.md + TFRadius.panel)
+                if (x - center) * (x - center) + (y - center) * (y - center) <= Double(TFRadius.panel * TFRadius.panel), x >= Double(TFSpace.md), y >= Double(TFSpace.md) { covered += step * step }
+                y += step
+            }
+            x += step
+        }
+        #expect(covered == 0, "입력창 모서리와 모서리 띠가 겹치는 넓이 \(covered)pt²")
+        #expect(edge(w - 10, h - 10) == .bottomRight && edge(10, h - 10) == .bottomLeft, "모서리 띠는 창 모서리 쪽 15pt")
     }
 }

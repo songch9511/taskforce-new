@@ -94,6 +94,7 @@ final class AssistantWindowManager {
     private(set) var controllers: [UUID: AssistantWindowController] = [:]
     private var positions: AssistantWindowPositions
     private var keyMonitor: Any?
+    private var screenObserver: NSObjectProtocol?
     private var following = false
     /// 창을 실제 화면에 올리는가 (시험은 끈다)
     var presents = true
@@ -122,12 +123,22 @@ final class AssistantWindowManager {
             let handled = MainActor.assumeIsolated { self?.handleKey(event) ?? false }
             return handled ? nil : event
         }
+        // 해상도 · 모니터 연결이 바뀌면 보이는 창을 지금 화면 안으로 다시 놓는다
+        screenObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.screenParametersChanged() }
+        }
+    }
+
+    private func screenParametersChanged() {
+        for controller in controllers.values where controller.isVisible { controller.screenParametersChanged() }
     }
 
     /// 키 모니터를 걷는다 (앱은 끝까지 두고, 시험이 정리한다)
     func stop() {
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = nil
+        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
+        screenObserver = nil
         following = false
     }
 
@@ -376,13 +387,17 @@ final class AssistantWindowManager {
         // 그 창이 있는 화면의 키로 기억한다 (보조 화면의 창을 레일 화면 키로 저장하지 않는다)
         let display = controllers[windowID]?.currentScreenID ?? environment.display()
         positions.remember(topLeft, conversation: conversation, display: display)
+        // 사용자가 정한 크기의 창을 다른 화면으로 옮겼으면 그 화면에서도 이 크기로 연다. 기본 크기의 창은 그 화면에 정해 둔 크기를 지우지 않는다
+        if let size = controllers[windowID]?.preferredSize, size != .standard { positions.rememberSize(size, display: display) }
         store.save(positions)
     }
 
-    /// 사용자가 정한 크기를 그 창이 있는 화면의 것으로 기억한다
+    /// 사용자가 정한 크기를 그 창이 있는 화면의 것으로, 자리와 함께 한 번에 기억한다 (⌥ + 화살표를 누르고 있어도 한 걸음에 한 번만 쓴다)
     private func rememberSize(_ size: AssistantWindowSize, windowID: UUID) {
-        let display = controllers[windowID]?.currentScreenID ?? environment.display()
+        guard let controller = controllers[windowID], let conversation = registry.conversationID(of: windowID) else { return }
+        let display = controller.currentScreenID
         positions.rememberSize(size, display: display)
+        positions.remember(controller.topLeft, conversation: conversation, display: display)
         store.save(positions)
     }
 

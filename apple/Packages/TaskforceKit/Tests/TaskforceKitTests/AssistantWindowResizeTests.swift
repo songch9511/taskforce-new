@@ -183,7 +183,16 @@ struct AssistantWindowResizeTests {
         let small = CGRect(x: 0, y: 0, width: 800, height: 600)
         #expect(size(AssistantWindowSize(width: 900, height: 800), visible: small) == CGSize(width: 800 - 44, height: 600), "작은 화면으로 옮기면 그 화면 안으로")
         #expect(size(AssistantWindowSize(width: 900, height: 800), visible: small, rail: 0) == CGSize(width: 800, height: 600), "레일 없는 화면")
-        #expect(size(AssistantWindowSize(width: 380, height: 270), head: 52, footer: 300) == CGSize(width: 380, height: 52 + 300 + G.minBodyHeight), "큰 입력 영역이면 최소 높이가 올라간다")
+        #expect(size(AssistantWindowSize(width: 380, height: 270), content: 500, head: 52, footer: 300) == CGSize(width: 380, height: 52 + 300 + G.minBodyHeight), "큰 입력 영역이면 최소 높이가 올라간다 (내용 500 = 머리 + 입력 영역 + 본문)")
+    }
+
+    @Test func aShortChatWindowTheUserGrewIsNotRaisedToTheMinimumWhenTheMouseComesUp() {
+        // 짧은 대화: 내용에 맞춘 높이가 192로 최소(260)보다 작다. 이 창을 눌러 230까지 키웠다
+        #expect(size(AssistantWindowSize(width: 380, height: 230), content: 192).height == 230, "놓는 순간 260으로 튀지 않는다")
+        #expect(size(AssistantWindowSize(width: 380, height: 192), content: 192).height == 192)
+        #expect(size(AssistantWindowSize(width: 380, height: 150), content: 192).height == 192, "그래도 내용보다 작아지지는 않는다")
+        #expect(size(AssistantWindowSize(width: 380, height: 230), content: 400).height == 260, "내용이 최소보다 길면 최소가 지킨다")
+        #expect(size(AssistantWindowSize(width: 380, height: 270), content: 500, footer: 300).height == 52 + 300 + G.minBodyHeight, "입력 영역이 크면 최소(머리 + 입력 영역 + 본문)가 지킨다")
     }
 
     @Test func theAutoHeightIsAlsoKeptInsideAShortScreen() {

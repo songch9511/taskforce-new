@@ -55,16 +55,20 @@ extension AssistantWindowGeometry {
     }
 
     /// 창의 크기: 사용자가 정한 값 · 내용 · 화면으로. 정한 높이가 없으면 내용에 맞추고(`height(content:isEmpty:)`: 440 · 560),
-    /// 정한 높이는 내용과 상관없이 따른다. 어느 쪽이든 이 화면의 최대(보이는 영역 − 레일) 안이고, 정한 값은 최소 밑으로 내려가지 않는다
+    /// 정한 높이는 내용과 상관없이 따른다. 어느 쪽이든 이 화면의 최대(보이는 영역 − 레일) 안이다.
+    /// 정한 높이는 최소(`minimumHeight`) 밑으로 내려가지 않는다. 단 내용 자체가 최소보다 짧은 대화(짧은 창)는 내용에 맞는 높이까지만 지킨다:
+    /// 짧은 창은 누르기 시작할 때 최소가 "지금 높이"(`resized`)라서, 키운 높이가 최소보다 작아도 놓는 순간 튀지 않는다
     public static func size(
         _ preferred: AssistantWindowSize, contentHeight: CGFloat, isEmpty: Bool, head: CGFloat, footer: CGFloat, visible: CGRect, railWidth: CGFloat
     ) -> CGSize {
         let limit = maxSize(visible: visible, railWidth: railWidth)
         let width = Swift.min(Swift.max(preferred.width, minWidth), limit.width)
+        let natural = height(content: contentHeight, isEmpty: isEmpty)
         guard let chosen = preferred.height else {
-            return CGSize(width: width, height: Swift.min(height(content: contentHeight, isEmpty: isEmpty), limit.height))
+            return CGSize(width: width, height: Swift.min(natural, limit.height))
         }
-        return CGSize(width: width, height: Swift.min(Swift.max(chosen, minimumHeight(head: head, footer: footer)), limit.height))
+        let floor = Swift.min(minimumHeight(head: head, footer: footer), natural)
+        return CGSize(width: width, height: Swift.min(Swift.max(chosen, floor), limit.height))
     }
 
     /// 끌기가 시작된 때의 창에 변화량을 더해 새 창을 구한다. 끄는 쪽 가장자리만 움직이고 반대쪽은 그대로다.

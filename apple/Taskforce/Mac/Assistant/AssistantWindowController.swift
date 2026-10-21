@@ -8,12 +8,25 @@ import TaskforceUI
 final class AssistantPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    /// 키 창이 아닌 창의 왼쪽 누름: 끌기 · 크기 조절 영역이 받으면 우리가 그 뷰에 직접 전달한다.
+    /// 그냥 두면 비활성 패널은 `sendEvent` 안에서 뷰의 `mouseDown`보다 **먼저** 키 창이 되어, 창을 옮기려던 사용자의 다음 키 입력이 이 창으로 들어간다.
+    /// 클릭(움직이지 않은 누름)이면 `DragNSView`가 직접 키 창으로 만든다. 그 밖의 곳(SwiftUI 단추 · 입력창 · 본문)은 예전처럼 누르면 키 창이 된다
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown, !isKeyWindow,
+           let hit = contentView?.superview?.hitTest(event.locationInWindow),
+           hit is AssistantDragRegion.DragNSView || hit is AssistantResizeEdgeView {
+            hit.mouseDown(with: event)
+            return
+        }
+        super.sendEvent(event)
+    }
 }
 
 /// 창 하나의 NSPanel · 자리 · 크기. 어느 대화를 보이는지는 `AssistantWindowModel`, 창 개수 · 위치 · 크기 기억은 `AssistantWindowManager`가 정한다.
 /// - 기본은 380pt 폭, 높이는 내용에 맞춰 560까지 (빈 대화는 440 아래로 줄지 않는다). 높이가 변해도 **위 가장자리**가 움직이지 않는다
 /// - 크기는 사용자가 가장자리 · 모서리를 끌어 바꾼다 (`preferredSize`: 폭만 바꾸면 높이는 계속 내용에 맞추고, 높이를 바꾸면 그 높이). 두 번 누르면 기본으로
-/// - 핸들 · 머리의 빈 곳을 누르면 `performDrag`로 끌고, 핸들에 포커스를 두고 화살표 키로 8pt씩 옮기고 ⌥ + 화살표로 16pt씩 크기를 바꾼다
+/// - 핸들 · 머리의 빈 곳을 누르면 마우스를 직접 따라가 옮기고(`AssistantMouseTracker`), 핸들에 포커스를 두고 화살표 키로 8pt씩 옮기고 ⌥ + 화살표로 16pt씩 크기를 바꾼다
 /// - 열고 닫는 움직임은 불투명도뿐이다 (DS가 창의 움직임을 말하지 않는다. 움직임 줄이기와 같은 모양)
 @MainActor
 final class AssistantWindowController: NSObject, NSWindowDelegate {
@@ -44,7 +57,7 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
     /// 마우스 왼쪽 버튼이 눌려 있나 (끌기 도중에는 보정하지 않는다. 시험은 바꾼다)
     var mouseIsDown: () -> Bool = { NSEvent.pressedMouseButtons & 1 != 0 }
     var onMoved: (CGPoint) -> Void = { _ in }
-    /// 사용자가 크기를 정했다 (끌기를 놓았을 때 · 키보드 · 기본으로 되돌림)
+    /// 사용자가 크기를 정했다 (끌기를 놓았을 때 · 키보드 · 기본으로 되돌림). 자리는 이미 `topLeft`에 있다: 받는 쪽이 크기와 자리를 같이 기억한다
     var onResized: (AssistantWindowSize) -> Void = { _ in }
     var onBecameKey: () -> Void = {}
     var onResignedKey: () -> Void = {}
@@ -97,7 +110,7 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
         panel.hasShadow = true
         panel.hidesOnDeactivate = false
         panel.isMovable = true
-        // 배경 끌기는 끈다: 본문 어디서나 끌리면 글을 고르다 창이 움직인다. 핸들 · 머리의 빈 곳만 `performDrag`로 끈다
+        // 배경 끌기는 끈다: 본문 어디서나 끌리면 글을 고르다 창이 움직인다. 핸들 · 머리의 빈 곳만 직접 따라가 끈다
         panel.isMovableByWindowBackground = false
         panel.isReleasedWhenClosed = false
         panel.animationBehavior = .none
@@ -197,6 +210,11 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
         applyFrame(.placement, screenID: screenID)
     }
 
+    /// 화면 구성이 바뀌었다 (해상도 · 모니터 연결 · 해제): 지금 화면 기준으로 다시 놓는다. 바라는 자리는 그대로라 화면이 돌아오면 그 자리로 돌아온다
+    func screenParametersChanged() {
+        applyFrame(.placement)
+    }
+
     // MARK: 크기 조절
 
     /// 크기 조절 끌기 하나: 시작 때의 창과 한도. 끄는 동안 이 값에 마우스가 움직인 만큼을 더해 창을 정한다
@@ -208,10 +226,13 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
         let maximum: CGSize
     }
 
-    /// 크기 조절 끌기를 시작한다 (가장자리 · 모서리를 누름). 이동의 정착 보정이 끼어들지 않게 하고, 열려 있는 메뉴는 닫는다. 키 창은 바꾸지 않는다
+    /// 크기 조절 끌기를 시작한다 (가장자리 · 모서리를 누름). 남은 이동 정착은 먼저 끝내고, 열려 있는 메뉴는 닫는다. 키 창은 바꾸지 않는다
     func beginResize(_ edge: AssistantWindowGeometry.ResizeEdge) {
-        settleTask?.cancel()
-        settleTask = nil
+        // 끌기를 막 놓아 정착(화면 안 · 레일 밖 보정과 기억)이 남아 있으면 지금 끝낸다: 취소하면 보정 · 기억 없이 크기 조절이 시작한다
+        if settleTask != nil {
+            settleTask?.cancel()
+            finishMove()
+        }
         closeTargetMenu()
         let screen = environment.screen(for: panel.frame)
         let railWidth = environment.reservedRailWidth(on: screen)
@@ -239,19 +260,23 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
         panel.invalidateShadow()
     }
 
-    /// 마우스를 놓았다: 이 크기를 사용자가 정한 크기로 삼는다. 높이를 바꾸지 않았으면 높이는 계속 내용에 맞춘다.
-    /// 자리도 함께 기억한다 (위 · 왼쪽 가장자리를 끌면 자리가 바뀌고, 아니어도 크기와 짝으로 다시 열린다)
+    /// 마우스를 놓았다: 이 크기를 사용자가 정한 크기로 삼는다. 폭은 왼쪽 · 오른쪽 가장자리가 움직여 바뀌었을 때만, 높이는 위 · 아래 가장자리가 움직여 바뀌었을 때만 가져온다:
+    /// 작은 화면에서 줄어 보이는 창의 높이만 끌어도 큰 화면에서 정한 폭을 덮어쓰지 않고, 높이를 바꾸지 않았으면 높이는 계속 내용에 맞춘다.
+    /// 자리도 함께 기억한다 (`onResized` 한 번에 크기와 자리를 같이 쓴다: 위 · 왼쪽 가장자리를 끌면 자리가 바뀌고, 아니어도 크기와 짝으로 다시 열린다)
     func endResize() {
         guard let session = resizeSession else { return }
         resizeSession = nil
         let frame = panel.frame
         guard frame != session.frame else { return }
+        let changedWidth = (session.edge.movesLeft || session.edge.movesRight) && frame.width != session.frame.width
         let changedHeight = session.edge.changesHeight && frame.height != session.frame.height
-        preferredSize = AssistantWindowSize(width: frame.width, height: changedHeight ? frame.height : preferredSize.height)
+        preferredSize = AssistantWindowSize(
+            width: changedWidth ? frame.width : preferredSize.width,
+            height: changedHeight ? frame.height : preferredSize.height
+        )
         topLeft = CGPoint(x: frame.minX, y: frame.maxY)
         desiredTopLeft = topLeft
         onResized(preferredSize)
-        onMoved(topLeft)
         // 자동 높이는 새 폭의 내용에 다시 맞춘다
         applyFrame()
     }
@@ -269,7 +294,6 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
         preferredSize = .standard
         applyFrame()
         onResized(.standard)
-        onMoved(topLeft)
     }
 
     // MARK: 보이기 · 숨기기

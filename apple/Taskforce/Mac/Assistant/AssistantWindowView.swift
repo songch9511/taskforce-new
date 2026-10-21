@@ -287,42 +287,41 @@ enum AssistantBodyAnchor {
 // MARK: 드래그
 
 /// 마우스를 누른 곳에서 창을 끈다 (핸들 · 머리의 빈 곳). 그 위의 컨트롤(History · New chat)은 자기 클릭을 받는다.
-/// 창 배경 끌기(`isMovableByWindowBackground`)가 아니다: 본문은 끌지 않는다. 누름이 오면 `performDrag`로 창 끌기를 직접 시작한다
+/// 창 배경 끌기(`isMovableByWindowBackground`)가 아니다: 본문은 끌지 않는다. 누름이 오면 직접 마우스를 따라가 창을 옮긴다
 struct AssistantDragRegion: NSViewRepresentable {
     var toolTip: String?
-    /// 움직이지 않은 누름(클릭)일 때: 핸들은 여기서 포커스를 가져간다 (화살표 키 이동 · ⌥ 크기 조절의 시작)
-    var onClick: () -> Void = {}
 
     func makeNSView(context: Context) -> NSView { DragNSView() }
-
-    func updateNSView(_ view: NSView, context: Context) {
-        view.toolTip = toolTip
-        (view as? DragNSView)?.onClick = onClick
-    }
+    func updateNSView(_ view: NSView, context: Context) { view.toolTip = toolTip }
 
     final class DragNSView: NSView {
-        /// 창 끌기를 시작한다 (마우스를 놓을 때까지 돌아오지 않는다). 시험은 바꾼다
-        var performDrag: (NSWindow, NSEvent) -> Void = { window, event in window.performDrag(with: event) }
-        var onClick: () -> Void = {}
+        /// 움직임이 이 거리(pt)를 넘어야 끌기다: 그보다 작게 흔들린 누름은 클릭이다
+        nonisolated static let dragThreshold: CGFloat = 3
+        /// 끌기를 따라가는 길 (시험은 마우스 자리 · 버튼 · 기다리는 시간을 바꾼다)
+        var tracker = AssistantMouseTracker()
 
         /// 배경 끌기 길과 겹치지 않는다: 끌기는 `mouseDown`이 시작한다
         override var mouseDownCanMoveWindow: Bool { false }
         /// 다른 앱이 앞이어도 첫 누름이 끌기를 시작한다
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
+        /// 누른 곳에서 마우스가 움직인 만큼 창을 옮긴다. `performDrag`가 아니라 직접 따라간다 (`AssistantMouseTracker`: 키 창이 아닌 창을 키 창으로 만들지 않는다).
+        /// 움직이지 않은 누름은 클릭이다: 창이 키 창이 된다. 클릭은 입력창의 포커스를 빼앗지 않는다: 키 창만 될 뿐 첫 응답자는 그대로다
         override func mouseDown(with event: NSEvent) {
             guard let window else { return super.mouseDown(with: event) }
             let origin = window.frame.origin
-            performDrag(window, event)
-            // 끌기는 키를 가져가지 않는다 (옮기려다 다른 앱에 치던 글이 입력창으로 들어가지 않게). 움직이지 않은 누름은 클릭이다: 창이 키 창이 된다
-            guard window.frame.origin == origin else { return }
-            if !window.isKeyWindow { window.makeKey() }
-            onClick()
+            var dragging = false
+            tracker.track(in: window, from: event) { delta in
+                if !dragging, hypot(delta.x, delta.y) >= Self.dragThreshold { dragging = true }
+                if dragging { window.setFrameOrigin(NSPoint(x: origin.x + delta.x, y: origin.y + delta.y)) }
+            }
+            if !dragging, !window.isKeyWindow { window.makeKey() }
         }
     }
 }
 
-/// 36 × 4 핸들 (`border-default`, 위 6pt): 핸들과 머리의 빈 곳이 창을 끈다. 핸들에 포커스를 두고 화살표 키를 누르면 8pt씩 옮기고, ⌥ + 화살표는 크기를 16pt씩 바꾼다
+/// 36 × 4 핸들 (`border-default`, 위 6pt): 핸들과 머리의 빈 곳이 창을 끈다. 핸들에 포커스를 두고 화살표 키를 누르면 8pt씩 옮기고, ⌥ + 화살표는 크기를 16pt씩 바꾼다.
+/// 클릭은 핸들에 포커스를 주지 않는다 (이어 치던 입력창의 포커스를 지킨다): 핸들은 키보드(Tab 순서 · 접근성 포커스)로 닿는다
 struct AssistantDragHandle: View {
     nonisolated static let height: CGFloat = 14
     let onMove: (AssistantWindowGeometry.Direction) -> Void
@@ -331,7 +330,7 @@ struct AssistantDragHandle: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            AssistantDragRegion(onClick: { focused = true })
+            AssistantDragRegion()
             Capsule()
                 .fill(TFColor.borderDefault)
                 .frame(width: 36, height: 4)

@@ -16,8 +16,9 @@ struct AssistantResizeHandlers {
 final class AssistantWindowContentView: NSView {
     /// 가장자리 띠의 굵기. 머리 위 핸들(캡슐은 위 6–10pt)을 가리지 않고, 본문 스크롤 막대의 바깥 조각만 덮는다
     nonisolated static let edgeThickness: CGFloat = 5
-    /// 모서리 정사각형의 한 변. 창 모서리(반지름 18)의 둥근 곳 바깥은 투명이라 누름이 창을 통과한다: 보이는 쪽(대각선으로 5pt 안쪽부터)이 잡히도록 넉넉히
-    nonisolated static let cornerSize: CGFloat = 16
+    /// 모서리 정사각형의 한 변. 창 모서리(반지름 18)의 둥근 곳 바깥은 투명이라 누름이 창을 통과한다: 보이는 쪽(대각선으로 5pt 안쪽부터)이 잡히도록 넉넉히.
+    /// 15보다 크면 입력창의 둥근 모서리(창 가장자리에서 12pt 안쪽, 반지름 12)와 겹친다: 15는 겹침 0이다 (시험이 지킨다)
+    nonisolated static let cornerSize: CGFloat = 15
 
     let content: NSView
     private(set) var edgeViews: [AssistantWindowGeometry.ResizeEdge: AssistantResizeEdgeView] = [:]
@@ -46,6 +47,13 @@ final class AssistantWindowContentView: NSView {
         needsLayout = true
     }
 
+    /// 띠 위에서 굴린 스크롤을 그 아래 본문에 넘긴다 (5pt 띠가 스크롤을 삼키지 않게)
+    func forwardScroll(_ event: NSEvent) {
+        let inContent = content.convert(event.locationInWindow, from: nil)
+        let target = content.hitTest(content.convert(inContent, to: content.superview)) ?? content
+        target.scrollWheel(with: event)
+    }
+
     override func layout() {
         super.layout()
         let width = bounds.width, height = bounds.height
@@ -63,14 +71,12 @@ final class AssistantWindowContentView: NSView {
 }
 
 /// 가장자리 또는 모서리 하나의 띠: 누르고 끌면 그만큼 창 크기를 바꾸고, 두 번 누르면 기본 크기로 돌아간다.
-/// 마우스를 누르는 동안 이벤트를 직접 따라간다 (`trackEvents`): 마우스가 창 밖으로 나가도 놓을 때까지 이어지고, 창이 키 창이 되지 않는다
+/// 마우스를 누르는 동안 이벤트를 직접 따라간다 (`AssistantMouseTracker`): 마우스가 창 밖으로 나가도 놓을 때까지 이어지고, 창이 키 창이 되지 않는다
 final class AssistantResizeEdgeView: NSView {
     let edge: AssistantWindowGeometry.ResizeEdge
     private weak var owner: AssistantWindowContentView?
-    /// 이벤트가 있을 때의 마우스 자리 (화면 좌표, 아래가 0). 창이 움직이는 중에도 흔들리지 않게 이벤트가 아니라 지금의 마우스를 읽는다. 시험은 바꾼다
-    var locate: (NSEvent) -> CGPoint = { _ in NSEvent.mouseLocation }
-    /// 놓는 이벤트를 기다리는 가장 긴 시간 (시험은 줄인다)
-    var trackTimeout: TimeInterval = NSEvent.foreverDuration
+    /// 끌기를 따라가는 길 (시험은 마우스 자리 · 버튼 · 기다리는 시간을 바꾼다)
+    var tracker = AssistantMouseTracker()
 
     init(edge: AssistantWindowGeometry.ResizeEdge, owner: AssistantWindowContentView) {
         self.edge = edge
@@ -108,24 +114,18 @@ final class AssistantResizeEdgeView: NSView {
 
     override var mouseDownCanMoveWindow: Bool { false }
 
+    override func scrollWheel(with event: NSEvent) {
+        owner?.forwardScroll(event)
+    }
+
     override func mouseDown(with event: NSEvent) {
         guard let window, let handlers = owner?.handlers else { return }
         if event.clickCount >= 2 {
             handlers.reset()
             return
         }
-        let start = locate(event)
         handlers.begin(edge)
-        window.trackEvents(matching: [.leftMouseDragged, .leftMouseUp], timeout: trackTimeout, mode: .eventTracking) { tracked, stop in
-            // 시간 초과: 놓는 이벤트를 놓쳤다. 여기서 끝맺는다
-            guard let tracked else {
-                stop.pointee = true
-                return
-            }
-            let point = self.locate(tracked)
-            handlers.drag(CGPoint(x: point.x - start.x, y: point.y - start.y))
-            if tracked.type == .leftMouseUp { stop.pointee = true }
-        }
+        tracker.track(in: window, from: event) { handlers.drag($0) }
         handlers.end()
     }
 }
