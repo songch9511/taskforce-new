@@ -8,6 +8,8 @@ import TaskforceUI
 final class AssistantPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+    /// 핸들 · 머리를 끄는 중 (`DragNSView`가 문턱을 넘은 뒤 놓을 때까지 켠다)
+    var isDragging = false
 
     /// 키 창이 아닌 창의 왼쪽 누름: 끌기 · 크기 조절 영역이 받으면 우리가 그 뷰에 직접 전달한다.
     /// 그냥 두면 비활성 패널은 `sendEvent` 안에서 뷰의 `mouseDown`보다 **먼저** 키 창이 되어, 창을 옮기려던 사용자의 다음 키 입력이 이 창으로 들어간다.
@@ -148,10 +150,10 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
     }
 
     /// 위 가장자리를 둔 채 크기를 맞춘다. 보이는 영역 · 레일 밖으로 넣는다. 보정은 늘 **바라는 자리**에서 시작한다.
-    /// 크기 조절 끌기 중에는 아무것도 하지 않는다 (끌기가 창을 정한다. 놓으면 `endResize`가 맞춘다)
+    /// 크기 조절 · 창 끌기 중에는 아무것도 하지 않는다 (끌기가 창을 정한다: 스트리밍 답이 창을 키우거나 보정이 창을 밀어 끌리는 창이 튀지 않게. 놓으면 `endResize` · 끌기 정착이 맞춘다)
     /// - screenID: 놓을 화면을 정해 준다 (`placement`일 때만). 기억한 위치를 읽은 화면이다: 지금 높이로 다른 화면을 고르면 새 높이가 반영돼도 돌아오지 못한다
     func applyFrame(_ change: Change = .heightChange, screenID: String? = nil) {
-        guard resizeSession == nil else { return }
+        guard resizeSession == nil, !panel.isDragging else { return }
         // 창이 있는 화면 기준으로 보정한다 (레일은 레일 화면에만 있다)
         let reference = change == .placement ? Self.rect(topLeft: desiredTopLeft, size: wantedSize) : panel.frame
         let screen = (change == .placement ? screenID.flatMap { environment.screen(id: $0) } : nil) ?? environment.screen(for: reference)
@@ -210,7 +212,9 @@ final class AssistantWindowController: NSObject, NSWindowDelegate {
         applyFrame(.placement, screenID: screenID)
     }
 
-    /// 화면 구성이 바뀌었다 (해상도 · 모니터 연결 · 해제): 지금 화면 기준으로 다시 놓는다. 바라는 자리는 그대로라 화면이 돌아오면 그 자리로 돌아온다
+    /// 화면 구성이 바뀌었다 (해상도 · 모니터 연결 · 해제): 지금 화면 기준으로 다시 놓는다.
+    /// 모니터를 뗄 때는 macOS가 창을 먼저 옮기고 그 옮김이 `windowDidMove`로 바라는 자리가 되므로, 모니터가 돌아와도 열려 있는 창은 저절로 돌아가지 않는다
+    /// (기억해 둔 위치는 그 화면 키로 남아 다시 열 때 그 화면의 자리로 열린다. 정한 크기 값도 그대로라 큰 화면으로 옮기면 다시 그 크기다)
     func screenParametersChanged() {
         applyFrame(.placement)
     }

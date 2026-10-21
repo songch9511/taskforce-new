@@ -157,6 +157,90 @@ struct AssistantWindowDragResizeTests {
         #expect(panel.isKeyWindow, "클릭: 창이 키 창이 된다 (Esc가 듣는다)")
     }
 
+    @Test func aWindowDragStaysAnchoredToItsTopLeftWhenTheWindowGrowsMidDrag() async throws {
+        let r = try rig()
+        defer { r.defaults.cleanup() }
+        try await layOut(r.controller)
+        defer { r.controller.panel.orderOut(nil) }
+        let panel = r.controller.panel
+        let view = try #require(hit(r.controller, x: panel.frame.width / 2, y: 8) as? AssistantDragRegion.DragNSView)
+        let start = CGPoint(x: panel.frame.minX, y: panel.frame.maxY)
+        // 누른 곳 → (+40, −20) → (+90, −50) → 놓음. 두 번째 끄는 이벤트 앞에서 창이 위 가장자리를 둔 채 100pt 자란다 (스트리밍 답이 창을 키운다)
+        var queue = [CGPoint(x: 500, y: 500), CGPoint(x: 540, y: 480), CGPoint(x: 590, y: 450), CGPoint(x: 590, y: 450)]
+        var calls = 0
+        view.tracker.locate = { _ in
+            calls += 1
+            if calls == 3 {
+                let f = panel.frame
+                panel.setFrame(NSRect(x: f.minX, y: f.minY - 100, width: f.width, height: f.height + 100), display: false)
+            }
+            return queue.removeFirst()
+        }
+        view.tracker.timeout = 2
+        view.tracker.buttonIsDown = { true }
+        for type in [NSEvent.EventType.leftMouseDragged, .leftMouseDragged, .leftMouseUp] {
+            NSApp.postEvent(try mouseEvent(type, r.controller, x: 0, y: 0), atStart: false)
+        }
+        view.mouseDown(with: try mouseDown(r.controller, x: panel.frame.width / 2, y: 8))
+        #expect(CGPoint(x: panel.frame.minX, y: panel.frame.maxY) == CGPoint(x: start.x + 90, y: start.y - 50), "누를 때의 왼쪽 위에서 마우스가 움직인 만큼: 높이가 변해도 튀지 않는다")
+    }
+
+    @Test func contentGrowingMidDragNeitherReshapesNorClampsTheWindowUntilTheMouseIsUp() async throws {
+        let r = try rig()
+        defer { r.defaults.cleanup() }
+        try await layOut(r.controller)
+        defer { r.controller.panel.orderOut(nil) }
+        let panel = r.controller.panel
+        let view = try #require(hit(r.controller, x: panel.frame.width / 2, y: 8) as? AssistantDragRegion.DragNSView)
+        let before = panel.frame
+        var queue = [CGPoint(x: 500, y: 500), CGPoint(x: 540, y: 480), CGPoint(x: 590, y: 450), CGPoint(x: 590, y: 450)]
+        var calls = 0
+        var heightsDuringDrag: [CGFloat] = []
+        var flagsDuringDrag: [Bool] = []
+        view.tracker.locate = { _ in
+            calls += 1
+            if calls == 3 {
+                // 스트리밍 답이 본문을 키웠다 (창은 560까지 자라려 한다)
+                r.controller.presentation.headHeight = 52
+                r.controller.presentation.footerHeight = 100
+                r.controller.presentation.bodyHeight = 700
+                r.controller.applyFrame()
+                heightsDuringDrag.append(panel.frame.height)
+                flagsDuringDrag.append(panel.isDragging)
+            }
+            return queue.removeFirst()
+        }
+        view.tracker.timeout = 2
+        view.tracker.buttonIsDown = { true }
+        for type in [NSEvent.EventType.leftMouseDragged, .leftMouseDragged, .leftMouseUp] {
+            NSApp.postEvent(try mouseEvent(type, r.controller, x: 0, y: 0), atStart: false)
+        }
+        view.mouseDown(with: try mouseDown(r.controller, x: panel.frame.width / 2, y: 8))
+        #expect(heightsDuringDrag == [before.height] && flagsDuringDrag == [true], "끄는 도중에는 높이 맞춤이 창을 건드리지 않는다 (움직임 · 깜박임 없음)")
+        #expect(!panel.isDragging, "놓으면 끝")
+        r.controller.applyFrame()
+        #expect(panel.frame.height == AssistantWindowGeometry.maxHeight, "놓은 뒤에는 쌓인 높이가 맞춰진다")
+    }
+
+    @Test func aClickNeverMarksTheWindowAsBeingDragged() async throws {
+        let r = try rig()
+        defer { r.defaults.cleanup() }
+        try await layOut(r.controller)
+        defer { r.controller.panel.orderOut(nil) }
+        let panel = r.controller.panel
+        let view = try #require(hit(r.controller, x: 200, y: 34) as? AssistantDragRegion.DragNSView)
+        var flags: [Bool] = []
+        var queue = [CGPoint(x: 500, y: 500), CGPoint(x: 501, y: 500), CGPoint(x: 501, y: 500)]
+        view.tracker.locate = { _ in flags.append(panel.isDragging); return queue.removeFirst() }
+        view.tracker.timeout = 2
+        view.tracker.buttonIsDown = { true }
+        for type in [NSEvent.EventType.leftMouseDragged, .leftMouseUp] {
+            NSApp.postEvent(try mouseEvent(type, r.controller, x: 0, y: 0), atStart: false)
+        }
+        view.mouseDown(with: try mouseDown(r.controller, x: 200, y: 34))
+        #expect(flags.allSatisfy { !$0 } && !panel.isDragging, "문턱 아래의 누름은 끌기가 아니다")
+    }
+
     @Test func aLostMouseUpEndsAWindowDragToo() async throws {
         let r = try rig()
         defer { r.defaults.cleanup() }
@@ -684,7 +768,7 @@ struct AssistantWindowDragResizeTests {
         for _ in 0..<200 where r.controller.panel.frame.maxX > smaller.maxX - 44 { try await Task.sleep(for: .milliseconds(5)) }
         let frame = r.controller.panel.frame
         #expect(frame.minX >= smaller.minX && frame.maxX <= smaller.maxX - 44 && frame.minY >= smaller.minY && frame.maxY <= smaller.maxY, "새 화면 안 · 레일 앞: \(frame)")
-        #expect(r.controller.preferredSize == chosen, "정한 크기 값은 그대로 (화면이 돌아오면 다시 그 크기)")
+        #expect(r.controller.preferredSize == chosen, "정한 크기 값은 그대로 (더 큰 화면으로 옮기면 다시 그 크기)")
     }
 
     @Test func startingAResizeWhileAMoveIsStillSettlingFinishesTheMoveFirst() throws {

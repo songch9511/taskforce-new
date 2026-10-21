@@ -306,15 +306,22 @@ struct AssistantDragRegion: NSViewRepresentable {
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
         /// 누른 곳에서 마우스가 움직인 만큼 창을 옮긴다. `performDrag`가 아니라 직접 따라간다 (`AssistantMouseTracker`: 키 창이 아닌 창을 키 창으로 만들지 않는다).
+        /// 기준은 누를 때의 **왼쪽 위**다: 끄는 도중 창 높이가 변해도(스트리밍 답) 위 가장자리가 마우스를 따라가 튀지 않는다.
+        /// 끄는 동안 `AssistantPanel.isDragging`이 켜져 컨트롤러의 높이 맞춤 · 화면 보정이 창을 건드리지 않는다 (놓은 뒤 정착이 맞춘다).
         /// 움직이지 않은 누름은 클릭이다: 창이 키 창이 된다. 클릭은 입력창의 포커스를 빼앗지 않는다: 키 창만 될 뿐 첫 응답자는 그대로다
         override func mouseDown(with event: NSEvent) {
             guard let window else { return super.mouseDown(with: event) }
-            let origin = window.frame.origin
+            let panel = window as? AssistantPanel
+            let startTopLeft = CGPoint(x: window.frame.minX, y: window.frame.maxY)
             var dragging = false
             tracker.track(in: window, from: event) { delta in
-                if !dragging, hypot(delta.x, delta.y) >= Self.dragThreshold { dragging = true }
-                if dragging { window.setFrameOrigin(NSPoint(x: origin.x + delta.x, y: origin.y + delta.y)) }
+                if !dragging, hypot(delta.x, delta.y) >= Self.dragThreshold {
+                    dragging = true
+                    panel?.isDragging = true
+                }
+                if dragging { window.setFrameTopLeftPoint(NSPoint(x: startTopLeft.x + delta.x, y: startTopLeft.y + delta.y)) }
             }
+            panel?.isDragging = false
             if !dragging, !window.isKeyWindow { window.makeKey() }
         }
     }
