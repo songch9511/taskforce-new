@@ -187,10 +187,11 @@ final class AssistantWindowManager {
             // 열 때 패널에 열린 항목이 있으면 그것이 auto 칩이다
             model.followOpenItem(shell.openItem.map(Self.chip(for:)))
             let controller = AssistantWindowController(
-                model: model, runtime: runtime, topLeft: initial.topLeft, screenID: initial.screenID, environment: environment, reduceMotion: reduceMotion()
+                model: model, runtime: runtime, topLeft: initial.topLeft, screenID: initial.screenID, size: initial.size, environment: environment, reduceMotion: reduceMotion()
             )
             controller.presents = presents
             controller.onMoved = { [weak self] topLeft in self?.remember(topLeft, windowID: id) }
+            controller.onResized = { [weak self] size in self?.rememberSize(size, windowID: id) }
             controller.onBecameKey = { [weak self] in self?.registry.touch(id) }
             controller.onOpenConnections = { [weak self] in self?.onOpenConnections() }
             controllers[id] = controller
@@ -354,17 +355,20 @@ final class AssistantWindowManager {
     }
 
     /// 새 창의 왼쪽 위: 그 대화의 기억된 위치(이 화면), 없으면 앞 창에서 24pt 아래 · 왼쪽, 보이는 창이 없으면 첫 창의 자리 (열린 패널 12pt 왼쪽 · 없으면 레일 12pt 왼쪽).
-    /// 기억한 위치는 그 위치를 읽은 화면(`screenID`)에 놓는다
-    private func initialPlacement(for conversationID: UUID) -> (topLeft: CGPoint, screenID: String?) {
+    /// 기억한 위치는 그 위치를 읽은 화면(`screenID`)에 놓는다. 크기는 대화가 아니라 화면의 것이다: 그 화면에서 사용자가 마지막에 정한 크기 (없으면 기본)
+    private func initialPlacement(for conversationID: UUID) -> (topLeft: CGPoint, screenID: String?, size: AssistantWindowSize) {
         // 기억은 앞 창이 있는 화면, 없으면 레일 화면에서 찾는다
         let displays = [registry.frontmost.flatMap { controllers[$0]?.currentScreenID }, environment.display()].compactMap { $0 }
         for display in displays {
-            if let remembered = positions.position(conversation: conversationID, display: display) { return (remembered, display) }
+            if let remembered = positions.position(conversation: conversationID, display: display) {
+                return (remembered, display, positions.size(display: display) ?? .standard)
+            }
         }
+        let size = displays.lazy.compactMap { self.positions.size(display: $0) }.first ?? .standard
         if let front = registry.frontmost, let controller = controllers[front] {
-            return (AssistantWindowGeometry.cascaded(from: controller.topLeft), nil)
+            return (AssistantWindowGeometry.cascaded(from: controller.topLeft), nil, size)
         }
-        return (AssistantWindowGeometry.firstTopLeft(panelFrame: environment.panelFrame(), railFrame: environment.railFrame()), nil)
+        return (AssistantWindowGeometry.firstTopLeft(panelFrame: environment.panelFrame(), railFrame: environment.railFrame()), nil, size)
     }
 
     private func remember(_ topLeft: CGPoint, windowID: UUID) {
@@ -372,6 +376,13 @@ final class AssistantWindowManager {
         // 그 창이 있는 화면의 키로 기억한다 (보조 화면의 창을 레일 화면 키로 저장하지 않는다)
         let display = controllers[windowID]?.currentScreenID ?? environment.display()
         positions.remember(topLeft, conversation: conversation, display: display)
+        store.save(positions)
+    }
+
+    /// 사용자가 정한 크기를 그 창이 있는 화면의 것으로 기억한다
+    private func rememberSize(_ size: AssistantWindowSize, windowID: UUID) {
+        let display = controllers[windowID]?.currentScreenID ?? environment.display()
+        positions.rememberSize(size, display: display)
         store.save(positions)
     }
 

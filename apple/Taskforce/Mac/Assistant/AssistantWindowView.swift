@@ -24,13 +24,15 @@ final class AssistantWindowPresentation {
 struct AssistantWindowActions {
     var toggleTargetMenu: () -> Void = {}
     var move: (AssistantWindowGeometry.Direction) -> Void = { _ in }
+    /// ⌥ + 화살표: 오른쪽 아래 모서리를 옮긴다
+    var resize: (AssistantWindowGeometry.Direction) -> Void = { _ in }
     /// 동의가 먼저 필요할 때 Connections를 연다
     var openConnections: () -> Void = {}
 }
 
 /// 떠 있는 Assistant 창의 내용 (디자인 AssistantWindow): 드래그 핸들 · 머리(대화 이름 · History · New chat) · 본문(대화 또는 History) · 입력 영역(PromptBox).
-/// 380pt 폭, 모서리 18, `panel` 재료, 그림자는 창이 그린다 (`shadow-float`). 패널(EdgePanel)이 아니다: 레일 · 탭 · 바깥 클릭으로 닫기가 없다.
-/// 본문은 대화(메시지)이고, 창 높이가 560을 넘으면 본문만 스크롤한다. 빈 대화는 칩 + 프롬프트뿐이다
+/// 기본 380pt 폭(사용자가 가장자리 · 모서리로 바꾼다: 폭은 창이 정한다), 모서리 18, `panel` 재료, 그림자는 창이 그린다 (`shadow-float`). 패널(EdgePanel)이 아니다: 레일 · 탭 · 바깥 클릭으로 닫기가 없다.
+/// 본문은 대화(메시지)이고, 창 높이가 본문보다 작으면 본문만 스크롤한다 (기본은 560부터). 빈 대화는 칩 + 프롬프트뿐이다
 struct AssistantWindowView: View {
     let model: AssistantWindowModel
     let runtime: ChatRuntime
@@ -56,24 +58,28 @@ struct AssistantWindowView: View {
     var body: some View {
         VStack(spacing: 0) {
             head
-            ScrollViewReader { proxy in
-                ScrollView {
-                    bodyContent
-                        .padding(EdgeInsets(top: 0, leading: TFSpace.lg, bottom: TFSpace.sm, trailing: TFSpace.lg))
-                        .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { presentation.bodyHeight = $0 }
-                }
-                .defaultScrollAnchor(model.mode == .chat ? .bottom : .top)
-                .scrollIndicators(.automatic)
-                .onChange(of: signature) {
-                    // 한 번 양보한 뒤 내린다: 마지막 줄 아래에 줄이 더해지는 변화(전달 줄 옆의 오류 줄 · Try again)는 이번 갱신의 배치가 끝난 다음에야 높이가 늘어난다
-                    guard model.mode == .chat else { return }
-                    Task { @MainActor in proxy.scrollTo(AssistantBodyAnchor.bottom, anchor: .bottom) }
+            // 글이 짧으면 머리 바로 아래부터, 길면 맨 아래(가장 새 글)에서 시작한다: 사용자가 창을 길게 늘려도 짧은 대화가 입력창 위로 내려앉지 않게
+            // 보이는 높이를 최소 높이로 줘 위에 붙인다 (세션 패널과 같다)
+            GeometryReader { viewport in
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        bodyContent
+                            .padding(EdgeInsets(top: 0, leading: TFSpace.lg, bottom: TFSpace.sm, trailing: TFSpace.lg))
+                            .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { presentation.bodyHeight = $0 }
+                            .frame(maxWidth: .infinity, minHeight: viewport.size.height, alignment: .top)
+                    }
+                    .defaultScrollAnchor(model.mode == .chat ? .bottom : .top)
+                    .scrollIndicators(.automatic)
+                    .onChange(of: signature) {
+                        // 한 번 양보한 뒤 내린다: 마지막 줄 아래에 줄이 더해지는 변화(전달 줄 옆의 오류 줄 · Try again)는 이번 갱신의 배치가 끝난 다음에야 높이가 늘어난다
+                        guard model.mode == .chat else { return }
+                        Task { @MainActor in proxy.scrollTo(AssistantBodyAnchor.bottom, anchor: .bottom) }
+                    }
                 }
             }
             footer
         }
-        .frame(width: AssistantWindowGeometry.width)
-        .frame(maxHeight: .infinity, alignment: .top)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background {
             ZStack {
                 RoundedRectangle(cornerRadius: TFRadius.lg, style: .continuous).fill(.ultraThinMaterial)
@@ -91,7 +97,7 @@ struct AssistantWindowView: View {
 
     private var head: some View {
         VStack(spacing: 0) {
-            AssistantDragHandle(onMove: actions.move)
+            AssistantDragHandle(onMove: actions.move, onResize: actions.resize)
             HStack(spacing: TFSpace.xs) {
                 Text(model.title)
                     .font(TFFont.calloutEmphasis)
@@ -101,7 +107,8 @@ struct AssistantWindowView: View {
                     .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityAddTraits(.isHeader)
-                    .help(model.title)
+                    // 제목도 창을 잡는 곳이다. 긴 제목의 툴팁은 끌기 뷰가 단다: `.help`가 만드는 뷰는 누름을 가로채 끌기가 안 된다
+                    .overlay(AssistantDragRegion(toolTip: model.title))
                 TFIconButton(.chatHistory, label: ChatCopy.historyTitle, isOn: model.mode == .history) { model.toggleHistory() }
                 TFIconButton(.newChat, label: ChatCopy.newChat) { model.newChat() }
             }
@@ -279,30 +286,58 @@ enum AssistantBodyAnchor {
 
 // MARK: 드래그
 
-/// 마우스를 누른 곳에서 창을 끈다 (핸들 · 머리의 빈 곳). 그 위의 컨트롤(History · New chat)은 자기 클릭을 받는다
+/// 마우스를 누른 곳에서 창을 끈다 (핸들 · 머리의 빈 곳). 그 위의 컨트롤(History · New chat)은 자기 클릭을 받는다.
+/// 창 배경 끌기(`isMovableByWindowBackground`)가 아니다: 본문은 끌지 않는다. 누름이 오면 `performDrag`로 창 끌기를 직접 시작한다
 struct AssistantDragRegion: NSViewRepresentable {
+    var toolTip: String?
+    /// 움직이지 않은 누름(클릭)일 때: 핸들은 여기서 포커스를 가져간다 (화살표 키 이동 · ⌥ 크기 조절의 시작)
+    var onClick: () -> Void = {}
+
     func makeNSView(context: Context) -> NSView { DragNSView() }
-    func updateNSView(_ view: NSView, context: Context) {}
+
+    func updateNSView(_ view: NSView, context: Context) {
+        view.toolTip = toolTip
+        (view as? DragNSView)?.onClick = onClick
+    }
 
     final class DragNSView: NSView {
-        override var mouseDownCanMoveWindow: Bool { true }
+        /// 창 끌기를 시작한다 (마우스를 놓을 때까지 돌아오지 않는다). 시험은 바꾼다
+        var performDrag: (NSWindow, NSEvent) -> Void = { window, event in window.performDrag(with: event) }
+        var onClick: () -> Void = {}
+
+        /// 배경 끌기 길과 겹치지 않는다: 끌기는 `mouseDown`이 시작한다
+        override var mouseDownCanMoveWindow: Bool { false }
+        /// 다른 앱이 앞이어도 첫 누름이 끌기를 시작한다
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+        override func mouseDown(with event: NSEvent) {
+            guard let window else { return super.mouseDown(with: event) }
+            let origin = window.frame.origin
+            performDrag(window, event)
+            // 끌기는 키를 가져가지 않는다 (옮기려다 다른 앱에 치던 글이 입력창으로 들어가지 않게). 움직이지 않은 누름은 클릭이다: 창이 키 창이 된다
+            guard window.frame.origin == origin else { return }
+            if !window.isKeyWindow { window.makeKey() }
+            onClick()
+        }
     }
 }
 
-/// 36 × 4 핸들 (`border-default`, 위 6pt): 핸들과 머리의 빈 곳이 창을 끈다. 핸들에 포커스를 두고 화살표 키를 누르면 8pt씩 옮긴다
+/// 36 × 4 핸들 (`border-default`, 위 6pt): 핸들과 머리의 빈 곳이 창을 끈다. 핸들에 포커스를 두고 화살표 키를 누르면 8pt씩 옮기고, ⌥ + 화살표는 크기를 16pt씩 바꾼다
 struct AssistantDragHandle: View {
     nonisolated static let height: CGFloat = 14
     let onMove: (AssistantWindowGeometry.Direction) -> Void
+    var onResize: (AssistantWindowGeometry.Direction) -> Void = { _ in }
     @FocusState private var focused: Bool
 
     var body: some View {
         ZStack(alignment: .top) {
-            AssistantDragRegion()
+            AssistantDragRegion(onClick: { focused = true })
             Capsule()
                 .fill(TFColor.borderDefault)
                 .frame(width: 36, height: 4)
                 .padding(.top, 6)
+                // 사용자가 잡는 곳이 캡슐이다: 그림이 누름을 가로채면 아래 끌기 영역에 닿지 않는다
+                .allowsHitTesting(false)
         }
         .frame(height: Self.height)
         .overlay {
@@ -313,11 +348,16 @@ struct AssistantDragHandle: View {
         .focusable()
         .focusEffectDisabled()
         .focused($focused)
-        .onKeyPress(.leftArrow) { onMove(.left); return .handled }
-        .onKeyPress(.rightArrow) { onMove(.right); return .handled }
-        .onKeyPress(.upArrow) { onMove(.up); return .handled }
-        .onKeyPress(.downArrow) { onMove(.down); return .handled }
+        .onKeyPress(.leftArrow, phases: [.down, .repeat]) { press in step(.left, press) }
+        .onKeyPress(.rightArrow, phases: [.down, .repeat]) { press in step(.right, press) }
+        .onKeyPress(.upArrow, phases: [.down, .repeat]) { press in step(.up, press) }
+        .onKeyPress(.downArrow, phases: [.down, .repeat]) { press in step(.down, press) }
         .accessibilityLabel("Move window")
+    }
+
+    private func step(_ direction: AssistantWindowGeometry.Direction, _ press: KeyPress) -> KeyPress.Result {
+        if press.modifiers.contains(.option) { onResize(direction) } else { onMove(direction) }
+        return .handled
     }
 }
 #endif
