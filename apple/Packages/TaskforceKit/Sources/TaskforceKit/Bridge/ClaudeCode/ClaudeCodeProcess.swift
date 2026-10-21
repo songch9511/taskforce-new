@@ -592,6 +592,15 @@ public actor ClaudeCodeProcess: AgentProcess {
         mode: ClaudeMapperConfig.Mode, binding: ClaudeAnswerBinding? = nil, session: ClaudeCodeLaunch.SessionArgument, providerID: String, agentSessionID: String, taskID: String,
         turnSeq: Int, access: AgentAccess, workspace: String, folder: ClaudeSessionFolder, executable: ClaudeCodeExecutable, sink: AgentEventSink?, stdin: Data
     ) async throws -> Spawn {
+        // 작업 폴더의 CLAUDE.md · .claude/CLAUDE.md를 읽어 시작 프롬프트에 붙인다 (격리 cwd라 저장소 지침이 들어오지 않는다. 새 세션 · 다음 턴 · 답 · 닫기 모두).
+        // 막힐 수 있는 읽기라 actor 밖에서, 아래 종료 확인 **앞**에서 한다 (확인 뒤 등록까지 await를 끼우지 않는다). 못 읽은 파일은 조용히 건너뛴다:
+        // 로그에는 고정 코드와 수만 남기고 글 · 이름 · 경로는 어디에도 가지 않는다
+        let projectInstructions = await offActor { ClaudeProjectInstructions.read(workspace: workspace) }
+        if projectInstructions.skipped > 0 { log.log("claude_instructions_skipped", ["count": .count(projectInstructions.skipped), "why": .code("unusable")]) }
+        if !projectInstructions.instructions.isEmpty {
+            let read = projectInstructions.instructions
+            log.log("claude_instructions", ["files": .count(read.files.count), "bytes": .count(read.byteCount), "cut": .count(read.wasCut ? 1 : 0)])
+        }
         // 종료가 시작된 뒤에는 띄우지 않는다 (16장 1, 프로세스 0)
         guard !spawningStopped else {
             log.log("claude_spawn_refused", ["reason": .code("shutdown")])
@@ -662,7 +671,9 @@ public actor ClaudeCodeProcess: AgentProcess {
         spawns[spawnID] = spawn
         sessionSpawn[agentSessionID] = spawnID
         taskSpawn[taskID] = spawnID
-        let arguments = ClaudeCodeLaunch.arguments(access: access, workspace: workspace, settings: files.settings.path, mcp: files.mcp.path, session: session)
+        let arguments = ClaudeCodeLaunch.arguments(
+            access: access, workspace: workspace, settings: files.settings.path, mcp: files.mcp.path, session: session, instructions: projectInstructions.instructions
+        )
         // 지킴이를 disclaim으로 띄우고 지킴이가 `claude`를 띄운다 (13장 1). 검사한 실제 파일(realpath)로 띄우고, 자식이 보는 argv[0]은 후보 경로 그대로 (8장 8).
         // 지킴이가 알린 `claude` · 지킴이 id를 앱이 다시 대조하지 못하면 정체 commit · stdin 전에 멈춘다 (12장 6). 막히는 일은 actor 밖에서 (14장 9)
         let keeper = helpers.keeper

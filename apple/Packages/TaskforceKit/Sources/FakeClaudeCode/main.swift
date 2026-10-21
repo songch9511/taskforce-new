@@ -13,6 +13,25 @@ nonisolated(unsafe) var fakeInterrupted: sig_atomic_t = 0
 enum Fake {
     static let prompt = "When you need the user's input, call mcp__tf__ask_user (1–4 questions). Make one such call at a time and wait for its result."
 
+    static let projectOpen = "<<<PROJECT INSTRUCTIONS: "
+
+    /// `--append-system-prompt`가 `prompt`로 시작해 고른 작업 폴더를 `--add-dir` 값 그대로 말하는가 (Kit `ClaudeCodePrompts.v2`의 앞부분).
+    /// 첫 줄(질문 안내 + 폴더 줄 + 안내 문장)은 한 줄이다. 경로에 제어 글자가 있으면 폴더 줄이 없다(질문 안내만).
+    /// 그 뒤는 비었거나, 빈 줄 다음에 Taskforce가 읽어 붙인 프로젝트 지침 블록이어야 한다 (소개 문장 + `<<<PROJECT INSTRUCTIONS: …>>>` 블록, 마지막은 닫는 표지나 `[Not included: …]`)
+    static func promptNamesWorkspace(_ text: String, addDir: String) -> Bool {
+        let parts = text.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+        let head = String(parts[0])
+        let rest = parts.count > 1 ? String(parts[1]) : ""
+        guard !head.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }), head.hasPrefix(prompt) else { return false }
+        if addDir.isEmpty || addDir.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }) {
+            guard head == prompt else { return false }
+        } else {
+            guard head.hasPrefix(prompt + " The user's chosen workspace folder for this session is: \(addDir) (absolute path).") else { return false }
+        }
+        if parts.count == 1 { return true }
+        return rest.hasPrefix("\nThe workspace folder has its own project instructions.") && rest.contains("\n\n" + projectOpen) && (rest.hasSuffix(">>>") || rest.hasSuffix("in total.)]"))
+    }
+
     nonisolated(unsafe) static var report: [String: Any] = [:]
     nonisolated(unsafe) static var reportURL: URL?
     nonisolated(unsafe) static var messageCounter = 0
@@ -25,6 +44,7 @@ enum Fake {
         var tools = ""
         var mcpConfig = ""
         var addDir = ""
+        var systemPrompt = ""
         var settings = ""
         var sessionID: String?
         var resume: String?
@@ -297,7 +317,7 @@ enum Fake {
             case "--settings": guard let path = value() else { return nil }; flags.settings = path
             case "--setting-sources": guard value() == "project" else { return nil }
             case "--permission-mode": guard value() == "manual" else { return nil }
-            case "--append-system-prompt": guard value() == prompt else { return nil }
+            case "--append-system-prompt": guard let text = value() else { return nil }; flags.systemPrompt = text
             case "--session-id": flags.sessionID = value()
             case "--resume": flags.resume = value()
             default: return nil
@@ -307,6 +327,8 @@ enum Fake {
         let required: Set<String> = ["-p", "--output-format", "--verbose", "--include-hook-events", "--max-budget-usd", "--tools", "--strict-mcp-config", "--mcp-config", "--add-dir",
                                      "--settings", "--setting-sources", "--permission-mode", "--append-system-prompt"]
         guard required.isSubset(of: seen), (flags.sessionID == nil) != (flags.resume == nil) else { return nil }
+        // 프롬프트는 `--add-dir`과 순서가 정해져 있지 않으므로 다 읽은 뒤에 대조한다
+        guard promptNamesWorkspace(flags.systemPrompt, addDir: flags.addDir) else { return nil }
         return flags
     }
 
@@ -439,7 +461,7 @@ enum Fake {
         let cwd = FileManager.default.currentDirectoryPath
         let stdin = readStdin()
         report = [
-            "args_ok": true, "fds": openFDs.map(Int.init), "env_keys": environmentKeys.sorted(), "stdin_bytes": stdin.count, "resume": flags.resume != nil,
+            "args_ok": true, "project_instructions": flags.systemPrompt.contains(projectOpen), "fds": openFDs.map(Int.init), "env_keys": environmentKeys.sorted(), "stdin_bytes": stdin.count, "resume": flags.resume != nil,
             "session_id": sessionID, "cwd": cwd, "tools": flags.tools, "pid": Int(getpid()), "pgid": Int(getpgrp()),
             "argv0": CommandLine.arguments.first ?? "", "exec_path": executablePath(), "started_at": Date().timeIntervalSince1970,
         ]

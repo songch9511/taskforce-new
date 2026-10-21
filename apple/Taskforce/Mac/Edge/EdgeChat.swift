@@ -120,6 +120,12 @@ final class ChatRuntime {
             await narrow?.refresh()
             await full?.refresh()
         } }
+        // 에이전트의 글(답 · 질문 · 사건 줄)은 서버가 비동기로 쓰고 `conversation_messages`는 Realtime 대상이 아니다: 세션 저장소가 새로 읽을 때마다
+        // (열린 task가 있으면 5초마다) 보이는 에이전트 대화의 글도 다시 읽는다. 질문이 꺼져 있어도 켜 둔다 (Claude Code 첫 실사용: 마지막 답이 서버에는 있는데 창에 나오지 않았다, `AgentThreadFollow`)
+        let chatToFollow = chat
+        let followThreads: @MainActor ([AgentSessionItem]) -> Void = { [weak chatToFollow] items in chatToFollow?.agentSessionsRead(items) }
+        agentTurns?.onApplied = followThreads
+        issues?.sessions.onApplied = followThreads
         // 에이전트 질문 (OA D4b-m-1): 세션 저장소가 새로 읽을 때마다 질문 저장소가 질문을 기다리는 세션의 질문을 읽는다 (좁은 저장소 · U2 전체 저장소 둘 다)
         if agentQuestions, let routes = gateway as? any AgentQuestionGateway {
             let questions = AgentQuestionStore(gateway: routes, scope: scope, secrets: secretSubmitter, sleep: questionSleep)
@@ -129,10 +135,12 @@ final class ChatRuntime {
             scope.onLeft { [weak notifications] in notifications?.accountLeft() }
             questions.thisMacProvider = { await BridgeHost.shared?.activeRuntime?.localBridgeID() }
             agentTurns?.onApplied = { [weak questions, weak notifications] items in
+                followThreads(items)
                 questions?.sessionsRead(items)
                 notifications?.sessionsSeen(items, thisMacBridgeID: questions?.thisMacBridgeID, signedIn: scope.token != nil)
             }
             issues?.sessions.onApplied = { [weak questions, weak notifications] items in
+                followThreads(items)
                 questions?.sessionsRead(items)
                 notifications?.sessionsSeen(items, thisMacBridgeID: questions?.thisMacBridgeID, signedIn: scope.token != nil)
             }

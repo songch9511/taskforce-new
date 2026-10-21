@@ -226,6 +226,8 @@ public final class ChatStore {
     @ObservationIgnored var deliveryPoll: Task<Void, Never>?
     /// 첫 전달 때 서버가 만든 세션 (대화 id → 세션 id): 대화 행(`agent_session_id`)을 다시 읽기 전에도 Stop · 세션 읽기가 그 세션을 안다 (보낸 응답의 `agent_task`)
     var learnedSessions: [UUID: UUID] = [:]
+    /// 세션마다 마지막으로 읽은 턴 번호 · 상태: 세션 읽기가 반영될 때 달라졌으면 그 세션의 대화 글을 다시 읽는다 (`AgentThreadFollow.swift`)
+    @ObservationIgnored var agentThreadMarks: [UUID: AgentThreadFollow.Mark] = [:]
     /// 앱(Mac)이 잠잔다: 5초 전달 읽기가 멈춘다. 깨면 한 번 읽는다
     public internal(set) var isAsleep = false
     /// 에이전트 대화의 쓰기 · 읽기 넷 (Send again · 후보 고르기 · Stop · 전달 읽기, OA D4a-20b). 없으면 그 동작이 없다 (실제 연결만 가진다)
@@ -306,6 +308,7 @@ public final class ChatStore {
         deliveryPoll?.cancel()
         deliveryPoll = nil
         learnedSessions = [:]
+        agentThreadMarks = [:]
         fullTexts = [:]
         fullTextExpanded = []
         sentChips = [:]

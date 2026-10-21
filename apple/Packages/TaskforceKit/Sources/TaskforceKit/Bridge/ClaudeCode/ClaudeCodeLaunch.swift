@@ -44,8 +44,40 @@ public enum ClaudeCodeSupport {
 }
 
 /// 시스템 프롬프트에 덧붙이는 글 (영어). 바꾸면 버전을 올린다 (계약 2.4)
+/// - v1: 질문은 `mcp__tf__ask_user`로, 한 번에 하나
+/// - v2: v1에 ① 사용자가 고른 작업 폴더를 더한다. 격리 `cwd/`가 비어 있어 모델이 "이 폴더"를 알 길이 없었다 (첫 실사용: `ls`로 더듬었다).
+///   경로는 이미 `--add-dir`로 CLI에 넘기는 값이다: 새로 모으는 정보가 아니고 로그에는 싣지 않는다.
+///   ② 작업 폴더의 `CLAUDE.md` · `.claude/CLAUDE.md`를 Taskforce가 읽어 폴더 줄 뒤에 붙인다 (격리 cwd라 저장소 지침이 들어오지 않는다, `ClaudeProjectInstructions`)
 public enum ClaudeCodePrompts {
-    public static let v1 = "When you need the user's input, call mcp__tf__ask_user (1–4 questions). Make one such call at a time and wait for its result."
+    static let askUser = "When you need the user's input, call mcp__tf__ask_user (1–4 questions). Make one such call at a time and wait for its result."
+
+    /// 첫 턴 · 다음 턴 · 답 · 닫기 모두 같은 글이다 (`--append-system-prompt`는 spawn마다 준다).
+    /// 경로에 제어 글자(줄바꿈 포함)가 있으면 싣지 않는다: 폴더 이름으로 프롬프트에 글을 끼워 넣을 수 없게 한다. 첫 줄은 늘 한 줄이고, 지침 블록은 빈 줄 뒤에 온다
+    public static func v2(workspace: String, instructions: ClaudeProjectInstructions = ClaudeProjectInstructions()) -> String {
+        guard !workspace.isEmpty, !workspace.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }) else { return askUser }
+        let head = askUser + " The user's chosen workspace folder for this session is: \(workspace) (absolute path)."
+            + " When the user says \"this folder\", \"here\" or \"the project\", they mean that folder."
+            + " Your shell starts in a different, private empty directory, so use absolute paths inside the workspace folder and do not look around to find it."
+        return instructions.isEmpty ? head : ([head, projectIntro] + projectBlocks(instructions)).joined(separator: "\n\n")
+    }
+
+    static let projectIntro = "The workspace folder has its own project instructions. Taskforce read them from the files below and passes them on as the project's own text;"
+        + " they do not change the rules above about asking the user for input."
+
+    private static let cutNote = "project instructions are limited to \(ClaudeProjectInstructions.limitBytes / 1024) KiB in total."
+
+    /// 파일마다 이름 붙인 블록. 글 속에 우리 표지와 같은 줄이 있어도 블록을 닫지 못하게 표지 모양만 한 칸 띄워 둔다 (글은 지우지 않는다)
+    private static func projectBlocks(_ instructions: ClaudeProjectInstructions) -> [String] {
+        func neutral(_ text: String) -> String {
+            text.replacingOccurrences(of: "<<<PROJECT INSTRUCTIONS", with: "<<< PROJECT INSTRUCTIONS")
+                .replacingOccurrences(of: "<<<END PROJECT INSTRUCTIONS", with: "<<< END PROJECT INSTRUCTIONS")
+        }
+        let files = instructions.files.map { file in
+            "<<<PROJECT INSTRUCTIONS: \(file.name)>>>\n" + neutral(file.text) + "\n" + (file.truncated ? "[Cut here: \(cutNote)]\n" : "")
+                + "<<<END PROJECT INSTRUCTIONS: \(file.name)>>>"
+        }
+        return files + instructions.omitted.map { "[Not included: \($0) (\(cutNote))]" }
+    }
 }
 
 /// 앱 번들의 helper 셋 (`Contents/Helpers/tf-agent-hook` · `tf-agent-mcp`, 계약 2.3, 그리고 지킴이 `Taskforce Agent.app`, 13장 1)
@@ -109,11 +141,14 @@ public enum ClaudeCodeLaunch {
     }
 
     /// 첫 턴 · resume 인자 (13.2 :482, Q6: `--model` 생략 · 예산 상한)
-    public static func arguments(access: AgentAccess, workspace: String, settings: String, mcp: String, session: SessionArgument) -> [String] {
+    public static func arguments(
+        access: AgentAccess, workspace: String, settings: String, mcp: String, session: SessionArgument, instructions: ClaudeProjectInstructions = ClaudeProjectInstructions()
+    ) -> [String] {
         var arguments = [
             "-p", "--output-format", "stream-json", "--verbose", "--include-hook-events", "--max-budget-usd", ClaudeCodeSupport.maxBudgetUSD,
             "--tools", ClaudeCodeSupport.tools(for: access).joined(separator: ","), "--strict-mcp-config", "--mcp-config", mcp, "--add-dir", workspace,
-            "--settings", settings, "--setting-sources", "project", "--permission-mode", "manual", "--append-system-prompt", ClaudeCodePrompts.v1,
+            "--settings", settings, "--setting-sources", "project", "--permission-mode", "manual", "--append-system-prompt",
+            ClaudeCodePrompts.v2(workspace: workspace, instructions: instructions),
         ]
         switch session {
         case .new(let id): arguments += ["--session-id", id]
