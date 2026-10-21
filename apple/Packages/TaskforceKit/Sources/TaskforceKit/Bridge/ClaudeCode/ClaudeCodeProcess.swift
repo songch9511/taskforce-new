@@ -31,12 +31,18 @@ public struct ClaudeCodeTestHooks: Sendable {
     public var inputBytes: (@Sendable (Int) -> Void)?
     /// 끝나는 spawn이 등록부에서 내려온 직후 · 남은 출력을 내기 전 (출력 정산 중 `forgetSession`이 가리개를 지우지 않는지 보는 경쟁 시험, 검토 1)
     public var afterUnregister: (@Sendable () async -> Void)?
+    /// 프로젝트 지침(CLAUDE.md)을 읽기 바로 전 (읽기가 느려도 한 세션에 writer가 둘 생기지 않고 비밀값 가리개가 지워지지 않는지 보는 경쟁 시험, 검토 P1)
+    public var beforeInstructionsRead: (@Sendable () async -> Void)?
+    /// 프로젝트 지침 표지에 쓰는 무작위 꼬리표를 정한다 (시험이 프롬프트 전문을 글자까지 대조하게. 없으면 spawn마다 무작위)
+    public var instructionsTag: (@Sendable () -> String)?
 
     public init(
         afterConfigWrite: (@Sendable (URL) -> Void)? = nil, gateDelay: Duration? = nil, terminateOverride: (@Sendable (AgentProcessIdentity) -> AgentLiveness?)? = nil,
         beforeFinishClose: (@Sendable () async -> Void)? = nil, beforeHookReturn: (@Sendable () async -> Void)? = nil, inputBytes: (@Sendable (Int) -> Void)? = nil,
-        afterUnregister: (@Sendable () async -> Void)? = nil
+        afterUnregister: (@Sendable () async -> Void)? = nil, beforeInstructionsRead: (@Sendable () async -> Void)? = nil, instructionsTag: (@Sendable () -> String)? = nil
     ) {
+        self.beforeInstructionsRead = beforeInstructionsRead
+        self.instructionsTag = instructionsTag
         self.afterConfigWrite = afterConfigWrite
         self.gateDelay = gateDelay
         self.terminateOverride = terminateOverride
@@ -200,10 +206,26 @@ public actor ClaudeCodeProcess: AgentProcess {
         ClaudeCodeSupport.supports(version)
     }
 
+    // MARK: 프로젝트 지침
+
+    /// 작업 폴더의 CLAUDE.md · .claude/CLAUDE.md를 읽는다 (격리 cwd라 저장소 지침이 들어오지 않는다: 새 세션 · 다음 턴 · 답 · 닫기 모두 시작 프롬프트에 붙는다).
+    /// **세션이 비었는지 보기 전에** 부른다: 막힐 수 있는 읽기라 `waitForSessionIdle` 뒤에 끼우면 비었다고 본 뒤 등록까지 틈이 생겨 같은 세션에 writer가 둘 되고
+    /// (닫기 + 턴) 그 틈에 `forgetSession`이 방금 심은 가리개를 지운다 · 끝내기가 그 spawn을 놓친다 (검토 P1). `launch`는 등록까지 await가 없어야 한다.
+    /// 못 읽은 파일은 조용히 건너뛴다: 로그에는 고정 코드와 수만 남기고 글 · 이름 · 경로는 어디에도 가지 않는다
+    private func loadInstructions(workspace: String) async -> ClaudeProjectInstructions {
+        await testHooks.beforeInstructionsRead?()
+        let outcome = await offActor { ClaudeProjectInstructions.read(workspace: workspace) }
+        if outcome.skipped > 0 { log.log("claude_instructions_skipped", ["count": .count(outcome.skipped), "why": .code("unusable")]) }
+        let read = outcome.instructions
+        if !read.isEmpty { log.log("claude_instructions", ["files": .count(read.files.count), "bytes": .count(read.byteCount), "cut": .count(read.wasCut ? 1 : 0)]) }
+        return read
+    }
+
     // MARK: 새 턴
 
     public func startTurn(_ turn: AgentTurnStart, events: AgentEventSink) async throws -> AgentProcessIdentity {
         guard let workspace = turn.workspaceRef.flatMap(workspaceRealPath), hookServer != nil, let executable = locator.locate() else { throw AgentStartError(.spawnFailed) }
+        let instructions = await loadInstructions(workspace: workspace)
         try await waitForSessionIdle(turn.sessionID)
         let folder = try ClaudeSessionFolder.prepare(sessionsRoot: sessionsRoot, agentSessionID: turn.sessionID)
         var state = ClaudeSessionState.load(from: folder.root)
@@ -231,7 +253,7 @@ public actor ClaudeCodeProcess: AgentProcess {
         secretItems[turn.sessionID] = nil
         let spawn = try await launch(
             mode: .turn(newSessionID: newSession), session: session, providerID: providerID, agentSessionID: turn.sessionID, taskID: turn.taskID, turnSeq: turn.turnSeq,
-            access: turn.access, workspace: workspace, folder: folder, executable: executable, sink: events, stdin: Data(turn.text.utf8)
+            access: turn.access, workspace: workspace, instructions: instructions, folder: folder, executable: executable, sink: events, stdin: Data(turn.text.utf8)
         )
         guard let identity = spawn.identity else { throw AgentStartError(.spawnFailed) }
         return identity
@@ -276,6 +298,7 @@ public actor ClaudeCodeProcess: AgentProcess {
         guard let workspace = answer.workspaceRef.flatMap(workspaceRealPath) else { throw AgentStartError(.spawnFailed) }
         guard let external = answer.externalSessionID, BridgeRuntime.isSafeSessionID(external) else { return .requestClosed }
         guard hookServer != nil, let executable = locator.locate() else { throw AgentStartError(.spawnFailed) }
+        let instructions = await loadInstructions(workspace: workspace)
         try await waitForSessionIdle(answer.sessionID)
         let folder = try ClaudeSessionFolder.prepare(sessionsRoot: sessionsRoot, agentSessionID: answer.sessionID)
         var state = ClaudeSessionState.load(from: folder.root)
@@ -310,7 +333,8 @@ public actor ClaudeCodeProcess: AgentProcess {
         let binding = ClaudeAnswerBinding(requestID: answer.requestID, kind: answer.kind, inputSHA256: open.inputSHA256, value: answer.value, targetSHA256: open.targetSHA256)
         let spawn = try await launch(
             mode: .answer(requestID: answer.requestID), binding: binding, session: .resume(external), providerID: external, agentSessionID: answer.sessionID,
-            taskID: answer.taskID, turnSeq: answer.turnSeq, access: answer.access, workspace: workspace, folder: folder, executable: executable, sink: events, stdin: Data()
+            taskID: answer.taskID, turnSeq: answer.turnSeq, access: answer.access, workspace: workspace, instructions: instructions, folder: folder, executable: executable,
+            sink: events, stdin: Data()
         )
         // 새 프로세스의 정체가 원장에 commit돼야 답을 준다 (8장 14 · 9장 8): 그 전의 답 훅은 기다린다. 실패하면 답을 주지 않고 그 프로세스를 끝낸다.
         // 끝이 증명될 때까지 이 spawn이 등록부 · 디스크 잠금에 남아 같은 세션의 다음 실행을 막는다
@@ -350,14 +374,19 @@ public actor ClaudeCodeProcess: AgentProcess {
         // Claude 세션이 없으면 닫을 보류도 없다
         guard let external = request.externalSessionID, BridgeRuntime.isSafeSessionID(external) else { return }
         guard let executable = locator.locate() else { throw AgentStartError(.spawnFailed) }
+        let instructions = await loadInstructions(workspace: workspace)
         try await waitForSessionIdle(request.sessionID)
         let folder = try ClaudeSessionFolder.prepare(sessionsRoot: sessionsRoot, agentSessionID: request.sessionID)
         try Self.requireBound(external, state: ClaudeSessionState.load(from: folder.root))
         secretItems[request.sessionID] = nil
-        try await close(requestID: request.requestID, providerID: external, agentSessionID: request.sessionID, taskID: request.taskID, workspace: workspace, executable: executable)
+        try await close(
+            requestID: request.requestID, providerID: external, agentSessionID: request.sessionID, taskID: request.taskID, workspace: workspace, instructions: instructions, executable: executable
+        )
     }
 
-    private func close(requestID: String, providerID: String, agentSessionID: String, taskID: String, workspace: String, executable: ClaudeCodeExecutable) async throws {
+    private func close(
+        requestID: String, providerID: String, agentSessionID: String, taskID: String, workspace: String, instructions: ClaudeProjectInstructions, executable: ClaudeCodeExecutable
+    ) async throws {
         let folder = try ClaudeSessionFolder.prepare(sessionsRoot: sessionsRoot, agentSessionID: agentSessionID)
         var state = ClaudeSessionState.load(from: folder.root)
         state.openDeferred = nil
@@ -365,7 +394,7 @@ public actor ClaudeCodeProcess: AgentProcess {
         // 닫기 spawn의 사건은 서버로 보내지 않는다 (sink 없음). 모든 훅이 deny, 닫는 id의 결과에서 SIGINT
         let spawn = try await launch(
             mode: .close(requestID: requestID), session: .resume(providerID), providerID: providerID, agentSessionID: agentSessionID, taskID: taskID, turnSeq: 1,
-            access: .write, workspace: workspace, folder: folder, executable: executable, sink: nil, stdin: Data()
+            access: .write, workspace: workspace, instructions: instructions, folder: folder, executable: executable, sink: nil, stdin: Data()
         )
         // 끝날 때까지 기다린다 (다음 startTurn이 두 번째 writer를 만들지 않게). 10초 안에 끝나지 않으면 고아 끝내기.
         // 끝을 증명하지 못하면 던진다 (8장 15): 호출한 쪽은 이 세션의 다음 실행을 띄우지 않는다
@@ -590,17 +619,9 @@ public actor ClaudeCodeProcess: AgentProcess {
 
     private func launch(
         mode: ClaudeMapperConfig.Mode, binding: ClaudeAnswerBinding? = nil, session: ClaudeCodeLaunch.SessionArgument, providerID: String, agentSessionID: String, taskID: String,
-        turnSeq: Int, access: AgentAccess, workspace: String, folder: ClaudeSessionFolder, executable: ClaudeCodeExecutable, sink: AgentEventSink?, stdin: Data
+        turnSeq: Int, access: AgentAccess, workspace: String, instructions: ClaudeProjectInstructions, folder: ClaudeSessionFolder, executable: ClaudeCodeExecutable,
+        sink: AgentEventSink?, stdin: Data
     ) async throws -> Spawn {
-        // 작업 폴더의 CLAUDE.md · .claude/CLAUDE.md를 읽어 시작 프롬프트에 붙인다 (격리 cwd라 저장소 지침이 들어오지 않는다. 새 세션 · 다음 턴 · 답 · 닫기 모두).
-        // 막힐 수 있는 읽기라 actor 밖에서, 아래 종료 확인 **앞**에서 한다 (확인 뒤 등록까지 await를 끼우지 않는다). 못 읽은 파일은 조용히 건너뛴다:
-        // 로그에는 고정 코드와 수만 남기고 글 · 이름 · 경로는 어디에도 가지 않는다
-        let projectInstructions = await offActor { ClaudeProjectInstructions.read(workspace: workspace) }
-        if projectInstructions.skipped > 0 { log.log("claude_instructions_skipped", ["count": .count(projectInstructions.skipped), "why": .code("unusable")]) }
-        if !projectInstructions.instructions.isEmpty {
-            let read = projectInstructions.instructions
-            log.log("claude_instructions", ["files": .count(read.files.count), "bytes": .count(read.byteCount), "cut": .count(read.wasCut ? 1 : 0)])
-        }
         // 종료가 시작된 뒤에는 띄우지 않는다 (16장 1, 프로세스 0)
         guard !spawningStopped else {
             log.log("claude_spawn_refused", ["reason": .code("shutdown")])
@@ -672,7 +693,7 @@ public actor ClaudeCodeProcess: AgentProcess {
         sessionSpawn[agentSessionID] = spawnID
         taskSpawn[taskID] = spawnID
         let arguments = ClaudeCodeLaunch.arguments(
-            access: access, workspace: workspace, settings: files.settings.path, mcp: files.mcp.path, session: session, instructions: projectInstructions.instructions
+            access: access, workspace: workspace, settings: files.settings.path, mcp: files.mcp.path, session: session, instructions: instructions
         )
         // 지킴이를 disclaim으로 띄우고 지킴이가 `claude`를 띄운다 (13장 1). 검사한 실제 파일(realpath)로 띄우고, 자식이 보는 argv[0]은 후보 경로 그대로 (8장 8).
         // 지킴이가 알린 `claude` · 지킴이 id를 앱이 다시 대조하지 못하면 정체 commit · stdin 전에 멈춘다 (12장 6). 막히는 일은 actor 밖에서 (14장 9)
@@ -1197,9 +1218,14 @@ public actor ClaudeCodeProcess: AgentProcess {
         await apply(spawn, actions)
         if let id = spawn.unexpectedDeferred, let executable = locator.locate() {
             // 기록에 없는 id가 보고됐거나 열린 요청으로 적지 못했다: 그 id를 바로 닫는다 (질문을 내지 않는다)
+            // 지침은 닫기 앞에서 읽어 `close`가 등록까지 await 없이 가게 한다 (이 spawn은 닫기가 끝날 때까지 등록부에 남아 세션을 막고 있다)
+            let instructions = await loadInstructions(workspace: spawn.workspace)
             await testHooks.beforeFinishClose?()
             do {
-                try await close(requestID: id, providerID: spawn.providerID, agentSessionID: spawn.agentSessionID, taskID: spawn.taskID, workspace: spawn.workspace, executable: executable)
+                try await close(
+                    requestID: id, providerID: spawn.providerID, agentSessionID: spawn.agentSessionID, taskID: spawn.taskID, workspace: spawn.workspace, instructions: instructions,
+                    executable: executable
+                )
             } catch {
                 log.log("claude_close_failed", [:])
             }
