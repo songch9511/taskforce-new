@@ -2,7 +2,7 @@
 
 Taskforce (AI project manager)
 
-- Effective date: 2026-10-08
+- Effective date: {{effective-date}}
 - 한국어: [이용약관](terms.ko.md) (the Korean version prevails if the two differ)
 
 ## 1. Purpose
@@ -13,19 +13,21 @@ These terms set out how you may use the Taskforce app (iOS and macOS) and its se
 
 1. The Service finds the work you committed to in meeting notes, messages, and email from services you connect (such as Notion, Google, and Slack), keeps it organized, updates it when due dates or scope change, and shows the quote each task came from. When you ask for a draft for a task (such as an email or document), the AI writes it and saves it in the app (during the beta, only on accounts we enable).
 2. The Service is a **beta**. Features may change or be removed, it may contain errors, and we may end the beta.
-3. New accounts can try the Service free and then choose an optional paid subscription as described below. Existing free beta access is preserved under section 2A.8.
+3. The Service is offered in two plans, Pro and Lifetime. There is no free plan. Without a plan, or after a plan ends, AI processing and execution stop (including importing and processing new source text from connected services), but you can still view and manage your saved tasks, results, and sources. Existing free beta access is preserved under section 2A.10.
 4. The Service is distributed through TestFlight or as a Mac installer file the Company provides directly. If you use TestFlight, Apple's terms also apply.
 
-## 2A. Optional paid subscriptions
+## 2A. Plans and payment
 
-1. New accounts receive a 7-day, card-free trial starting with their first successful source sync. The trial includes $1 of AI processing in total and does not convert to a paid subscription automatically.
-2. Subscriptions cost **USD $9.99 per account per month** or **USD $101.90 per account per year** (15% off USD $119.88 for twelve monthly payments, rounded to the nearest cent), plus applicable taxes shown at checkout. Annual subscriptions are charged in one payment. Payment starts immediately when you complete checkout, including during a trial, and renews automatically until cancelled.
-3. Both plans include $3 of AI processing per UTC calendar month, resetting on the first day of each month. Unused allowance does not roll over. AI requests reserve their verified maximum cost until the provider confirms the actual cost; reserved and confirmed costs count toward the allowance. AI processing pauses if the remaining allowance cannot cover a request. There are no automatic overage charges. Saved tasks remain available to view and manage.
-4. Payments are sold and processed by **Lemon Squeezy as merchant of record** under its [Buyer Terms](https://www.lemonsqueezy.com/buyer-terms). Taskforce receives the payment confirmation and subscription status, and enables access for the Taskforce account that opened checkout. Use the same account on the website and Mac app.
-5. Cancel future renewals in **Account → Manage subscription**, or at [Manage subscription](https://api.taskforcelabs.dev/billing), before your renewal date. Access continues until the paid period ends unless the payment is refunded. Cancellation alone does not refund an unused period. If you need help cancelling, contact us at least 48 hours before renewal.
-6. For a refund request, duplicate charge, or failure to receive paid access, contact privacy@taskforcelabs.dev with your order number. Requests are reviewed according to the circumstances, Lemon Squeezy's buyer terms and refund procedures, and applicable law. No clause limits a statutory withdrawal, cancellation, or refund right. A refund may end the paid access it covered.
-7. Account deletion first cancels future renewal. Deletion may be delayed while an open checkout expires or cancellation is confirmed, so that billing is not left active. Deleting an account does not itself request a refund and does not erase transaction records that Lemon Squeezy must retain. Deleting only the app does not cancel a subscription.
-8. This optional subscription offer applies to new accounts and existing users who separately choose it. Existing free beta users keep their free access unless we give at least 30 days' notice and they separately agree to pay. No existing user is enrolled or charged automatically.
+1. Pro comes with a 3-day free trial after you add a payment method (once per account). When the trial ends, the first payment is charged automatically. If you cancel before the trial ends, you are not charged.
+2. Pro costs **USD $12.99 per month** or **USD $119.88 per year**; annual subscriptions are charged in one payment. An account's first monthly Pro subscription costs USD $6.99 for its first paid month. Pro renews automatically on the same cycle until cancelled. **Lifetime is a single payment of USD $229.** The Lifetime price may change, but the price you paid does not. Applicable taxes are shown separately at checkout.
+3. Pro includes AI and execution within a fair-use limit. If an account reaches it, AI and execution pause until the next calendar month. During the trial a trial limit applies, and reaching it pauses AI and execution until the trial ends. We tell you in the app when this happens, and we never charge extra for it. We pay the model costs for Pro.
+4. Lifetime is a one-time purchase of access for as long as we operate the Service, including updates during that time, and cannot be transferred to another account. Lifetime runs AI and execution with the OpenRouter API key you add in the app, and those model costs are billed to your OpenRouter account. You manage that account's charges, limits, and settings (such as logging) and OpenRouter's terms. We use the key only for your own AI requests. If there is no key or it cannot be used, AI and execution stop. If you buy Lifetime while subscribed to Pro, your next Pro renewal is cancelled.
+5. Usage fees for agents you connect, such as Claude Code, are not included in either plan; they are billed under your own plan with that service.
+6. Payments are sold and processed by **Lemon Squeezy as merchant of record** under its [Buyer Terms](https://www.lemonsqueezy.com/buyer-terms). Taskforce receives the payment confirmation and the subscription or order status, and enables access for the Taskforce account that opened checkout.
+7. Cancel future Pro renewals before your renewal date in the Mac app under Settings → Account → Plan & usage → Manage subscription, or through My Orders in your Lemon Squeezy receipt email. Access continues until the paid period ends unless the payment is refunded. Cancellation alone does not refund an unused period. If you need help cancelling, contact us at least 48 hours before renewal.
+8. Within 72 hours (3 days) after each paid payment (each Pro payment, or a Lifetime order), you can request a full refund of that payment in the Mac app under Settings → Account → Plan & usage → Request refund (one in-app request per account). A free trial has no payment, so this period starts at the first payment. Once the refund is confirmed, the plan that payment provided ends immediately, and for Pro the next renewal is also cancelled. For any other refund request, a duplicate charge, or failure to receive paid access, contact privacy@taskforcelabs.dev with your order number. Requests are reviewed according to the circumstances, Lemon Squeezy's buyer terms and refund procedures, and applicable law. No clause limits a statutory withdrawal, cancellation, or refund right.
+9. Account deletion first cancels future renewal. Deletion may be delayed while an open checkout expires or cancellation is confirmed, so that billing is not left active. Deleting an account does not itself request a refund and does not erase transaction records that Lemon Squeezy must retain. Deleting your account also removes your Lifetime access and your saved OpenRouter key. Deleting only the app does not cancel a subscription.
+10. These plans apply to new accounts and existing users who separately choose them. Existing free beta users keep their free access unless we give at least 30 days' notice (in the app under Plan & usage, and by email) and they separately agree to pay. No existing user is enrolled or charged automatically.
 
 ## 3. Agreement and changes
 
@@ -35,11 +37,12 @@ These terms set out how you may use the Taskforce app (iOS and macOS) and its se
 
 ## 4. Your account
 
-1. You create an account with Sign in with Apple, your Google account, or your email address.
+1. You create an account with Sign in with Apple, your Google account, or your email address. General users sign in by email with an 8-digit verification code received in that mailbox, without a password. Email-and-password sign-in is reserved for accounts the Company designates for app review.
 2. You must be at least 14 years old to use the Service.
 3. The beta is not offered to people who live in the European Economic Area (EEA, including the European Union) or the United Kingdom. Please do not sign up from these regions.
 4. Keep your account and devices secure. Tell us right away if you learn your account has been used without permission.
 5. You can delete your account at any time in app → Settings → Delete Account (Mac: Settings → Account → Delete Account). Once deletion completes, it removes your stored app data and cannot be undone. Billing cancellation and limited payment records are described in section 2A and the Privacy Policy.
+6. If your sign-in methods use different email addresses (for example, Apple's "Hide My Email"), they create separate accounts. Add the other method in Account → Sign-in to use one account with both. We do not merge data between separate accounts.
 
 ## 5. Connections and permissions
 
@@ -96,4 +99,4 @@ If we find such conduct, we may restrict your use after notifying you. In urgent
 - Address: 262-20, Galma-dong, Seo-gu, Daejeon, Republic of Korea
 - Email: privacy@taskforcelabs.dev
 
-These terms take effect on 2026-10-08.
+These terms take effect on {{effective-date}}.
