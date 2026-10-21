@@ -5,8 +5,8 @@ import Testing
 import TaskforceAgentWire
 @testable import TaskforceKit
 
-/// 작업 폴더의 CLAUDE.md가 **띄운 `claude`의 인자**로 가는가 (가짜 `claude`가 받은 `--append-system-prompt`를 보고서에 남긴다).
-/// 새 세션 · 다음 턴 · 답 resume 모두 같다. 읽을 수 없는 파일은 조용히 건너뛰고 턴은 그대로 돈다. 글 · 경로는 로그에 남지 않는다
+/// 작업 폴더의 CLAUDE.md가 **띄운 `claude`가 받는 프롬프트 파일**(`--append-system-prompt-file`, 0600)로 가는가 (가짜 `claude`가 받은 파일을 읽어 보고서에 남긴다).
+/// 새 세션 · 다음 턴 · 답 resume · 닫기 모두 같다. 읽을 수 없는 파일은 조용히 건너뛰고 턴은 그대로 돈다. 글 · 경로는 로그에 남지 않고 인자에도 없다
 @Suite(.serialized)
 struct ClaudeProjectInstructionsRuntimeTests {
     static let marker = "PROJECT-RULE-4f9c"

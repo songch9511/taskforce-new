@@ -106,7 +106,8 @@ public enum AgentSessionRules {
                 updatedAt: session.updatedAt, issueIDs: issues, currentIssueID: current,
                 conversationID: snapshot.conversations.first { $0.agentSessionID == session.id }?.id,
                 hasOpenTask: session.status != .closed && (task?.isOpen ?? false), pill: pill(for: session, task: task),
-                connectionBridgeID: bridges[session.connectionID], lastTaskState: task?.state, cancelRequested: task?.cancelRequestedAt != nil, turnSeq: session.lastTurnSeq
+                connectionBridgeID: bridges[session.connectionID], lastTaskState: task?.state, cancelRequested: task?.cancelRequestedAt != nil, turnSeq: session.lastTurnSeq,
+                lastEventSeq: task?.lastEventSeq
             )
         }
     }

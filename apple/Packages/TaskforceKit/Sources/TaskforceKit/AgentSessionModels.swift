@@ -68,8 +68,11 @@ public struct AgentTaskRecord: Decodable, Sendable, Hashable {
     public let state: AgentTaskState
     public let lastLiveState: AgentTaskState?
     public let cancelRequestedAt: Date?
+    /// 서버가 이 턴에서 마지막으로 반영한 bridge 사건 순서 (`agent_tasks.last_event_seq`): 새 사건(글 · 질문 · 진행)이 반영될 때마다 오른다.
+    /// 대화 글을 다시 읽을 때를 정하는 값싼 신호다 (`AgentThreadFollow`). 없는 읽기(옛 픽스처)는 nil
+    public let lastEventSeq: Int?
 
-    public static let columns = "agent_session_id, run_id, turn_seq, state, last_live_state, cancel_requested_at"
+    public static let columns = "agent_session_id, run_id, turn_seq, state, last_live_state, cancel_requested_at, last_event_seq"
 
     enum CodingKeys: String, CodingKey {
         case state
@@ -78,10 +81,11 @@ public struct AgentTaskRecord: Decodable, Sendable, Hashable {
         case turnSeq = "turn_seq"
         case lastLiveState = "last_live_state"
         case cancelRequestedAt = "cancel_requested_at"
+        case lastEventSeq = "last_event_seq"
     }
 
     public init(
-        agentSessionID: UUID, runID: UUID, turnSeq: Int?, state: AgentTaskState, lastLiveState: AgentTaskState? = nil, cancelRequestedAt: Date? = nil
+        agentSessionID: UUID, runID: UUID, turnSeq: Int?, state: AgentTaskState, lastLiveState: AgentTaskState? = nil, cancelRequestedAt: Date? = nil, lastEventSeq: Int? = nil
     ) {
         self.agentSessionID = agentSessionID
         self.runID = runID
@@ -89,6 +93,7 @@ public struct AgentTaskRecord: Decodable, Sendable, Hashable {
         self.state = state
         self.lastLiveState = lastLiveState
         self.cancelRequestedAt = cancelRequestedAt
+        self.lastEventSeq = lastEventSeq
     }
 
     public init(from decoder: Decoder) throws {
@@ -99,6 +104,7 @@ public struct AgentTaskRecord: Decodable, Sendable, Hashable {
         state = AgentTaskState(raw: try c.decode(String.self, forKey: .state))
         lastLiveState = try c.decodeIfPresent(String.self, forKey: .lastLiveState).map(AgentTaskState.init(raw:))
         cancelRequestedAt = try c.decodeIfPresent(Date.self, forKey: .cancelRequestedAt)
+        lastEventSeq = try c.decodeIfPresent(Int.self, forKey: .lastEventSeq)
     }
 
     /// 열린 task: 끝나지 않았다 (연결이 끊긴 것도 재접속을 기다리는 열린 일이다). idle · 끝 상태 · 모르는 값은 열리지 않았다
@@ -297,12 +303,15 @@ public struct AgentSessionItem: Identifiable, Sendable, Hashable {
     public let lastTaskState: AgentTaskState?
     public let cancelRequested: Bool
     public let turnSeq: Int
+    /// 마지막 턴 task의 마지막 반영 사건 순서 (`AgentTaskRecord.lastEventSeq`): 대화 글을 다시 읽을 때를 정한다 (`AgentThreadFollow`)
+    public let lastEventSeq: Int?
 
     public init(
         id: UUID, name: String, agent: AgentMarkKind, agentName: String, connectionID: UUID, status: AgentSessionStatus, ring: AgentSessionRing?,
         line: String, createdAt: Date, updatedAt: Date, issueIDs: [UUID], currentIssueID: UUID?, conversationID: UUID?, hasOpenTask: Bool,
-        pill: AgentSessionPill?, connectionBridgeID: UUID? = nil, lastTaskState: AgentTaskState? = nil, cancelRequested: Bool = false, turnSeq: Int = 0
+        pill: AgentSessionPill?, connectionBridgeID: UUID? = nil, lastTaskState: AgentTaskState? = nil, cancelRequested: Bool = false, turnSeq: Int = 0, lastEventSeq: Int? = nil
     ) {
+        self.lastEventSeq = lastEventSeq
         self.id = id
         self.name = name
         self.agent = agent
