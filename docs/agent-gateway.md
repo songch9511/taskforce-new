@@ -402,7 +402,7 @@ Mac bridge(11-1절)의 첫 실제 adapter다. 턴마다 사용자의 `claude -p`
 
 ## 17. 외부 세션 목록 (OA 외부 세션 PR1) — 결정 기록과 위치
 
-Taskforce 밖에서 시작한 Claude Code 세션을 이 Mac의 레일 "On this Mac"에 보이는 일. 계약 `handoffs/oa-external-sessions-contract.md` 16 · 17장(본문의 "서버에 0"을 16장이 뒤집었다). 이어받기(PR2)는 이 장에 없다.
+Taskforce 밖에서 시작한 Claude Code 세션을 이 Mac의 레일 "On this Mac"에 보이는 일. 계약 `handoffs/oa-external-sessions-contract.md` 16 · 17장(본문의 "서버에 0"을 16장이 뒤집었다). 이어받기(PR2s 서버)는 18장이다.
 
 ### 17-1. 서버에 가는 것 · 가지 않는 것
 
@@ -426,7 +426,7 @@ Taskforce 밖에서 시작한 Claude Code 세션을 이 Mac의 레일 "On this M
 ### 17-4. 지표
 
 - `external_sessions_shown`(`metric_events` 종류 검사는 `20261129000000`의 목록 + 이 type): 레일 목록이 행 1개 이상으로 보인 날 하루 한 번(UTC 날짜별 부분 unique 인덱스). 앱이 **`POST /api/v2/external-sessions/shown`**으로 `{ rows_bucket: 1 | 2-5 | 6-15 | 16+, held_bucket: 0 | 1-2 | 3+ }`(구간 값만, 글 · 수 0, strict)를 알리면 route가 서버 권한으로 남긴다 — 앱의 열 권한(`type` · `action_id`)과 insert 정책(`app_opened` · `assistant_opened`)은 그대로다. 같은 날 두 번째는 23505를 조용히 넘겨 204다. gate · 베타 명단은 13-3과 같다. **v1 `metric-events`는 동결이라 건드리지 않았다**(`contract-v1-freeze.test.ts`가 그 스키마 지문을 지킨다): 새 지표는 v2다.
-- `session_attached` · `session_attach_refused`는 이어받기 PR의 몫이다(남기는 곳 없는 type을 지금 넣으면 등록부 시험이 깨진다).
+- `session_attached`는 이어받기 서버(18장)가 남긴다. `session_attach_refused`(앱이 남기는 거절 지표)는 Mac 이어받기(PR2m)의 몫이다(남기는 곳 없는 type을 지금 넣으면 등록부 시험이 깨진다).
 
 ### 17-4b. Mac이 올리는 방식 · 로그아웃 (Kit `ExternalSessionReporter` · `ExternalSessionSignOut`)
 
@@ -443,3 +443,46 @@ Taskforce 밖에서 시작한 Claude Code 세션을 이 Mac의 레일 "On this M
 - cwd는 힌트일 뿐: 평범한 절대 경로(`..` · NUL · 개행 없음) + 프로젝트 디렉터리 이름(영숫자 아닌 UTF-16 단위를 `-`로, 200단위 넘으면 확인 불가)과 정확히 같아야 하고 폴더 규칙을 지나야 한다. 어긋나면 "Unreadable"이고 그 줄의 폴더는 어디에도 쓰지 않는다. 워크트리(`<저장소>/.claude/worktrees/<이름>`)는 저장소 밑 묶음에 "Can't resume here · Worktree". 저장소로 읽힌 곳이 홈이거나 `~/.claude` 안(`~/.claude/worktrees/<이름>`: 사용자가 모아 둔 자리)이면 홈 폴더 이름 밑으로 묶지 않고 일반 폴더 규칙의 결과를 쓴다.
 - 실행 중 판정(5.4): 등록 파일(pid 살아 있음 · 같은 사용자 · 시작 시각 1초 안 — pid 재사용은 stale. `procStart`가 2015년 이전이거나 지금보다 하루 넘게 앞이면 단위를 잘못 읽은 값이라 믿지 않고(nil) 살아 있으면 쥔 것으로 본다. `lstart` 글(`Wed Oct 21 04:57:32 2026`)에는 시간대가 없다: 데스크톱 번들 `claude` 2.1.304는 **UTC**로 적는다(KST Mac의 `ps lstart`와 9시간 차이). 그래서 이 Mac의 시간대와 UTC 두 가지로 읽어 어느 쪽이든 1초 안이면 같은 프로세스로 본다 — 이 Mac의 시간대로만 읽으면 살아 있는 데스크톱 세션이 stale로 보여 "Running in Terminal"(argv의 `--resume=`)이나 비어 있음으로 잘못 나왔다) · argv(`--resume` · `-r` · `--session-id`) · 같은 폴더의 등록 안 된 `claude`(`PROC_PIDVNODEPATHINFO`) · 기록이 60초 안에 쓰임. 신호를 읽지 못하고 주인도 못 찾으면 `couldNotCheck`(fail-closed).
 - 한계: 이어받기 전이라 두 writer 경합(TOCTOU)은 PR2의 몫이다. 데스크톱이 열린 세션마다 `claude`를 띄워 둔다는 관찰(OB-3)은 실측 전이다. `procStart` 형식(R4)은 데스크톱 쪽만 실측했다(UTC `lstart`, 위); 터미널 CLI 쪽은 실측 전이라 두 시간대로 읽는다.
+
+## 18. 외부 세션 이어받기 서버 (OA 외부 세션 PR2s)
+
+Taskforce 밖에서 시작한 Claude Code 세션(터미널 · Claude 데스크톱)을 이 사용자의 에이전트 세션 + 대화로 묶는다. 계약 `handoffs/oa-external-sessions-contract.md` 7장(ES-16 · ES-17 · ES-18 · 7.2), 9장(보안), 10장(`session_attached`), 12.2(시험), 19장(실측 R1–R9 결과, 본문을 이긴다). **Mac 쪽(확인 줄 · 핀 · 외부 writer 검사 · 인자)은 PR2m이고 이 장에 없다.** 서버는 Claude 세션 UUID와 가상 루트만 받는다 — 목록(17장, HMAC 불투명 id)과 달리 이어받을 때는 `--resume`에 쓰일 실제 id가 서버 행 `external_session_id`에 들어간다(Mac은 그 id를 자기 세션 폴더 상태의 묶인 id와 대조해 다르면 띄우지 않는다, ES-08). 계약 20장: D1(HMAC)은 목록 표에만 적용되고, 이어받을 때 실제 id를 저장하는 것은 받아들여졌다.
+
+### 18-1. gate · capability (ES-16)
+
+- 새 플래그 `AGENT_ATTACH_EXISTING_ENABLED`(정확히 `"true"`, 기본 꺼짐, `src/lib/flags.ts`). route는 **이 플래그 ∧ `CONVERSATIONS_V2_ENABLED` ∧ 본문 adapter의 플래그(`adapterEnabled`) ∧ 베타 명단 ∧ registry `session.attach_existing: true`**일 때만 일한다. 이 플래그는 새로 이어받는 입구만 닫는다(이미 이어받은 세션의 대화 · Stop은 다른 gate가 정한다).
+- registry: Claude Code `session.attach_existing: true` + `session.evidence`(R1 R2 R3 R8 R9, 2026-10-21, CLI 2.1.306 — 증거 문서 `docs/rollouts/claude-code-r1-evidence.md` "Re-run on 2.1.306"). `list`는 둘 다 false 그대로(서버는 목록을 받지 않는다). Codex는 false다. `attachExistingAllowed(adapter, env)`가 grade 검사다(registry 밖 이름 · `__proto__` 포함 거절). 서술자 스키마(`agentCapabilitySchema`)의 `session`에 `evidence`(선택, 2000자)를 더했다 — 없어도 되는 칸이라 옛 bridge 보고에는 영향 없다.
+
+### 18-2. route (ES-17)
+
+`POST /api/v2/agent-sessions/attach` (`authenticateRequest`: Bearer · 쿠키, 쿠키 쓰기는 CSRF). 본문 `attachAgentSessionRequestSchema`(strict): `{ bridge_id: uuid, adapter: "agent:…", external_session_id: 정규 소문자 UUID, workspace_ref: "/taskforce/ws_<소문자 UUID>" }`. 사용자 id · 연결 id는 본문에 없다.
+
+| 순서 | 검사 | 실패 |
+|---|---|---|
+| 1 | gate: 대화 v2 ∧ `AGENT_ATTACH_EXISTING_ENABLED` (인증 · DB 전) | 404 `not_found` (다른 v2 에이전트 route와 같다) |
+| 2 | 인증 | 401 |
+| 3 | 베타 명단 | 404 `not_found` |
+| 4 | 본문: UUID가 정규 소문자 형태가 아니거나(`pending:` · 경로 · 옵션 모양 포함), `workspace_ref`가 가상 루트 모양이 아니거나(`/Users/…` 같은 실제 경로 모양 포함), 모르는 칸 | 400 `invalid_request` (오류 글에 요청 값 없음) |
+| 5 | grade: registry `attach_existing` ∧ adapter 플래그 — 이 adapter는 이어받을 수 없다 | 403 `forbidden` |
+| 6 | 속도 제한: `take_rate_limit` 종류 `agent_attach`, 사용자별 10분에 30번 (`AGENT_ATTACH_LIMIT`). 저장 함수보다 먼저 센다 — 위 검사에서 걸린 요청은 한도를 쓰지 않는다. 멱등 재시도도 센다 | 429 `rate_limited` + `Retry-After` |
+| 7 | SQL `attach_agent_session` | 404 `not_found` (없는 · 남의 · 해제된 bridge, active 연결 없음을 구별하지 않는다) · 409 `session_in_use` · 409 `workspace_mismatch` · 409 `busy_retry`(잠금 경합, 같은 요청 재시도 가능) · 500 |
+
+성공: 201 `{ status: "created", conversation_id, workspace_ref, session }`, 같은 Claude id가 이미 묶여 있으면 200 `{ status: "existing", … }`(멱등, 행 늘지 않음). `workspace_ref`는 **서버에 저장된 값**이다(고친 뒤의 값; 앱은 자기 핀과 맞춘다). `session`은 `agentSessionSchema`(display_name은 `""` — 제목을 보내지 않는다, ES-19). 로그는 결과 코드뿐이다: `{ event:"agent_session_attach", result }`와 실패 때 `{ event, error 이름, code }` — Claude id · 가상 루트 · bridge id · 사용자 id는 남기지 않는다(시험이 모든 결과에서 grep 0). 오류 코드 `session_in_use` · `forbidden` · `workspace_mismatch`는 `agentAttachErrorCodeSchema`(기존 여섯 코드 목록은 그대로).
+
+### 18-3. SQL (`20261204000000_agent_session_attach.sql`)
+
+- `attach_agent_session(p_user_id, p_bridge_id, p_adapter, p_external_session_id, p_workspace_ref) returns jsonb`: **invoker**(`security definer` 아님 — 호출자는 서버의 service role뿐이고 쓰는 표를 이미 쓸 수 있다. 형제 서버 전용 함수 `report_external_sessions` 등과 같다), `search_path=''`, **public · anon · authenticated 실행 권한 없음, service role만**. **새 표 0**, 기존 `agent_sessions` · `conversations` 모양 그대로.
+- 한 트랜잭션: 인자 모양을 다시 강제(22023) → bridge가 이 사용자 것이고 active(`for share`: 그 사이 `revoke_bridge`가 끼어들지 못한다) → 그 bridge에 이 adapter의 active 연결 → `(사용자, Claude id)` advisory lock → 다른 연결에 닫히지 않은 같은 id 세션이 있으면 `session_in_use` → `agent_sessions` insert(`bound`, `display_name ''`) `on conflict (connection_id, external_session_id) do nothing` → 이 세션의 대화(열린 대화 먼저)가 없으면 `conversations`(target `agent`, 연결, 세션) insert → **세션 행이 새로 생겼을 때만** `metric_events` `session_attached`(props는 adapter뿐) → `{ status, session_id, conversation_id, workspace_ref }`. 소유 확인 전에는 아무 잠금도 잡지 않는다.
+- existing: 같은 연결에 이미 묶인 세션(Taskforce가 시작한 세션 · 이전에 이어받은 세션 · Open in Terminal로 external이 된 세션 모두). **보낸 `workspace_ref`가 저장된 값과 다르면**(Mac의 폴더 식별이 바뀐 뒤 같은 세션을 다시 이어받을 때): 세션이 `bound`이고 열린 작업(`dispatched` · `accepted` · `running` · `awaiting_answer` · `unreachable`)이 **없으면** 보낸 값으로 고치고 `existing`(새 행 · 이벤트 없음, 응답은 고친 값), **아니면** `workspace_mismatch`(409, 아무것도 고치지 않는다). 세션 행을 `for update`로 잠그고 본다 — `start_agent_turn`(세션 잠금 뒤 작업 insert)과 겹쳐도 옛 값으로 명령이 나가지 않는다(실제 Postgres 시험이 두 순서를 본다). 같은 값이면 열린 작업이 있어도 그냥 `existing`이다.
+- `created`는 세션 또는 대화를 이 호출이 새로 만들었다는 뜻이다. **`session_attached`는 세션 행이 새로 생겼을 때만** 남긴다: 세션은 있고 대화만 다시 만든 호출은 `created`지만 지표를 남기지 않는다.
+- 같은 연결의 `closed` 세션은 `session_in_use`로 답하지만 **방어용 분기**다: 연결이 active인 채 그 세션만 closed가 되는 정상 경로는 없다(closed는 `revoke_bridge`가 연결을 revoked로 바꿀 때 함께 일어난다). 시험은 직접 갱신으로 만든다. 다른 연결의 `closed` 세션(해제된 bridge의 옛 세션)은 막지 않는다. Action · run · 작업 · 메시지는 만들지 않는다 — 첫 메시지가 오면 기존 `start_agent_turn`이 새 세션(`pending:`)을 만들지 않고 이 세션에 턴을 붙인다. 명령은 `lease_bridge_command`가 `external_session_id`가 실제 id면 `resume: true`로 만든다(시험이 명령의 `session` 칸 `{ external_session_id, workspace_ref, resume: true }`를 본다).
+- 동시에 온 두 요청: advisory lock으로 직렬화 → 하나가 `created`, 나머지는 `existing`(세션 · 대화 · 이벤트 각각 1). 서로 다른 Mac에서 같은 id가 동시에 오면 하나는 `session_in_use`.
+- `metric_events` 종류 검사: 바로 앞 목록(`20261203000000`) 그대로 + `session_attached` 하나. 앱 insert 정책은 그대로 — 앱은 이 지표를 남기지 못한다. 이벤트는 사용자 행동이라 리텐션 활동이고(등록부 `activity: true`) `/admin/metrics` 카드의 type 표에 든다. **이 검사를 다시 만드는 다음 마이그레이션(Mac 이어받기 PR2m 등)은 `session_attached`를 목록에 이어 가져야 한다.**
+- 속도 제한: `rate_limit_events` 종류 검사는 앞 목록(`20261130000000`) 그대로 + `agent_attach` 하나, `take_rate_limit`은 그 파일의 본문 그대로에 종류 목록 한 곳만 더해 `create or replace`한다(시험이 두 정의가 그 한 토큰 외에는 같은지 본다). 한도 값(30번 · 10분)은 함수가 아니라 호출하는 쪽(`src/lib/agents/sessions.ts`의 `AGENT_ATTACH_LIMIT`)이 정한다.
+
+### 18-4. 계약 본문과 다른 점 · 남은 것
+
+- 10장의 `detail` 칸(`claude_app` · `terminal` · `unknown`)은 만들지 않았다: ES-18 함수 시그니처에 출처 인자가 없고, 이 PR은 종류 검사를 정확히 `session_attached` 하나만 더한다(코디네이터가 20장에서 미룸을 받아들였다).
+- `session_attach_refused`(앱이 남기는 거절 지표)와 앱 insert 정책 확장은 PR2m의 몫이다.
+- 처리방침에는 아직 이어받기 문장이 없다(9.4, 법률 PR 몫). 플래그는 그 게시 전에는 사용자에게 켜지 않는다.
+- 실제 Postgres 시험: `tests/pg/agent-session-attach.test.ts`(같은 시나리오 + 연결 둘 경합: 같은 id 동시 요청 · 서로 다른 Mac 동시 요청 · bridge 해제와 겹침 · 가상 루트 고치기와 턴 시작이 겹치는 두 순서 · `agent_attach` 한도 경합).

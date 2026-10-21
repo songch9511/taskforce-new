@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   agentAccessSchema,
+  agentAttachErrorCodeSchema,
   agentConversationErrorCodeSchema,
   agentConversationMessageSchema,
   agentDeliveryReasonSchema,
@@ -334,11 +335,14 @@ describe("응답", () => {
 });
 
 describe("오류 코드", () => {
-  it("v2 에이전트 코드는 기존 v2 코드를 모두 포함하고 새 코드 여섯을 더한다 (기존 목록은 그대로)", () => {
+  it("v2 에이전트 코드는 기존 v2 코드를 모두 포함하고 새 코드 여섯을 더하고 이어받기가 둘을 더 얹는다 (기존 목록은 그대로)", () => {
     expect(agentConversationErrorCodeSchema.options).toEqual(["target_mismatch", "question_stale", "secret_requires_local", "session_busy", "approval_via_review", "busy_retry"]);
     for (const code of apiErrorV2CodeSchema.options) expect(apiErrorV2AgentCodeSchema.options).toContain(code);
     for (const code of agentConversationErrorCodeSchema.options) expect(apiErrorV2AgentCodeSchema.options).toContain(code);
-    expect(apiErrorV2AgentCodeSchema.options).toHaveLength(apiErrorV2CodeSchema.options.length + agentConversationErrorCodeSchema.options.length);
+    // 이어받기(PR2s)가 둘을 더한다: session_in_use(409) · forbidden(403). 위 여섯 목록은 그대로다
+    for (const code of agentAttachErrorCodeSchema.options) expect(apiErrorV2AgentCodeSchema.options).toContain(code);
+    expect(apiErrorV2AgentCodeSchema.options).toHaveLength(apiErrorV2CodeSchema.options.length + agentConversationErrorCodeSchema.options.length + agentAttachErrorCodeSchema.options.length);
     expect(apiErrorV2CodeSchema.options).not.toContain("target_mismatch");
+    expect(agentConversationErrorCodeSchema.options).not.toContain("session_in_use");
   });
 });

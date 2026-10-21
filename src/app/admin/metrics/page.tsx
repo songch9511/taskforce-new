@@ -57,6 +57,7 @@ const AGENT_TYPE_LABELS: Record<string, string> = {
   project_archived: "프로젝트 보관",
   assistant_opened: "Assistant 열기 (아직 남기는 곳 없음)",
   external_sessions_shown: "외부 세션 목록(On this Mac) 보임 (하루 한 번)",
+  session_attached: "외부 세션 이어받기 (Resume here 성공)",
 };
 const AGENT_DIM_LABELS: Record<string, string> = {
   kind: "종류",
