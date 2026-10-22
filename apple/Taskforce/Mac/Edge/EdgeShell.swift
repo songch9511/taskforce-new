@@ -106,7 +106,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         )
         rail = EdgeRailPanelController(shell: shell)
         panel = EdgePanelController(shell: shell, chat: chat)
-        claudePanel = shell.desktop != nil ? EdgeClaudeAppPanelController(shell: shell) : nil
+        claudePanel = shell.desktop != nil ? EdgeClaudeAppPanelController(shell: shell, backgroundOpen: doneStores.backgroundOpen) : nil
         // 새 Issues 화면이 켜진 구성만 세션 패널 창이 있다 (꺼지면 창도 읽기도 없다)
         if let chat, chat.issues != nil {
             sessionPanel = EdgeSessionPanelController(shell: shell, runtime: chat)
@@ -415,6 +415,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         guard let claudePanel else { return }
         let wanted = withObservationTracking {
             _ = claudePanel.presentation.contentHeight
+            _ = claudePanel.presentation.pane.windowExtra
             _ = panel.presentation.bodyHeight
             _ = panel.presentation.footerHeight
             _ = panel.presentation.shown
@@ -454,6 +455,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         guard let sessionPanel else { return }
         let wanted = withObservationTracking {
             _ = sessionPanel.presentation.contentHeight
+            _ = sessionPanel.presentation.pane.windowExtra
             _ = panel.presentation.bodyHeight
             _ = panel.presentation.footerHeight
             return shell.sessionPanelShown

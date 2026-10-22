@@ -62,7 +62,12 @@ struct AssistantTurnView: View {
             VStack(alignment: .leading, spacing: TFSpace.sm) {
                 Message(isUser: false) {
                     VStack(alignment: .leading, spacing: TFSpace.sm) {
-                        MessageText(MessageViewFull.shownText(turn), isDeleted: turn.textDeleted)
+                        if turn.textDeleted {
+                            MessageText(MessageViewFull.shownText(turn), isDeleted: true)
+                        } else {
+                            // 안전한 부분만 그린다 (코드 블록 · 인라인 코드 · 목록 · 굵게): 링크 · 표 · 이미지 · HTML은 쓴 그대로 글자다 (DZ 세션 보기 V1 승인)
+                            SessionMarkdownView(source: MessageViewFull.shownText(turn))
+                        }
                         // 잘린 답 바로 아래 8: 이 Mac 원장에 전문이 있을 때만 링크가 보이고, 누르면 그 자리에서 펼친다
                         if MessageViewFull.showsLink(turn) {
                             LinkButton(MessageViewFull.title) { actions.viewFull(turn) }

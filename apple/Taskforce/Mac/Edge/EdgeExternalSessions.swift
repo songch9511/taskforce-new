@@ -332,6 +332,15 @@ extension EdgeShellModel {
     static let liveConversation: @MainActor (String, String?) -> ClaudeAppConversation = { id, cwd in
         ClaudeAppConversation(sessionID: id, cwd: cwd, source: ClaudeAppTranscriptReader(claudeDirectory: NSHomeDirectory() + "/.claude", log: BridgeOSLog()))
     }
+
+    /// 실제 앱의 백그라운드 일 출력 꼬리 읽기 (세션 보기 V1): 이 Mac의 임시 폴더 · `~/.claude`의 그 일 하나만 좁게 읽는다 (`BackgroundTaskTail`: 경로는 (세션 id · 일 id · 작업 폴더)로 만들고
+    /// 모든 폴더 · 파일이 이 사용자의 진짜 것일 때만, 끝 부분만, 메모리에만). 글 · 경로를 로그에 남기지 않는다
+    static let liveBackgroundTail: @MainActor (String, String?, TaskforceKit.BackgroundTask) -> BackgroundTaskTailModel = { sessionID, cwd, task in
+        let reader = BackgroundTaskTail(claudeDirectory: NSHomeDirectory() + "/.claude")
+        let taskID = task.id
+        let kind = task.kind
+        return BackgroundTaskTailModel(taskID: taskID, read: { window in reader.read(sessionID: sessionID, cwd: cwd, taskID: taskID, kind: kind, window: window) })
+    }
 }
 
 /// Claude 데스크톱 세션을 레일에 올리는 이 Mac의 값들 (OA PR-D2): 등록 폴더(`~/.claude/sessions`) 폴러 + `claude agents --json` 맞춰 보기 + 안 연 끝남 표시 + 하루 한 번 지표.
@@ -365,14 +374,19 @@ enum ClaudeAppRuntime {
 struct RailDoneStores {
     let rail: any RailDoneStore
     let claudeApp: any ClaudeAppDoneStore
+    /// 백그라운드 일 옆줄의 "열어 본 시각" (세션 보기 V1: 막 끝난 일은 목록을 한 번 열어 볼 때까지 남는다). 두 세션 패널이 같이 쓴다
+    let backgroundOpen: any BackgroundTaskOpenStore
 
     static func inMemory() -> RailDoneStores {
-        RailDoneStores(rail: InMemoryRailDoneStore(), claudeApp: InMemoryClaudeAppDoneStore())
+        RailDoneStores(rail: InMemoryRailDoneStore(), claudeApp: InMemoryClaudeAppDoneStore(), backgroundOpen: InMemoryBackgroundTaskOpenStore())
     }
 
     /// 앱을 다시 켠 뒤에도 남는다 (기본은 앱 설정 도메인)
     static func persistent(defaults: any RailDoneDefaults = UserDefaults.standard) -> RailDoneStores {
-        RailDoneStores(rail: UserDefaultsRailDoneStore(defaults: defaults), claudeApp: UserDefaultsClaudeAppDoneStore(defaults: defaults))
+        RailDoneStores(
+            rail: UserDefaultsRailDoneStore(defaults: defaults), claudeApp: UserDefaultsClaudeAppDoneStore(defaults: defaults),
+            backgroundOpen: UserDefaultsBackgroundTaskOpenStore(defaults: defaults)
+        )
     }
 }
 

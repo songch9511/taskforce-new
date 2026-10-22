@@ -16,7 +16,10 @@ import Foundation
 /// - peer 줄의 글은 받는 쪽이 감싼 글(`message.content`, "not typed by your user …")이 아니라 보낸 글 `origin.body`다. 같은 (`msg_id`, 검증된 보낸 pid, 플러그인)은 한 번만 (`user`와 `queued_command` 두 모양으로 기록돼도). `msg_id`만 같은 다른 보낸이의 메시지는 가리지 않는다
 ///
 /// 상한: 한 줄 1 MiB(넘으면 그 줄을 통째로 건너뛴다) · 한 번에 읽는 창 2 MiB · 처음 열면 꼬리부터 마지막 200개 · 이전 쪽은 **거슬러 간 거리**가 총량 16 MiB를 넘지 않게 · 글 한 칸 32 KiB.
-/// 도구 줄은 이름과 `description`뿐이다. 입력 · 결과 본문은 펼칠 때(`detail`) 그 줄을 다시 읽어서 16 KiB까지만 준다 (결과는 그 줄 뒤로 총량 16 MiB 안에서 찾는다: 그보다 먼 결과는 못 찾는다).
+/// 도구 줄은 이름과 `description`과 **파일 이름**(`file_path` · `notebook_path`의 마지막 성분: 경로 · 명령 · 검색어는 읽지 않는다)뿐이다. 입력 · 결과 본문은 펼칠 때(`detail`) 그 줄을 다시 읽어서 16 KiB까지만 준다 (결과는 그 줄 뒤로 총량 16 MiB 안에서 찾는다: 그보다 먼 결과는 못 찾는다).
+/// 세션 보기 V1(DZ oa-session-view-dz v2)이 더한 것: ① 결과 줄의 `tool_result.is_error`(불리언)와 `tool_use_id` → 실패한 도구 id ② 백그라운드 일의 시작 줄(`toolUseResult`의 `backgroundTaskId` · `agentId`+`isAsync`)과 끝 알림 줄
+/// (`origin.kind == "task-notification"` 또는 `queued_command`의 `commandMode == "task-notification"`) → 아이디 · 상태 · 끝낸 코드 · 시각뿐 (`BackgroundTaskText`). 이 둘은 대화 줄이 아니라 **그 번에 읽은 신호**(`ClaudeAppTranscriptCursor.signals`)로만 나간다.
+/// 오류 글 · 명령 · 출력 · 알림 요약 · 에이전트 프롬프트는 선언하지 않아 값으로 남지 않는다. 사용자가 친 글 · 어시스턴트의 글에 알림 모양이 있어도 신호가 아니다 (출처 표시가 있는 줄만).
 /// 메모리에만 둔다 (디스크 캐시 0). 글 · 경로 · id를 로그에 남기지 않는다: `claude_app_transcript {result}` 코드 하나뿐.
 /// 안전: 5.1과 같다 — `O_NOFOLLOW` · 이 uid · 일반 파일 (`ExternalSessionFileSystem.read`), 프로젝트 디렉터리 · 기록 파일 모두 기호 링크 아님.
 /// 기록 글은 평문으로만 다룬다 (DT8): 링크 · 태그를 해석하지 않고, 제어 글자 · 눈에 보이지 않는 서식 글자(방향 바꿈 · 폭 없는 공백 · 태그 · 줄 구분 등)를 지운다 (ZWJ · ZWNJ는 둔다).
@@ -75,7 +78,7 @@ public struct ClaudeAppTranscriptReader: Sendable {
         let scanned = scan(data, start: start, dropHead: start > 0, sessionID: sessionID, peers: &peers)
         var cursor = ClaudeAppTranscriptCursor(
             sessionID: sessionID, path: located.path, created: located.entry.created, earliestOffset: start, nextOffset: start + Int64(scanned.consumedEnd),
-            coveredBytes: 0, discarding: false, peerIDs: peers.ids
+            coveredBytes: 0, discarding: false, peerIDs: peers.ids, signals: scanned.signals
         )
         if start > 0, !scanned.sawNewline {
             // 창 전체가 한 줄 안이다 (창보다 긴 줄): 그 줄은 건너뛰고, 끝나는 개행까지 이어 읽기에서도 버린다
@@ -94,7 +97,7 @@ public struct ClaudeAppTranscriptReader: Sendable {
     /// **빈 쪽에 `hasEarlier`가 true여도 끝이 아니다**: 그 창이 건너뛴 줄뿐일 수 있다 — 다시 누르면 더 앞으로 간다
     public func earlier(_ cursor: ClaudeAppTranscriptCursor) -> ClaudeAppTranscriptLoad {
         guard cursor.earliestOffset > 0, cursor.coveredBytes < limits.maxTotalBytes else {
-            return .page(ClaudeAppTranscriptPage(turns: [], cursor: cursor, hasEarlier: false, skippedLines: 0))
+            return .page(ClaudeAppTranscriptPage(turns: [], cursor: Self.quiet(cursor), hasEarlier: false, skippedLines: 0))
         }
         guard let entry = fileSystem.lstat(cursor.path), entry.kind == .regular, entry.owner == fileSystem.userID, entry.created == cursor.created, entry.size >= cursor.earliestOffset else {
             return .unreadable
@@ -103,10 +106,11 @@ public struct ClaudeAppTranscriptReader: Sendable {
         let length = Int(min(Int64(limits.windowBytes), Int64(limits.maxTotalBytes - cursor.coveredBytes), cursor.earliestOffset))
         let start = cursor.earliestOffset - Int64(length)
         guard let data = fileSystem.read(cursor.path, start, length), data.count == length else { return .unreadable }
-        var next = cursor
+        var next = Self.quiet(cursor)
         var peers = PeerSeen(ids: cursor.peerIDs)
         let scanned = scan(data, start: start, dropHead: start > 0, sessionID: cursor.sessionID, peers: &peers)
         next.peerIDs = peers.ids
+        next.signals = scanned.signals
         guard scanned.sawNewline else {
             // 창 전체가 한 줄 안이다: 그 줄은 건너뛰고 한 줄의 가운데에서 이어 간다
             next.earliestOffset = start
@@ -134,14 +138,14 @@ public struct ClaudeAppTranscriptReader: Sendable {
             log.log("claude_app_transcript", ["result": .code("reset")])
             return .reset
         }
-        if entry.size == cursor.nextOffset { return .turns([], cursor: cursor, hasMore: false) }
+        if entry.size == cursor.nextOffset { return .turns([], cursor: Self.quiet(cursor), hasMore: false) }
         let remaining = entry.size - cursor.nextOffset
         let length = Int(min(Int64(limits.windowBytes), remaining))
         guard let read = fileSystem.read(cursor.path, cursor.nextOffset, length) else {
             log.log("claude_app_transcript", ["result": .code("unreadable")])
             return .unreadable
         }
-        var next = cursor
+        var next = Self.quiet(cursor)
         var data = read
         var base = cursor.nextOffset
         if next.discarding {
@@ -158,6 +162,7 @@ public struct ClaudeAppTranscriptReader: Sendable {
         var peers = PeerSeen(ids: cursor.peerIDs)
         let scanned = scan(data, start: base, dropHead: false, sessionID: cursor.sessionID, peers: &peers)
         next.peerIDs = peers.ids
+        next.signals = scanned.signals
         let leftover = data.count - scanned.consumedEnd
         if leftover > limits.maxLineBytes || (scanned.consumedEnd == 0 && data.count >= limits.windowBytes) {
             // 개행 없이 한 줄이 상한을 넘었다: 지금까지의 조각을 버리고 그 줄의 끝(개행)까지 계속 버린다
@@ -254,11 +259,33 @@ public struct ClaudeAppTranscriptReader: Sendable {
         /// 마지막 개행 바로 뒤 (창 안의 위치). 그 뒤는 아직 끝나지 않은 줄이다
         var consumedEnd = 0
         var sawNewline = false
+        /// 이 창에서 읽은 대화 줄 아닌 신호 (실패한 도구 · 백그라운드 일의 사건)
+        var signals = ClaudeAppTranscriptSignals()
+        var failedSeen = Set<String>()
+
+        mutating func collect(_ parsed: Parsed) {
+            for id in parsed.failedToolIDs where failedSeen.insert(id).inserted { signals.failedToolIDs.append(id) }
+            signals.background += parsed.background
+        }
+    }
+
+    /// 한 줄에서 나온 것: 대화 줄 + (대화가 아닌) 신호
+    private struct Parsed {
+        var turns: [ClaudeAppTurn] = []
+        var failedToolIDs: [String] = []
+        var background: [BackgroundTaskEvent] = []
     }
 
     private enum LineResult {
-        case turns([ClaudeAppTurn])
+        case parsed(Parsed)
         case failed
+    }
+
+    /// 읽은 번의 신호를 비운 커서 (읽을 것이 없었던 번 · 새 읽기의 바탕): 신호는 읽은 그 번에만 있다
+    private static func quiet(_ cursor: ClaudeAppTranscriptCursor) -> ClaudeAppTranscriptCursor {
+        var copy = cursor
+        copy.signals = ClaudeAppTranscriptSignals()
+        return copy
     }
 
     /// 이미 보여 준 peer 메시지의 열쇠 (최근 256개): 같은 메시지가 `user`와 `queued_command` 두 모양으로 기록돼도 한 번만 보인다.
@@ -318,7 +345,9 @@ public struct ClaudeAppTranscriptReader: Sendable {
                 continue
             }
             switch parse(data.subdata(in: span), offset: start + Int64(span.lowerBound), sessionID: sessionID, decoder: decoder, peers: &peers) {
-            case .turns(let turns): if !turns.isEmpty { scanned.groups.append((start + Int64(span.lowerBound), turns)) }
+            case .parsed(let parsed):
+                if !parsed.turns.isEmpty { scanned.groups.append((start + Int64(span.lowerBound), parsed.turns)) }
+                scanned.collect(parsed)
             case .failed: scanned.skipped += 1
             }
         }
@@ -371,8 +400,10 @@ public struct ClaudeAppTranscriptReader: Sendable {
         /// `origin` 키가 있다 (모양이 낯설어 디코딩하지 못해도): origin이 있는데 peer가 아니면 사용자가 친 말이 아니다
         var hasOrigin = false
         var attachment: Attachment?
+        /// 백그라운드 일의 시작 줄에서만: 아이디 칸 셋뿐이다 (`stdout` · `prompt` · `outputFile` 등은 선언하지 않는다)
+        var toolUseResult: ToolUseResult?
 
-        enum CodingKeys: String, CodingKey { case type, sessionId, isMeta, isSidechain, isCompactSummary, isVisibleInTranscriptOnly, timestamp, message, origin, attachment }
+        enum CodingKeys: String, CodingKey { case type, sessionId, isMeta, isSidechain, isCompactSummary, isVisibleInTranscriptOnly, timestamp, message, origin, attachment, toolUseResult }
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -387,6 +418,23 @@ public struct ClaudeAppTranscriptReader: Sendable {
             origin = try? container.decodeIfPresent(Origin.self, forKey: .origin)
             hasOrigin = container.contains(.origin) && !((try? container.decodeNil(forKey: .origin)) ?? false)
             attachment = try? container.decodeIfPresent(Attachment.self, forKey: .attachment)
+            toolUseResult = try? container.decodeIfPresent(ToolUseResult.self, forKey: .toolUseResult)
+        }
+    }
+
+    /// `toolUseResult`는 `backgroundTaskId`(백그라운드 Bash) · `agentId` + `isAsync`(백그라운드 에이전트)만 꺼낸다. 문자열이거나 낯선 모양이면 없는 것이다
+    private struct ToolUseResult: Decodable {
+        var backgroundTaskID: String?
+        var agentID: String?
+        var isAsync: Bool?
+
+        enum CodingKeys: String, CodingKey { case backgroundTaskID = "backgroundTaskId", agentID = "agentId", isAsync }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            backgroundTaskID = try? container.decodeIfPresent(String.self, forKey: .backgroundTaskID)
+            agentID = try? container.decodeIfPresent(String.self, forKey: .agentID)
+            isAsync = try? container.decodeIfPresent(Bool.self, forKey: .isAsync)
         }
     }
 
@@ -429,9 +477,14 @@ public struct ClaudeAppTranscriptReader: Sendable {
         var name: String?
         var id: String?
         var description: String?
+        /// `tool_use`의 대상 파일 **이름** (`file_path` · `notebook_path`의 마지막 성분)
+        var fileName: String?
+        /// `tool_result`: 어느 도구 호출의 결과인가 · 오류였나 (오류 글 · 결과 글은 선언하지 않는다)
+        var toolUseID: String?
+        var isError: Bool?
 
-        enum CodingKeys: String, CodingKey { case type, text, name, id, input }
-        enum InputKeys: String, CodingKey { case description }
+        enum CodingKeys: String, CodingKey { case type, text, name, id, input, toolUseID = "tool_use_id", isError = "is_error" }
+        enum InputKeys: String, CodingKey { case description, filePath = "file_path", notebookPath = "notebook_path" }
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -439,9 +492,13 @@ public struct ClaudeAppTranscriptReader: Sendable {
             text = try? container.decodeIfPresent(String.self, forKey: .text)
             name = try? container.decodeIfPresent(String.self, forKey: .name)
             id = try? container.decodeIfPresent(String.self, forKey: .id)
-            // 도구 입력은 `description`만 꺼낸다 (명령 · 경로 · 내용은 담지 않는다)
+            toolUseID = try? container.decodeIfPresent(String.self, forKey: .toolUseID)
+            isError = try? container.decodeIfPresent(Bool.self, forKey: .isError)
+            // 도구 입력은 `description`과 대상 파일의 **이름**만 꺼낸다 (명령 · 경로 · 검색어 · 내용은 담지 않는다: 경로는 이름만 남기고 버린다)
             if let input = try? container.nestedContainer(keyedBy: InputKeys.self, forKey: .input) {
                 description = try? input.decodeIfPresent(String.self, forKey: .description)
+                let path = (try? input.decodeIfPresent(String.self, forKey: .filePath)) ?? (try? input.decodeIfPresent(String.self, forKey: .notebookPath))
+                fileName = path.flatMap(SessionStepText.fileName(fromPath:))
             }
         }
     }
@@ -465,38 +522,44 @@ public struct ClaudeAppTranscriptReader: Sendable {
         }
     }
 
-    /// `attachment`는 `type`과 `origin`만 꺼낸다 (`prompt` · `rendered` · 계정 칸은 선언하지 않는다)
+    /// `attachment`는 `type`과 `origin`만 꺼낸다 (`rendered` · 계정 칸은 선언하지 않는다). `prompt`는 `commandMode == "task-notification"`일 때만 읽는다
+    /// (끝 알림의 글: 아이디 · 상태 · 끝낸 코드만 쓴다. `prompt_snapshot` 같은 다른 첨부의 `prompt`는 읽지 않는다)
     private struct Attachment: Decodable {
         var type: String?
         var origin: Origin?
+        var notificationText: String?
 
-        enum CodingKeys: String, CodingKey { case type, origin }
+        enum CodingKeys: String, CodingKey { case type, origin, commandMode, prompt }
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             type = try? container.decodeIfPresent(String.self, forKey: .type)
             origin = try? container.decodeIfPresent(Origin.self, forKey: .origin)
+            if (try? container.decodeIfPresent(String.self, forKey: .commandMode)) == "task-notification" {
+                notificationText = try? container.decodeIfPresent(String.self, forKey: .prompt)
+            }
         }
     }
 
     private func parse(_ line: Data, offset: Int64, sessionID: String, decoder: JSONDecoder, peers: inout PeerSeen) -> LineResult {
         // `"user"` · `"assistant"` · `"queued_command"` 글자가 하나도 없는 줄은 대화 줄이 될 수 없다: 디코딩하지 않는다.
         // 글자가 있는 줄은(계정 · 첨부 줄에 우연히 있을 수도 있다) 디코딩하되 `Record`가 선언한 칸만 꺼내고, 아래 규칙을 지나야 대화가 된다
-        guard line.range(of: Self.userNeedle) != nil || line.range(of: Self.assistantNeedle) != nil || line.range(of: Self.queuedNeedle) != nil else { return .turns([]) }
+        guard line.range(of: Self.userNeedle) != nil || line.range(of: Self.assistantNeedle) != nil || line.range(of: Self.queuedNeedle) != nil else { return .parsed(Parsed()) }
         guard String(validating: line, as: UTF8.self) != nil, let record = try? decoder.decode(Record.self, from: line) else { return .failed }
-        return .turns(turns(from: record, offset: offset, sessionID: sessionID, peers: &peers))
+        return .parsed(parsed(from: record, offset: offset, sessionID: sessionID, peers: &peers))
     }
 
     /// 사용자가 친 말이 아닌 Claude Code 표시 줄(슬래시 명령 · 로컬 명령 출력)의 시작
     private static let markupPrefixes = ["<command-name>", "<command-message>", "<command-args>", "<local-command-"]
 
-    private func turns(from record: Record, offset: Int64, sessionID: String, peers: inout PeerSeen) -> [ClaudeAppTurn] {
-        if record.isSidechain == true || record.isCompactSummary == true || record.isVisibleInTranscriptOnly == true { return [] }
-        if let other = record.sessionId, other != sessionID { return [] }
+    private func parsed(from record: Record, offset: Int64, sessionID: String, peers: inout PeerSeen) -> Parsed {
+        if record.isSidechain == true || record.isCompactSummary == true || record.isVisibleInTranscriptOnly == true { return Parsed() }
+        if let other = record.sessionId, other != sessionID { return Parsed() }
         let time = record.timestamp.flatMap(Self.date)
         var out: [ClaudeAppTurn] = []
-        func add(_ kind: ClaudeAppTurn.Kind, truncated: Bool = false, toolID: String? = nil) {
-            out.append(ClaudeAppTurn(id: "\(offset)-\(out.count)", kind: kind, timestamp: time, truncated: truncated, lineOffset: offset, toolUseID: toolID))
+        var signals = Parsed()
+        func add(_ kind: ClaudeAppTurn.Kind, truncated: Bool = false, toolID: String? = nil, target: String? = nil) {
+            out.append(ClaudeAppTurn(id: "\(offset)-\(out.count)", kind: kind, timestamp: time, truncated: truncated, lineOffset: offset, toolUseID: toolID, target: target))
         }
         func user(_ raw: String) {
             guard let (kept, cut) = plain(raw), !Self.markupPrefixes.contains(where: kept.hasPrefix) else { return }
@@ -515,8 +578,9 @@ public struct ClaudeAppTranscriptReader: Sendable {
             if let origin = record.origin, origin.kind == "peer" {
                 peer(origin)
             } else if record.hasOrigin {
-                // origin이 있는데 peer가 아니다(훅 · 작업 알림 등): 사용자가 친 말이 아니다
-                break
+                // origin이 있는데 peer가 아니다(훅 · 작업 알림 등): 사용자가 친 말이 아니다. 백그라운드 일의 끝 알림만 대화가 아닌 신호로 읽는다 (출처 표시가 있는 줄만: 사용자가 친 글은 알림이 아니다)
+                if record.origin?.kind == "task-notification", case .text(let text)? = record.message?.content,
+                   let event = BackgroundTaskText.notification(text, at: time) { signals.background.append(event) }
             } else if record.isMeta != true, let content = record.message?.content {
                 switch content {
                 case .text(let text):
@@ -524,26 +588,47 @@ public struct ClaudeAppTranscriptReader: Sendable {
                 case .blocks(let blocks):
                     // 도구 결과 · 이미지 블록은 대화가 아니다: 텍스트 블록만 이어 붙인다
                     user(blocks.filter { $0.type == "text" }.compactMap(\.text).joined(separator: "\n"))
+                    // 결과 줄에서는 신호만: 오류로 끝난 도구 호출의 id (불리언 하나) · 백그라운드 일의 시작
+                    let results = blocks.filter { $0.type == "tool_result" }.compactMap { block in block.toolUseID.flatMap { BackgroundTaskText.isValidToolUseID($0) ? ($0, block.isError == true) : nil } }
+                    for (toolID, failed) in results where failed { signals.failedToolIDs.append(toolID) }
+                    if let started = record.toolUseResult.flatMap({ Self.backgroundStart($0, toolUseID: results.first?.0, at: time) }) { signals.background.append(started) }
                 }
             }
         case "assistant":
-            guard case .blocks(let blocks)? = record.message?.content else { return [] }
+            guard case .blocks(let blocks)? = record.message?.content else { return Parsed() }
             for block in blocks {
                 switch block.type {
                 case "text":
                     if let text = block.text, let (kept, cut) = plain(text) { add(.assistant(kept), truncated: cut) }
                 case "tool_use":
                     guard let name = block.name.flatMap(ExternalSessionRules.sanitizedTitle) else { continue }
-                    add(.tool(name: name, description: block.description.flatMap(ExternalSessionRules.sanitizedTitle)), toolID: block.id.flatMap { $0.utf8.count <= 128 ? $0 : nil })
+                    add(.tool(name: name, description: block.description.flatMap(ExternalSessionRules.sanitizedTitle)), toolID: block.id.flatMap { $0.utf8.count <= 128 ? $0 : nil }, target: block.fileName)
                 default: continue
                 }
             }
         case "attachment":
-            if record.attachment?.type == "queued_command", let origin = record.attachment?.origin, origin.kind == "peer" { peer(origin) }
+            if record.attachment?.type == "queued_command", let origin = record.attachment?.origin, origin.kind == "peer" {
+                peer(origin)
+            } else if record.attachment?.type == "queued_command", let text = record.attachment?.notificationText, let event = BackgroundTaskText.notification(text, at: time) {
+                // 턴이 도는 동안 끼어든 끝 알림 (`commandMode == "task-notification"`)
+                signals.background.append(event)
+            }
         default:
             break
         }
-        return out
+        signals.turns = out
+        return signals
+    }
+
+    /// 백그라운드 일의 시작 줄 (BG-1): 아이디가 틀렸으면 nil
+    private static func backgroundStart(_ result: ToolUseResult, toolUseID: String?, at time: Date?) -> BackgroundTaskEvent? {
+        if let id = result.backgroundTaskID, BackgroundTaskText.isValidTaskID(id) {
+            return .started(taskID: id, toolUseID: toolUseID, kind: .command, name: nil, at: time)
+        }
+        if result.isAsync == true, let id = result.agentID, BackgroundTaskText.isValidTaskID(id) {
+            return .started(taskID: id, toolUseID: toolUseID, kind: .agent, name: nil, at: time)
+        }
+        return nil
     }
 
     // MARK: 글 · 시각

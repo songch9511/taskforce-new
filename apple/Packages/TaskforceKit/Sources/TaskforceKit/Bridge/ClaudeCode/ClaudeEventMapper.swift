@@ -118,6 +118,8 @@ public enum ClaudeMapperAction: Equatable, Sendable {
     case initSeen(ClaudeInitInfo)
     /// result를 봤다 (프로세스가 곧 끝나야 한다)
     case resultSeen
+    /// 백그라운드 일의 사건 (로컬 전용: 서버로 가지 않는다. 이름은 모델이 쓴 description만)
+    case backgroundTask(BackgroundTaskEvent)
 }
 
 /// stream-json 사건 → 형태 있는 사건 + 자체 점검 ②③④⑥ (순수, I/O 0). 처음 `result` 뒤의 사건은 무시한다 (비어 있지 않은 resume가 턴을 하나 더 돌린 r2-cc2mcp-2)
@@ -142,6 +144,12 @@ public struct ClaudeEventMapper: Sendable {
     static let toleratedRefusals = 5
     private var toolUseNames: [String: String] = [:]
     private var toolUseFiles: [String: String] = [:]
+    /// 도구 호출 id → 모델이 쓴 `input.description` (백그라운드 일의 이름을 확인한다: 명령 글은 이름이 아니다). 한 spawn에서 `maxToolDescriptions`개까지
+    private var toolDescriptions: [String: String] = [:]
+    static let maxToolDescriptions = 512
+    /// 앞에서 돌던 명령(`is_backgrounded == false`)의 일 id: 그 알림 · 갱신은 백그라운드 일이 아니라 무시한다
+    private var foregroundTasks: Set<String> = []
+    static let maxForegroundTasks = 256
     private var artifacts: [ClaudeArtifactCandidate] = []
     private var confirmed: ClaudePendingDeferred?
 
@@ -196,6 +204,7 @@ public struct ClaudeEventMapper: Sendable {
                 accepted = true
                 out.append(.emit(.accepted))
             }
+            for (id, description) in info.toolDescriptions where toolDescriptions.count < Self.maxToolDescriptions || toolDescriptions[id] != nil { toolDescriptions[id] = description }
             for block in info.blocks {
                 switch block {
                 case .text(let value):
@@ -248,8 +257,13 @@ public struct ClaudeEventMapper: Sendable {
                 }
             }
             out += progress(now)
-        case .task:
-            out += progress(now)
+        case .task(let payload):
+            // 시작 · 알림은 전처럼 진행 신호로 센다 (모양이 틀린 것도). 그 밖의 task 줄(진행 · 갱신 · 목록)은 전처럼 진행 신호가 아니다
+            switch payload {
+            case .started?, .notification?, nil: out += progress(now)
+            default: break
+            }
+            if let payload { out += backgroundActions(payload, now: now) }
         case .rateLimit(let status):
             if let status, status != "allowed" { rateLimited = true }
         case .result(let info):
@@ -364,6 +378,71 @@ public struct ClaudeEventMapper: Sendable {
         guard !artifacts.isEmpty else { return [] }
         defer { artifacts = [] }
         return [.artifacts(artifacts)]
+    }
+
+    // MARK: 백그라운드 일 (로컬 전용: 서버로 가는 사건이 아니다)
+
+    private static func kind(taskType: String?, tool: String?, names: [String: String]) -> BackgroundTaskKind {
+        switch taskType {
+        case "local_bash": return .command
+        case "local_agent": return .agent
+        default: break
+        }
+        switch tool.flatMap({ names[$0] }) {
+        case "Bash": return .command
+        case "Agent", "Task": return .agent
+        default: return .other
+        }
+    }
+
+    /// 이름: **모델이 쓴 글만**. 에이전트는 설명을 늘 모델이 쓴다. 그 밖(명령 등)은 CLI가 모델이 안 쓰면 명령 글 자체를 description 자리에 주므로,
+    /// 그 도구 호출의 `input.description`(모델이 쓴 글)과 같다고 확인될 때만 이름으로 쓴다. 확인할 수 없으면 nil (화면은 도구 이름을 보인다)
+    private func vettedName(_ description: String?, tool: String?, kind: BackgroundTaskKind) -> String? {
+        guard let description, !description.isEmpty else { return nil }
+        if kind == .agent { return description }
+        guard let tool, let written = toolDescriptions[tool], written == description else { return nil }
+        return description
+    }
+
+    private static func finishedStatus(_ word: String) -> BackgroundTaskStatus? {
+        switch word {
+        case "completed": .done
+        case "failed": .failed
+        case "stopped", "killed", "cancelled", "canceled": .stopped
+        default: nil
+        }
+    }
+
+    private mutating func backgroundActions(_ event: ClaudeTaskStreamEvent, now: Date) -> [ClaudeMapperAction] {
+        switch event {
+        case .started(let id, let tool, let type, let description, let backgrounded):
+            if backgrounded == false {
+                if foregroundTasks.count < Self.maxForegroundTasks { foregroundTasks.insert(id) }
+                return []
+            }
+            let kind = Self.kind(taskType: type, tool: tool, names: toolUseNames)
+            return [.backgroundTask(.started(taskID: id, toolUseID: tool, kind: kind, name: vettedName(description, tool: tool, kind: kind), at: now))]
+        case .progress:
+            return []
+        case .updated(let id, let status, let endMillis):
+            guard !foregroundTasks.contains(id), let status, let finished = Self.finishedStatus(status) else { return [] }
+            let end = endMillis.map { Date(timeIntervalSince1970: Double($0) / 1000) } ?? now
+            return [.backgroundTask(.finished(taskID: id, kind: nil, status: finished, exitCode: nil, at: end))]
+        case .notification(let id, _, let status, let exitCode, let kind):
+            guard !foregroundTasks.contains(id) else { return [] }
+            let finished = BackgroundTaskText.status(status ?? "")
+            return [.backgroundTask(.finished(taskID: id, kind: kind, status: finished, exitCode: finished == .stopped ? nil : exitCode, at: now))]
+        case .changed(let tasks):
+            var out: [ClaudeMapperAction] = []
+            var running: [String] = []
+            for task in tasks where !foregroundTasks.contains(task.taskID) {
+                let kind = Self.kind(taskType: task.taskType, tool: nil, names: toolUseNames)
+                out.append(.backgroundTask(.started(taskID: task.taskID, toolUseID: nil, kind: kind, name: vettedName(task.description, tool: nil, kind: kind), at: now)))
+                running.append(task.taskID)
+            }
+            out.append(.backgroundTask(.snapshot(runningTaskIDs: running)))
+            return out
+        }
     }
 
     /// 2초에 하나로 묶는다

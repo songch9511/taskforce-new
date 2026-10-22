@@ -363,6 +363,11 @@ final class EdgeShellModel {
     @ObservationIgnored private let claudeAppOpened: ClaudeAppOpenedMetric?
     /// 데스크톱 세션 하나의 대화 읽기를 만든다 (세션 id, 등록 파일의 작업 폴더): 실제 앱은 `~/.claude`의 기록을 읽는 `ClaudeAppTranscriptReader`, 시험은 가짜
     @ObservationIgnored var makeConversation: @MainActor (String, String?) -> ClaudeAppConversation = EdgeShellModel.liveConversation
+    /// 한 세션의 백그라운드 일 하나의 출력 꼬리 읽기를 만든다 (세션 id, 작업 폴더, 그 일): 실제 앱은 이 Mac의 기록 · 임시 폴더를 좁게 읽는 `BackgroundTaskTail`, 시험 · 견본은 가짜.
+    /// Claude 세션 보기와 Taskforce 세션 패널이 같이 쓴다 (Taskforce는 이 Mac의 기록이 묶은 Claude 세션 id로 부른다)
+    @ObservationIgnored var makeBackgroundTail: @MainActor (String, String?, BackgroundTask) -> BackgroundTaskTailModel = EdgeShellModel.liveBackgroundTail
+    /// Esc가 먼저 닫을 옆줄이 있나 (꼬리 → 목록 → 접힘): Claude 세션 패널 컨트롤러가 채운다. 닫았으면 true
+    @ObservationIgnored var onEscapeDesktopPane: () -> Bool = { false }
     /// 지금 보이는 Claude 데스크톱 세션 (세션 id): 레일 링 · Sessions 줄을 눌러 연다. 메인 패널이 Sessions면 그 왼쪽 패널로, `.claudeApp` 화면이면 레일 옆 한 패널로 선다
     private(set) var desktopPanelID: String? {
         didSet { desktopPanelChanged() }
@@ -1455,11 +1460,14 @@ final class EdgeShellModel {
     func escape() {
         // 레일 옆 한 패널(데스크톱 세션 보기)은 Esc가 패널째 접는다. Sessions 왼쪽의 세션 보기는 Esc가 먼저 그것만 닫는다 (OA PR-D2)
         if panelOpen, view == .claudeApp {
+            // 옆줄이 열려 있으면 Esc가 먼저 그것만 접는다 (꼬리 → 목록 → 접힘 → 패널)
+            if onEscapeDesktopPane() { return }
             dismiss()
             return
         }
         if panelOpen, view == .sessions, desktopPanelID != nil || sessionPanelID != nil {
             if desktopPanelID != nil {
+                if onEscapeDesktopPane() { return }
                 desktopPanelID = nil
             } else if !onEscapeSessionOverlay() {
                 sessionPanelID = nil

@@ -19,6 +19,8 @@ final class FakeClaude: @unchecked Sendable {
     let helpers: ClaudeCodeHelpers
     let environment: [String: String]
     let timing: ClaudeCodeTiming
+    /// 이 실행의 백그라운드 일 판 (실제 앱의 공유 판을 쓰지 않는다: 시험끼리 섞이지 않게 실행마다 하나)
+    let board = BackgroundTaskBoard()
 
     /// - `linked`: 후보 `~/.local/bin/claude`가 실제 파일(`~/versions/claude-fake`)을 가리키는 기호 링크다 (8장 8)
     /// - `keeper`: 지킴이 대신 쓸 실행 파일 (없는 경로 · 늦게 뜨는 감싸개, 14장 1 · 9)
@@ -54,7 +56,7 @@ final class FakeClaude: @unchecked Sendable {
         self.timing = timing
         process = ClaudeCodeProcess(
             sessionsRoot: box.sessionsRoot, hookServer: server, helpers: helpers, locator: ClaudeCodeLocator(candidates: [claude.path], confinedTo: box.root.path),
-            environment: environment, managedSettingsPath: box.root.appending(path: "managed-settings.json").path, timing: timing, log: log, testHooks: hooks
+            environment: environment, managedSettingsPath: box.root.appending(path: "managed-settings.json").path, timing: timing, log: log, testHooks: hooks, backgroundTasks: board
         )
         if attach { process.attach(AgentRuntimeServices(decideTool: decider.function)) }
     }

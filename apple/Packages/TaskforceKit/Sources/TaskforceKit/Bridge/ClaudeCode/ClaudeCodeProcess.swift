@@ -118,6 +118,8 @@ public actor ClaudeCodeProcess: AgentProcess {
     nonisolated let services = Mutex<AgentRuntimeServices?>(nil)
     /// Edit/Write가 바꾸면 안 되는 앱 데이터 폴더 (`sessionsRoot`는 늘 포함, 10장 5)
     nonisolated let protectedRoots: [URL]
+    /// 세션이 돌린 백그라운드 일 (`task_*` 줄, 로컬 전용: 서버 · 디스크 · 로그 0). Taskforce 세션 패널이 이 Mac 안에서 읽는다
+    nonisolated let backgroundTasks: BackgroundTaskBoard
 
     private var spawns: [String: Spawn] = [:]
     private var sessionSpawn: [String: String] = [:]
@@ -160,6 +162,7 @@ public actor ClaudeCodeProcess: AgentProcess {
         guard forgetWhenSettled.contains(sessionID), settling[sessionID] == nil, registeredSpawns(sessionID).isEmpty else { return false }
         forgetWhenSettled.remove(sessionID)
         sessionRedactors[sessionID] = nil
+        backgroundTasks.clear(session: sessionID)
         return true
     }
 
@@ -209,8 +212,9 @@ public actor ClaudeCodeProcess: AgentProcess {
         sessionsRoot: URL, hookServer: HookSocketServer?, helpers: ClaudeCodeHelpers, locator: ClaudeCodeLocator,
         environment: [String: String] = ProcessInfo.processInfo.environment, managedSettingsPath: String = ClaudeCodeProbe.managedSettingsPath,
         fileSystem: GateFileSystem = .live, timing: ClaudeCodeTiming = .standard, log: any BridgeLogSink = NoBridgeLog(), runner: ClaudeCommandRunner? = nil,
-        testHooks: ClaudeCodeTestHooks = ClaudeCodeTestHooks(), protectedRoots: [URL] = []
+        testHooks: ClaudeCodeTestHooks = ClaudeCodeTestHooks(), protectedRoots: [URL] = [], backgroundTasks: BackgroundTaskBoard = .shared
     ) {
+        self.backgroundTasks = backgroundTasks
         self.sessionsRoot = sessionsRoot
         self.protectedRoots = [sessionsRoot] + protectedRoots
         self.hookServer = hookServer
@@ -1212,6 +1216,9 @@ public actor ClaudeCodeProcess: AgentProcess {
                     "mode": .code(spawn.modeName), "ms_to_init": .millis(Int(Date().timeIntervalSince(spawn.startedAt) * 1000)), "plugins": .count(info.hasPlugins ? 1 : 0),
                     "skills": .count(info.hasSkills ? 1 : 0), "messaging_socket": .count(info.hasMessagingSocket ? 1 : 0),
                 ])
+            case .backgroundTask(let event):
+                // 로컬 전용: 이 Mac의 판에만 쓴다 (서버 · 로그에 보내지 않는다)
+                backgroundTasks.apply(event, session: spawn.agentSessionID)
             case .resultSeen:
                 // result 뒤에는 스스로 끝나야 한다: 끝나지 않으면 SIGINT
                 let wait = timing.exitAfterResult

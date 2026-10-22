@@ -601,3 +601,42 @@ peer 중복 열쇠(msg_id · 보낸 pid · 플러그인) · 타자로 친 `user`
 - Assistant 창에서 ⌘4는 지나간다(`AssistantWindowManager.KeyIntent` 범위 밖). Settings › Shortcuts 목록에 ⌘4 Sessions를 나열하려면 `EdgeShellModel.Control.shortcut`을 `tooltipShortcut`으로 되돌리고 `SettingsWindowTests.panelKeysAreOnlyTheOnesThatWork`를 고친다(범위 밖).
 - 페이로드(타자로 친 말) 외의 peer 메시지(`peer`)는 오른쪽 말풍선으로 보인다("via Taskforce" 표시는 중계(PR-D3)가 생긴 뒤).
 - `TaskforceUITests`의 Done 라벨 · `TFMotion.doneHold` 시험, `AssistantWindowManager`의 `expandedRailFrame` 호출(Sessions 버튼이 있는 열 높이 기본값 사용), `TaskforceApp.swift`가 실제 `RailDoneStore`를 주는 일은 이 PR 범위 밖이다.
+
+## 21. 세션 보기 V1 · 단계 · 일한 시간 · 복사 · 안전한 마크다운 · 백그라운드 사이드 탭 (OA 세션 보기 V1, DZ `oa-session-view-dz` 최종본 v2)
+
+Claude 세션 보기(20-3)와 Taskforce 세션 패널, Assistant 창의 대화 줄을 같은 방식으로 그린다. **로컬 데이터만**이다: 단계 · 백그라운드 이름을 서버에 저장하는 일은 V2다. 새 서버 경로 · 마이그레이션 · 지표 0, 새 색 토큰 0(`ActivityRing`은 건드리지 않는다). 로그에 글 · 경로 · id · 명령 · 출력을 남기지 않는다.
+
+### 21-1. 단계 · 묶음 (`SessionTimeline` · `SessionStepText` · `SessionTimelineSource`)
+
+- 한 번(사용자 글 → 다음 사용자 글)의 도구 단계가 **연속 4개 이상**이면 도구 이름 한 줄로 묶는다(`groupThreshold`, 첫 등장 순서의 고유 이름을 " · "로 잇는다). 개수는 글자로 보이지 않고 접근성 이름("{n} steps")에만 있다. 펼치면 마지막 6개 + Show all / Show less(`visibleRecent`). 열린 묶음 머리는 위에 붙는다(`LazyVStack` 고정 머리). 마지막 묶음은 도는 중 열려 있고 끝나면 접힌다(사용자가 고른 것은 그대로).
+- 단계 줄은 "이름 · 파일 이름"이다: 파일 이름만(경로의 마지막 구성요소, `ExternalSessionRules.sanitizedTitle`로 정리, 30자 넘으면 가운데를 줄이고 확장자를 지킨다). **경로 · 명령은 어떤 줄에도 담지 않는다.** Bash는 모델이 쓴 `description`을 보인다. 실패는 `tool_result.is_error`로 정하고 굵은 "Failed"를 붙인다.
+- 본문(Input / Result)은 펼칠 때만: Claude 패널은 `ClaudeAppConversation.detail(of:)`(19-3의 reader `detail`, 메인 밖), Taskforce 패널은 이 Mac에 그 세션의 기록이 있을 때(`BridgeRuntime.localTranscriptTarget(forAgentSession:)` → 공급자 세션 id + cwd) 같은 reader로 읽고, 없으면 이름만 보인다. 읽은 본문은 64개까지 캐시한다.
+- 읽는 쪽 변화(`ClaudeAppTranscriptReader`): `ClaudeAppTurn`에 `target`(파일 이름) · `failed`가 생겼고, 선언한 필드만 해석하는 규칙은 그대로다(`file_path`/`notebook_path`의 값에서 마지막 구성요소만 꺼내 나머지는 버린다. 경로 · 명령 · 검색어 칸은 선언하지 않는다). 19-3의 "도구 줄은 이름과 description만"은 "이름 · description · 파일 이름"으로 바뀌었다(`ClaudeAppTranscriptReaderTests.aToolRowIsOnlyTheNameTheDescriptionAndAFileName`가 경로 · 명령 · 입력 칸 이름이 없음을 고정한다).
+
+### 21-2. 일한 시간 (`SessionTime` · `SessionTimeline`)
+
+- 도는 중: "Working · m:ss"(1시간부터 h:mm:ss) 라이브 줄. 끝난 한 번의 마지막 답 밑: "Worked for {42s | 4m 12s | 1h 8m}". **벽시계 시간이고 승인 기다린 시간을 포함한다.** 10초 미만이거나 시작을 모르면 숨긴다. 한 번의 시작 = 사용자 글의 시각, 끝 = 그 한 번 항목의 가장 늦은 시각.
+- Taskforce 패널은 대화(서버 턴)에 이 Mac 기록의 단계를 시각으로 섞는다(어긋난 시계를 5초까지 받아 주고, 같은 시각이면 사용자 < 단계 < 답). 첫 턴보다 훨씬 앞선 단계는 버린다.
+
+### 21-3. 복사 (`SessionCopyFeedback` · `SessionCopyButton`)
+
+- 마지막 답 블록 밑의 복사 아이콘은 호버 · 키보드 포커스일 때만 보이고(복사 직후 "Copied" 1.5초), 코드 블록의 복사는 늘 보인다. **보이는 모양이 아니라 마크다운 원문**을 복사한다. Assistant 창의 턴에도 같다. 빈 글은 복사하지 않는다(클립보드를 지우지 않는다). 클립보드는 `\.sessionPasteboard` 주입(시험은 가짜).
+
+### 21-4. 안전한 마크다운 (`SafeMarkdown` · `SessionMarkdownRender`)
+
+- 직접 만든 파서가 **코드 블록**(` ``` ` · `~~~`, 언어 이름은 20자 이하 `[A-Za-z0-9_+#.-]`만, 색칠 없음, 긴 블록은 Show all / Show less) · **인라인 코드** · **목록**(깊이 2 · 번호) · **굵게** · 제목(굵기만)만 만든다. 링크 · 이미지 · 표 · HTML · 인용은 **쓴 그대로 글자**다. `AttributedString`을 직접 쌓아 링크 속성을 만들 길 자체가 없다(`link == nil`을 시험이 고정). 인라인 해석은 한 문단 8 KiB로 자르고 굵게는 겹치지 않는다. Apple의 마크다운 해석기는 쓰지 않는다.
+
+### 21-5. 백그라운드 일 · 사이드 탭
+
+- **일의 목록** = `BackgroundTaskList`(순수 상태기계: `BackgroundTaskEvent` started / finished / snapshot, 이름 합치기, 정렬 running → failed → 나머지 · 새것 먼저, 256개까지). 사이드 탭은 일이 있으면 보이고, **막 끝난 일은 사용자가 목록을 한 번 열어 볼 때까지** 남는다(열어 본 시각은 이 Mac에만: 세션마다 64개까지, `UserDefaults` 키 `taskforce.sessionView.backgroundOpened`). 세션을 닫으면 도는 일은 그 시각에 Stopped가 된다.
+- **Claude 패널의 원천** = 기록: 시작 = 결과 줄의 `toolUseResult.backgroundTaskId`(백그라운드 Bash) · `agentId` + `isAsync`(백그라운드 에이전트), 끝 = 끝 알림(`origin.kind == "task-notification"`인 사용자 줄, 또는 턴 중 끼어든 `commandMode == "task-notification"`인 `queued_command`)에서 아이디 · 상태 · 끝낸 코드 · 시각만(`BackgroundTaskText`, 요약의 명령 글은 읽지 않는다). `outputFile` · `stdout`은 선언하지 않는다. 이름은 모델이 쓴 `description`만(명령 글은 쓰지 않는다). 읽는 쪽이 줄 단위로 `ClaudeAppTranscriptSignals`(실패 id · 일 사건)를 만들고 `ClaudeAppConversation`이 목록에 합친다.
+- **Taskforce 패널의 원천** = 어댑터의 스트림: `ClaudeStreamParser`가 `task_started` · `task_progress` · `task_updated` · `task_notification` · `background_tasks_changed`를 `ClaudeTaskStreamEvent`로 읽고(id는 `[A-Za-z0-9_-]{1,64}`, 설명 400자까지, 명령 글은 선언하지 않는다), `ClaudeEventMapper`가 **이 Mac에만 쓰는** `ClaudeMapperAction.backgroundTask`로 바꿔 `ClaudeCodeProcess`가 `BackgroundTaskBoard`(세션마다, 32세션 LRU)에 적는다. 서버로 보내지 않고 새 이벤트 종류도 없다. 이름은 직전 `tool_use`의 `input.description`과 맞을 때만 쓰고(에이전트의 설명은 받는다), 전경 일(`is_backgrounded == false`)은 무시한다. 모르는 알림 상태는 Stopped. 기존 진행(progress) 의미는 그대로다(started · notification · 값 없음만 진행으로 센다). 세션을 잊으면 판에서도 지운다.
+- **출력 꼬리 읽기** = `BackgroundTaskTail`(보안 검토 대상, 이 한 타입에 모음). 경로는 기록이 아니라 (세션 id · 일 id · 작업 폴더)로 만든다. 일 id `[A-Za-z0-9_-]{1,64}` · 세션 id 소문자 UUID가 아니면 파일 시스템을 만지기 전에 거절한다. 길 `임시 폴더 → claude-<uid> → 프로젝트 → 세션 → tasks → <일 id>.output`의 모든 폴더는 `lstat` 폴더 · 이 uid · `realpath` 같음, 파일은 이 uid의 일반 파일, 읽기는 `ExternalSessionFileSystem.read`(`O_NOFOLLOW` · `O_NONBLOCK` · fd 소유자 · `F_GETPATH` 일치). 에이전트 일의 출력은 기호 링크를 따라가지 않고 `~/.claude/projects/<프로젝트>/<세션>/subagents/agent-<일 id>.jsonl`을 직접 읽는다(선언한 필드만 해석, 어시스턴트 줄만, agentId · sessionId가 맞아야). 상한: 명령 출력은 끝 16 KiB(Show earlier로 ×4씩 1 MiB까지), 에이전트 기록은 끝 2 MiB 창에서 마지막 200개(줄 1 MiB · 글 32 KiB). 색 코드 · 제어 글자 · 눈에 안 보이는 서식 글자를 지운다. 메모리에만 두고 로그를 남기지 않는다(값의 `description`은 내용을 찍지 않는다).
+- **화면(Mac)**: 사이드 탭은 패널 바깥 모서리에 붙은 전체 높이 띠(36pt) / 펼침(256pt)이고, **패널 창을 왼쪽으로 넓혀서**(`SidePaneLayout.windowFrame`: 오른쪽 모서리 · 위 · 높이 그대로) 만든다. 화면 왼쪽에 여유가 36보다 작으면 띠를 패널 틀 안으로 자르고(`cut`), 256보다 작으면 펼침이 패널 위를 덮는다(`overlay`). 목록 → 일을 누르면 출력 꼬리(Back), 도는 일은 1초마다 다시 읽고 끝난 일은 한 번만 읽는다. Esc 순서: 꼬리 → 목록 → 접기 → 패널(`SessionSidePaneModel.escape`). 움직임은 `TFMotion` 토큰이고 손쉬운 사용의 동작 줄이기를 따른다.
+- **스크롤**: 사용자가 위로 올렸으면 새 내용이 와도 맨 아래로 끌지 않는다(`SessionScrollPin`: 내용 · 뷰 크기가 바뀌어도 의도를 지킨다).
+
+### 21-6. 알려진 한계 · 후속
+
+- 인라인 코드는 배경색 속성만이다(`AttributedString`은 4pt 안쪽 여백 · 모서리 5를 그릴 수 없다). Monitor · 워크플로 상태는 열린 질문(사용자 확인 1회)이라 목록에 없다.
+- 기록의 단계 · 백그라운드 형식은 Claude Code 버전에 달렸다(실측 BG-1 ~ BG-7). 모르는 모양은 건너뛰고 죽지 않는다.
+- 서버 저장(단계 · 백그라운드 이름)은 V2다.

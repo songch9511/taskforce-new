@@ -207,6 +207,10 @@ public enum TFFont {
     public static let footnoteEmphasis = Font.system(size: 13, weight: .semibold)
     /// 키 글자 11 semibold
     public static let key = Font.system(size: 11, weight: .semibold)
+    /// 코드 블록 · 도구 입력 · 결과 (DZ v2 E4, `--font-mono`) 12: 줄 18
+    public static let mono = Font.system(size: 12, design: .monospaced)
+    /// 인라인 코드 (DZ v2 E1) 13: 줄 18
+    public static let monoInline = Font.system(size: 13, design: .monospaced)
     #else
     public static let title = Font.title3.weight(.semibold)
     public static let headline = Font.headline
@@ -224,6 +228,8 @@ public enum TFFont {
     public static let calloutEmphasis = Font.subheadline.weight(.semibold)
     public static let footnoteEmphasis = Font.footnote.weight(.semibold)
     public static let key = Font.caption2.weight(.semibold)
+    public static let mono = Font.system(.caption, design: .monospaced)
+    public static let monoInline = Font.system(.footnote, design: .monospaced)
     #endif
 }
 
