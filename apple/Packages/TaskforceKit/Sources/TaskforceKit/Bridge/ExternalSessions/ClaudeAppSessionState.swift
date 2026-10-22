@@ -35,13 +35,5 @@ public enum ClaudeAppSessionState: Hashable, Sendable {
         default: .answer
         }
     }
-
-    /// 일하는 중이거나 멈춰 있다: 쉬게 되면 "끝났다"로 볼 수 있다
-    public var isActive: Bool {
-        switch self {
-        case .busy, .waiting: true
-        case .idle, .unknown: false
-        }
-    }
 }
 #endif

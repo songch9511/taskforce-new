@@ -8,16 +8,19 @@ import Foundation
 /// 읽는 것
 /// - **사용자가 연 그 세션 하나**의 `projects/<디렉터리>/<소문자 UUID>.jsonl`만. 다른 기록 · 등록 파일 · 자격 파일은 열지도 나열하지도 않는다 (폴더를 모를 때만 `projects`를 한 번 나열한다)
 /// - 해석하는 줄은 셋뿐이다: `user`(텍스트 블록), `assistant`(텍스트 블록 · `tool_use`의 이름과 `description`만), `attachment.type == queued_command`이면서 `origin.kind == "peer"`(DR-7).
-///   그 밖 모든 종류 — `attachment`의 다른 종류(`session_context`의 계정 이메일 · `credential_org` · `prompt_snapshot`), `api-request*`(시스템 프롬프트), 시스템 · 계정 줄 — 은 **열지 않는다**:
-///   `"user"` · `"assistant"` · `"queued_command"` 글자가 없는 줄은 디코딩하지 않고, 디코딩해도 선언한 칸만 꺼낸다 (`thinking` · 도구 입력 · 도구 결과 · 첨부 칸은 선언하지 않는다)
-/// - 건너뛰는 줄: 서브에이전트(`isSidechain`) · 다른 세션 id를 단 줄 · 메타(`isMeta`, peer가 아니면) · peer가 아닌 `queued_command`(작업 알림 등)
-/// - peer 줄의 글은 받는 쪽이 감싼 글(`message.content`, "not typed by your user …")이 아니라 보낸 글 `origin.body`다
+///   그 밖 모든 종류 — `attachment`의 다른 종류(`session_context`의 계정 이메일 · `credential_org` · `prompt_snapshot`), `api-request*`(시스템 프롬프트), 시스템 · 계정 줄 — 은 **대화로 만들지 않는다**:
+///   `"user"` · `"assistant"` · `"queued_command"` 글자가 하나도 없는 줄은 디코딩조차 하지 않고, 글자가 있는 줄은(계정 · 첨부 줄에 우연히 있을 수도 있다) 디코딩하되 **선언한 칸만** 꺼낸다
+///   (`thinking` · 도구 입력 · 도구 결과 · 첨부 칸은 선언하지 않아 값으로 남지 않는다. 디코딩은 그 줄을 잠깐 메모리에 둔다)
+/// - 건너뛰는 줄: 서브에이전트(`isSidechain`) · 다른 세션 id를 단 줄 · 메타(`isMeta`, peer가 아니면) · `origin`이 있는데 peer가 아닌 줄(훅 · 작업 알림 등) · peer가 아닌 `queued_command` ·
+///   Claude Code 표시 줄(`<command-name>` 등으로 시작하는 `user` 글 · `isCompactSummary` · `isVisibleInTranscriptOnly`)
+/// - peer 줄의 글은 받는 쪽이 감싼 글(`message.content`, "not typed by your user …")이 아니라 보낸 글 `origin.body`다. 같은 `msg_id`는 한 번만 (`user`와 `queued_command` 두 모양으로 기록돼도)
 ///
-/// 상한: 한 줄 1 MiB(넘으면 그 줄을 통째로 건너뛴다) · 한 번에 읽는 창 2 MiB · 처음 열기와 이전 쪽의 총량 16 MiB · 처음 열면 꼬리부터 마지막 200개 · 글 한 칸 32 KiB.
-/// 도구 줄은 이름과 `description`뿐이다. 입력 · 결과 본문은 펼칠 때(`detail`) 그 줄을 다시 읽어서 16 KiB까지만 준다.
+/// 상한: 한 줄 1 MiB(넘으면 그 줄을 통째로 건너뛴다) · 한 번에 읽는 창 2 MiB · 처음 열면 꼬리부터 마지막 200개 · 이전 쪽은 **거슬러 간 거리**가 총량 16 MiB를 넘지 않게 · 글 한 칸 32 KiB.
+/// 도구 줄은 이름과 `description`뿐이다. 입력 · 결과 본문은 펼칠 때(`detail`) 그 줄을 다시 읽어서 16 KiB까지만 준다 (결과는 그 줄 뒤로 총량 16 MiB 안에서 찾는다: 그보다 먼 결과는 못 찾는다).
 /// 메모리에만 둔다 (디스크 캐시 0). 글 · 경로 · id를 로그에 남기지 않는다: `claude_app_transcript {result}` 코드 하나뿐.
 /// 안전: 5.1과 같다 — `O_NOFOLLOW` · 이 uid · 일반 파일 (`ExternalSessionFileSystem.read`), 프로젝트 디렉터리 · 기록 파일 모두 기호 링크 아님.
-/// 기록 글은 평문으로만 다룬다 (DT8): 링크 · 태그를 해석하지 않고, 제어 글자 · 방향 바꿈 글자를 지운다.
+/// 기록 글은 평문으로만 다룬다 (DT8): 링크 · 태그를 해석하지 않고, 제어 글자 · 눈에 보이지 않는 서식 글자(방향 바꿈 · 폭 없는 공백 · 태그 · 줄 구분 등)를 지운다 (ZWJ · ZWNJ는 둔다).
+/// **빈 쪽(`turns`가 비었다)에 `hasEarlier`가 true여도 끝이 아니다**: 한 번에 읽는 창이 건너뛴 줄뿐일 수 있다. 끝은 `hasEarlier == false`다.
 public struct ClaudeAppTranscriptReader: Sendable {
     public struct Limits: Equatable, Sendable {
         /// 한 번에 읽는 창 (처음 열 때의 꼬리 · 이전 쪽 · 이어 읽기 · 펼친 도구의 결과 찾기)
@@ -68,53 +71,56 @@ public struct ClaudeAppTranscriptReader: Sendable {
             guard let read = fileSystem.read(located.path, start, length) else { return finish(.unreadable) }
             data = read
         }
-        let scanned = scan(data, start: start, dropHead: start > 0, sessionID: sessionID)
+        var peers = PeerSeen()
+        let scanned = scan(data, start: start, dropHead: start > 0, sessionID: sessionID, peers: &peers)
         var cursor = ClaudeAppTranscriptCursor(
-            sessionID: sessionID, path: located.path, created: located.entry.created, earliestOffset: start, earliestMidLine: false,
-            nextOffset: start + Int64(scanned.consumedEnd), bytesRead: data.count, discarding: false
+            sessionID: sessionID, path: located.path, created: located.entry.created, earliestOffset: start, nextOffset: start + Int64(scanned.consumedEnd),
+            coveredBytes: 0, discarding: false, peerIDs: peers.ids
         )
         if start > 0, !scanned.sawNewline {
             // 창 전체가 한 줄 안이다 (창보다 긴 줄): 그 줄은 건너뛰고, 끝나는 개행까지 이어 읽기에서도 버린다
             cursor.nextOffset = start + Int64(data.count)
             cursor.discarding = true
-            cursor.earliestMidLine = true
+            cursor.coveredBytes = data.count
             return finish(.page(page(turns: [], cursor: cursor, skipped: 1)))
         }
         let (turns, earliest) = select(scanned)
         cursor.earliestOffset = earliest
+        cursor.coveredBytes = Int(max(0, start + Int64(data.count) - earliest))
         return finish(.page(page(turns: turns, cursor: cursor, skipped: scanned.skipped)))
     }
 
-    /// "Show earlier": 지금까지 읽은 가장 앞 줄 앞의 창 하나. 돌려주는 줄은 앞에 붙일 것만이다. 총량 상한에 닿았거나 처음까지 읽었으면 빈 쪽
+    /// "Show earlier": 지금까지 읽은 가장 앞 줄 앞의 창 하나. 돌려주는 줄은 앞에 붙일 것만이다. 총량 상한(거슬러 간 거리)에 닿았거나 처음까지 읽었으면 빈 쪽.
+    /// **빈 쪽에 `hasEarlier`가 true여도 끝이 아니다**: 그 창이 건너뛴 줄뿐일 수 있다 — 다시 누르면 더 앞으로 간다
     public func earlier(_ cursor: ClaudeAppTranscriptCursor) -> ClaudeAppTranscriptLoad {
-        guard cursor.earliestOffset > 0, cursor.bytesRead < limits.maxTotalBytes else {
+        guard cursor.earliestOffset > 0, cursor.coveredBytes < limits.maxTotalBytes else {
             return .page(ClaudeAppTranscriptPage(turns: [], cursor: cursor, hasEarlier: false, skippedLines: 0))
         }
         guard let entry = fileSystem.lstat(cursor.path), entry.kind == .regular, entry.owner == fileSystem.userID, entry.created == cursor.created, entry.size >= cursor.earliestOffset else {
             return .unreadable
         }
-        let length = Int(min(Int64(limits.windowBytes), Int64(limits.maxTotalBytes - cursor.bytesRead), cursor.earliestOffset))
+        // 한 번에 읽는 것은 창 하나, 거슬러 가는 거리는 남은 총량까지
+        let length = Int(min(Int64(limits.windowBytes), Int64(limits.maxTotalBytes - cursor.coveredBytes), cursor.earliestOffset))
         let start = cursor.earliestOffset - Int64(length)
         guard let data = fileSystem.read(cursor.path, start, length), data.count == length else { return .unreadable }
         var next = cursor
-        next.bytesRead += data.count
-        let scanned = scan(data, start: start, dropHead: start > 0, sessionID: cursor.sessionID)
+        var peers = PeerSeen(ids: cursor.peerIDs)
+        let scanned = scan(data, start: start, dropHead: start > 0, sessionID: cursor.sessionID, peers: &peers)
+        next.peerIDs = peers.ids
         guard scanned.sawNewline else {
             // 창 전체가 한 줄 안이다: 그 줄은 건너뛰고 한 줄의 가운데에서 이어 간다
             next.earliestOffset = start
-            next.earliestMidLine = start > 0
+            next.coveredBytes += Int(cursor.earliestOffset - start)
             return .page(page(turns: [], cursor: next, skipped: data.isEmpty ? 0 : 1))
         }
         var (turns, earliest) = select(scanned)
-        var midLine = false
         if earliest >= cursor.earliestOffset {
             // 창이 개행 하나뿐이라 나아가지 못했다: 이 창은 다 본 것으로 하고 가운데에서 이어 간다 (끝없이 같은 쪽을 돌려주지 않는다)
             earliest = start
-            midLine = start > 0
             turns = []
         }
         next.earliestOffset = earliest
-        next.earliestMidLine = midLine
+        next.coveredBytes += Int(cursor.earliestOffset - earliest)
         return .page(page(turns: turns, cursor: next, skipped: scanned.skipped))
     }
 
@@ -149,7 +155,9 @@ public struct ClaudeAppTranscriptReader: Sendable {
             base += Int64(skip)
             next.discarding = false
         }
-        let scanned = scan(data, start: base, dropHead: false, sessionID: cursor.sessionID)
+        var peers = PeerSeen(ids: cursor.peerIDs)
+        let scanned = scan(data, start: base, dropHead: false, sessionID: cursor.sessionID, peers: &peers)
+        next.peerIDs = peers.ids
         let leftover = data.count - scanned.consumedEnd
         if leftover > limits.maxLineBytes || (scanned.consumedEnd == 0 && data.count >= limits.windowBytes) {
             // 개행 없이 한 줄이 상한을 넘었다: 지금까지의 조각을 버리고 그 줄의 끝(개행)까지 계속 버린다
@@ -161,7 +169,8 @@ public struct ClaudeAppTranscriptReader: Sendable {
         return .turns(scanned.groups.flatMap(\.turns), cursor: next, hasMore: Int64(length) < remaining)
     }
 
-    /// 펼친 도구 줄의 본문: 그 줄을 다시 읽어 입력을, 그 뒤 창에서 같은 `tool_use_id`의 결과를 찾는다 (각각 `maxDetailBytes`까지).
+    /// 펼친 도구 줄의 본문: 그 줄을 다시 읽어 입력을, 그 줄 뒤로 같은 `tool_use_id`의 결과를 찾는다 (각각 `maxDetailBytes`까지).
+    /// 결과는 창 단위로 찾되 그 줄 뒤 **총량(`maxTotalBytes`) 안에서만** 찾는다: 그보다 먼 결과는 못 찾아 `result`가 nil이다 (입력은 준다). 창 경계에서 줄을 가르지 않는다.
     /// 도구 줄이 아니거나, 그 자리의 줄이 그 도구가 아니거나, 파일이 바뀌었으면 nil
     public func detail(of turn: ClaudeAppTurn, cursor: ClaudeAppTranscriptCursor) -> ClaudeAppToolDetail? {
         guard case .tool = turn.kind, let toolID = turn.toolUseID, turn.lineOffset >= 0,
@@ -178,14 +187,23 @@ public struct ClaudeAppTranscriptReader: Sendable {
         let (shownInput, inputCut) = clean(inputText, limit: limits.maxDetailBytes)
         truncated = inputCut
         var result: String?
-        let after = turn.lineOffset + Int64(line.count) + 1
-        if after < entry.size {
-            let length = Int(min(Int64(limits.windowBytes), entry.size - after))
-            if let window = fileSystem.read(cursor.path, after, length), let found = Self.toolResult(in: window, toolID: toolID, sessionID: cursor.sessionID, maxLine: limits.maxLineBytes) {
+        var position = turn.lineOffset + Int64(line.count) + 1
+        var searched = 0
+        while result == nil, position < entry.size, searched < limits.maxTotalBytes {
+            let length = Int(min(Int64(limits.windowBytes), entry.size - position, Int64(limits.maxTotalBytes - searched)))
+            guard length > 0, let window = fileSystem.read(cursor.path, position, length) else { break }
+            let split = Self.completeLines(window)
+            if let found = Self.toolResult(in: window, spans: split.spans, toolID: toolID, sessionID: cursor.sessionID, maxLine: limits.maxLineBytes) {
                 let (text, cut) = clean(found, limit: limits.maxDetailBytes)
                 result = text
                 truncated = truncated || cut
+                break
             }
+            // 다음 창은 마지막 완성된 줄 다음부터 (줄을 가르지 않는다). 개행이 하나도 없는 창(창보다 긴 줄)은 건너뛴다
+            let advance = split.consumedEnd > 0 ? split.consumedEnd : window.count
+            position += Int64(advance)
+            searched += advance
+            if window.count < length { break }
         }
         return ClaudeAppToolDetail(input: shownInput ?? "", result: result, truncated: truncated)
     }
@@ -243,6 +261,21 @@ public struct ClaudeAppTranscriptReader: Sendable {
         case failed
     }
 
+    /// 이미 보여 준 peer 메시지의 `msg_id` (최근 256개): 같은 메시지가 `user`와 `queued_command` 두 모양으로 기록돼도 한 번만 보인다
+    struct PeerSeen {
+        static let limit = 256
+        var ids: [String] = []
+
+        /// 처음 보는 id(또는 id가 없는 메시지)이면 true
+        mutating func firstTime(_ id: String?) -> Bool {
+            guard let id else { return true }
+            if ids.contains(id) { return false }
+            ids.append(id)
+            if ids.count > Self.limit { ids.removeFirst(ids.count - Self.limit) }
+            return true
+        }
+    }
+
     /// 개행으로 나눈 완성된 줄(개행 앞)의 범위와 마지막 개행 뒤의 위치
     private static func completeLines(_ data: Data) -> (spans: [Range<Int>], consumedEnd: Int) {
         var spans: [Range<Int>] = []
@@ -261,7 +294,7 @@ public struct ClaudeAppTranscriptReader: Sendable {
     }
 
     /// 창 안의 완성된 줄들을 읽는다. 앞이 잘린 줄(`dropHead`)과 개행 없이 끝난 줄(창의 끝)은 읽지 않는다. 상한을 넘은 줄은 읽지 않고 센다
-    private func scan(_ data: Data, start: Int64, dropHead: Bool, sessionID: String) -> Scanned {
+    private func scan(_ data: Data, start: Int64, dropHead: Bool, sessionID: String, peers: inout PeerSeen) -> Scanned {
         let split = Self.completeLines(data)
         var spans = split.spans
         var scanned = Scanned(firstLineStart: start, consumedEnd: split.consumedEnd, sawNewline: !spans.isEmpty)
@@ -279,7 +312,7 @@ public struct ClaudeAppTranscriptReader: Sendable {
                 scanned.skipped += 1
                 continue
             }
-            switch parse(data.subdata(in: span), offset: start + Int64(span.lowerBound), sessionID: sessionID, decoder: decoder) {
+            switch parse(data.subdata(in: span), offset: start + Int64(span.lowerBound), sessionID: sessionID, decoder: decoder, peers: &peers) {
             case .turns(let turns): if !turns.isEmpty { scanned.groups.append((start + Int64(span.lowerBound), turns)) }
             case .failed: scanned.skipped += 1
             }
@@ -300,7 +333,7 @@ public struct ClaudeAppTranscriptReader: Sendable {
     }
 
     private func page(turns: [ClaudeAppTurn], cursor: ClaudeAppTranscriptCursor, skipped: Int) -> ClaudeAppTranscriptPage {
-        ClaudeAppTranscriptPage(turns: turns, cursor: cursor, hasEarlier: cursor.earliestOffset > 0 && cursor.bytesRead < limits.maxTotalBytes, skippedLines: skipped)
+        ClaudeAppTranscriptPage(turns: turns, cursor: cursor, hasEarlier: cursor.earliestOffset > 0 && cursor.coveredBytes < limits.maxTotalBytes, skippedLines: skipped)
     }
 
     private func finish(_ load: ClaudeAppTranscriptLoad) -> ClaudeAppTranscriptLoad {
@@ -324,12 +357,17 @@ public struct ClaudeAppTranscriptReader: Sendable {
         var sessionId: String?
         var isMeta: Bool?
         var isSidechain: Bool?
+        /// Claude Code가 대화를 줄여 넣은 요약 · 기록에서만 보이는 줄: 대화가 아니다
+        var isCompactSummary: Bool?
+        var isVisibleInTranscriptOnly: Bool?
         var timestamp: String?
         var message: Message?
         var origin: Origin?
+        /// `origin` 키가 있다 (모양이 낯설어 디코딩하지 못해도): origin이 있는데 peer가 아니면 사용자가 친 말이 아니다
+        var hasOrigin = false
         var attachment: Attachment?
 
-        enum CodingKeys: String, CodingKey { case type, sessionId, isMeta, isSidechain, timestamp, message, origin, attachment }
+        enum CodingKeys: String, CodingKey { case type, sessionId, isMeta, isSidechain, isCompactSummary, isVisibleInTranscriptOnly, timestamp, message, origin, attachment }
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -337,9 +375,12 @@ public struct ClaudeAppTranscriptReader: Sendable {
             sessionId = try? container.decodeIfPresent(String.self, forKey: .sessionId)
             isMeta = try? container.decodeIfPresent(Bool.self, forKey: .isMeta)
             isSidechain = try? container.decodeIfPresent(Bool.self, forKey: .isSidechain)
+            isCompactSummary = try? container.decodeIfPresent(Bool.self, forKey: .isCompactSummary)
+            isVisibleInTranscriptOnly = try? container.decodeIfPresent(Bool.self, forKey: .isVisibleInTranscriptOnly)
             timestamp = try? container.decodeIfPresent(String.self, forKey: .timestamp)
             message = try? container.decodeIfPresent(Message.self, forKey: .message)
             origin = try? container.decodeIfPresent(Origin.self, forKey: .origin)
+            hasOrigin = container.contains(.origin) && !((try? container.decodeNil(forKey: .origin)) ?? false)
             attachment = try? container.decodeIfPresent(Attachment.self, forKey: .attachment)
         }
     }
@@ -433,40 +474,51 @@ public struct ClaudeAppTranscriptReader: Sendable {
         }
     }
 
-    private func parse(_ line: Data, offset: Int64, sessionID: String, decoder: JSONDecoder) -> LineResult {
-        // 대화 줄이 될 수 없는 줄은 디코딩하지 않는다 (계정 · 시스템 프롬프트 · 첨부 줄은 여기서 끝난다)
+    private func parse(_ line: Data, offset: Int64, sessionID: String, decoder: JSONDecoder, peers: inout PeerSeen) -> LineResult {
+        // `"user"` · `"assistant"` · `"queued_command"` 글자가 하나도 없는 줄은 대화 줄이 될 수 없다: 디코딩하지 않는다.
+        // 글자가 있는 줄은(계정 · 첨부 줄에 우연히 있을 수도 있다) 디코딩하되 `Record`가 선언한 칸만 꺼내고, 아래 규칙을 지나야 대화가 된다
         guard line.range(of: Self.userNeedle) != nil || line.range(of: Self.assistantNeedle) != nil || line.range(of: Self.queuedNeedle) != nil else { return .turns([]) }
         guard String(validating: line, as: UTF8.self) != nil, let record = try? decoder.decode(Record.self, from: line) else { return .failed }
-        return .turns(turns(from: record, offset: offset, sessionID: sessionID))
+        return .turns(turns(from: record, offset: offset, sessionID: sessionID, peers: &peers))
     }
 
-    private func turns(from record: Record, offset: Int64, sessionID: String) -> [ClaudeAppTurn] {
-        if record.isSidechain == true { return [] }
+    /// 사용자가 친 말이 아닌 Claude Code 표시 줄(슬래시 명령 · 로컬 명령 출력)의 시작
+    private static let markupPrefixes = ["<command-name>", "<command-message>", "<command-args>", "<local-command-"]
+
+    private func turns(from record: Record, offset: Int64, sessionID: String, peers: inout PeerSeen) -> [ClaudeAppTurn] {
+        if record.isSidechain == true || record.isCompactSummary == true || record.isVisibleInTranscriptOnly == true { return [] }
         if let other = record.sessionId, other != sessionID { return [] }
         let time = record.timestamp.flatMap(Self.date)
         var out: [ClaudeAppTurn] = []
         func add(_ kind: ClaudeAppTurn.Kind, truncated: Bool = false, toolID: String? = nil) {
             out.append(ClaudeAppTurn(id: "\(offset)-\(out.count)", kind: kind, timestamp: time, truncated: truncated, lineOffset: offset, toolUseID: toolID))
         }
+        func user(_ raw: String) {
+            guard let (kept, cut) = plain(raw), !Self.markupPrefixes.contains(where: kept.hasPrefix) else { return }
+            add(.user(kept), truncated: cut)
+        }
         func peer(_ origin: Origin) {
-            guard let body = origin.body, let (text, cut) = plain(body) else { return }
+            let messageID = origin.messageID.flatMap { $0.utf8.count <= 64 ? $0 : nil }
+            guard let body = origin.body, let (text, cut) = plain(body), peers.firstTime(messageID) else { return }
             add(.peer(text, ClaudeAppPeer(
                 plugin: origin.plugin.flatMap { $0.utf8.count <= 64 ? $0 : nil }, verifiedPeerPID: origin.verifiedPeerPid.flatMap { $0 > 0 && $0 <= Int(Int32.max) ? Int32($0) : nil },
-                messageID: origin.messageID.flatMap { $0.utf8.count <= 64 ? $0 : nil }
+                messageID: messageID
             )), truncated: cut)
         }
         switch record.type {
         case "user":
             if let origin = record.origin, origin.kind == "peer" {
                 peer(origin)
+            } else if record.hasOrigin {
+                // origin이 있는데 peer가 아니다(훅 · 작업 알림 등): 사용자가 친 말이 아니다
+                break
             } else if record.isMeta != true, let content = record.message?.content {
                 switch content {
                 case .text(let text):
-                    if let (kept, cut) = plain(text) { add(.user(kept), truncated: cut) }
+                    user(text)
                 case .blocks(let blocks):
                     // 도구 결과 · 이미지 블록은 대화가 아니다: 텍스트 블록만 이어 붙인다
-                    let joined = blocks.filter { $0.type == "text" }.compactMap(\.text).joined(separator: "\n")
-                    if let (kept, cut) = plain(joined) { add(.user(kept), truncated: cut) }
+                    user(blocks.filter { $0.type == "text" }.compactMap(\.text).joined(separator: "\n"))
                 }
             }
         case "assistant":
@@ -496,7 +548,8 @@ public struct ClaudeAppTranscriptReader: Sendable {
         return text.map { ($0, cut) }
     }
 
-    /// 평문으로 정리한다 (DT8): 제어 글자(줄바꿈 · 탭 제외) · 방향 바꿈 글자 · BOM을 지우고 앞뒤 공백을 자른다. `limit` 바이트를 넘으면 글자 중간이 아닌 곳에서 자른다.
+    /// 평문으로 정리한다 (DT8): 제어 글자(줄바꿈 · 탭 제외)와 눈에 보이지 않는 서식 글자(방향 바꿈 · 폭 없는 공백 · 연한 하이픈 · BOM · 태그 글자)와 줄 · 문단 구분(U+2028 · U+2029)을 지우고
+    /// 앞뒤 공백을 자른다. 이모지 · 문자를 잇는 ZWJ · ZWNJ는 둔다. `limit` 바이트를 넘으면 글자 중간이 아닌 곳에서 자른다.
     /// 링크 · 태그 · 마크다운은 해석하지 않는다 — 글자 그대로다. 남는 것이 없으면 nil
     private func clean(_ raw: String, limit: Int) -> (String?, Bool) {
         var scalars = String.UnicodeScalarView()
@@ -504,7 +557,7 @@ public struct ClaudeAppTranscriptReader: Sendable {
         var truncated = false
         for scalar in raw.unicodeScalars {
             if Self.isStripped(scalar) { continue }
-            let size = String(scalar).utf8.count
+            let size = scalar.utf8.count
             if bytes + size > limit {
                 truncated = true
                 break
@@ -519,8 +572,12 @@ public struct ClaudeAppTranscriptReader: Sendable {
     private static func isStripped(_ scalar: Unicode.Scalar) -> Bool {
         switch scalar.value {
         case 0x0A, 0x09: return false
-        case 0x202A...0x202E, 0x2066...0x2069, 0x200E, 0x200F, 0x061C, 0xFEFF: return true
-        default: return scalar.properties.generalCategory == .control
+        // 글자를 잇는 데 쓰는 서식 글자 (ZWNJ · ZWJ)
+        case 0x200C, 0x200D: return false
+        case 0x2028, 0x2029: return true
+        default:
+            let category = scalar.properties.generalCategory
+            return category == .control || category == .format
         }
     }
 
@@ -541,10 +598,9 @@ public struct ClaudeAppTranscriptReader: Sendable {
     }
 
     /// 창 안에서 같은 `tool_use_id`의 결과 글을 찾는다 (`user` 줄의 `tool_result` 블록: 문자열이거나 텍스트 블록 배열)
-    private static func toolResult(in window: Data, toolID: String, sessionID: String, maxLine: Int) -> String? {
+    private static func toolResult(in window: Data, spans: [Range<Int>], toolID: String, sessionID: String, maxLine: Int) -> String? {
         let idNeedle = Data(toolID.utf8)
         let resultNeedle = Data("\"tool_result\"".utf8)
-        let (spans, _) = completeLines(window)
         for span in spans where !span.isEmpty && span.count <= maxLine {
             let line = window.subdata(in: span)
             guard line.range(of: resultNeedle) != nil, line.range(of: idNeedle) != nil,

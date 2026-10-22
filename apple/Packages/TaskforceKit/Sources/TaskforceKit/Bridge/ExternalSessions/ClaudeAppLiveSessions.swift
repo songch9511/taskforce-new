@@ -27,20 +27,40 @@ public struct ClaudeAppSession: Identifiable, Equatable, Sendable, CustomStringC
 }
 
 /// 등록 파일에서 읽은, 지금 레일에 오를 수 있는 데스크톱 세션들 (5.4 · 21.5 DT1 · DT3의 Kit 몫)
-public struct ClaudeAppLiveSessions: Equatable, Sendable {
+public struct ClaudeAppLiveSessions: Equatable, Sendable, CustomStringConvertible, CustomDebugStringConvertible {
     /// 믿는 세션: `entrypoint claude-desktop`(background 종류 아님), 우리 혈통 아님, 살아 있음(pid · uid · procStart), 그 id의 살아 있는 등록이 **하나뿐**. id 순
     public var sessions: [ClaudeAppSession]
-    /// 살아 있는 등록이 둘 이상인 id: 어느 쪽도 믿지 않는다 ("Running in two places")
+    /// 살아 있는 등록이 둘 이상인 id: 어느 쪽도 믿지 않는다 ("Running in two places").
+    /// **비어 있다고 다른 writer가 없다는 뜻은 아니다**: 등록 파일을 만들지 않는 writer(옛 버전 · 등록이 없는 프로세스)는 여기에 안 나온다. 보내기 전 확인(PR-D3)은 따로 한다
     public var doubled: Set<String>
     /// 등록 폴더를 읽을 수 없거나 형식이 바뀌어 하나도 해석하지 못했다
     public var registryUnavailable: Bool
+
+    public init(sessions: [ClaudeAppSession], doubled: Set<String>, registryUnavailable: Bool) {
+        self.sessions = sessions
+        self.doubled = doubled
+        self.registryUnavailable = registryUnavailable
+    }
+
+    /// 개수만 말한다: 세션 id · pid를 찍지 않는다
+    public var description: String { "ClaudeAppLiveSessions(sessions: \(sessions.count), doubled: \(doubled.count), registryUnavailable: \(registryUnavailable))" }
+    public var debugDescription: String { description }
 
     public static func read(
         fileSystem: ExternalSessionFileSystem = .live, sessionsDirectory: String, facts: ExternalSessionProcessFacts = .live, ownPIDs: Set<Int32> = [], now: Date = Date(),
         localZone: TimeZone = .current
     ) -> ClaudeAppLiveSessions {
+        var reuse = ExternalSessionRegistry.Reuse()
+        return read(fileSystem: fileSystem, sessionsDirectory: sessionsDirectory, facts: facts, ownPIDs: ownPIDs, now: now, localZone: localZone, reuse: &reuse, alwaysRead: [])
+    }
+
+    /// 폴러가 이어 쓰는 읽기: 지난번과 같은 파일은 다시 열지 않는다 (`alwaysRead` = 지금 레일에 있는 데스크톱 세션의 pid는 늘 다시 읽는다)
+    static func read(
+        fileSystem: ExternalSessionFileSystem, sessionsDirectory: String, facts: ExternalSessionProcessFacts, ownPIDs: Set<Int32>, now: Date, localZone: TimeZone = .current,
+        reuse: inout ExternalSessionRegistry.Reuse, alwaysRead: Set<Int32>
+    ) -> ClaudeAppLiveSessions {
         let entries: [ExternalSessionRegistry.Entry]
-        switch ExternalSessionRegistry.read(fileSystem: fileSystem, sessionsDirectory: sessionsDirectory, now: now, localZone: localZone) {
+        switch ExternalSessionRegistry.read(fileSystem: fileSystem, sessionsDirectory: sessionsDirectory, now: now, localZone: localZone, reuse: &reuse, alwaysRead: alwaysRead) {
         case .unavailable: return ClaudeAppLiveSessions(sessions: [], doubled: [], registryUnavailable: true)
         case .entries(let found): entries = found
         }

@@ -5,7 +5,7 @@ import Foundation
 // 모델을 부르지 않는다. 등록 파일(내부 형식)을 늘 이 값으로 맞춰 보려고 쓴다. 필요한 키만 읽는다: `pid` · `sessionId` · `status` · `waitingFor`.
 // 폴더(`cwd`) · 이름(`name`) · 종류 · 시작 시각은 읽지도 담지도 않는다 (모든 세션의 폴더 · 이름이 메모리에 오지만 값으로 남기지 않는다).
 
-public struct ClaudeAgentsItem: Equatable, Sendable {
+public struct ClaudeAgentsItem: Equatable, Sendable, CustomStringConvertible, CustomDebugStringConvertible {
     public var pid: Int32
     /// 소문자 정규 UUID
     public var sessionID: String
@@ -16,11 +16,15 @@ public struct ClaudeAgentsItem: Equatable, Sendable {
         self.sessionID = sessionID
         self.state = state
     }
+
+    /// 상태만 말한다: id · pid를 찍지 않는다
+    public var description: String { "ClaudeAgentsItem(state: \(state))" }
+    public var debugDescription: String { description }
 }
 
 public enum ClaudeAgentsListing {
-    /// 답의 상한 (살아 있는 세션 수백 개도 이 안이다). 넘으면 읽지 않는다
-    public static let maxBytes = 256 * 1024
+    /// 답의 상한 = 러너가 표준 출력을 담는 상한(`ClaudeCodeProbe.run`의 64 KiB)과 같다. 더 긴 답은 러너가 정확히 이만큼에서 잘라 온전한 JSON이 아니므로 읽지 않는다 (약 250세션)
+    public static let maxBytes = 64 * 1024
     public static let maxItems = 500
 
     /// 선언한 키만 꺼낸다: 폴더 · 이름 · 종류 · 시작 시각은 디코딩해도 담지 않는다. 틀린 모양의 칸은 없는 것으로 읽는다
@@ -65,22 +69,54 @@ public enum ClaudeAgentsListing {
 
 /// `claude agents --json` 한 번 (고정 찾기 · 자식 환경 넷 · 기한). 결과는 값 목록뿐이고 로그에는 고정 결과 코드(`ok` · `unavailable`) 하나만 남긴다
 public struct ClaudeAgentsLister: Sendable {
+    /// 기한 (이 값의 두 배가 B 원천의 캐시 나이 상한에 들어간다: `ClaudeAppStatusPoller`)
+    public static let defaultTimeout: TimeInterval = 5
+
     let locator: ClaudeCodeLocator
     let runner: ClaudeCommandRunner
     let timeout: TimeInterval
     let log: any BridgeLogSink
 
-    /// - runner: 짧은 명령 실행기. 실제 앱은 `ClaudeCodeProbe.liveRunner`(자식 환경 넷 · 임시 cwd · 시간 초과)
-    public init(locator: ClaudeCodeLocator, runner: @escaping ClaudeCommandRunner, timeout: TimeInterval = 5, log: any BridgeLogSink = NoBridgeLog()) {
+    /// - runner: 짧은 명령 실행기. 실제 앱은 `live(locator:environment:)`
+    public init(locator: ClaudeCodeLocator, runner: @escaping ClaudeCommandRunner, timeout: TimeInterval = ClaudeAgentsLister.defaultTimeout, log: any BridgeLogSink = NoBridgeLog()) {
         self.locator = locator
         self.runner = runner
         self.timeout = timeout
         self.log = log
     }
 
-    /// 읽지 못하면 nil (`claude`가 없다 · 0이 아닌 종료 · 시간 초과 · 모르는 모양)
+    /// 실제 앱용: `ClaudeCodeProbe.liveRunner`(자식 환경 넷 · 기한 · 표준 출력 64 KiB)에 cwd는 **비어 있는 임시 폴더**다 (사용자의 폴더 · 프로젝트 설정이 이 명령에 보이지 않는다)
+    public static func live(
+        locator: ClaudeCodeLocator, environment: [String: String] = ProcessInfo.processInfo.environment, timeout: TimeInterval = defaultTimeout, log: any BridgeLogSink = NoBridgeLog()
+    ) -> ClaudeAgentsLister {
+        let folder = EmptyFolder()
+        return ClaudeAgentsLister(locator: locator, runner: ClaudeCodeProbe.liveRunner(environment: environment, cwd: { folder.path }), timeout: timeout, log: log)
+    }
+
+    /// 쓰기 전에 만드는 빈 임시 폴더 (0700). 이 값을 쥔 러너가 사라지면 지운다
+    private final class EmptyFolder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var created: String?
+
+        var path: String {
+            lock.withLock {
+                if let created, FileManager.default.fileExists(atPath: created) { return created }
+                let path = NSTemporaryDirectory() + "tf-claude-agents-" + UUID().uuidString.lowercased()
+                try? FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+                created = path
+                return path
+            }
+        }
+
+        deinit {
+            if let created { try? FileManager.default.removeItem(atPath: created) }
+        }
+    }
+
+    /// 읽지 못하면 nil (`claude`가 없다 · 0이 아닌 종료 · 시간 초과 · 모르는 모양).
+    /// 인자는 정확히 `agents --json --setting-sources ""`다: 사용자 · 프로젝트 · 로컬 설정(훅 등)을 읽지 않는다 (`claude agents --help`: `--setting-sources`)
     public func list() async -> [ClaudeAgentsItem]? {
-        guard let executable = locator.locate(), let output = await runner(executable, ["agents", "--json"], timeout), output.exitCode == 0,
+        guard let executable = locator.locate(), let output = await runner(executable, ["agents", "--json", "--setting-sources", ""], timeout), output.exitCode == 0,
               let items = ClaudeAgentsListing.parse(output.stdout) else {
             log.log("claude_app_agents", ["result": .code("unavailable")])
             return nil

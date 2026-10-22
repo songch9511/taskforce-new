@@ -100,9 +100,13 @@ extension ExternalSessionSuites {
                     Issue.record("peer 줄이 아니다")
                     return
                 }
-                #expect(peer.isTaskforceRelay && peer.plugin == "tf-relay" && peer.verifiedPeerPID == 4321)
-                #expect(!ClaudeAppPeer(plugin: "tf-relay-probe", verifiedPeerPID: 1, messageID: nil).isTaskforceRelay)
-                #expect(!ClaudeAppPeer(plugin: nil, verifiedPeerPID: nil, messageID: nil).isTaskforceRelay)
+                // 중계 출처는 플러그인 이름만으로 믿지 않는다: 우리가 띄운 중계 프로세스의 pid(검증된 peer pid)까지 같아야 한다 (보안 검토 P2)
+                #expect(peer.plugin == "tf-relay" && peer.verifiedPeerPID == 4321)
+                #expect(peer.isTaskforceRelay(relayPID: 4321))
+                #expect(!peer.isTaskforceRelay(relayPID: 9999), "이름만 tf-relay인 다른 프로세스의 메시지는 Taskforce가 보낸 것이 아니다")
+                #expect(!ClaudeAppPeer(plugin: "tf-relay-probe", verifiedPeerPID: 1, messageID: nil).isTaskforceRelay(relayPID: 1))
+                #expect(!ClaudeAppPeer(plugin: "tf-relay", verifiedPeerPID: nil, messageID: nil).isTaskforceRelay(relayPID: 4321))
+                #expect(!ClaudeAppPeer(plugin: nil, verifiedPeerPID: 4321, messageID: nil).isTaskforceRelay(relayPID: 4321))
             }
         }
 
@@ -140,6 +144,141 @@ extension ExternalSessionSuites {
                 var dump = ""
                 Swift.dump(page.turns, to: &dump)
                 #expect(!dump.contains(notAPeer) && !dump.contains(A.wrapperSentinel))
+            }
+        }
+
+        // MARK: 대화가 아닌 줄 · 중복 · 글 정리 (코드 검토 P3)
+
+        private func peerUser(msg: String, body: String, pid: Int = 4321) -> String {
+            F.json([
+                "type": "user", "isMeta": true, "sessionId": id, "message": ["role": "user", "content": A.wrapperSentinel],
+                "origin": ["kind": "peer", "plugin": "tf-relay", "verifiedPeerPid": pid, "msg_id": msg, "body": body],
+            ])
+        }
+
+        private func peerQueued(msg: String, body: String, pid: Int = 4321) -> String {
+            F.json([
+                "type": "attachment", "sessionId": id,
+                "attachment": ["type": "queued_command", "prompt": A.wrapperSentinel, "origin": ["kind": "peer", "plugin": "tf-relay", "verifiedPeerPid": pid, "msg_id": msg, "body": body]],
+            ])
+        }
+
+        @Test func aUserRecordWhoseOriginIsNotAPeerIsNotShown() throws {
+            try withHome { home in
+                let injected = F.json(["type": "user", "sessionId": id, "message": ["role": "user", "content": "SENTINEL-HOOK-INJECTED"], "origin": ["kind": "hook", "body": "SENTINEL-HOOK-INJECTED"]])
+                let other = F.json(["type": "user", "sessionId": id, "message": ["role": "user", "content": "SENTINEL-TASK-INJECTED"], "origin": ["body": "x"]])
+                try home.transcript(directory: directory, id: id, lines: [L.user(id: id, text: "typed"), injected, other, L.assistant(id: id, text: "ok")])
+                guard let page = page(reader(home).open(sessionID: id, cwd: cwd)) else { return }
+                #expect(texts(page.turns) == ["typed", "ok"], "origin이 있는데 peer가 아니면 사용자가 친 말이 아니다")
+            }
+        }
+
+        @Test func claudeCodeSlashCommandAndLocalCommandMarkupIsNotConversation() throws {
+            try withHome { home in
+                let markup = [
+                    "<command-name>/clear</command-name>\n<command-message>clear</command-message>\n<command-args></command-args>", "<local-command-stdout>SENTINEL-LOCAL-OUTPUT</local-command-stdout>",
+                    "<local-command-caveat>Caveat: SENTINEL-CAVEAT</local-command-caveat>", "  <command-name>/model</command-name>",
+                ].map { L.user(id: id, text: $0) }
+                let mid = L.user(id: id, text: "please explain what <command-name> means in Claude Code")
+                try home.transcript(directory: directory, id: id, lines: markup + [mid, L.assistant(id: id, text: "ok")])
+                guard let page = page(reader(home).open(sessionID: id, cwd: cwd)) else { return }
+                #expect(texts(page.turns) == ["please explain what <command-name> means in Claude Code", "ok"], "맨 앞의 표시 줄만 건너뛴다: 글 가운데의 같은 글자는 대화다")
+            }
+        }
+
+        @Test func compactSummariesAndTranscriptOnlyRecordsAreNotConversation() throws {
+            try withHome { home in
+                let compact = F.json(["type": "user", "isCompactSummary": true, "sessionId": id, "message": ["role": "user", "content": "SENTINEL-COMPACT-SUMMARY"]])
+                let transcriptOnly = F.json(["type": "assistant", "isVisibleInTranscriptOnly": true, "sessionId": id, "message": ["role": "assistant", "content": [["type": "text", "text": "SENTINEL-TRANSCRIPT-ONLY"]]]])
+                try home.transcript(directory: directory, id: id, lines: [L.user(id: id, text: "typed"), compact, transcriptOnly, L.assistant(id: id, text: "ok")])
+                guard let page = page(reader(home).open(sessionID: id, cwd: cwd)) else { return }
+                #expect(texts(page.turns) == ["typed", "ok"])
+            }
+        }
+
+        @Test func aPeerMessageRecordedAsBothShapesIsShownOnce() throws {
+            try withHome { home in
+                try home.transcript(directory: directory, id: id, lines: [L.user(id: id, text: "typed"), peerUser(msg: "m1", body: "hello"), peerQueued(msg: "m1", body: "hello"), peerQueued(msg: "m2", body: "second")])
+                guard let first = page(reader(home).open(sessionID: id, cwd: cwd)) else { return }
+                #expect(texts(first.turns) == ["typed", "hello", "second"], "같은 msg_id는 한 번만")
+            }
+        }
+
+        @Test func aPeerMessageAlreadyShownIsNotShownAgainByLiveUpdatesOrEarlierPages() throws {
+            try withHome { home in
+                let path = try home.transcript(directory: directory, id: id, lines: [L.user(id: id, text: "typed"), peerUser(msg: "m1", body: "hello"), peerQueued(msg: "m2", body: "second")])
+                let reader = reader(home)
+                guard let first = page(reader.open(sessionID: id, cwd: cwd)) else { return }
+                #expect(texts(first.turns) == ["typed", "hello", "second"])
+                // 라이브로 같은 msg_id가 다른 모양으로 또 온다
+                try append(path, peerUser(msg: "m2", body: "second") + "\n" + peerQueued(msg: "m3", body: "third") + "\n")
+                guard case .turns(let more, let cursor, _) = reader.newer(first.cursor) else { Issue.record("이어 읽기"); return }
+                #expect(texts(more) == ["third"], "앞서 본 msg_id는 이어 읽기에서도 다시 오지 않는다")
+                // 이어 읽기에서 처음 본 msg_id도 다음 이어 읽기에 기억이 이어진다
+                try append(path, peerUser(msg: "m3", body: "third") + "\n" + peerQueued(msg: "m4", body: "fourth") + "\n")
+                guard case .turns(let next, _, _) = reader.newer(cursor) else { Issue.record("두 번째 이어 읽기"); return }
+                #expect(texts(next) == ["fourth"], "이어 읽기가 새로 본 msg_id를 커서에 남긴다")
+            }
+            try withHome { home in
+                // 이전 쪽: 더 앞(오래된) 줄에 같은 msg_id가 있다
+                let limits = ClaudeAppTranscriptReader.Limits(windowBytes: 1024, maxLineBytes: 512, maxTotalBytes: 1 << 20, pageTurns: 3, maxTextBytes: 4096, maxDetailBytes: 1024)
+                try home.transcript(directory: directory, id: id, lines: [peerUser(msg: "m1", body: "old copy")] + conversation(8) + [peerQueued(msg: "m1", body: "new copy")])
+                let reader = reader(home, limits: limits)
+                guard case .page(var current) = reader.open(sessionID: id, cwd: cwd) else { return }
+                var all = current.turns
+                var rounds = 0
+                while current.hasEarlier, rounds < 100, case .page(let next) = reader.earlier(current.cursor) {
+                    all = next.turns + all
+                    current = next
+                    rounds += 1
+                }
+                #expect(texts(all).filter { $0 == "old copy" || $0 == "new copy" } == ["new copy"], "같은 msg_id는 이전 쪽에서도 한 번만 (보이는 쪽이 이긴다)")
+            }
+        }
+
+        @Test func invisibleFormatCharactersAndLineSeparatorsAreStripped() throws {
+            try withHome { home in
+                let raw = "a\u{200B}b\u{00AD}c\u{2028}d\u{2029}e\u{E0067}f\u{2060}g\u{FEFF}h \u{FE0F}ok"
+                try home.transcript(directory: directory, id: id, lines: [L.user(id: id, text: raw)])
+                guard let page = page(reader(home).open(sessionID: id, cwd: cwd)) else { return }
+                #expect(texts(page.turns) == ["abcdefgh \u{FE0F}ok"], "보이지 않는 서식 글자(폭 없는 공백 · 연한 하이픈 · 줄 구분 · 태그 · 단어 붙임)는 지운다 (변이 선택자는 둔다)")
+            }
+        }
+
+        @Test func theJoinersThatBuildEmojiAndScriptsStay() throws {
+            try withHome { home in
+                let family = "👨\u{200D}👩\u{200D}👧"
+                let persian = "می\u{200C}خواهم"
+                try home.transcript(directory: directory, id: id, lines: [L.user(id: id, text: "\(family) \(persian)")])
+                guard let page = page(reader(home).open(sessionID: id, cwd: cwd)) else { return }
+                #expect(texts(page.turns) == ["\(family) \(persian)"], "이모지 · 문자를 잇는 ZWJ · ZWNJ는 둔다")
+            }
+        }
+
+        /// 도구 줄은 있고 결과는 그 뒤 멀리 있다 (사이에 다른 줄이 많다). 열린 쪽 · 이전 쪽을 모두 모아 도구 줄을 찾는다
+        private func farToolSetup(_ home: ExternalHome, limits: ClaudeAppTranscriptReader.Limits) throws -> (reader: ClaudeAppTranscriptReader, tool: ClaudeAppTurn, cursor: ClaudeAppTranscriptCursor)? {
+            let lines = [L.tool(id: id, toolID: "toolu_far", name: "Bash", input: ["command": "ls", "description": "Far"])] + conversation(60, pad: 200) + [L.toolResult(id: id, toolID: "toolu_far", text: "FAR-RESULT")]
+            try home.transcript(directory: directory, id: id, lines: lines)
+            let reader = reader(home, limits: limits)
+            guard case .page(let first) = reader.open(sessionID: id, cwd: cwd) else { Issue.record("열지 못했다"); return nil }
+            var current = first
+            var tools = first.turns.filter { $0.kind == .tool(name: "Bash", description: "Far") }
+            var rounds = 0
+            while current.hasEarlier, rounds < 200, case .page(let next) = reader.earlier(current.cursor) {
+                tools += next.turns.filter { $0.kind == .tool(name: "Bash", description: "Far") }
+                current = next
+                rounds += 1
+            }
+            guard let tool = tools.first else { Issue.record("도구 줄을 찾지 못했다"); return nil }
+            return (reader, tool, current.cursor)
+        }
+
+        @Test func aToolResultFarAfterItsToolLineIsFoundWithinTheTotalBudget() throws {
+            try withHome { home in
+                // 결과는 도구 줄 뒤 약 20 KiB: 창 하나(4 KiB)보다 멀지만 총량(64 KiB) 안
+                let limits = ClaudeAppTranscriptReader.Limits(windowBytes: 4096, maxLineBytes: 2048, maxTotalBytes: 64 * 1024, pageTurns: 200, maxTextBytes: 4096, maxDetailBytes: 1024)
+                guard let setup = try farToolSetup(home, limits: limits) else { return }
+                #expect(setup.reader.detail(of: setup.tool, cursor: setup.cursor)?.result == "FAR-RESULT")
             }
         }
 
@@ -395,6 +534,23 @@ extension ExternalSessionSuites {
             #expect(limits.maxDetailBytes == 16 * 1024)
         }
 
+        /// 숫자만이 아니라 동작으로: 한 줄이 **정확히** 1 MiB면 읽고, 한 바이트 넘으면 통째로 건너뛴다 (표준 상한 그대로)
+        @Test func theOneMiBLineCapIsExactlyAtTheBoundary() throws {
+            try withHome { home in
+                let overhead = L.assistant(id: id, text: "").utf8.count
+                let exact = L.assistant(id: id, text: String(repeating: "a", count: (1 << 20) - overhead))
+                let over = L.assistant(id: id, text: String(repeating: "a", count: (1 << 20) - overhead + 1))
+                #expect(exact.utf8.count == 1 << 20 && over.utf8.count == (1 << 20) + 1)
+                try home.transcript(directory: directory, id: id, lines: [L.user(id: id, text: "start"), exact])
+                guard let atCap = page(reader(home).open(sessionID: id, cwd: cwd)) else { return }
+                #expect(texts(atCap.turns).count == 2 && atCap.skippedLines == 0, "정확히 1 MiB는 읽는다")
+                try FileManager.default.removeItem(atPath: home.projects + "/" + directory + "/" + id + ".jsonl")
+                try home.transcript(directory: directory, id: id, lines: [L.user(id: id, text: "start"), over])
+                guard let overCap = page(reader(home).open(sessionID: id, cwd: cwd)) else { return }
+                #expect(texts(overCap.turns) == ["start"] && overCap.skippedLines == 1, "1 MiB + 1바이트는 건너뛴다")
+            }
+        }
+
         @Test func aLongConversationShowsTheLastTwoHundredAndEarlierPagesFillInTheRestWithoutGapsOrRepeats() throws {
             try withHome { home in
                 try home.transcript(directory: directory, id: id, lines: conversation(450))
@@ -444,12 +600,37 @@ extension ExternalSessionSuites {
                     guard let next = page(reader.earlier(current.cursor)) else { return }
                     current = next
                     pages += 1
-                    #expect(!(current.cursor.bytesRead >= limits.maxTotalBytes && current.hasEarlier), "상한에 닿은 쪽은 \"Show earlier\"를 내지 않는다")
+                    #expect(!(current.cursor.coveredBytes >= limits.maxTotalBytes && current.hasEarlier), "상한에 닿은 쪽은 \"Show earlier\"를 내지 않는다")
                 }
                 #expect(pages < 100, "끝이 난다")
                 #expect(!current.hasEarlier)
-                #expect(recording.bytesRead <= limits.maxTotalBytes, "읽은 총량이 상한을 넘지 않는다")
+                // 상한은 **얼마나 멀리 거슬러 갔나**로 센다 (같은 바이트를 다시 읽은 것은 세지 않는다): 한 번에 읽는 것은 창 하나까지
+                let size = Int((try FileManager.default.attributesOfItem(atPath: current.cursor.path)[.size] as? NSNumber)?.int64Value ?? -1)
+                #expect(current.cursor.coveredBytes == size - Int(current.cursor.earliestOffset), "거슬러 간 거리 = 파일 끝 − 가장 앞 줄의 시작")
+                #expect(current.cursor.coveredBytes <= limits.maxTotalBytes, "마지막 읽기는 남은 만큼만 거슬러 상한을 넘지 않는다")
+                #expect(recording.reads.allSatisfy { $0.returned <= limits.windowBytes }, "한 번의 읽기는 창 하나까지")
                 #expect(current.cursor.earliestOffset > 0, "상한 때문에 멈췄지 파일 처음까지 읽은 것이 아니다")
+            }
+        }
+
+        @Test func aPageThatReachesTheCapOrIsEmptyDoesNotMeanTheHistoryEnded() throws {
+            try withHome { home in
+                // 줄이 모두 건너뛰는 줄(너무 큼)이어도 이전 쪽은 빈 쪽을 줄 수 있다: 빈 쪽 + hasEarlier는 끝이 아니다
+                let limits = ClaudeAppTranscriptReader.Limits(windowBytes: 4096, maxLineBytes: 512, maxTotalBytes: 1 << 20, pageTurns: 200, maxTextBytes: 4096, maxDetailBytes: 1024)
+                try home.transcript(directory: directory, id: id, lines: conversation(2) + conversation(20, pad: 600) + conversation(2))
+                let reader = reader(home, limits: limits)
+                guard let first = page(reader.open(sessionID: id, cwd: cwd)) else { return }
+                guard let second = page(reader.earlier(first.cursor)) else { return }
+                #expect(second.turns.isEmpty && second.hasEarlier, "건너뛴 줄만 있는 창: 비었지만 앞이 더 있다")
+                var current = second
+                var rounds = 0
+                var collected = first.turns
+                while current.hasEarlier, rounds < 200, case .page(let next) = reader.earlier(current.cursor) {
+                    collected = next.turns + collected
+                    current = next
+                    rounds += 1
+                }
+                #expect(texts(collected).first == "turn 0" && texts(collected).count == 4, "계속 누르면 앞의 읽을 수 있는 줄에 닿는다")
             }
         }
 
@@ -697,15 +878,44 @@ extension ExternalSessionSuites {
             }
         }
 
-        @Test func theCursorAndTheTurnsPrintNeitherTextNorPathNorID() throws {
+        /// 화면 · 로그에 찍힐 수 있는 모든 값(커튼 · 쪽 · 줄 · 출처 · 펼친 본문 · 갱신)이 글 · 경로 · id · pid · 도구 본문을 찍지 않는다
+        @Test func everyValueThatCanBePrintedHidesTextPathIDAndToolBodies() throws {
             try withHome { home in
                 try install("desktop-basic.jsonl", in: home)
-                guard let page = page(reader(home).open(sessionID: id, cwd: cwd)) else { return }
-                let printed = [String(describing: page.cursor), String(reflecting: page.cursor)] + page.turns.flatMap { [String(describing: $0), String(reflecting: $0)] }
-                for text in printed {
-                    #expect(!text.contains(home.root) && !text.contains(id) && !text.contains("Please") && !text.contains("tf-relay") && !text.contains("List files"), "\(text)")
+                let reader = reader(home)
+                guard let page = page(reader.open(sessionID: id, cwd: cwd)) else { return }
+                guard let bash = page.turns.first(where: { $0.kind == .tool(name: "Bash", description: "List files") }), let detail = reader.detail(of: bash, cursor: page.cursor) else {
+                    Issue.record("펼친 본문을 읽지 못했다")
+                    return
+                }
+                guard case .peer(_, let peer) = page.turns[4].kind else { return }
+                let update = ClaudeAppTranscriptUpdate.turns(page.turns, cursor: page.cursor, hasMore: false)
+                var values: [Any] = [page.cursor, page, detail, peer, update, ClaudeAppTranscriptLoad.page(page)]
+                values += page.turns
+                for value in values {
+                    for text in [String(describing: value), String(reflecting: value)] {
+                        for secret in [home.root, id, "Please", "tf-relay", "List files", A.commandSentinel, A.resultSentinel, "toolu_", "4321", "00000000-0000-4000-8000-0000000000b1", "file-a", "Bash"] {
+                            #expect(!text.contains(secret), Comment(rawValue: "\(type(of: value))이 \(secret)을 찍는다: \(text.prefix(120))"))
+                        }
+                    }
                 }
             }
+        }
+
+        @Test func thePreviewInitializersBuildTheValuesTheViewsNeed() {
+            let cursor = ClaudeAppTranscriptCursor(sessionID: id)
+            let turns = [ClaudeAppTurn(id: "t1", kind: .user("hello")), ClaudeAppTurn(id: "t2", kind: .assistant("hi"), timestamp: Date(timeIntervalSince1970: 1), truncated: true), ClaudeAppTurn(id: "t3", kind: .tool(name: "Bash", description: nil))]
+            let page = ClaudeAppTranscriptPage(turns: turns, cursor: cursor, hasEarlier: true, skippedLines: 2)
+            let detail = ClaudeAppToolDetail(input: "{}", result: nil, truncated: false)
+            #expect(page.turns.count == 3 && page.hasEarlier && page.skippedLines == 2 && cursor.sessionID == id)
+            #expect(detail.input == "{}" && detail.result == nil)
+            #expect(turns[1].truncated && turns[1].timestamp == Date(timeIntervalSince1970: 1) && !turns[0].truncated)
+            let poll = ClaudeAppStatusPoller.Poll(sessions: [], doubled: [], source: .agents, mismatch: true, verified: false, registryUnavailable: false)
+            #expect(poll.source == .agents && poll.mismatch)
+            // 견본 커서는 아무 파일도 가리키지 않는다: 읽기는 못 읽음으로 끝난다
+            let reader = ClaudeAppTranscriptReader(claudeDirectory: "/nonexistent-claude-dir")
+            #expect(reader.newer(cursor) == .unreadable)
+            #expect(reader.detail(of: turns[2], cursor: cursor) == nil)
         }
 
         @Test func twoDirectoriesWithTheSameTranscriptNameDoNotConfuseTheCursor() throws {

@@ -66,16 +66,37 @@ enum ClaudeAppFixture {
     }
 }
 
-/// 손으로 흘리는 시계 (읽기 쉬운 값 하나)
+/// 손으로 흘리는 시계 둘: 벽시계(`now`, 시각 표시 · 믿을 범위)와 단조 시간(`uptime`, 간격 · 머무는 시간 · 캐시 나이). `advance`는 둘을 함께, `jumpWall`은 벽시계만 움직인다
 final class ClaudeAppClock: @unchecked Sendable {
     private let lock = NSLock()
-    private var current: Date
+    private var wall: Date
+    private var monotonic: TimeInterval
 
-    init(_ start: Date = Date(timeIntervalSince1970: 1_800_000_000)) { current = start }
+    init(_ start: Date = Date(timeIntervalSince1970: 1_800_000_000), uptime: TimeInterval = 5_000) {
+        wall = start
+        monotonic = uptime
+    }
 
-    var now: Date { lock.withLock { current } }
-    func advance(_ seconds: TimeInterval) { lock.withLock { current = current.addingTimeInterval(seconds) } }
-    func set(_ date: Date) { lock.withLock { current = date } }
+    var now: Date { lock.withLock { wall } }
+    var uptime: TimeInterval { lock.withLock { monotonic } }
+
+    func advance(_ seconds: TimeInterval) {
+        lock.withLock {
+            wall = wall.addingTimeInterval(seconds)
+            monotonic += seconds
+        }
+    }
+
+    /// 사용자가 시계를 바꾸었거나 NTP가 크게 고쳤다: 단조 시간은 그대로다
+    func jumpWall(by seconds: TimeInterval) { lock.withLock { wall = wall.addingTimeInterval(seconds) } }
+}
+
+/// 다른 작업에서 켜지는 표시 (막힘이 시험을 멈추지 않게 기다림에 상한을 둘 때)
+final class ClaudeAppFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    func set() { lock.withLock { value = true } }
+    var isSet: Bool { lock.withLock { value } }
 }
 
 /// `claude agents --json`를 대신하는 가짜 실행기: 부른 횟수를 세고, 정해 둔 답을 주고, 돌고 있는 동안 세상을 바꾸거나 붙잡힐 수 있다
@@ -97,8 +118,10 @@ final class ClaudeAppAgentsStub: @unchecked Sendable {
     /// 다음 호출 **하나**를 `release()`까지 붙잡는다 (그 사이 들어오는 다른 호출은 붙잡지 않는다: 잘못된 코드가 두 번째를 띄워도 시험이 멈추지 않고 횟수로 드러난다)
     func hold() { lock.withLock { holdNext = true } }
     var isHolding: Bool { lock.withLock { entered } }
+    /// 붙잡힌 호출을 풀고, 아직 들어오지 않은 호출이 있으면 그것도 붙잡지 않게 한다 (작업이 늦게 시작해도 시험이 영영 멈추지 않는다)
     func release() {
         let waiting: CheckedContinuation<Void, Never>? = lock.withLock {
+            holdNext = false
             holding = false
             defer { gate = nil }
             return gate

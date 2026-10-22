@@ -40,12 +40,34 @@ extension ExternalSessionSuites {
             }
         }
 
-        @Test func onlyBusyAndWaitingCountAsActive() {
-            #expect(ClaudeAppSessionState.busy.isActive && ClaudeAppSessionState.waiting(.approval).isActive && ClaudeAppSessionState.waiting(.answer).isActive)
-            #expect(!ClaudeAppSessionState.idle.isActive && !ClaudeAppSessionState.unknown.isActive)
-        }
-
         // MARK: 등록 파일 (DR-2)
+
+        @Test func aRegistryReadThatReusesWhatIsUnchangedReadsOnlyTheFilesItMustRead() throws {
+            try withHome { home in
+                try home.registry(pid: 100, json: A.registry(pid: 100, id: F.uuid(1), status: "busy"))
+                try home.registry(pid: 101, json: A.registry(pid: 101, id: F.uuid(2), status: "idle", entrypoint: "cli"))
+                try "not json".write(toFile: home.sessions + "/102.json", atomically: false, encoding: .utf8)
+                let recording = RecordingFileSystem()
+                var reuse = ExternalSessionRegistry.Reuse()
+                let first = ExternalSessionRegistry.read(fileSystem: recording.fileSystem, sessionsDirectory: home.sessions, now: now, reuse: &reuse, alwaysRead: [])
+                #expect(recording.reads.count == 3, "처음에는 모두 읽는다")
+                let mark = recording.reads.count
+                let second = ExternalSessionRegistry.read(fileSystem: recording.fileSystem, sessionsDirectory: home.sessions, now: now, reuse: &reuse, alwaysRead: [100])
+                #expect(recording.reads[mark...].map(\.path) == [home.sessions + "/100.json"], "크기 · 수정 시각이 같은 파일은 다시 읽지 않는다. 꼭 읽으라고 한 pid만 읽는다")
+                #expect(second == first, "다시 읽지 않은 파일도 같은 결과를 낸다 (해석 못 한 파일을 해석한 것으로 치지도 않는다)")
+                // 바뀐 파일은 읽는다
+                let mark2 = recording.reads.count
+                try home.registry(pid: 101, json: A.registry(pid: 101, id: F.uuid(2), status: "busy", entrypoint: "cli") + " ")
+                let third = ExternalSessionRegistry.read(fileSystem: recording.fileSystem, sessionsDirectory: home.sessions, now: now, reuse: &reuse, alwaysRead: [])
+                #expect(recording.reads[mark2...].map(\.path) == [home.sessions + "/101.json"])
+                if case .entries(let entries) = third { #expect(entries.first { $0.pid == 101 }?.state == .busy) } else { Issue.record("읽지 못했다") }
+                // 사라진 파일은 결과에서도 기억에서도 사라진다
+                try FileManager.default.removeItem(atPath: home.sessions + "/101.json")
+                let fourth = ExternalSessionRegistry.read(fileSystem: recording.fileSystem, sessionsDirectory: home.sessions, now: now, reuse: &reuse, alwaysRead: [])
+                if case .entries(let entries) = fourth { #expect(entries.map(\.pid) == [100]) } else { Issue.record("읽지 못했다") }
+                #expect(reuse.cachedNames == ["100.json", "102.json"])
+            }
+        }
 
         @Test func theRegistryCarriesTheStatusTheWaitReasonAndWhenItChanged() throws {
             try withHome { home in
@@ -59,6 +81,28 @@ extension ExternalSessionSuites {
                 #expect(byPID[101]?.statusUpdatedAt == Date(timeIntervalSince1970: 1_799_999_000))
                 #expect(byPID[102]?.state == .waiting(.answer))
                 #expect(byPID[103]?.state == .idle)
+            }
+        }
+
+        @Test func nonRegistryNamesBeforeTheRealFilesCannotPushThemOutOfTheFileLimit() throws {
+            try withHome { home in
+                try home.registry(pid: 100, json: A.registry(pid: 100, id: id, status: "busy"))
+                let base = ExternalSessionFileSystem.live
+                // 목록 앞에 이름이 맞지 않는 항목 600개(`<pid>.<hash>.key` 등)가 서 있다: 이름을 거르기 전에 500개로 자르면 진짜 파일이 밀려난다
+                let decoys = (0..<600).map { ExternalSessionFileSystem.Entry(name: "\($0).abcdef.key", kind: .regular, owner: base.userID, size: 10, modified: now, created: now) }
+                let crowded = ExternalSessionFileSystem(
+                    userID: base.userID, realpath: base.realpath, lstat: base.lstat,
+                    list: { path, limit in
+                        guard case .entries(let real) = base.list(path, limit) else { return base.list(path, limit) }
+                        return .entries(decoys + real)
+                    },
+                    read: base.read
+                )
+                guard case .entries(let entries) = ExternalSessionRegistry.read(fileSystem: crowded, sessionsDirectory: home.sessions, now: now) else {
+                    Issue.record("읽지 못했다")
+                    return
+                }
+                #expect(entries.map(\.pid) == [100])
             }
         }
 
@@ -158,9 +202,27 @@ extension ExternalSessionSuites {
         }
 
         @Test func anAnswerWithManyItemsKeepsAtMostTheLimit() {
-            let many = (0..<(ClaudeAgentsListing.maxItems + 25)).map { (100 + $0, F.uuid(0x1000 + $0), "idle" as String?, nil as String?) }
-            let items = ClaudeAgentsListing.parse(A.agentsJSON(many))
+            // 짧은 항목: 상한 수를 넘는 항목이 바이트 상한 안에 든다
+            let text = "[" + (0..<(ClaudeAgentsListing.maxItems + 25)).map { "{\"pid\":\(100 + $0),\"sessionId\":\"\(F.uuid(0x1000 + $0))\",\"status\":\"idle\"}" }.joined(separator: ",") + "]"
+            #expect(text.utf8.count < ClaudeAgentsListing.maxBytes)
+            let items = ClaudeAgentsListing.parse(Data(text.utf8))
             #expect(items?.count == ClaudeAgentsListing.maxItems)
+        }
+
+        @Test func anAnswerLargerThanWhatTheRunnerKeepsIsNothingNotAHalfReadList() async throws {
+            func list(count: Int) -> String {
+                "[" + (0..<count).map { "{\"pid\":\(100 + $0),\"sessionId\":\"\(F.uuid(0x2000 + $0))\",\"status\":\"idle\",\"name\":\"\(String(repeating: "n", count: 120))\"}" }.joined(separator: ",") + "]"
+            }
+            let small = try rig(payload: list(count: 100))
+            defer { small.home.cleanup() }
+            #expect(list(count: 100).utf8.count < ClaudeAgentsListing.maxBytes)
+            #expect(await lister(small).list()?.count == 100)
+            // 러너는 표준 출력을 정확히 64 KiB까지만 담는다: 그보다 큰 답은 잘려 온전한 JSON이 아니고 읽는 쪽의 상한(같은 64 KiB)도 같다
+            let big = try rig(payload: list(count: 500))
+            defer { big.home.cleanup() }
+            #expect(list(count: 500).utf8.count > ClaudeAgentsListing.maxBytes)
+            #expect(await lister(big).list() == nil)
+            #expect(ClaudeAgentsListing.maxBytes == 64 * 1024)
         }
 
         // MARK: 실행 (고정 찾기 · 인자 · 환경 · 기한)
@@ -177,6 +239,7 @@ extension ExternalSessionSuites {
               printf 'argc=%s\\n' "$#"
               for a in "$@"; do printf 'arg=%s\\n' "$a"; done
               printf 'pwd=%s\\n' "$(pwd -P)"
+              printf 'entries=%s\\n' "$(ls -A | wc -l | tr -d ' ')"
               /usr/bin/env
             } > '\(record)'
             \(extra)
@@ -210,13 +273,26 @@ extension ExternalSessionSuites {
             let items = await lister(rig).list()
             #expect(items == [ClaudeAgentsItem(pid: 100, sessionID: id, state: .waiting(.approval))])
             let lines = recorded(rig)
-            #expect(lines.filter { $0.hasPrefix("arg=") } == ["arg=agents", "arg=--json"], "인자는 정확히 둘, 이 순서")
-            #expect(lines.contains("argc=2"))
+            #expect(lines.filter { $0.hasPrefix("arg=") } == ["arg=agents", "arg=--json", "arg=--setting-sources", "arg="], "인자는 정확히 이것: 사용자 설정(프로젝트 · 사용자 훅 등)을 읽지 않는다")
+            #expect(lines.contains("argc=4"))
             #expect(lines.contains("HOME=" + rig.home.home))
             let text = lines.joined(separator: "\n")
             for leaked in ["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "SUPABASE", "DYLD_", "CLAUDE_CODE_OAUTH", A.cwdSentinel, "evil.dylib"] {
                 #expect(!text.contains(leaked), Comment(rawValue: "자식 환경에 \(leaked)이 없다"))
             }
+        }
+
+        @Test func theLiveListerRunsInAnEmptyTemporaryFolderNotInAnyOfTheUsersFolders() async throws {
+            let payload = String(decoding: A.agentsJSON([(100, id, "busy", nil)]), as: UTF8.self)
+            let rig = try rig(payload: payload)
+            defer { rig.home.cleanup() }
+            let environment = ["HOME": rig.home.home, "USER": "tester", "LANG": "en_US.UTF-8", "PATH": "/usr/bin:/bin"]
+            let live = ClaudeAgentsLister.live(locator: rig.locator, environment: environment)
+            #expect(await live.list()?.count == 1)
+            let lines = recorded(rig)
+            #expect(lines.contains("entries=0"), "cwd는 비어 있는 임시 폴더다: 프로젝트 설정 · 파일을 읽을 것이 없다")
+            let pwd = lines.first { $0.hasPrefix("pwd=") }.map { String($0.dropFirst(4)) } ?? ""
+            #expect(pwd.contains("tf-claude-agents") && !pwd.hasPrefix(rig.home.root) && !pwd.hasPrefix(rig.home.home), "홈 · 작업 폴더가 아니다: \(pwd)")
         }
 
         @Test func noClaudeOnThisMacOrAFailingOrNonJsonRunIsNothingNotACrash() async throws {
