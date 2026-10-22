@@ -18,18 +18,19 @@ extension ActivityRing.Kind {
 
 /// Activity ring (0.2.0 디자인 시스템 Atoms): 일 하나가 지금 무엇을 하는지. 검은 레일(bezel) 위에서만 쓴다.
 /// 업무 상태(`TaskStatusMark`: To Do · In Progress · Done)가 아니다. 뜻은 색이 아니라 움직임과 모양이 전한다.
-/// - running: `status/activity` 호가 돈다 (1.1초에 한 바퀴). 에이전트가 일하는 중
+/// - running: `status/activity` 호(blue-350 `#86ABED`)가 돈다 (1.1초에 한 바퀴). 에이전트가 일하는 중
 /// - stopping: Stop new steps를 요청했고 아직 확인 전. 회색 호가 느리게 돈다 (2.4초). 아직 일하고 있을 수 있다
 /// - unreachable: Mac 연결이 끊겨 진행을 모른다. 회색 반 링이 멈춰 있다. 사람을 기다리는 `waiting`과 섞지 않는다
 /// - needsYou: 닫힌 링 (2.5 선). 그 세션의 에이전트가 당신의 답을 기다린다. 점을 넣지 않는다 (In Progress ◉와 겹친다)
-///   옛 모양(`classic`)은 형광펜 노랑, 캡슐 레일 모양(`capsule`, OA U3)은 `needs-you` 주황이고 원반이 없다 (DS "Rings never fill")
+///   옛 모양(`classic`)은 형광펜 노랑, 캡슐 레일 모양(`capsule`, OA U3)은 `needs-you` 주황(`#EBAA7E`)이고 원반이 없다 (DS "Rings never fill")
 /// - waiting: 회색 점선 링. 사람 · 서비스의 답을 기다린다
-/// - done: 흰 링 + 체크, 3초 동안 (캡슐 레일 모양은 `done` 초록 링 + 초록 체크)
+/// - done: 흰 링 + 체크, 3초 동안 (캡슐 레일 모양은 `done` 청록 초록(teal-300 `#77E2C2`) 링 + 같은 색 체크)
 /// - idle: 멈춘 링 (아무것도 돌지 않고 기다리지 않는다). 레일에는 오르지 않는다 (이슈 상세의 Sessions 목록이 말한다)
 /// 움직임 줄이기: running은 반 링, stopping은 3/4 링으로 멈춰 서로 구분된다.
-/// **ground**: `bezel`(기본, 검은 레일 · 14/18pt)과 `light`(패널 위 · 12/18pt, 선은 2pt 고정). 빛 위에서는 트랙 `border/default`, running 호 `status/activity`,
+/// **ground**: `bezel`(기본, 검은 레일 · 14/18pt)과 `light`(패널 위 · 12/18pt, 선은 2pt 고정). 빛 위에서는 트랙 `border/default`, running 호 `status/activity-panel`,
 /// needs-you는 `marker` 원반 + `text/primary` 2pt 링, done은 `text/primary` 링(체크 없음), idle은 `status/step-inactive`, waiting · unreachable · stopping의 호는 `text/secondary`
-/// (캡슐 모양에서는 needs-you · done이 각자의 색 링 하나뿐이다: 원반도 잉크 링도 없다)
+/// (캡슐 모양에서는 needs-you · done이 각자의 색 링 하나뿐이다: 원반도 잉크 링도 없다. 그 색은 흰 · graphite 패널에서 3:1을 넘기는 `status/needs-you-panel` · `status/done-panel`이고,
+/// 검은 레일(`bezel`)은 두 모드 모두 `status/needs-you` · `status/done` · `status/activity`다. 레일 상태 색 C · Spaced, 사용자 승인 2026-10-22)
 /// **look**(OA U3-14): `classic`(기본)은 지금 모양이다 — Release 레일이 이것을 쓴다. `capsule`은 새 캡슐 레일의 모양과 움직임이다
 public struct ActivityRing: View {
     public enum Kind: String, CaseIterable, Sendable {
@@ -121,6 +122,9 @@ public struct ActivityRing: View {
     private var unit: CGFloat { points / 16 }
     private var inset: CGFloat { ground == .light ? 1 : 1.5 * unit }
     private var line: CGFloat { ground == .light ? 2 : 2 * unit }
+    /// 패널 위(라이트 바탕)는 흰 패널에서 3:1을 넘기는 `-panel` 토큰 (다크는 레일 값과 같다), 검은 레일은 기본 토큰
+    private var needsYouColor: Color { ground == .light ? TFColor.needsYouPanel : TFColor.needsYou }
+    private var activityColor: Color { ground == .light ? TFColor.statusActivityPanel : TFColor.statusActivity }
 
     public var body: some View {
         Group {
@@ -135,7 +139,7 @@ public struct ActivityRing: View {
                         .opacity(frame.opacity)
                         if frame.echoOpacity > 0 {
                             Circle()
-                                .strokeBorder(TFColor.needsYou, lineWidth: 1.5)
+                                .strokeBorder(needsYouColor, lineWidth: 1.5)
                                 .frame(width: (points - 2 * inset) * frame.echoScale, height: (points - 2 * inset) * frame.echoScale)
                                 .opacity(frame.echoOpacity)
                         }
@@ -164,18 +168,18 @@ public struct ActivityRing: View {
         }
     }
 
-    /// 빛 위: 트랙은 `border/default`, needs-you는 원반, done · idle은 한 색 링
+    /// 빛 위: 트랙은 `border/default`, needs-you는 원반, done · idle은 한 색 링 (캡슐 모양의 needs-you · done은 `-panel` 토큰)
     @ViewBuilder private func lightTrack(_ ring: Circle.InsetShape) -> some View {
         switch kind {
         case .needsYou:
             if look == .capsule {
-                ring.stroke(TFColor.needsYou, lineWidth: line)
+                ring.stroke(needsYouColor, lineWidth: line)
             } else {
                 ring.fill(TFColor.fillMarker)
                 ring.stroke(TFColor.textPrimary, lineWidth: line)
             }
         case .done:
-            ring.stroke(look == .capsule ? TFColor.done : TFColor.textPrimary, lineWidth: line)
+            ring.stroke(look == .capsule ? TFColor.donePanel : TFColor.textPrimary, lineWidth: line)
         case .idle:
             ring.stroke(TFColor.statusStepInactive, lineWidth: line)
         case .waiting:
@@ -204,7 +208,7 @@ public struct ActivityRing: View {
 
     @ViewBuilder private var arc: some View {
         if let length = kind.arcLength(reduceMotion: reduceMotion) {
-            let color = kind == .running ? TFColor.statusActivity : (ground == .light ? TFColor.textSecondary : TFColor.bezelInkSecondary)
+            let color = kind == .running ? activityColor : (ground == .light ? TFColor.textSecondary : TFColor.bezelInkSecondary)
             let shape = Circle()
                 .inset(by: inset)
                 .trim(from: 0, to: length)

@@ -77,11 +77,17 @@ enum FigmaColor {
         "bg/field": ("#F5F5F7", "#FFFFFF12"),
         "bg/tooltip": ("#FFFFFF", "#3A3A3C"),
         "bg/panel": ("#FFFFFFF7", "#2C2C2EF7"),
-        "status/activity": ("#6A8CC7", "#6A8CC7"),
+        // 레일 상태 색 C · Spaced (DZ oa-rail-colors-dz, 사용자 승인 2026-10-22): 레일은 두 모드 모두 검정이라 `status/*` 한 값이다.
+        // `activity`는 blue-350(brand accent blue-400 `#6A8CC7`은 그대로), `done`은 teal-300(옛 green-300 `#9CE73A`는 쓰지 않는다)
+        "status/activity": ("#86ABED", "#86ABED"),
         "status/step-inactive": ("#8E8E93", "#8E8E93"),
-        // DS tokens.json `needs-you`(orange-300) · `done`(green-300), 두 모드가 같다 (OA U3 검토 1: 코드 상수에서 색 세트로)
+        // DS tokens.json `needs-you`(orange-300) · `done`(teal-300), 두 모드가 같다 (OA U3 검토 1: 코드 상수에서 색 세트로)
         "status/needs-you": ("#EBAA7E", "#EBAA7E"),
-        "status/done": ("#9CE73A", "#9CE73A"),
+        "status/done": ("#77E2C2", "#77E2C2"),
+        // 패널(빛 · 그레이파이트) 위 12px 링용: 라이트는 흰 패널에서 3:1을 넘기도록 어둡게, 다크는 레일 값 그대로
+        "status/needs-you-panel": ("#BD7F55", "#EBAA7E"),
+        "status/done-panel": ("#2A9E81", "#77E2C2"),
+        "status/activity-panel": ("#6A8ECD", "#86ABED"),
         "bezel/base": ("#000000", "#000000"),
         "bezel/ink": ("#FFFFFF", "#FFFFFF"),
         "bezel/ink-secondary": ("#9A9AA0", "#9A9AA0"),
@@ -234,13 +240,45 @@ struct ColorTokenTests {
         #expect(TokenCatalog.sourceColorSets() == Set(TFColor.Name.allCases.map(\.rawValue)))
     }
 
-    /// 세션이 당신을 기다리는 링(needs-you)과 방금 끝난 링(done)은 DS 토큰의 색 세트다: orange-300 · green-300, 두 모드가 같다 (코드 상수가 아니다)
+    /// 세션이 당신을 기다리는 링(needs-you)과 방금 끝난 링(done), 일하는 중 호(activity)는 DS 토큰의 색 세트다: orange-300 · teal-300 · blue-350, 두 모드가 같다 (코드 상수가 아니다)
     @Test func theRingTokensAreDesignSystemColorSetsInBothAppearances() throws {
         let needsYou = try #require(TokenCatalog.resolve("status/needs-you"), "색 세트가 없다")
         let done = try #require(TokenCatalog.resolve("status/done"), "색 세트가 없다")
+        let activity = try #require(TokenCatalog.resolve("status/activity"), "색 세트가 없다")
         #expect(needsYou.light == RGBA("#EBAA7E") && needsYou.dark == RGBA("#EBAA7E"), "orange-300")
-        #expect(done.light == RGBA("#9CE73A") && done.dark == RGBA("#9CE73A"), "green-300")
+        #expect(done.light == RGBA("#77E2C2") && done.dark == RGBA("#77E2C2"), "teal-300")
+        #expect(activity.light == RGBA("#86ABED") && activity.dark == RGBA("#86ABED"), "blue-350")
         #expect(TFColor.Name.statusNeedsYou.rawValue == "status/needs-you" && TFColor.Name.statusDone.rawValue == "status/done")
+        // 옛 형광 연두는 어느 상태 색에도 남지 않는다
+        for token in ["status/needs-you", "status/done", "status/activity", "status/needs-you-panel", "status/done-panel", "status/activity-panel"] {
+            let value = try #require(TokenCatalog.resolve(token), "\(token) 색 세트가 없다")
+            #expect(value.light != RGBA("#9CE73A") && value.dark != RGBA("#9CE73A"), "\(token): green-300은 쓰지 않는다")
+        }
+    }
+
+    /// 패널 위 링 값 셋: 라이트는 흰 패널에서 3:1을 넘기게 어둡게, 다크는 레일 값 그대로. 색상은 레일 값과 같다 (필요한 대비 시험은 ContrastTests)
+    @Test func thePanelRingTokensAreDarkerOnLightAndTheRailValueOnDark() throws {
+        let pairs: [(panel: String, rail: String, light: String)] = [
+            ("status/needs-you-panel", "status/needs-you", "#BD7F55"),
+            ("status/done-panel", "status/done", "#2A9E81"),
+            ("status/activity-panel", "status/activity", "#6A8ECD"),
+        ]
+        for pair in pairs {
+            let panel = try #require(TokenCatalog.resolve(pair.panel), "\(pair.panel) 색 세트가 없다")
+            let rail = try #require(TokenCatalog.resolve(pair.rail), "\(pair.rail) 색 세트가 없다")
+            #expect(panel.light == RGBA(pair.light), "\(pair.panel) Light")
+            #expect(panel.dark == rail.dark, "\(pair.panel) Dark는 레일 값 \(rail.dark)")
+        }
+        #expect(TFColor.Name.allCases.map(\.rawValue).contains("status/needs-you-panel"), "TFColor.Name에 패널 토큰이 있다")
+        #expect(TFColor.Name.allCases.map(\.rawValue).contains("status/done-panel"))
+        #expect(TFColor.Name.allCases.map(\.rawValue).contains("status/activity-panel"))
+    }
+
+    /// brand accent blue-400 `#6A8CC7`은 상태 색 정리와 상관없이 그대로다 (activity만 blue-350으로 옮겼다)
+    @Test func theBrandAccentKeepsBlue400() throws {
+        let accent = try #require(TokenCatalog.resolve("fill/accent"))
+        let border = try #require(TokenCatalog.resolve("border/accent"))
+        #expect(accent.dark == RGBA("#6A8CC7") && border.dark == RGBA("#6A8CC7"), "blue-400")
     }
 
     /// 선택 면은 DS 값 그대로: 라이트 검정 7% · 다크 흰색 10% (청색 아님)
