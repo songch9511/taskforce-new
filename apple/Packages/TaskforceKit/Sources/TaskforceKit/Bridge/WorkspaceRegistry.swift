@@ -334,11 +334,17 @@ extension WorkspaceRegistry: AgentWorkspaceFolders {
         }
     }
 
-    /// 이 대화의 폴더 (대화 머리, 사용자 결정 2026-10-21): 세션 핀(세션을 연 뒤에는 바뀌지 않는다) → 이 대화가 보내기 전에 고른 폴더. 프로젝트의 폴더만 있는 대화는 nil이다 —
-    /// 그 폴더가 이 Mac의 연결 것인지 모르고, 첫 보내기에서 세션 핀이 되어서야 이 대화의 폴더다. 규칙을 지금 다시 보지 않는다: 지워진 폴더도 그 세션이 쓰던 폴더다
+    /// 이 대화의 폴더 (대화 머리, 사용자 결정 2026-10-21): 세션이 **있으면** 그 세션의 로컬 핀뿐이다 (세션을 연 뒤에는 바뀌지 않는다) — 핀이 없으면 nil: 다른 Mac의 세션이거나 이 Mac이 아직 핀을 꽂기 전이라
+    /// 이 대화가 고른 폴더로 대신하지 않는다 (코드 검토 P2: 다른 Mac 에이전트 대화에 이 Mac의 폴더를 보이지 않게). 세션이 **없으면** 이 대화가 보내기 전에 고른 폴더.
+    /// 프로젝트의 폴더만 있는 대화는 nil이다 — 그 폴더가 이 Mac의 연결 것인지 모르고, 첫 보내기에서 세션 핀이 되어서야 이 대화의 폴더다. 규칙을 지금 다시 보지 않는다: 지워진 폴더도 그 세션이 쓰던 폴더다
     public func folder(forSession session: UUID?, conversation: UUID) -> String? {
-        if let session, let pinned = pinned(session: session.uuidString) { return pinned }
+        if let session { return pinned(session: session.uuidString) }
         return pending(conversation: conversation)
+    }
+
+    /// 대화가 고른 폴더를 지운다 (세션 핀 · 프로젝트의 폴더는 건드리지 않는다). 지울 것이 없으면 파일도 쓰지 않는다
+    public func forgetFolder(forConversation id: UUID) {
+        removePending(conversation: id)
     }
 
     public func register(path: String, scope: AgentWorkspaceGate.Scope) throws {

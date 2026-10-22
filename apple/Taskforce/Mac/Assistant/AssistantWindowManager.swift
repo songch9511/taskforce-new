@@ -156,6 +156,8 @@ final class AssistantWindowManager {
         let chat = runtime.chat
         let restored = chat.lastConversationID
         let conversation = restored ?? chat.reserveNewChat(target: .taskforce, excluding: [])
+        // 다시 쓰이는 빈 대화에 옛 작업 폴더가 남아 있을 수 있다 (새 대화는 폴더 없이 시작한다)
+        if restored == nil { runtime.forgetChosenFolder(of: conversation) }
         guard let id = openWindow(for: conversation) else { return nil }
         // 목록을 아직 읽기 전이었다면: 읽은 뒤에도 손대지 않은 새 창이면 마지막 대화로 되살린다 (패널 Chats가 하던 일)
         if restored == nil {
@@ -172,6 +174,7 @@ final class AssistantWindowManager {
     @discardableResult
     func openNewWindow() -> UUID? {
         let conversation = runtime.chat.reserveNewChat(target: .taskforce, excluding: openConversations(except: nil))
+        runtime.forgetChosenFolder(of: conversation)   // 다시 쓰이는 빈 대화의 옛 작업 폴더
         return openWindow(for: conversation)
     }
 
@@ -195,6 +198,8 @@ final class AssistantWindowManager {
             if let sessions = runtime.agentTurns { model.agent = AssistantAgentSupport(stop: runtime.stop, sessions: sessions) }
             // 이 대화의 세션에 열린 질문 (OA D4b-m-1): 카드와 composer 막기가 같은 상태를 본다
             model.questions = runtime.questions
+            // 대화가 쓰지 않게 된 작업 폴더(대상이 바뀐 · 버려진 · 다시 쓰이는 빈 대화)는 이 Mac의 등록부에서 지운다
+            runtime.wireFolders(model)
             // 열 때 패널에 열린 항목이 있으면 그것이 auto 칩이다
             model.followOpenItem(shell.openItem.map(Self.chip(for:)))
             let controller = AssistantWindowController(
@@ -238,6 +243,8 @@ final class AssistantWindowManager {
 
     /// ⌘W: 닫는다. 대화는 Chat history에 남는다
     func close(_ windowID: UUID) {
+        // 빈 새 대화를 보이던 창이면 그 대화에 적힌 작업 폴더를 버린다 (닫은 뒤 아무도 쓰지 않는다)
+        if let model = controllers[windowID]?.model { runtime.windowClosing(model) }
         controllers[windowID]?.close()
         controllers[windowID] = nil
         registry.close(windowID)

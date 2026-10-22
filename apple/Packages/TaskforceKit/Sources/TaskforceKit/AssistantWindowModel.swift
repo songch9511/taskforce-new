@@ -32,6 +32,13 @@ public final class AssistantWindowModel: Identifiable {
     /// 에이전트의 열린 질문 (OA D4b-m-1): Assistant 창과 세션 패널이 같은 상태를 본다. 없으면 질문 카드가 없다 (견본 · 시험용 가짜 연결)
     @ObservationIgnored public var questions: AgentQuestionStore?
 
+    /// 이 대화가 보내기 전에 고른 작업 폴더를 지운다 (사용자 결정 2026-10-21 · 코드 검토 2026-10-22). 창이 알리는 일만 한다 — 폴더 등록부는 앱의 것이다 (`ChatRuntime.wireFolders`가 잇는다).
+    /// 불리는 때: ① 빈 대화의 대상이 바뀌었다 (그 폴더는 옛 대상의 Mac의 것이다) ② 새로 내주는(다시 쓰이는) 빈 대화 ③ 창이 떠나는 빈 새 대화 (버려진 것) ④ 폴더를 적은 새 대화로 창이 못 옮겨 갔다
+    @ObservationIgnored public var forgetFolder: (UUID) -> Void = { _ in }
+
+    /// 머리 폴더 메뉴의 "New chat in another folder…"가 실패했을 때의 인라인 한 줄 (이 대화의 것: 다른 대화로 가면 사라진다). 없으면 nil
+    public private(set) var folderNoticeText: String?
+
     @ObservationIgnored let chat: ChatStore
     @ObservationIgnored let targets: AssistantTargetsStore
     @ObservationIgnored private let openElsewhere: () -> Set<UUID>
@@ -239,13 +246,17 @@ public final class AssistantWindowModel: Identifiable {
         let current = conversationID
         if chat.isLocalChat(current), !chat.hasMessages(current) {
             chat.setLocalTarget(wanted, for: current)
+            // 이 빈 대화가 고른 폴더는 옛 대상의 것이다 (다른 Mac의 에이전트로 바꾸면 이 Mac의 폴더가 그 대화에 남으면 안 된다)
+            forgetFolder(current)
             return
         }
         let text = chat.draft(for: current)
         // 쓰던 글이 남은 다른 대화는 다시 쓰지 않는다: 이 창의 글이 따라오며 그 글을 덮는다
         let fresh = chat.reserveNewChat(target: wanted, excluding: openElsewhere().union([current]).union(chat.draftConversationIDs))
+        forgetFolder(fresh)
         guard case .rebound = rebindHandler(fresh) else { return }
         conversationID = fresh
+        folderNoticeText = nil
         mode = .chat
         // 쓰던 글은 새 대화로 따라온다 (대상 바꾸기가 쓰던 글을 버리지 않는다)
         if !text.isEmpty {
@@ -262,30 +273,57 @@ public final class AssistantWindowModel: Identifiable {
     public func newChat() {
         mode = .chat
         let fresh = chat.reserveNewChat(target: .taskforce, excluding: openElsewhere())
+        // 다시 쓰이는 빈 대화에 옛 폴더가 남아 있을 수 있다 (새 대화는 폴더 없이 시작한다)
+        forgetFolder(fresh)
         if fresh != conversationID {
             guard case .rebound = rebindHandler(fresh) else { return }
+            let left = conversationID
             conversationID = fresh
+            folderNoticeText = nil
             chips = AssistantChipSet()
+            abandonIfEmptyLocal(left)
         }
         requestFocus()
+    }
+
+    /// 창이 떠난 빈 새 대화(서버에 없고 글이 없다)에 적힌 폴더는 버린다: 아무도 쓰지 않을 항목이 등록부에 남지 않게. 보낸 대화의 폴더(세션 핀의 기록)는 건드리지 않는다
+    private func abandonIfEmptyLocal(_ id: UUID) {
+        if chat.isLocalChat(id), !chat.hasMessages(id) { forgetFolder(id) }
+    }
+
+    /// 폴더 메뉴가 실패한 일을 이 대화에 한 줄로 보인다 (승인된 글만: 부르는 쪽이 정한다)
+    public func showFolderNotice(_ text: String) {
+        folderNoticeText = text
+    }
+
+    public func clearFolderNotice() {
+        folderNoticeText = nil
     }
 
     /// 대화 머리 폴더 메뉴의 "New chat in another folder…" (사용자 결정 2026-10-21): 같은 에이전트의 **새 대화**를 이 창에 연다. Claude 세션의 폴더는 세션을 연 뒤 바뀌지 않으므로
     /// 다른 폴더는 새 대화로 연다 — 이 대화는 글 · 초안 · 폴더 모두 그대로다 (초안도 따라오지 않는다).
     /// `bindFolder`가 새 대화 id에 고른 폴더를 적는다: **던지면 아무것도 바꾸지 않는다** (새 대화는 서버에 없는 빈 대화라 남아도 다음 새 대화가 다시 쓴다).
-    /// 쓰던 글이 있는 대화 · 다른 창이 보이는 대화 · 이 대화는 다시 쓰지 않는다. 연 뒤는 `newChat()`처럼 칩을 비우고 입력칸에 포커스를 준다. 열었으면 true
+    /// 쓰던 글이 있는 대화 · 다른 창이 보이는 대화 · 이 대화는 다시 쓰지 않는다. 이미 세션이 있는 대화(서버의 빈 대화를 다시 쓰게 된 경우)에는 폴더를 적지 않는다 — 그 세션의 폴더는 핀이다.
+    /// 폴더를 적은 뒤 창이 못 옮겨 가면 그 폴더를 지운다 (새 대화에 고아로 남지 않게). 옮겨 갔으면 떠나는 빈 새 대화의 폴더도 버린다.
+    /// 연 뒤는 `newChat()`처럼 칩을 비우고 입력칸에 포커스를 준다. 열었으면 true
     @discardableResult
     public func startAgentChat(bindFolder: (UUID) throws -> Void) -> Bool {
         guard toAgent else { return false }
         let current = conversationID
         let fresh = chat.reserveNewChat(target: option?.pick ?? pick, excluding: openElsewhere().union([current]).union(chat.draftConversationIDs))
+        guard chat.agentSessionID(for: fresh) == nil else { return false }
         do { try bindFolder(fresh) } catch { return false }
-        guard case .rebound = rebindHandler(fresh) else { return false }
+        guard case .rebound = rebindHandler(fresh) else {
+            forgetFolder(fresh)
+            return false
+        }
         conversationID = fresh
+        folderNoticeText = nil
         mode = .chat
         chips = AssistantChipSet()
         chat.ensureLoaded(fresh)
         requestFocus()
+        abandonIfEmptyLocal(current)
         return true
     }
 
@@ -307,11 +345,14 @@ public final class AssistantWindowModel: Identifiable {
             return
         }
         guard case .rebound = rebindHandler(id) else { return }
+        let left = conversationID
         conversationID = id
+        folderNoticeText = nil
         mode = .chat
         chips = AssistantChipSet()
         chat.ensureLoaded(id)
         requestFocus()
+        abandonIfEmptyLocal(left)
     }
 
     /// Esc: 열린 후보 메뉴 → 안쪽(History)을 먼저 닫는다. 처리했으면 true — 아니면 창이 숨는다

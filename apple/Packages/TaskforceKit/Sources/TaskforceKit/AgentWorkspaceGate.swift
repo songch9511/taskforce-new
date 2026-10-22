@@ -26,9 +26,11 @@ public enum AgentWorkspaceCopy {
     /// 폴더 경로에 `.git` · `.claude` 같은 민감 폴더 성분이 있을 때 (사용자 승인 2026-10-18, 재검토 1)
     public static let sensitiveFolder = "Choose a project folder, not a .git or settings folder."
 
-    // 제안 문구 (사용자 승인 전, 2026-10-21): 대화 머리의 폴더 메뉴. 승인되면 위 승인 목록 시험으로 옮긴다. 폴더 창의 메시지 · 버튼은 승인된 `chooseFolderForSession` · `choose`를 그대로 쓴다
+    // 대화 머리의 폴더 메뉴 (사용자 승인 2026-10-22). 폴더 창의 메시지 · 버튼은 위 승인된 `chooseFolderForSession` · `choose`를 그대로 쓴다
     /// 머리 폴더 메뉴의 한 줄: 폴더 창을 열고, 고른 폴더에 같은 에이전트의 **새 대화**를 연다 (이 대화의 폴더는 바뀌지 않는다)
     public static let newChatInAnotherFolder = "New chat in another folder…"
+    /// 머리 폴더 메뉴의 둘째 줄 (macOS 표준 문구): 지금 폴더를 Finder에서 보인다. 폴더가 없으면 줄이 꺼진다 (오류 글 없음)
+    public static let showInFinder = "Show in Finder"
     /// 머리 폴더 컨트롤의 접근성 이름 (값은 폴더 이름)
     public static let folderControl = "Folder"
 }
@@ -172,12 +174,15 @@ public protocol AgentWorkspaceFolders: Sendable {
     func rejectionMessage(forPath path: String, scope: AgentWorkspaceGate.Scope) -> String
     /// 등록한다. 규칙을 통과하지 못하면 던진다
     func register(path: String, scope: AgentWorkspaceGate.Scope) throws
-    /// 이 대화가 쓰는 폴더 — 이 Mac의 등록부가 **이 대화에** 적어 둔 것만 (대화 머리가 보인다): 세션이 있으면 그 세션의 핀, 아니면 이 대화가 보내기 전에 고른 폴더. 없으면 nil. 기본은 nil
+    /// 이 대화가 쓰는 폴더 — 이 Mac의 등록부가 **이 대화에** 적어 둔 것만 (대화 머리가 보인다): 세션이 **있으면** 그 세션의 로컬 핀뿐(없으면 nil: 다른 Mac의 세션이거나 핀을 꽂기 전이다), 세션이 없으면 이 대화가 보내기 전에 고른 폴더. 없으면 nil. 기본은 nil
     func folder(forSession session: UUID?, conversation: UUID) -> String?
+    /// 이 대화가 보내기 전에 고른 폴더를 지운다 (대화가 그 폴더를 쓰지 않게 된 때: 대상이 바뀌었다 · 다시 쓰이는 빈 대화 · 버려진 빈 대화 · 창을 못 바꾼 새 대화). 세션 핀은 건드리지 않는다. 기본은 아무 일도 안 한다
+    func forgetFolder(forConversation id: UUID)
 }
 
 extension AgentWorkspaceFolders {
     public func folder(forSession session: UUID?, conversation: UUID) -> String? { nil }
+    public func forgetFolder(forConversation id: UUID) {}
     public func rejectionMessage(forPath path: String) -> String { AgentWorkspaceCopy.rejected }
     public func accepts(path: String, scope: AgentWorkspaceGate.Scope) -> Bool { accepts(path: path) }
     public func rejectionMessage(forPath path: String, scope: AgentWorkspaceGate.Scope) -> String { rejectionMessage(forPath: path) }

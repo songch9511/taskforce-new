@@ -28,9 +28,10 @@ struct AgentWorkspaceGateTests {
         #expect(AgentWorkspaceCopy.rejected == "Choose a folder inside your home folder or on an external drive.")
     }
 
-    /// 제안 문구 (사용자 승인 전, 대화 머리의 폴더 메뉴 · 2026-10-21): 승인되면 위 목록으로 옮긴다. 폴더 창의 문구는 승인된 "Choose a folder for this session" · "Choose"를 그대로 쓴다
-    @Test func theFolderMenuCopyIsAProposalNotYetInTheApprovedList() {
+    /// 대화 머리의 폴더 메뉴 (사용자 승인 2026-10-22): 메뉴 두 줄과 컨트롤의 접근성 이름. 폴더 창의 문구는 위 승인된 "Choose a folder for this session" · "Choose"를 그대로 쓴다
+    @Test func theFolderMenuCopyIsExactlyWhatTheUserApproved() {
         #expect(AgentWorkspaceCopy.newChatInAnotherFolder == "New chat in another folder…")
+        #expect(AgentWorkspaceCopy.showInFinder == "Show in Finder", "macOS 표준 문구")
         #expect(AgentWorkspaceCopy.folderControl == "Folder")
     }
 

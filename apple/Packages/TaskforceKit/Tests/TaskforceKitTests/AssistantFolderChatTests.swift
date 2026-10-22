@@ -3,7 +3,8 @@ import Testing
 @testable import TaskforceKit
 
 /// 대화 머리의 "다른 폴더로 새 대화" (사용자 결정 2026-10-21): Claude 세션의 폴더는 세션을 연 뒤 바뀌지 않는다 — 그래서 다른 폴더는 **같은 에이전트의 새 대화**로 연다.
-/// 창은 같고(`rebind`), 옛 대화는 그대로이며(글 · 초안 · 폴더), 새 대화에는 고른 폴더가 먼저 적힌다. 폴더를 적지 못하면 아무것도 바꾸지 않는다
+/// 창은 같고(`rebind`), 옛 대화는 그대로이며(글 · 초안 · 폴더), 새 대화에는 고른 폴더가 먼저 적힌다. 폴더를 적지 못하면 아무것도 바꾸지 않는다.
+/// 코드 검토(2026-10-22): 대화가 쓰지 않을 폴더(`forgetFolder`)는 지운다 — 대상이 바뀐 빈 대화 · 새로 내주는(다시 쓰이는) 빈 대화 · 버려진 빈 대화 · 창을 못 바꾼 새 대화
 @MainActor
 struct AssistantFolderChatTests {
     let gateway = FakeChatGateway()
@@ -15,6 +16,8 @@ struct AssistantFolderChatTests {
         var elsewhere: Set<UUID> = []
         var rebinds: [UUID] = []
         var outcome: AssistantWindowRegistry.RebindOutcome = .rebound
+        /// `forgetFolder`가 불린 대화 (순서대로)
+        var forgotten: [UUID] = []
     }
 
     struct Rig {
@@ -27,10 +30,26 @@ struct AssistantFolderChatTests {
 
     struct Refused: Error {}
 
+    /// 부를 때마다 앞서는 시계: 나중에 만든 대화가 "가장 최근 빈 대화"가 되게 (같은 시각이면 다시 쓰이는 대화가 id 순서에 달려 시험이 흔들린다)
+    final class Clock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var seconds = 500.0
+        func tick() -> Date {
+            lock.withLock {
+                seconds += 1
+                return .test(seconds)
+            }
+        }
+    }
+
     /// - agent: 에이전트(Codex) 대화로 시작하나 (아니면 Taskforce 대화)
-    func rig(agent: Bool = true) async -> Rig {
-        gateway.conversationsHandler = { [] }
-        let chat = ChatStore(gateway: gateway, scope: scope, now: { .test(500) })
+    /// - existing: 서버에 이미 있는 대화들
+    /// - startOnExisting: 처음 보이는 대화가 `existing`의 첫 대화인가 (아니면 서버에 없는 빈 새 대화)
+    /// - late: 창이 열린 **뒤에** 서버 목록에 나타난 대화들 (처음 보이는 빈 대화가 그것을 다시 쓰지 않게)
+    func rig(agent: Bool = true, existing: [ChatConversation] = [], startOnExisting: Bool = false, late: [ChatConversation] = []) async -> Rig {
+        gateway.conversationsHandler = { existing }
+        let clock = Clock()
+        let chat = ChatStore(gateway: gateway, scope: scope, now: { clock.tick() })
         chat.assistant = assistant
         await chat.refresh()
         let connection = codex
@@ -41,7 +60,7 @@ struct AssistantFolderChatTests {
         await targets.refresh()
         let host = Host()
         let target: AssistantTargetPick = agent ? .agent(adapter: "agent:codex", connectionID: connection) : .taskforce
-        let conversation = chat.reserveNewChat(target: target, excluding: [])
+        let conversation = startOnExisting ? existing[0].id : chat.reserveNewChat(target: target, excluding: [])
         let model = AssistantWindowModel(
             conversationID: conversation, chat: chat, targets: targets,
             openElsewhere: { host.elsewhere },
@@ -50,7 +69,19 @@ struct AssistantFolderChatTests {
                 return host.outcome
             }
         )
+        model.forgetFolder = { host.forgotten.append($0) }
+        if !late.isEmpty {
+            gateway.conversationsHandler = { existing + late }
+            await chat.refresh()
+        }
         return Rig(model: model, chat: chat, targets: targets, host: host, original: conversation)
+    }
+
+    private func server(_ number: Int, last: Int? = 10) -> ChatConversation {
+        ChatConversation(
+            id: ChatContractFixtures.id(number, prefix: "bcb50000"), title: "Chat \(number)", createdAt: .test(), lastMessageAt: last.map { .test(Double($0)) },
+            target: ChatConversationTarget(kind: .taskforce)
+        )
     }
 
     @Test func itOpensAFreshConversationForTheSameAgentInTheSameWindowWithTheFolderWrittenFirst() async {
@@ -106,13 +137,16 @@ struct AssistantFolderChatTests {
         #expect(!started)
         #expect(r.model.conversationID == r.original && r.host.rebinds.isEmpty)
         #expect(r.model.chips.chips.count == 1 && r.model.mode == .history && r.model.focusRequest == focus)
+        #expect(r.host.forgotten.isEmpty, "적지 못했으니 지울 폴더도 없다")
     }
 
-    @Test func aWindowThatCannotRebindStaysWhereItIs() async {
+    @Test func aWindowThatCannotRebindStaysWhereItIsAndTheFolderJustWrittenIsForgotten() async {
         let r = await rig()
         r.host.outcome = .showsElsewhere(UUID())
-        let started = r.model.startAgentChat { _ in }
+        var bound: [UUID] = []
+        let started = r.model.startAgentChat { bound.append($0) }
         #expect(!started && r.model.conversationID == r.original)
+        #expect(r.host.forgotten == bound && bound.count == 1, "창을 못 바꿨으니 방금 적은 폴더는 새 대화에 고아로 남지 않는다 (코드 검토 P3)")
     }
 
     @Test func aTaskforceConversationHasNoFolderToChooseAndNothingHappens() async {
@@ -140,5 +174,104 @@ struct AssistantFolderChatTests {
         let model = AssistantWindowModel(conversationID: existing.id, chat: chat, targets: targets)
         #expect(model.startAgentChat { _ in })
         #expect(model.conversationID != existing.id && model.pick.connectionID == codex && model.targetName == "Codex")
+    }
+
+    // MARK: 세션이 이미 있는 대화는 새 대화로 쓰지 않는다 (코드 검토 질문 7)
+
+    @Test func aReusedEmptyConversationThatAlreadyHasASessionIsNeverBoundToAFolder() async {
+        // 서버에 있는 빈 에이전트 대화(같은 연결)가 세션을 이미 쥐고 있다: 새 대화가 그것을 다시 쓰게 되어도 폴더를 적지 않고 창도 옮기지 않는다
+        let withSession = ChatConversation(
+            id: ChatContractFixtures.id(9, prefix: "bcb50000"), title: nil, createdAt: .test(100), lastMessageAt: nil,
+            target: ChatConversationTarget(kind: .agent, agentConnectionID: codex, agentSessionID: UUID())
+        )
+        let r = await rig(late: [withSession])
+        var bound = 0
+        let started = r.model.startAgentChat { _ in bound += 1 }
+        #expect(!started && bound == 0, "세션이 있는 대화에는 폴더를 적지 않는다")
+        #expect(r.model.conversationID == r.original && r.host.rebinds.isEmpty && r.host.forgotten.isEmpty)
+    }
+
+    // MARK: 쓰지 않을 폴더 지우기 (코드 검토 P2 · P3)
+
+    @Test func changingTheTargetOfAnEmptyLocalChatForgetsItsFolderBecauseTheFolderBelongedToTheOldTargetsMac() async throws {
+        let r = await rig()
+        r.model.chooseTarget(try #require(r.targets.options.first { !$0.isAgent }))
+        #expect(r.host.forgotten == [r.original], "대상이 바뀌면 그 빈 대화가 고른 폴더(옛 대상의 Mac의 것)를 지운다")
+        r.model.chooseTarget(try #require(r.targets.options.last))
+        #expect(r.host.forgotten == [r.original, r.original], "다시 에이전트로 바꿔도 옛 폴더는 돌아오지 않는다")
+    }
+
+    @Test func choosingTheSameTargetAgainChangesNothingAndForgetsNothing() async throws {
+        let r = await rig()
+        r.model.chooseTarget(try #require(r.targets.options.last))
+        #expect(r.host.forgotten.isEmpty)
+    }
+
+    @Test func aChatHandedOutForTheNewTargetIsCleanedOfAnyOldFolder() async throws {
+        let sent = server(1)
+        let r = await rig(existing: [sent], startOnExisting: true)
+        r.model.chooseTarget(try #require(r.targets.options.last))
+        #expect(r.model.conversationID != sent.id)
+        #expect(r.host.forgotten == [r.model.conversationID], "새로 내준(다시 쓰인 빈) 대화의 옛 폴더를 지운다. 보낸 옛 대화는 건드리지 않는다")
+    }
+
+    @Test func newChatCleansTheReusedChatAndTheEmptyLocalChatItLeaves() async {
+        let r = await rig()
+        // 더 늦게 만든 다른 빈 대화: New chat이 그것을 다시 쓴다
+        let later = r.chat.reserveNewChat(target: .taskforce, excluding: [r.original])
+        r.model.newChat()
+        #expect(r.model.conversationID == later)
+        #expect(Set(r.host.forgotten) == [later, r.original], "다시 쓰인 대화의 옛 폴더 · 떠나는 빈 대화의 폴더 모두 지운다")
+    }
+
+    @Test func newChatOnAChatThatWasSentLeavesItsFolderAlone() async {
+        let sent = server(1)
+        let r = await rig(existing: [sent], startOnExisting: true)
+        r.model.newChat()
+        #expect(r.host.forgotten == [r.model.conversationID], "보낸 대화의 폴더(세션 핀의 기록)는 건드리지 않는다: 새 대화만 깨끗이")
+        #expect(!r.host.forgotten.contains(sent.id))
+    }
+
+    @Test func openingAnotherChatForgetsTheFolderOfTheEmptyLocalChatItLeavesButNotOfASentOne() async {
+        let sent = server(1)
+        let r = await rig(existing: [sent])
+        r.model.openConversation(sent.id)
+        #expect(r.host.forgotten == [r.original], "떠나는 빈 대화의 폴더를 지운다")
+        r.model.openConversation(r.original)
+        #expect(r.host.forgotten == [r.original], "보낸 대화(서버 대화)를 떠날 때는 지우지 않는다")
+        r.model.openConversation(r.original)
+        #expect(r.host.forgotten == [r.original], "같은 대화를 다시 여는 것은 떠나는 것이 아니다")
+    }
+
+    @Test func aWindowThatCannotRebindForgetsNothingWhenOpeningAChat() async {
+        let sent = server(1)
+        let r = await rig(existing: [sent])
+        r.host.outcome = .showsElsewhere(UUID())
+        r.model.openConversation(sent.id)
+        #expect(r.host.forgotten.isEmpty && r.model.conversationID == r.original, "창이 그대로면 그 빈 대화는 아직 보이는 중이다")
+    }
+
+    @Test func startingAFreshChatForgetsTheFolderOfTheEmptyLocalChatItLeaves() async {
+        let r = await rig()
+        var bound: [UUID] = []
+        #expect(r.model.startAgentChat { bound.append($0) })
+        #expect(r.host.forgotten == [r.original] && !bound.contains(r.original), "떠나는 빈 대화(예전의 새 대화)의 폴더는 지우고, 새로 적은 폴더는 남긴다")
+    }
+
+    // MARK: 인라인 안내 (register 실패)
+
+    @Test func aFolderNoticeBelongsToTheConversationItWasShownFor() async {
+        let sent = server(1)
+        let r = await rig(existing: [sent])
+        #expect(r.model.folderNoticeText == nil)
+        r.model.showFolderNotice("Something went wrong. Try again in a moment.")
+        #expect(r.model.folderNoticeText == "Something went wrong. Try again in a moment.")
+        r.model.openConversation(sent.id)
+        #expect(r.model.folderNoticeText == nil, "다른 대화로 가면 그 대화의 것이 아니다")
+        r.model.openConversation(r.original)
+        #expect(r.model.folderNoticeText == nil, "돌아와도 옛 안내는 되살아나지 않는다")
+        r.model.showFolderNotice("x")
+        r.model.clearFolderNotice()
+        #expect(r.model.folderNoticeText == nil)
     }
 }

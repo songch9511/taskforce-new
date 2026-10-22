@@ -1033,7 +1033,7 @@ struct SnapshotTerminalLauncher: AgentTerminalLauncher {
 /// (+ `-TFSnapshotDark`, `-TFReduceMotion YES`). 새 문구 아홉은 사용자 승인(2026-10-18)을 받아 앱과 같은 말이다(`AgentCopy`). 서버는 가짜(`AgentChatSampleGateway`)라 렌더 fixture일 뿐이다.
 /// 남기는 것(`mac-edge-agentchat-<이름>.png`): window-empty · window-in-flight(OA-4) · window-waiting(OA-4) · window-send-again-refused(동의 철회 뒤 거절) · window-reasons · window-queued · window-referent-menu · window-referent-failed(후보가 지워짐) · window-long-reason · window-running(Stop 원) ·
 /// window-stop-requested · window-stop-may-continue · window-truncated · window-truncated-expanded · window-events · window-many · window-hundred-plus · window-chip-added(auto 칩을 누른 뒤) ·
-/// window-folder-none · window-folder · window-folder-new-chat · window-folder-long · window-folder-korean (머리의 작업 폴더, 2026-10-21. `-TFEdgeSnapshotHold`는 window-folder 장면의 창을 120초 둔다) ·
+/// window-folder-none · window-folder · window-folder-new-chat · window-folder-long · window-folder-korean · window-folder-notice (머리의 작업 폴더, 2026-10-21. `-TFEdgeSnapshotHold`는 window-folder 장면의 창을 120초 둔다) ·
 /// panel-running · panel-idle-view-full(OA-3) · panel-external(OA-3) · panel-resume-card(OA-3) · panel-send-again-refused(동의 철회 뒤 거절) · panel-feature-off(기능 꺼짐) · panel-other-mac · panel-stop-requested · panel-stop-may-continue.
 /// (Resume 뒤 "아직 열림" 빨간 줄 · 폴더 고르기는 실제 프로세스 검사기를 쓰는 D4a-2의 장면이다)
 @MainActor
@@ -1169,11 +1169,17 @@ enum AgentChatSnapshot {
         // 머리의 작업 폴더 (사용자 결정 2026-10-21): 이 Mac이 이 대화에 적어 둔 폴더가 있으면 폴더 이름이 값인 Dropdown이 제목 줄 아래에 보인다 (경로는 툴팁이라 PNG에 없다).
         // 폴더가 없으면 아무것도 더하지 않는다 (window-in-flight와 같은 머리). 등록부는 견본 가짜다: 실제 등록부 · 디스크 · 폴더에 닿지 않는다
         let sampleHome = "/Users/sample"
-        runtime.workspaceHomes = { [sampleHome] }
-        func folderWindow(_ path: String?, _ name: String, chip: AssistantChip? = nil, freshChat: Bool = false) async {
+        let realHomes = runtime.workspaceHomes   // 이 견본이 끝나면 되돌린다 (뒤 장면 · 같은 실행의 다른 견본이 견본 홈을 쓰지 않게)
+        runtime.workspaceHomes = [sampleHome]
+        func folderWindow(_ path: String?, _ name: String, chip: AssistantChip? = nil, freshChat: Bool = false, notice: String? = nil) async {
             runtime.workspaceAsking = { AgentWorkspaceAsking(folders: SnapshotFolders(path: path), isThisMac: { _ in true }) }
             await world(AgentChatSampleData.inFlight())
             guard let model = await window(chip: chip) else { return }
+            if let notice {
+                // 폴더를 적지 못했을 때의 인라인 한 줄 (승인된 말): 대화 끝에 이벤트 줄 모양으로
+                model.showFolderNotice(notice)
+                await settle(0.4)
+            }
             if freshChat {
                 // 머리의 "New chat in another folder…"를 고른 뒤: 같은 에이전트의 빈 새 대화가 고른 폴더와 함께 열린다 (폴더 창은 견본에서 열지 않는다)
                 model.startAgentChat { _ in }
@@ -1183,15 +1189,23 @@ enum AgentChatSnapshot {
         }
         await folderWindow(nil, "window-folder-none", chip: issue139)
         await folderWindow(sampleHome + "/Documents/acme-website", "window-folder", chip: issue139)
-        // `-TFEdgeSnapshotHold`: 이 장면의 창을 120초 둔다 (실제 마우스 · 키보드로 머리의 폴더 컨트롤을 눌러 보는 수동 확인용: 창은 정말 화면에 떠 있다). 시작하면 `mac-edge-agentchat-hold-ready.txt`를 만든다
+        // `-TFEdgeSnapshotHold`: 실제로 있는 임시 폴더를 쥔 창을 120초 둔다 (실제 마우스 · 키보드로 머리의 폴더 메뉴 · Show in Finder를 눌러 보는 수동 확인용: 창은 정말 화면에 떠 있다).
+        // 시작하면 `mac-edge-agentchat-hold-ready.txt`를 만든다
         if ProcessInfo.processInfo.arguments.contains("-TFEdgeSnapshotHold") {
+            // 부모 폴더 이름이 실행마다 다르다: Show in Finder가 여는 Finder 창(부모 폴더 이름)이 이 실행의 것임을 알 수 있다
+            let held = FileManager.default.temporaryDirectory.appending(path: "taskforce-hold-\(UUID().uuidString.prefix(8))", directoryHint: .isDirectory)
+                .appending(path: "acme-website", directoryHint: .isDirectory)
+            try? FileManager.default.createDirectory(at: held, withIntermediateDirectories: true)
+            await folderWindow(held.path, "window-folder-hold", chip: issue139)
             FileManager.default.createFile(atPath: file("agentchat-hold-ready").deletingPathExtension().appendingPathExtension("txt").path, contents: Data())
             await settle(120)
         }
         await folderWindow(sampleHome + "/Documents/acme-website", "window-folder-new-chat", freshChat: true)
         await folderWindow(sampleHome + "/Documents/clients/acme-corporation/storefront-redesign-2026-frontend-monorepo-with-a-very-long-folder-name", "window-folder-long")
         await folderWindow(sampleHome + "/Documents/고객사 웹사이트 개편 🚀", "window-folder-korean")
+        await folderWindow(sampleHome + "/Documents/acme-website", "window-folder-notice", notice: AgentSettingsCopy.somethingWentWrong)
         runtime.workspaceAsking = { BridgeHost.shared?.workspaceAsking }
+        runtime.workspaceHomes = realHomes
         manager.closeAll()
 
         // 세션 패널 (OA-3): 이 Mac의 세션이라 알약이 보인다. Open in Terminal은 견본 가짜 launcher(`SnapshotTerminalLauncher`)로 그린다 (앱의 실제 launcher는 D4a-2)

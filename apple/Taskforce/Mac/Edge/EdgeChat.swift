@@ -41,12 +41,19 @@ final class ChatRuntime {
     var workspacePicker: any AgentWorkspacePicking = WorkspacePicker()
     /// 지금 계정의 폴더 등록부 + 연결 확인 (bridge가 꺼져 있으면 nil: 묻지 않는다). 시험은 가짜로 바꾼다
     var workspaceAsking: @MainActor () -> AgentWorkspaceAsking? = { BridgeHost.shared?.workspaceAsking }
-    /// 지금 홈으로 줄여 보일 경로들 (홈 · 홈의 realpath, Settings › Your agents와 같다). 시험은 임시 홈으로 바꾼다
-    var workspaceHomes: () -> [String] = {
+    /// 홈으로 줄여 보일 경로들 (홈 · 홈의 realpath, Settings › Your agents와 같다). **처음 쓸 때 한 번** 구한다 (머리를 그릴 때마다 파일 시스템을 보지 않는다). 시험 · 견본은 바꾸고 되돌린다
+    lazy var workspaceHomes: [String] = {
         let home = NSHomeDirectory()
         let real = URL(fileURLWithPath: home).resolvingSymlinksInPath().path
         return real == home ? [home] : [home, real]
+    }()
+    /// 폴더가 지금 있는 디렉터리인가 (머리 폴더 메뉴의 Show in Finder를 켠다). 시험은 바꾼다
+    var folderExists: (String) -> Bool = { path in
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
     }
+    /// 폴더를 Finder에서 보인다 (사용자 승인 2026-10-22: Show in Finder). 시험은 기록만 하는 가짜로 바꾼다 (실제 Finder를 열지 않는다)
+    var revealInFinder: @MainActor (URL) -> Void = { NSWorkspace.shared.activateFileViewerSelecting([$0]) }
     /// 폴더 창이 떠 있다 (두 번 눌러도 한 창)
     private var isAskingWorkspace = false
     #if DEBUG
@@ -180,22 +187,48 @@ final class ChatRuntime {
         return outcome == .proceed
     }
 
-    /// 대화 머리의 작업 폴더 줄 (사용자 결정 2026-10-21): 에이전트 대화에서 이 Mac의 등록부가 **이 대화에** 적어 둔 폴더가 있을 때만 (세션 핀 → 보내기 전에 고른 폴더).
-    /// 폴더를 고르기 전 · 다른 Mac의 세션 · Taskforce 대화는 nil이라 머리에 아무것도 더하지 않는다. 경로는 이 Mac에만 있고 서버로 가거나 로그에 남지 않는다
+    /// 대화 머리의 작업 폴더 줄 (사용자 결정 2026-10-21): 에이전트 대화에서 이 Mac의 등록부가 **이 대화에** 적어 둔 폴더가 있을 때만 — 세션이 있으면 그 세션의 로컬 핀, 없으면 보내기 전에 고른 폴더.
+    /// 폴더를 고르기 전 · 다른 Mac의 세션(핀이 없다) · Taskforce 대화는 nil이라 머리에 아무것도 더하지 않는다. 경로는 이 Mac에만 있고 서버로 가거나 로그에 남지 않는다.
+    /// `exists`: 폴더가 지금 있나 (없으면 Show in Finder만 꺼진다)
     func folderLine(for model: AssistantWindowModel) -> AgentWorkspaceFolderLine? {
         guard model.toAgent, let asking = workspaceAsking(),
               let path = asking.folders.folder(forSession: model.sessionID, conversation: model.conversationID) else { return nil }
-        return AgentWorkspaceFolderLine(path: path, homes: workspaceHomes())
+        return AgentWorkspaceFolderLine(path: path, homes: workspaceHomes, exists: folderExists(path))
+    }
+
+    /// 머리 폴더 메뉴의 "Show in Finder" (사용자 승인 2026-10-22): 이 대화의 지금 폴더를 Finder에서 보인다. 폴더가 없거나(오래된 화면에서 눌러도) 폴더가 아니면 아무것도 하지 않는다 — 오류 글 없음
+    func showFolderInFinder(_ model: AssistantWindowModel) {
+        guard model.toAgent, let asking = workspaceAsking(),
+              let path = asking.folders.folder(forSession: model.sessionID, conversation: model.conversationID), folderExists(path) else { return }
+        revealInFinder(URL(fileURLWithPath: path, isDirectory: true))
+    }
+
+    /// 이 대화가 보내기 전에 고른 폴더를 지운다 (대화가 그 폴더를 쓰지 않게 된 때). 창 모델의 `forgetFolder`가 여기로 온다
+    func forgetChosenFolder(of conversation: UUID) {
+        workspaceAsking()?.folders.forgetFolder(forConversation: conversation)
+    }
+
+    /// 창 관리자가 모델마다 건다: 모델이 알리는 "이 대화는 그 폴더를 쓰지 않는다"를 이 Mac의 등록부에 옮긴다
+    func wireFolders(_ model: AssistantWindowModel) {
+        model.forgetFolder = { [weak self] in self?.forgetChosenFolder(of: $0) }
+    }
+
+    /// 창이 닫힌다: 빈 새 대화(서버에 없고 글이 없다)를 보이던 창이면 그 대화에 적힌 폴더를 버린다 (보낸 대화의 폴더는 세션의 기록이라 남긴다)
+    func windowClosing(_ model: AssistantWindowModel) {
+        let conversation = model.conversationID
+        if chat.isLocalChat(conversation), !chat.hasMessages(conversation) { forgetChosenFolder(of: conversation) }
     }
 
     /// 머리 폴더 메뉴의 "New chat in another folder…" (사용자 결정 2026-10-21): 폴더 창을 먼저 연다 — 취소하면 아무것도 바뀌지 않는다. 고르면 같은 에이전트의 **새 대화**에 그 폴더를 적어 이 창에 열고
     /// 입력칸에 포커스를 준다. 이 대화(글 · 초안 · 폴더)는 그대로다: Claude 세션의 폴더는 세션을 연 뒤 바뀌지 않으므로 이 대화의 폴더를 바꾸는 길은 없다.
     /// 폴더 창의 문구 · 거절 규칙은 보내기 전 묻기와 같다 (승인된 "Choose a folder for this session" · "Choose", 겹치는 폴더 · 민감 폴더 거절).
-    /// 폴더 창을 기다리는 동안 계정 · 대화 · 대상이 바뀌면 아무것도 적지 않는다 (`prepareAgentSend`와 같다). 폴더 창이 이미 떠 있으면 아무것도 하지 않는다
+    /// 폴더 창을 기다리는 동안 계정 · 대화 · 대상이 바뀌면 아무것도 적지 않는다 (`prepareAgentSend`와 같다). 폴더 창이 이미 떠 있으면 아무것도 하지 않는다.
+    /// 고른 폴더를 등록하지 못하면(창이 받아 준 뒤 틈에 거절 · 쓰기 실패) 창은 그대로 두고 이 대화에 인라인 한 줄을 보인다 — 거절은 폴더 창이 보였을 승인된 문장 그대로, 그 밖은 Settings › Your agents의 쓰기 실패와 같은 승인된 말
     func startChatInAnotherFolder(_ model: AssistantWindowModel) async {
         guard model.toAgent, !isAskingWorkspace, let asking = workspaceAsking() else { return }
         isAskingWorkspace = true
         defer { isAskingWorkspace = false }
+        model.clearFolderNotice()
         let account = scope.token
         let conversation = model.conversationID
         let target = model.pick
@@ -209,7 +242,20 @@ final class ChatRuntime {
         guard let path = await workspacePicker.pickFolder(
             message: AgentWorkspaceCopy.chooseFolderForSession, prompt: AgentWorkspaceCopy.choose, rejection: AgentWorkspaceCopy.rejected, accepts: accepts, reason: reason
         ), unchanged() else { return }
-        model.startAgentChat { try folders.register(path: path, scope: .conversation($0)) }
+        var failure: (any Error)?
+        let started = model.startAgentChat { id in
+            do { try folders.register(path: path, scope: .conversation(id)) } catch {
+                failure = error
+                throw error
+            }
+        }
+        if !started, let failure { model.showFolderNotice(Self.folderFailureText(failure, path: path, folders: folders, scope: folderScope)) }
+    }
+
+    /// 등록 실패의 인라인 글 (승인된 문장만): 등록부의 거절이면 폴더 창이 그 폴더에 보였을 문장, 그 밖(쓰기 실패)은 Settings의 실패 줄과 같은 말
+    private static func folderFailureText(_ error: any Error, path: String, folders: any AgentWorkspaceFolders, scope: AgentWorkspaceGate.Scope) -> String {
+        if case WorkspaceRegistry.RegistryError.rejected = error { return folders.rejectionMessage(forPath: path, scope: scope) }
+        return AgentSettingsCopy.somethingWentWrong
     }
 
     /// Assistant 창의 보내기 (OA D4a2-05 · Astra P2-2). 에이전트 대화의 첫 보내기 직전에는 작업 폴더를 먼저 묻는다: 취소하면 보내지 않고 글은 입력 칸에 그대로 둔다.

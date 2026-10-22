@@ -39,8 +39,16 @@ struct AssistantWindowView: View {
     let presentation: AssistantWindowPresentation
     let reduceMotion: Bool
     var actions = AssistantWindowActions()
+    /// 폴더 줄을 다시 읽으라는 신호: 이 Mac의 폴더 등록부는 관찰되지 않아(bridge가 다른 스레드에서 세션 핀을 쓴다) 다른 변화가 와야만 다시 그려진다 — 아래 `.task`가 짧게 다시 읽고 올린다
+    @State private var folderRecheck = 0
 
     private var chat: ChatStore { runtime.chat }
+
+    /// 머리의 작업 폴더 (없으면 nil): `folderRecheck`를 읽어 두어 다시 읽기 신호가 이 값을 다시 그리게 한다
+    private var folderLine: AgentWorkspaceFolderLine? {
+        _ = folderRecheck
+        return runtime.folderLine(for: model)
+    }
 
     /// 대화가 바뀌었는지 보는 서명: 새 글 · 상태가 바뀌면 맨 아래로 내린다
     private struct Signature: Equatable {
@@ -91,6 +99,19 @@ struct AssistantWindowView: View {
         .accessibilityLabel("Assistant")
         // 열린 에이전트 대화의 세션을 좁게 읽는다 (D4a-13b): 대화가 바뀌거나 첫 전달로 세션이 생기면 다시 읽는다. 열린 task가 있으면 저장소가 5초마다 이어 읽는다
         .task(id: runtime.chat.agentSessionID(for: model.conversationID)) { await model.agent?.sessions.refresh() }
+        // 세션이 막 생겼다: 이 Mac의 bridge가 세션 핀을 꽂을 때까지(보통 1–2초) 폴더 줄을 다시 읽는다 — 세션이 있으면 그 핀만 폴더로 보이므로 핀이 꽂히기 전에는 줄이 없고,
+        // 다른 Mac의 세션은 핀이 영영 없다 (10초 뒤 멈춘다). 등록부는 메모리 표라 읽기는 싸다
+        .task(id: model.sessionID) {
+            guard model.sessionID != nil, runtime.folderLine(for: model) == nil else { return }
+            for _ in 0..<20 {
+                try? await Task.sleep(for: .milliseconds(500))
+                if Task.isCancelled { return }
+                if runtime.folderLine(for: model) != nil {
+                    folderRecheck += 1
+                    return
+                }
+            }
+        }
     }
 
     // MARK: 머리
@@ -115,7 +136,7 @@ struct AssistantWindowView: View {
             // 머리 위 2 (DS `.tf-awin .tf-panel-head`): 핸들 아래
             .padding(EdgeInsets(top: 2, leading: TFSpace.lg, bottom: TFSpace.sm, trailing: 10))
             .background(AssistantDragRegion())
-            if model.mode == .chat, !chat.isUnavailable, let folder = runtime.folderLine(for: model) {
+            if model.mode == .chat, !chat.isUnavailable, let folder = folderLine {
                 folderControl(folder)
             }
             if model.mode == .chat, !chat.isUnavailable, let project = chat.project(for: model.conversationID) {
@@ -133,11 +154,14 @@ struct AssistantWindowView: View {
     }
 
     /// 에이전트 대화의 작업 폴더 (이 Mac이 이 대화에 적어 둔 폴더가 있을 때만, 사용자 결정 2026-10-21): 폴더 이름이 값인 Dropdown(DS)이고 전체 경로는 툴팁이다.
-    /// 누르면 시스템 메뉴 한 줄이 열린다 — 다른 폴더로 같은 에이전트의 **새 대화**를 연다 (이 세션의 폴더는 바뀌지 않는다). 컨트롤 밖의 빈 곳은 머리처럼 창을 끈다
+    /// 누르면 시스템 메뉴 두 줄이 열린다 (사용자 승인 2026-10-22) — "New chat in another folder…"는 다른 폴더로 같은 에이전트의 **새 대화**를 열고 (이 세션의 폴더는 바뀌지 않는다),
+    /// "Show in Finder"는 지금 폴더를 Finder에서 보인다 (폴더가 없으면 꺼진다, 오류 글 없음). 컨트롤 밖의 빈 곳은 머리처럼 창을 끈다
     private func folderControl(_ folder: AgentWorkspaceFolderLine) -> some View {
         HStack(spacing: 0) {
             Menu {
                 Button(AgentWorkspaceCopy.newChatInAnotherFolder) { Task { await runtime.startChatInAnotherFolder(model) } }
+                Button(AgentWorkspaceCopy.showInFinder) { runtime.showFolderInFinder(model) }
+                    .disabled(!folder.exists)
             } label: {
                 DropdownLabel(folder.name, size: .compact, truncation: .middle)
             }
@@ -224,6 +248,8 @@ struct AssistantWindowView: View {
                 }
                 // Stop 뒤의 말 (OA D4a-14): 대화 끝에 이벤트 줄 모양 한 줄 (이 창에서만 보이는 로컬 줄, 서버가 취소 요청을 지우면 사라진다)
                 if let line = model.stopLineText { EventLine(line) }
+                // 폴더 메뉴의 "New chat in another folder…"가 폴더를 적지 못했다: 이 대화에 조용한 한 줄 (승인된 글만, 다른 대화로 가면 사라진다)
+                if let line = model.folderNoticeText { EventLine(line) }
                 Color.clear.frame(height: 1).id(AssistantBodyAnchor.bottom)
             }
             .padding(.top, TFSpace.xs)

@@ -5,8 +5,8 @@ import TaskforceKit
 @testable import Taskforce
 @testable import TaskforceUI
 
-/// Assistant 창 머리의 작업 폴더 (사용자 결정 2026-10-21, 격리 호스트): 에이전트 대화에 폴더가 적혀 있으면 머리에 폴더 이름(툴팁에 경로)이 보이고,
-/// 거기서 **다른 폴더의 새 대화**를 연다 (세션의 폴더는 세션을 연 뒤 바뀌지 않는다). 폴더 창은 가짜 패널이고 서버는 가짜 게이트웨이다 — 실제 `NSOpenPanel` · 서버 · `claude` 0.
+/// Assistant 창 머리의 작업 폴더 (사용자 결정 2026-10-21 · 코드 검토 반영 2026-10-22, 격리 호스트): 에이전트 대화에 폴더가 적혀 있으면 머리에 폴더 이름(툴팁에 경로)이 보이고,
+/// 거기서 **다른 폴더의 새 대화**를 열거나 Finder에서 그 폴더를 본다 (세션의 폴더는 세션을 연 뒤 바뀌지 않는다). 폴더 창은 가짜 패널 · Finder 열기는 기록만 하는 가짜이고 서버는 가짜 게이트웨이다 — 실제 `NSOpenPanel` · Finder · 서버 · `claude` 0.
 /// 창은 만들되 화면에 올리지 않는다 (`presents = false`; 끌기 시험은 화면 밖 `orderFront`)
 @MainActor
 struct AssistantFolderHeaderTests {
@@ -14,13 +14,20 @@ struct AssistantFolderHeaderTests {
 
     // MARK: 시험 도구
 
-    /// 임시 홈 + 폴더 등록부 + 가짜 폴더 창
+    /// Finder에서 보인 폴더들 (가짜 `revealInFinder`)
+    @MainActor
+    final class Reveals {
+        var urls: [URL] = []
+    }
+
+    /// 임시 홈 + 폴더 등록부 + 가짜 폴더 창 + 가짜 Finder
     @MainActor
     private struct Folders {
         let temp: URL
         let home: String
         let registry: WorkspaceRegistry
         let panel: WorkspacePickerTests.FakePanel
+        let reveals = Reveals()
 
         init() throws {
             temp = FileManager.default.temporaryDirectory.appending(path: "folder-header-\(UUID().uuidString)", directoryHint: .isDirectory)
@@ -39,9 +46,33 @@ struct AssistantFolderHeaderTests {
             runtime.workspacePicker = panel
             let registry = registry
             runtime.workspaceAsking = { AgentWorkspaceAsking(folders: registry, isThisMac: { _ in true }) }
-            let homes = [home, GateFileSystem.realpath(home) ?? home]
-            runtime.workspaceHomes = { homes }
+            runtime.workspaceHomes = [home, GateFileSystem.realpath(home) ?? home]
+            let reveals = reveals
+            runtime.revealInFinder = { reveals.urls.append($0) }
         }
+    }
+
+    /// 폴더 창이 받아 준 뒤 등록에서 실패하는 등록부 (검증 · 쓰기 사이의 틈): `error`가 있으면 그것을 던지고, 없으면 진짜 등록부에 넘긴다
+    private final class FailingRegisterFolders: AgentWorkspaceFolders, @unchecked Sendable {
+        let base: WorkspaceRegistry
+        let error: (any Error)?
+
+        init(base: WorkspaceRegistry, error: (any Error)?) {
+            self.base = base
+            self.error = error
+        }
+
+        func hasFolder(forProject id: UUID) -> Bool { base.hasFolder(forProject: id) }
+        func hasFolder(forConversation id: UUID) -> Bool { base.hasFolder(forConversation: id) }
+        func accepts(path: String) -> Bool { true }
+        func accepts(path: String, scope: AgentWorkspaceGate.Scope) -> Bool { true }
+        func rejectionMessage(forPath path: String, scope: AgentWorkspaceGate.Scope) -> String { base.rejectionMessage(forPath: path, scope: scope) }
+        func register(path: String, scope: AgentWorkspaceGate.Scope) throws {
+            if let error { throw error }
+            try base.register(path: path, scope: scope)
+        }
+        func folder(forSession session: UUID?, conversation: UUID) -> String? { base.folder(forSession: session, conversation: conversation) }
+        func forgetFolder(forConversation id: UUID) { base.forgetFolder(forConversation: id) }
     }
 
     // MARK: 모델만 (런타임)
@@ -56,7 +87,7 @@ struct AssistantFolderHeaderTests {
         var chat: ChatStore { runtime.chat }
     }
 
-    /// 이 Mac의 에이전트 대화 하나 (아직 아무것도 보내지 않았다), 초안 "ship it"
+    /// 이 Mac의 에이전트 대화 하나 (아직 아무것도 보내지 않았다), 초안 "ship it". 폴더 잇기(`wireFolders`)는 창 관리자가 하는 그대로다
     private func modelRig() throws -> ModelRig {
         let folders = try Folders()
         let account = try AppChatAccount.make()
@@ -64,6 +95,7 @@ struct AssistantFolderHeaderTests {
         folders.install(in: runtime)
         let conversation = runtime.chat.reserveNewChat(target: .agent(adapter: "agent:claude-code", connectionID: UUID()), excluding: [])
         let model = AssistantWindowModel(conversationID: conversation, chat: runtime.chat, targets: runtime.targets)
+        runtime.wireFolders(model)
         model.setDraft("ship it")
         return ModelRig(runtime: runtime, model: model, folders: folders, conversation: conversation, account: account)
     }
@@ -85,19 +117,15 @@ struct AssistantFolderHeaderTests {
         defer { r.folders.cleanup() }
         try r.folders.registry.setPending(r.folders.path("client-a"), conversation: r.conversation)
         let line = try #require(r.runtime.folderLine(for: r.model))
-        #expect(line.name == "client-a" && line.tooltip == "~/Documents/client-a")
+        #expect(line.name == "client-a" && line.tooltip == "~/Documents/client-a" && line.exists)
     }
 
-    @Test func withoutAnActiveRegistryOrOnAnotherMacNothingIsShown() throws {
+    @Test func withoutAnActiveRegistryNothingIsShown() throws {
         let r = try modelRig()
         defer { r.folders.cleanup() }
         try r.folders.registry.setPending(r.folders.path("client-a"), conversation: r.conversation)
         r.runtime.workspaceAsking = { nil }
         #expect(r.runtime.folderLine(for: r.model) == nil, "등록부가 없으면 (bridge 꺼짐 · 계정 없음) 아무것도 보이지 않는다")
-        // 다른 Mac의 세션: 이 Mac의 등록부에 그 세션의 핀도 이 대화의 폴더도 없다
-        r.folders.install(in: r.runtime)
-        let other = AssistantWindowModel(conversationID: r.chat.reserveNewChat(target: .agent(adapter: "agent:claude-code", connectionID: UUID()), excluding: [r.conversation]), chat: r.chat, targets: r.runtime.targets)
-        #expect(r.runtime.folderLine(for: other) == nil)
     }
 
     // MARK: 메뉴 동작 = 폴더를 고르고 새 대화
@@ -126,9 +154,6 @@ struct AssistantFolderHeaderTests {
         #expect(r.folders.panel.asked.map(\.prompt) == ["Choose", "Choose"])
         let shown = try #require(r.runtime.folderLine(for: r.model))
         #expect(shown.name == "client-b" && shown.tooltip == "~/Documents/client-b", "머리가 새 폴더를 보인다")
-        // 옛 대화로 돌아가면 옛 폴더가 보인다
-        r.model.openConversation(original)
-        #expect(r.runtime.folderLine(for: r.model)?.name == "client-a")
     }
 
     @Test func theFirstSendInTheNewConversationDoesNotAskAgainAndSendsToTheChosenFolder() async throws {
@@ -169,6 +194,7 @@ struct AssistantFolderHeaderTests {
         #expect(r.folders.panel.asked.count == 2, "폴더 창은 열었다")
         #expect(r.model.conversationID == original && r.model.draft == "still here" && r.model.chips.chips.count == 1, "취소 = 아무것도 바뀌지 않는다")
         #expect(try Foundation.Data(contentsOf: r.folders.registry.file) == fileBefore, "등록부 파일도 그대로")
+        #expect(r.model.folderNoticeText == nil, "취소는 오류가 아니다")
     }
 
     @Test func aFolderThePanelRejectsChangesNothing() async throws {
@@ -250,33 +276,152 @@ struct AssistantFolderHeaderTests {
         #expect(r.folders.panel.asked.isEmpty && r.model.conversationID == r.conversation)
     }
 
+    // MARK: 등록이 실패하면 인라인 한 줄 (코드 검토 P3: 승인된 글만)
+
+    @Test func aWriteFailureAfterPickingShowsTheApprovedGenericLineAndChangesNothing() async throws {
+        let r = try modelRig()
+        defer { r.folders.cleanup() }
+        let failing = FailingRegisterFolders(base: r.folders.registry, error: WorkspaceRegistry.RegistryError.writeFailed)
+        r.runtime.workspaceAsking = { AgentWorkspaceAsking(folders: failing, isThisMac: { _ in true }) }
+        r.folders.panel.choice = r.folders.path("client-b")
+        await r.runtime.startChatInAnotherFolder(r.model)
+        #expect(r.model.conversationID == r.conversation, "창은 그대로")
+        #expect(r.model.folderNoticeText == AgentSettingsCopy.somethingWentWrong, "Settings › Your agents의 쓰기 실패와 같은 승인된 말")
+        #expect(!FileManager.default.fileExists(atPath: r.folders.registry.file.path))
+        // 다시 눌러 이번에는 되면 안내는 사라진다
+        r.runtime.workspaceAsking = { AgentWorkspaceAsking(folders: r.folders.registry, isThisMac: { _ in true }) }
+        await r.runtime.startChatInAnotherFolder(r.model)
+        #expect(r.model.conversationID != r.conversation && r.model.folderNoticeText == nil)
+    }
+
+    @Test func aRejectionAfterPickingShowsTheSameApprovedSentenceThePanelWouldHave() async throws {
+        let r = try modelRig()
+        defer { r.folders.cleanup() }
+        // 폴더 창이 받아 준 뒤(틈) 등록부가 거절한다: 겹침 · 폴더가 사라짐
+        try r.folders.registry.setFolder(r.folders.path("client-c"), forProject: UUID())
+        let racy = FailingRegisterFolders(base: r.folders.registry, error: nil)
+        r.runtime.workspaceAsking = { AgentWorkspaceAsking(folders: racy, isThisMac: { _ in true }) }
+        r.folders.panel.choice = r.folders.path("client-c/sub")
+        await r.runtime.startChatInAnotherFolder(r.model)
+        #expect(r.model.folderNoticeText == AgentWorkspaceCopy.overlappingFolder && r.model.conversationID == r.conversation)
+        r.folders.panel.choice = r.folders.path("gone")   // 디렉터리가 아니다
+        await r.runtime.startChatInAnotherFolder(r.model)
+        #expect(r.model.folderNoticeText == AgentWorkspaceCopy.rejected && r.model.conversationID == r.conversation)
+    }
+
+    // MARK: Finder에서 보기 (사용자 승인 2026-10-22)
+
+    @Test func showInFinderRevealsTheCurrentFolderOnly() throws {
+        let r = try modelRig()
+        defer { r.folders.cleanup() }
+        r.runtime.showFolderInFinder(r.model)
+        #expect(r.folders.reveals.urls.isEmpty, "폴더가 아직 없으면 아무것도 열지 않는다")
+        try r.folders.registry.setPending(r.folders.path("client-a"), conversation: r.conversation)
+        r.runtime.showFolderInFinder(r.model)
+        #expect(r.folders.reveals.urls == [URL(fileURLWithPath: r.folders.real("client-a"), isDirectory: true)], "이 대화의 지금 폴더를 Finder에서 보인다")
+    }
+
+    @Test func aFolderThatNoLongerExistsDisablesShowInFinderWithoutAnyError() throws {
+        let r = try modelRig()
+        defer { r.folders.cleanup() }
+        try r.folders.registry.setPending(r.folders.path("client-a"), conversation: r.conversation)
+        #expect(try #require(r.runtime.folderLine(for: r.model)).exists)
+        try FileManager.default.removeItem(atPath: r.folders.path("client-a"))
+        let line = try #require(r.runtime.folderLine(for: r.model), "줄은 그대로 보인다 (이름 · 경로)")
+        #expect(!line.exists && line.name == "client-a", "없으면 Show in Finder만 꺼진다")
+        r.runtime.showFolderInFinder(r.model)
+        #expect(r.folders.reveals.urls.isEmpty && r.model.folderNoticeText == nil, "눌러도(오래된 화면) 열지 않고 오류 글도 없다")
+    }
+
+    @Test func aFileWhereTheFolderWasIsNotRevealedEither() throws {
+        let r = try modelRig()
+        defer { r.folders.cleanup() }
+        try r.folders.registry.setPending(r.folders.path("client-a"), conversation: r.conversation)
+        try FileManager.default.removeItem(atPath: r.folders.path("client-a"))
+        try Foundation.Data("x".utf8).write(to: URL(fileURLWithPath: r.folders.path("client-a")))
+        #expect(try #require(r.runtime.folderLine(for: r.model)).exists == false)
+        r.runtime.showFolderInFinder(r.model)
+        #expect(r.folders.reveals.urls.isEmpty)
+    }
+
+    @Test func showInFinderDoesNothingForATaskforceConversationOrWithoutARegistry() throws {
+        let r = try modelRig()
+        defer { r.folders.cleanup() }
+        try r.folders.registry.setPending(r.folders.path("client-a"), conversation: r.conversation)
+        let taskforce = r.chat.reserveNewChat(target: .taskforce, excluding: [r.conversation])
+        try r.folders.registry.setPending(r.folders.path("client-b"), conversation: taskforce)
+        r.runtime.showFolderInFinder(AssistantWindowModel(conversationID: taskforce, chat: r.chat, targets: r.runtime.targets))
+        r.runtime.workspaceAsking = { nil }
+        r.runtime.showFolderInFinder(r.model)
+        #expect(r.folders.reveals.urls.isEmpty)
+    }
+
+    // MARK: 쓰지 않을 폴더 지우기 (코드 검토 P3)
+
+    @Test func theWindowsForgetHookRemovesTheConversationsChosenFolderFromTheRegistry() throws {
+        let r = try modelRig()
+        defer { r.folders.cleanup() }
+        let other = UUID()
+        try r.folders.registry.setPending(r.folders.path("client-a"), conversation: r.conversation)
+        try r.folders.registry.setPending(r.folders.path("client-b"), conversation: other)
+        r.model.forgetFolder(r.conversation)
+        #expect(r.folders.registry.pending(conversation: r.conversation) == nil && r.folders.registry.pending(conversation: other) == r.folders.real("client-b"))
+    }
+
+    @Test func switchingAFreshChatToAnotherChatForgetsTheFolderItWasBoundTo() async throws {
+        let r = try modelRig()
+        defer { r.folders.cleanup() }
+        r.folders.panel.choice = r.folders.path("client-b")
+        await r.runtime.startChatInAnotherFolder(r.model)
+        let fresh = r.model.conversationID
+        #expect(r.folders.registry.pending(conversation: fresh) != nil)
+        r.model.openConversation(r.conversation)   // 새 대화를 아무 글도 없이 떠난다
+        #expect(r.folders.registry.pending(conversation: fresh) == nil, "버려진 빈 새 대화의 폴더는 등록부에 남지 않는다")
+    }
+
+    @Test func aSentChatKeepsItsFolderWhenTheWindowLeavesIt() async throws {
+        let r = try modelRig()
+        defer { r.folders.cleanup() }
+        r.folders.panel.choice = r.folders.path("client-a")
+        await r.runtime.sendFromWindow(r.model)   // 보냈다: 이 대화의 폴더는 세션의 기록이다
+        #expect(r.folders.registry.pending(conversation: r.conversation) != nil)
+        r.model.newChat()
+        #expect(r.folders.registry.pending(conversation: r.conversation) == r.folders.real("client-a"), "보낸 대화의 폴더는 지우지 않는다")
+    }
+
+    // MARK: 홈 줄임은 한 번만 구한다 (코드 검토 P3)
+
+    @Test func theHomeAbbreviationListIsComputedOnceAndNotOnEveryRender() throws {
+        let account = try AppChatAccount.make()
+        let runtime = ChatRuntime(gateway: AgentChatSampleGateway(), contextGateway: IssueSampleContextGateway(), scope: account.scope, now: { Date() }, issueScreens: true)
+        let first = runtime.workspaceHomes
+        #expect(first.contains(NSHomeDirectory()) && first == runtime.workspaceHomes)
+    }
+
     // MARK: 실제 창: 머리의 폴더 컨트롤과 끌기
 
     @MainActor
-    private struct WindowRig {
+    private struct ManagerRig {
         let controller: EdgeShellController
         let runtime: ChatRuntime
         let defaults: TestDefaults
         let account: AppChatAccount
         let folders: Folders
-        let model: AssistantWindowModel
-        let window: AssistantWindowController
         var manager: AssistantWindowManager { controller.assistant! }
 
         func cleanup() {
-            window.panel.orderOut(nil)
             manager.closeAll()
             defaults.cleanup()
             folders.cleanup()
         }
     }
 
-    /// 에이전트 대화(견본: 세션이 이 Mac에 있다) 하나를 보이는 창. `pinned`면 그 세션의 핀에 그 폴더가 적혀 있다
-    private func windowRig(pinned: String? = nil, taskforce: Bool = false) async throws -> WindowRig {
+    /// 창 관리자까지 있는 격리 구성. `state`가 서버 대화 · 세션이다 (기본: 견본의 에이전트 대화 하나, 세션은 이 Mac에 있다). `pinned`면 그 세션의 핀에 그 폴더가 적혀 있다
+    private func managerRig(state: AgentChatSampleGateway.State = Data.inFlight(), pinned: String? = nil) async throws -> ManagerRig {
         let folders = try Folders()
         let account = try AppChatAccount.make()
         let gateway = AgentChatSampleGateway()
-        gateway.state = Data.inFlight()
+        gateway.state = state
         let runtime = ChatRuntime(gateway: gateway, contextGateway: IssueSampleContextGateway(), scope: account.scope, now: { Date() }, issueScreens: true)
         folders.install(in: runtime)
         if let pinned { try folders.registry.pin(session: Data.sessionID.uuidString, to: folders.path(pinned)) }
@@ -287,12 +432,33 @@ struct AssistantFolderHeaderTests {
         controller.assistant?.presents = false
         await runtime.targets.refresh()
         await runtime.chat.refresh()
-        let manager = try #require(controller.assistant)
-        let conversation = taskforce ? runtime.chat.reserveNewChat(target: .taskforce, excluding: []) : Data.conversationID
-        let id = try #require(manager.openWindow(for: conversation))
-        let window = try #require(manager.controllers[id])
-        await runtime.chat.settle()
-        return WindowRig(controller: controller, runtime: runtime, defaults: defaults, account: account, folders: folders, model: window.model, window: window)
+        return ManagerRig(controller: controller, runtime: runtime, defaults: defaults, account: account, folders: folders)
+    }
+
+    @MainActor
+    private struct WindowRig {
+        let base: ManagerRig
+        let model: AssistantWindowModel
+        let window: AssistantWindowController
+        var controller: EdgeShellController { base.controller }
+        var runtime: ChatRuntime { base.runtime }
+        var folders: Folders { base.folders }
+        var manager: AssistantWindowManager { base.manager }
+
+        func cleanup() {
+            window.panel.orderOut(nil)
+            base.cleanup()
+        }
+    }
+
+    /// 에이전트 대화(견본: 세션이 이 Mac에 있다) 하나를 보이는 창. `pinned`면 그 세션의 핀에 그 폴더가 적혀 있다. `taskforce`면 대신 서버에 없는 빈 Taskforce 대화
+    private func windowRig(pinned: String? = nil, taskforce: Bool = false) async throws -> WindowRig {
+        let base = try await managerRig(pinned: pinned)
+        let conversation = taskforce ? base.runtime.chat.reserveNewChat(target: .taskforce, excluding: []) : Data.conversationID
+        let id = try #require(base.manager.openWindow(for: conversation))
+        let window = try #require(base.manager.controllers[id])
+        await base.runtime.chat.settle()
+        return WindowRig(base: base, model: window.model, window: window)
     }
 
     /// 창을 (화면 밖이 아니어도 가려지지 않게 올리지 않고) 레이아웃해서 SwiftUI가 머리 · 입력 영역의 높이를 알릴 때까지 기다린다
@@ -303,6 +469,16 @@ struct AssistantFolderHeaderTests {
             if window.presentation.headHeight > 0, window.presentation.footerHeight > 0 { return }
             try await Task.sleep(for: .milliseconds(10))
         }
+    }
+
+    /// 머리 높이가 조건을 만족할 때까지 기다린다 (최대 4초)
+    private func headHeight(_ window: AssistantWindowController, where condition: (CGFloat) -> Bool) async throws -> CGFloat {
+        for _ in 0..<400 {
+            window.panel.contentView?.layoutSubtreeIfNeeded()
+            if condition(window.presentation.headHeight) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        return window.presentation.headHeight
     }
 
     /// 창 안의 한 점(위가 0)을 누르면 받는 뷰
@@ -349,6 +525,90 @@ struct AssistantFolderHeaderTests {
         try taskforce.folders.registry.setPending(taskforce.folders.path("client-a"), conversation: taskforce.model.conversationID)
         try await layOut(taskforce.window)
         #expect(taskforce.window.presentation.headHeight == plain.window.presentation.headHeight)
+    }
+
+    /// 코드 검토 P2의 진짜 모양: 폴더를 고른 새 대화의 대상을 **다른 Mac의 에이전트**로 바꾼다 → 이 Mac의 폴더가 그 대화에 남지 않고, 머리의 폴더 줄도 메뉴도 없다
+    @Test func switchingAFolderBoundNewChatToAnotherMacsAgentLeavesNoFolderLineAndNoMenu() async throws {
+        let r = try await windowRig(taskforce: true)
+        defer { r.cleanup() }
+        let claude = try #require(r.runtime.targets.options.first { $0.name == "Claude Code" })
+        let codexOnAnotherMac = try #require(r.runtime.targets.options.first { $0.name == "Codex" })
+        r.model.chooseTarget(claude)   // 빈 새 대화의 대상을 이 Mac의 Claude Code로
+        try await layOut(r.window)
+        let bare = try await headHeight(r.window) { _ in true }
+
+        r.folders.panel.choice = r.folders.path("client-b")
+        await r.runtime.startChatInAnotherFolder(r.model)   // 같은 에이전트의 새 대화가 client-b와 함께 열린다
+        let fresh = r.model.conversationID
+        #expect(r.folders.registry.pending(conversation: fresh) == r.folders.real("client-b"))
+        let withFolder = try await headHeight(r.window) { $0 > bare + 20 }
+        #expect(r.runtime.folderLine(for: r.model) != nil && withFolder > bare + 20, "폴더 줄(= 메뉴)이 보인다")
+
+        r.model.chooseTarget(codexOnAnotherMac)   // 아직 보내기 전이라 대상을 바꿀 수 있다
+        #expect(r.folders.registry.pending(conversation: fresh) == nil, "옛 대상(이 Mac)의 폴더는 지워진다")
+        #expect(r.runtime.folderLine(for: r.model) == nil, "다른 Mac의 에이전트 대화에 이 Mac의 폴더가 보이지 않는다")
+        let after = try await headHeight(r.window) { $0 < withFolder - 20 }
+        #expect(after == bare, "폴더 줄도 메뉴도 없다: \(bare) → \(withFolder) → \(after)")
+        // 다시 에이전트를 이 Mac의 것으로 바꿔도 옛 폴더가 돌아오지 않는다
+        r.model.chooseTarget(claude)
+        #expect(r.runtime.folderLine(for: r.model) == nil)
+    }
+
+    /// 세션은 있는데 이 Mac에 핀이 없는 동안은 폴더 줄이 없고(다른 Mac의 세션이거나 핀을 꽂기 전), 이 Mac의 bridge가 핀을 꽂으면 곧 나타난다 (등록부는 관찰되지 않아 창이 짧게 다시 읽는다)
+    @Test func aSessionWithoutALocalPinGetsItsFolderLineAsSoonAsTheBridgePinsIt() async throws {
+        let r = try await windowRig()
+        defer { r.cleanup() }
+        try await layOut(r.window)
+        let without = r.window.presentation.headHeight
+        #expect(r.model.sessionID == Data.sessionID && r.runtime.folderLine(for: r.model) == nil, "세션이 있고 이 Mac에 핀이 없다")
+        try r.folders.registry.setPending(r.folders.path("client-b"), conversation: Data.conversationID)   // 대화가 고른 폴더가 있어도 세션 핀이 없으면 안 보인다
+        #expect(r.runtime.folderLine(for: r.model) == nil)
+        try r.folders.registry.pin(session: Data.sessionID.uuidString, to: r.folders.path("client-a"))
+        let after = try await headHeight(r.window) { $0 > without + 20 }
+        #expect(after > without + 20, "bridge가 핀을 꽂으면 머리가 폴더 줄을 보인다 (다른 변화를 기다리지 않는다): \(without) → \(after)")
+        #expect(r.runtime.folderLine(for: r.model)?.name == "client-a")
+    }
+
+    /// 쓰이지 않을 빈 대화의 옛 폴더 (코드 검토 P3): 다시 쓰이는 빈 대화 · 버려진 빈 대화 · 닫힌 창
+    @Test func aReusedEmptyChatHandedOutByANewWindowLosesItsOldFolder() async throws {
+        let r = try await windowRig(taskforce: true)
+        defer { r.cleanup() }
+        let stale = r.runtime.chat.reserveNewChat(target: .taskforce, excluding: [r.model.conversationID])
+        try r.folders.registry.setPending(r.folders.path("client-a"), conversation: stale)
+        let id = try #require(r.manager.openNewWindow())
+        let shown = try #require(r.manager.controllers[id]?.model.conversationID)
+        #expect(shown == stale, "빈 대화를 다시 쓴다")
+        #expect(r.folders.registry.pending(conversation: stale) == nil, "옛 폴더는 새 대화에 따라오지 않는다")
+        r.manager.controllers[id]?.panel.orderOut(nil)
+    }
+
+    @Test func chatsOpenedOnAnEmptyServerReusesAStaleEmptyChatWithoutItsOldFolder() async throws {
+        let r = try await managerRig(state: AgentChatSampleGateway.State())
+        defer { r.cleanup() }
+        let stale = r.runtime.chat.reserveNewChat(target: .taskforce, excluding: [])
+        try r.folders.registry.setPending(r.folders.path("client-a"), conversation: stale)
+        let id = try #require(r.manager.showChats())
+        #expect(r.manager.controllers[id]?.model.conversationID == stale)
+        #expect(r.folders.registry.pending(conversation: stale) == nil, "⌘3으로 여는 새 대화도 옛 폴더 없이 시작한다")
+        r.manager.controllers[id]?.panel.orderOut(nil)
+    }
+
+    @Test func closingAWindowOnAnEmptyFolderBoundChatForgetsTheFolderButNotOnASentChat() async throws {
+        let r = try await windowRig(taskforce: true)
+        defer { r.cleanup() }
+        let claude = try #require(r.runtime.targets.options.first { $0.name == "Claude Code" })
+        r.model.chooseTarget(claude)
+        r.folders.panel.choice = r.folders.path("client-b")
+        await r.runtime.startChatInAnotherFolder(r.model)
+        let fresh = r.model.conversationID
+        #expect(r.folders.registry.pending(conversation: fresh) != nil)
+        r.manager.close(r.window.model.id)
+        #expect(r.folders.registry.pending(conversation: fresh) == nil, "닫힌 창의 빈 새 대화 폴더는 버린다")
+        // 서버에 있는 (보낸) 대화의 폴더는 닫아도 그대로다
+        try r.folders.registry.setPending(r.folders.path("client-a"), conversation: Data.conversationID)
+        let id = try #require(r.manager.openWindow(for: Data.conversationID))
+        r.manager.close(try #require(r.manager.controllers[id]?.model.id))
+        #expect(r.folders.registry.pending(conversation: Data.conversationID) == r.folders.real("client-a"))
     }
 
     @Test func theFolderControlTakesItsOwnPressesWhileTheRestOfTheHeaderStillDragsTheWindow() async throws {

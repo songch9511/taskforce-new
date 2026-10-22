@@ -12,6 +12,13 @@ struct AgentWorkspaceFolderLineTests {
         AgentWorkspaceFolderLine(path: path, homes: homes ?? [home])
     }
 
+    /// Show in Finder는 폴더가 지금 있을 때만 켜진다 (사용자 승인 2026-10-22): 줄이 그 사실을 실어 나른다 (기본은 있음)
+    @Test func theLineCarriesWhetherTheFolderStillExistsForShowInFinder() throws {
+        #expect(try #require(make("/Users/daniel/Documents/client-a")).exists, "기본은 있음")
+        let gone = try #require(AgentWorkspaceFolderLine(path: "/Users/daniel/Documents/client-a", homes: [home], exists: false))
+        #expect(!gone.exists && gone.name == "client-a" && gone.tooltip == "~/Documents/client-a", "없어도 이름 · 경로는 그대로 보인다")
+    }
+
     @Test func theHeaderShowsTheFolderNameAndTheTooltipShowsTheFullPathWithTildeForHome() throws {
         let shown = try #require(make("/Users/daniel/Documents/client-a"))
         #expect(shown.name == "client-a")
