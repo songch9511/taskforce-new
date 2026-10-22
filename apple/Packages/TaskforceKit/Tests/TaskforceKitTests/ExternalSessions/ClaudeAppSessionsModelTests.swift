@@ -479,6 +479,24 @@ extension ExternalSessionSuites {
             #expect(done.owner == me, "같은 계정을 다시 알려도 아무 일이 없다")
         }
 
+        /// 계정이 바뀔 때 "떠남"이 셸의 "계정을 앎"(`adopt`)보다 늦게 와 주인이 지워졌어도 다음 폴이 주인을 다시 적는다 (순서와 상관없이 맞다)
+        @Test func aLateLeaveThatWipedTheOwnerIsRepairedByTheNextPoll() async {
+            let script = ClaudeAppPollScript()
+            let done = InMemoryClaudeAppDoneStore()
+            let clock = ClaudeAppClock()
+            let scope = AccountScope(currentAccount: { [me] in me })
+            script.serve([session(a, .busy, pid: 100)])
+            let model = make(script, done: done, clock: clock, scope: scope)
+            model.adopt(account: me)
+            scope.accountLeft()
+            #expect(done.owner == nil && done.load().isEmpty, "늦게 온 떠남이 도장을 지웠다")
+            await model.pollOnce()
+            clock.advance(1)
+            script.serve([session(a, .idle, pid: 100)])
+            await model.pollOnce()
+            #expect(done.owner == me && done.load()[a]?.pid == 100, "다음 폴이 주인을 다시 적고, 그 뒤 저장한 표시는 주인을 가진다")
+        }
+
         @Test func leavingTheAccountForgetsTheOwnerToo() async {
             let script = ClaudeAppPollScript()
             let done = InMemoryClaudeAppDoneStore()

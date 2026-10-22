@@ -1,6 +1,8 @@
+import AppKit
 import Auth
 import Carbon.HIToolbox
 import Foundation
+import SwiftUI
 import Testing
 @testable import TaskforceKit
 import TaskforceUI
@@ -662,7 +664,7 @@ struct SettingsWindowReadOnlyValueTests {
         // 캡슐 레일(새 Issues 화면)에는 Chats 칸 · ⌘3이 없다 (계약 24장): All work · Sessions · New chat
         let capsule = shell(capsule: true)
         let rows = SettingsPanelKeys.rows(for: capsule)
-        #expect(rows.map(\.label) == ["All work", "Sessions", "New chat"])
+        #expect(rows.map(\.label) == ["Projects", "Sessions", "New chat"], "레일이 그리는 이름 그대로: 캡슐 레일의 첫 칸은 Projects")
         #expect(rows.map(\.keys) == [["⌘", "2"], ["⌘", "4"], ["⌘", "N"]])
         // 노치 레일(옛 구성)은 Chats가 있으면 ⌘3도 있다 (Sessions 버튼이 없으니 ⌘4는 없다)
         #expect(self.rows(shell(capsule: false)) == ["All work", "Chats", "New chat"])
@@ -670,14 +672,14 @@ struct SettingsWindowReadOnlyValueTests {
         #expect(self.rows(shell(capsule: false, chats: false)) == ["All work"])
         // 로그인 전에는 Sessions 버튼이 없다: ⌘4가 없다. 로그인하면 나타난다
         let early = shell(capsule: true, signedIn: false)
-        #expect(self.rows(early) == ["All work", "New chat"])
+        #expect(self.rows(early) == ["Projects", "New chat"])
         early.accountChanged(SampleData.userID)
-        #expect(self.rows(early) == ["All work", "Sessions", "New chat"])
+        #expect(self.rows(early) == ["Projects", "Sessions", "New chat"])
         #expect(SettingsPanelKeys.rows(for: nil).isEmpty, "듣는 셸이 없으면 나열할 키도 없다")
         // 나열한 키는 모두 실제로 동작하고, 나열하지 않은 키는 이 셸이 듣지 않는다
         for control in EdgeShellModel.Control.allCases {
             guard control.shortcut != nil, let command = control.keyCommand else { continue }
-            #expect(capsule.listens(to: command) == rows.contains { $0.label == control.label }, Comment(rawValue: "\(control)"))
+            #expect(capsule.listens(to: command) == rows.contains { $0.label == capsule.label(for: control) }, Comment(rawValue: "\(control)"))
         }
         // 나열하는 키는 실제로 동작하는 키와 같다: 목록의 각 단축키는 `EdgeKeyCommand`가 그 칸으로 해석한다
         #expect(EdgeKeyCommand.of(keyCode: kVK_ANSI_2, flags: .command) == .allWork && EdgeKeyCommand.of(keyCode: kVK_ANSI_3, flags: .command) == .chats)
@@ -685,6 +687,43 @@ struct SettingsWindowReadOnlyValueTests {
         #expect(EdgeShellModel.Control.sessions.shortcut == "⌘4" && EdgeShellModel.Control.more.shortcut == nil)
         #expect(SettingsPanelKeys.keyCaps("⌥Space") == ["⌥", "Space"])
         #expect(SettingsPanelKeys.keyCaps("⇧⌘K") == ["⇧", "⌘", "K"])
+    }
+
+    /// 창이 그려진 뒤에 셸이 올라와도 목록이 다시 그려진다: 셸을 올리면 관찰하는 값(`panelKeysShellVersion`)이 바뀐다
+    @Test func settingTheShellAfterTheWindowRenderedNotifiesTheListSoItRedraws() {
+        let model = SettingsWindowModel.shared
+        let shell = shell(capsule: true)
+        final class Changes: @unchecked Sendable { var count = 0 }
+        let changes = Changes()
+        withObservationTracking {
+            _ = model.panelKeysShellVersion
+        } onChange: {
+            changes.count += 1
+        }
+        let before = model.panelKeysShellVersion
+        model.panelKeysShell = shell
+        #expect(changes.count == 1 && model.panelKeysShellVersion == before + 1, "셸이 올라오면 그 값을 읽던 화면에 알린다")
+        #expect(SettingsPanelKeys.rows(for: model.panelKeysShell).map(\.label) == ["Projects", "Sessions", "New chat"])
+        withExtendedLifetime(shell) {}
+    }
+
+    /// 듣는 키가 하나도 없으면 "In the panel" 머리말도 그리지 않는다 (빈 머리말만 남지 않게). 동기 시험: 공유 모델을 쓰는 동안 다른 시험이 끼어들지 못한다
+    @Test func theHeadingIsDrawnOnlyWhenTheShellListensToSomeKey() {
+        let model = SettingsWindowModel.shared
+        let saved = model.panelKeysShell
+        defer { model.panelKeysShell = saved }
+        func height() -> CGFloat {
+            let host = NSHostingView(rootView: SettingsPanelKeysSection().frame(width: 520))
+            host.layoutSubtreeIfNeeded()
+            return host.fittingSize.height
+        }
+        model.panelKeysShell = nil
+        #expect(height() == 0, "듣는 셸이 없으면 머리말도 없다")
+        // Chats 없는 노치 구성은 ⌘2 하나는 듣는다: 머리말과 한 줄이 그려진다
+        let listening = shell(capsule: false, chats: false)
+        model.panelKeysShell = listening
+        #expect(height() > 0, "듣는 키가 있으면 머리말과 줄이 그려진다")
+        withExtendedLifetime(listening) {}
     }
 
     /// 설정 창은 가장 최근에 만들어진 Edge 셸이 듣는 키를 본다 (컨트롤러가 스스로 올린다)

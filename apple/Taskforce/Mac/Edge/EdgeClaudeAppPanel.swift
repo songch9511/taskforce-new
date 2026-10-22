@@ -38,6 +38,9 @@ struct ClaudeAppSessionPanelView: View {
         static let bottom = "claude-app-bottom"
     }
 
+    /// 맨 아래에서 이만큼(pt) 안이면 "맨 아래에 붙어 있다"로 본다
+    static let pinnedSlack: CGFloat = 24
+
     var body: some View {
         let scale = TFMotion.panelTransform(shown: presentation.shown, reduceMotion: shell.reduceMotion).scale
         Group {
@@ -81,6 +84,12 @@ struct ClaudeAppSessionPanelView: View {
                     }
                     .defaultScrollAnchor(.bottom)
                     .scrollIndicators(.automatic)
+                    // 맨 아래에 붙어 있는지 대화 상태에 알린다: 위로 거슬러 읽는 중에는 라이브 줄이 붙어도 위쪽 줄을 버리지 않는다 (`ClaudeAppConversation.pinnedToBottom`)
+                    .onScrollGeometryChange(for: Bool.self) { geometry in
+                        geometry.visibleRect.maxY >= geometry.contentSize.height - Self.pinnedSlack
+                    } action: { _, pinned in
+                        conversation.pinnedToBottom = pinned
+                    }
                     .onChange(of: TailSignature(last: conversation.turns.last?.id, phase: conversation.phase)) { proxy.scrollTo(Anchor.bottom, anchor: .bottom) }
                 }
             }

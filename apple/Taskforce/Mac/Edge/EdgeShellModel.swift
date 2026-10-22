@@ -357,6 +357,8 @@ final class EdgeShellModel {
     let desktop: ClaudeAppSessionsModel?
     /// 아직 안 연 끝남의 저장 (계약 23장): 있고 새 Issues 화면이 켜진 셸은 끝난 링(초록)이 **열어 볼 때까지** 레일에 남는다 (타이머 없음, 이 Mac에 저장 → 다시 켠 뒤에도). 없으면 지금처럼 3초다 (노치 레일 · 시험)
     @ObservationIgnored let railDone: (any RailDoneStore)?
+    /// 표시만 남은 끝난 이슈를 id로 읽는다 (기존 RLS 읽기, `IssueRuntime.finished`). 시험은 가짜로 바꾼다. 새 Issues 화면이 없는 셸은 읽지 않는다
+    @ObservationIgnored var lookupFinishedIssue: @MainActor (UUID) async -> FinishedIssueResult = { _ in .unknown }
     /// 데스크톱 세션 보기를 연 날의 지표 (하루 한 번, 종류만). 없으면 보내지 않는다
     @ObservationIgnored private let claudeAppOpened: ClaudeAppOpenedMetric?
     /// 데스크톱 세션 하나의 대화 읽기를 만든다 (세션 id, 등록 파일의 작업 폴더): 실제 앱은 `~/.claude`의 기록을 읽는 `ClaudeAppTranscriptReader`, 시험은 가짜
@@ -474,6 +476,7 @@ final class EdgeShellModel {
         self.externalSessions = issues == nil ? nil : externalSessions
         self.desktop = issues == nil || externalSessions == nil ? nil : desktopSessions
         self.railDone = issues == nil ? nil : railDone
+        if let finished = issues?.finished { lookupFinishedIssue = { await finished.read($0) } }
         self.claudeAppOpened = issues == nil || externalSessions == nil ? nil : claudeAppOpened
         if issues != nil, let railDone {
             // 끝난 링은 열어 볼 때까지 남는다: 세션 저장소도 같은 저장소로 올리고, 저장해 둔 이슈의 끝남을 되살린다
@@ -887,9 +890,16 @@ final class EdgeShellModel {
     /// 레일의 Projects(All work) 칸 · ⌘2 (계약 24장, 토글): Projects 첫 화면이 이미 열려 있으면 패널을 닫는다.
     /// 이슈 목록 · 상세처럼 쌓인 화면에서는 닫지 않고 Projects 첫 화면으로 간다 (그 화면의 칸을 누른 것이 아니다). 다른 화면이 열려 있으면 연다
     func toggleAllWork() {
-        if panelOpen, view == .allWork, issues == nil || !nav.canGoBack {
-            dismiss()
-            return
+        if panelOpen, view == .allWork {
+            // 새 Issues 화면: 쌓인 화면이 아니면 닫는다. 노치 레일(옛 구성): 고른 행 · 검색어 · 필터(카드 포함)가 없을 때만 닫는다 —
+            // 있으면 옛 동작대로 그것을 비우고 목록을 보인다 (`openAllWork`)
+            let atFirstScreen = issues != nil
+                ? !nav.canGoBack
+                : currentID == nil && workFilter.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !workFilter.hasActiveFilters && !filtersOpen
+            if atFirstScreen {
+                dismiss()
+                return
+            }
         }
         openAllWork()
     }
@@ -1570,6 +1580,7 @@ final class EdgeShellModel {
         if hadAccount {
             recentlyDone = [:]
             carriedDone = [:]
+            orphanTried = [:]
             // 마지막으로 저장한 표시의 사본도 비운다: 남기면 새 계정이 같은 표시를 만들었을 때 "바뀌지 않았다"며 저장하지 않는다
             savedIssueDone = nil
         }
@@ -1618,6 +1629,7 @@ final class EdgeShellModel {
             for action in work.doneToday where recentlyDone[action.id] != nil { carriedDone[action.id] = action }
             carriedDone = carriedDone.filter { recentlyDone[$0.key] != nil }
             persistIssueDone()
+            resolveOrphanDone(work, now: now)
         }
         self.work = work
         reconcileReview(previous: previousReview)
@@ -1648,6 +1660,7 @@ final class EdgeShellModel {
                 railDone.clear()
                 recentlyDone = [:]
                 carriedDone = [:]
+                orphanTried = [:]
                 savedIssueDone = nil
                 issues?.sessions.discardRestoredDone()
             }
@@ -1656,12 +1669,57 @@ final class EdgeShellModel {
         desktop?.adopt(account: account)
     }
 
+    /// 주인이 없는 저장본에는 지금 계정을 주인으로 찍는다: 계정이 바뀔 때 "떠남"(저장본 비움)이 `claimDoneStores`(주인 적기)보다 늦게 와 도장이 지워졌어도
+    /// 그 뒤에 쓰는 표시는 주인을 가진다 (순서와 상관없이 맞다). 다른 계정의 주인은 덮어쓰지 않는다
     private func persistIssueDone() {
         guard doneUntilOpened, let railDone else { return }
         let current = recentlyDone
+        let account = account
         guard current != (savedIssueDone ?? railDone.load().issues) else { return }
         savedIssueDone = current
-        railDone.update { $0.issues = current }
+        railDone.update {
+            $0.issues = current
+            if $0.owner == nil { $0.owner = account }
+        }
+    }
+
+    /// 표시만 남은 이슈를 다시 읽는 간격 (읽지 못했을 때)
+    static let orphanRetryInterval: TimeInterval = 60
+    /// 이슈를 마지막으로 읽어 본 때 · 읽는 중인 이슈
+    @ObservationIgnored private var orphanTried: [UUID: Date] = [:]
+    @ObservationIgnored private var orphanInFlight: Set<UUID> = []
+
+    /// 다시 켠 뒤 표시는 있는데 어느 목록에도 없는 이슈(오늘 끝난 일에서 빠졌고 이 실행에서 본 적도 없다): 그 이슈를 id로 읽는다 (기존 RLS 읽기, 제목은 저장하지 않는다).
+    /// 아직 끝난 이슈면 링을 제목과 함께 되살리고(메모리에만), 다시 열렸거나 지워졌거나 취소했으면 표시를 버리고, 읽지 못하면 표시를 두고 `orphanRetryInterval` 뒤에 다시 읽는다.
+    /// 읽는 사이 계정이 바뀌었으면 그 결과를 쓰지 않는다
+    private func resolveOrphanDone(_ work: EdgeWorkSnapshot, now: Date) {
+        guard doneUntilOpened, case .loaded = work.load else { return }
+        let known = Set(work.doneToday.map(\.id)).union(work.open.map(\.id)).union(work.review.map(\.id)).union(work.working).union(carriedDone.keys)
+        let owner = account
+        for id in recentlyDone.keys.sorted(by: { $0.uuidString < $1.uuidString }) where !known.contains(id) && !orphanInFlight.contains(id) {
+            if let tried = orphanTried[id], now.timeIntervalSince(tried) < Self.orphanRetryInterval { continue }
+            orphanTried[id] = now
+            orphanInFlight.insert(id)
+            let lookup = lookupFinishedIssue
+            Task { @MainActor [weak self] in
+                let result = await lookup(id)
+                guard let self else { return }
+                self.orphanInFlight.remove(id)
+                guard self.account == owner, self.recentlyDone[id] != nil else { return }
+                switch result {
+                case .finished(let summary):
+                    self.carriedDone[id] = summary
+                    self.refreshSlots(at: self.clock())
+                case .notFinished, .gone:
+                    self.recentlyDone[id] = nil
+                    self.carriedDone[id] = nil
+                    self.persistIssueDone()
+                    self.refreshSlots(at: self.clock())
+                case .unknown:
+                    break
+                }
+            }
+        }
     }
 
     /// 이슈를 열었다 (링 · 목록 · 상세): 그 이슈의 끝남(v1 run의 끝 · 그 이슈 세션들의 끝)을 지운다. 같은 완료는 다시 오르지 않고 새 일이 끝나야 다시 초록이다.

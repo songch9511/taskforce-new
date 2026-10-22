@@ -146,7 +146,11 @@ final class SettingsWindowModel {
     /// Account › Plan & usage의 상태 · 동작 (OA 결제 PR-C). 탭을 옮겨도 진행 중인 요청 · 읽은 값이 남고, 계정이 바뀌면 비운다
     let plan = PlanSummaryStore()
     /// Shortcuts › In the panel이 "지금 이 셸이 듣는 키"만 보이려고 읽는 셸 (Edge 셸 컨트롤러가 만들어질 때 스스로 올린다). 셸이 없으면 목록이 비어 있다 (`SettingsPanelKeys.rows(for:)`)
-    @ObservationIgnored weak var panelKeysShell: EdgeShellModel?
+    @ObservationIgnored weak var panelKeysShell: EdgeShellModel? {
+        didSet { panelKeysShellVersion += 1 }
+    }
+    /// 위 셸이 바뀔 때마다 오른다: 창이 그려진 뒤에 셸이 생겨도 목록이 다시 그려진다 (셸 자체는 약한 참조라 관찰하지 않는다)
+    private(set) var panelKeysShellVersion = 0
 
     /// 창 제목: 연 상세, 없으면 탭 이름 (그 탭의 상세만)
     func title(on tab: SettingsWindowTab) -> String {
@@ -573,7 +577,8 @@ enum SettingsPanelKeys {
         guard let shell else { return [] }
         var rows = EdgeShellModel.Control.allCases.compactMap { control -> (label: String, keys: [String])? in
             guard let shortcut = control.shortcut, let command = control.keyCommand, shell.listens(to: command) else { return nil }
-            return (control.label, keyCaps(shortcut))
+            // 레일이 그리는 이름 그대로 (캡슐 레일의 첫 칸은 "Projects")
+            return (shell.label(for: control), keyCaps(shortcut))
         }
         if shell.listens(to: .newChat) { rows.append((newChat.label, keyCaps(newChat.shortcut))) }
         return rows

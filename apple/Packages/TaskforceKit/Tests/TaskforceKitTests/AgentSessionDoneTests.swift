@@ -145,6 +145,34 @@ struct AgentSessionDoneTests {
         #expect(third.items[0].ring == .idle, "열어 본 것은 다시 켜도 남지 않는다")
     }
 
+    /// 주인 도장은 쓸 때마다 확인한다 (순서와 상관없이 맞게): 계정이 바뀔 때 "떠남"(저장본 비움)이 셸의 "계정을 앎"(주인 적기)보다 늦게 와도,
+    /// 그 뒤에 저장하는 표시에는 지금 계정의 도장이 찍힌다
+    @Test func aSavedMarkIsStampedWithTheAccountEvenWhenTheLeaveWipedTheOwnerAfterTheShellClaimedIt() async {
+        let done = InMemoryRailDoneStore()
+        let user = UUID()
+        let gateway = FakeAgentSessionGateway()
+        let (store, scope, _) = makeStore(gateway, done: done, user: user)
+        done.setOwner(user)
+        await finish(store, gateway)
+        #expect(done.load().sessions[Fx.id(1)] != nil && done.load().owner == user, "주인을 이미 적었으면 그대로")
+        // 떠남이 뒤늦게 와서 저장본을 비웠다 (주인도 지워진다)
+        scope.accountLeft()
+        #expect(done.load() == RailDoneMarks(), "비워지면 주인도 없다")
+        await finish(store, gateway)
+        #expect(done.load().sessions[Fx.id(1)] != nil, "새로 끝난 세션은 저장된다")
+        #expect(done.load().owner == user, "그 뒤 저장하는 표시에는 지금 계정이 주인으로 찍힌다")
+    }
+
+    @Test func aStoreWithAnotherOwnerIsNotRestampedByASave() async {
+        let done = InMemoryRailDoneStore()
+        let other = UUID()
+        done.save(RailDoneMarks(owner: other))
+        let gateway = FakeAgentSessionGateway()
+        let (store, _, _) = makeStore(gateway, done: done)
+        await finish(store, gateway)
+        #expect(done.load().owner == other, "다른 계정의 주인은 덮어쓰지 않는다 (셸이 계정을 알 때 비운다)")
+    }
+
     /// 다시 켠 뒤 로그인한 계정이 저장본의 주인이 아니었다 (보안 P3-1): 셸이 저장본을 비우고 이 저장소에게 되살린 표시를 버리게 한다 (저장소 쓰기는 셸의 몫)
     @Test func discardingTheRestoredMarksMakesTheSessionIdleAgainWithoutTouchingTheStore() async {
         let done = InMemoryRailDoneStore()

@@ -261,6 +261,37 @@ extension ExternalSessionSuites {
             conversation.stop()
         }
 
+        /// 위로 거슬러 읽는 중(맨 아래에 붙어 있지 않다)에는 위쪽 줄을 버리지 않는다: 읽던 글이 사라지거나 밀리지 않게. 맨 아래로 돌아오면 그때 맞춘다
+        @Test func theLiveTailTrimsOnlyWhileThePanelIsPinnedToTheBottom() async {
+            let script = S()
+            let sleeper = ClaudeAppLoopSleeper()
+            script.queueOpen(S.page([S.turn(1), S.turn(2), S.turn(3)]))
+            script.queueNewer(.turns([S.turn(4), S.turn(5), S.turn(6)], cursor: ClaudeAppTranscriptCursor(sessionID: id), hasMore: false))
+            let conversation = make(script, sleeper: sleeper, limit: 4)
+            #expect(conversation.pinnedToBottom, "처음에는 맨 아래에 붙어 있다")
+            conversation.pinnedToBottom = false
+            conversation.start()
+            #expect(await eventually { script.newerCalls == 1 && ids(conversation).count == 6 })
+            #expect(ids(conversation) == ["t1", "t2", "t3", "t4", "t5", "t6"] && !conversation.hasEarlier, "맨 아래에 없으면 상한을 넘어도 버리지 않는다")
+            conversation.pinnedToBottom = true
+            #expect(ids(conversation) == ["t3", "t4", "t5", "t6"] && conversation.hasEarlier, "맨 아래로 돌아오면 상한에 맞춘다")
+            conversation.stop()
+        }
+
+        /// 그래도 메모리는 막는다: 맨 아래에 없어도 상한의 두 배를 넘으면 오래된 줄을 버린다
+        @Test func aWindowPastTwiceTheLimitIsTrimmedEvenWhileThePanelIsNotPinned() async {
+            let script = S()
+            let sleeper = ClaudeAppLoopSleeper()
+            script.queueOpen(S.page([S.turn(1), S.turn(2), S.turn(3)]))
+            script.queueNewer(.turns((4...9).map { S.turn($0) }, cursor: ClaudeAppTranscriptCursor(sessionID: id), hasMore: false))
+            let conversation = make(script, sleeper: sleeper, limit: 4)
+            conversation.pinnedToBottom = false
+            conversation.start()
+            #expect(await eventually { script.newerCalls == 1 && !ids(conversation).isEmpty && ids(conversation).last == "t9" })
+            #expect(ids(conversation) == ["t6", "t7", "t8", "t9"] && conversation.hasEarlier, "9줄은 상한 4의 두 배(8)를 넘는다: 상한까지 줄인다")
+            conversation.stop()
+        }
+
         /// 버린 줄을 "Show earlier"가 다시 읽을 수 있어야 한다: 커서의 가장 앞 자리가 남은 가장 앞 줄로 옮겨 가고 (그 사이에 구멍이 없다), 버린 줄의 id는 다시 보일 수 있다
         @Test func droppingTheOldestMovesTheCursorSoShowEarlierReadsTheDroppedLinesAgain() async {
             let script = S()

@@ -216,11 +216,16 @@ public final class AgentSessionStore {
         markOpened([id])
     }
 
-    /// 저장소를 준 구성만 저장한다. 세션 칸만 고친다 (이슈 칸은 셸의 몫)
+    /// 저장소를 준 구성만 저장한다. 세션 칸만 고친다 (이슈 칸은 셸의 몫). 주인이 없는 저장본에는 지금 계정을 주인으로 찍는다:
+    /// 계정이 바뀔 때 "떠남"(저장본 비움)이 셸의 "계정을 앎"(주인 적기)보다 늦게 와 주인이 지워졌어도 그 뒤에 쓰는 표시는 주인을 가진다 (순서와 상관없이 맞다). 다른 계정의 주인은 덮어쓰지 않는다
     private func saveDone() {
         guard let doneStore else { return }
         let sessions = doneObservedAt
-        doneStore.update { $0.sessions = sessions }
+        let account = scope.token?.userID
+        doneStore.update {
+            $0.sessions = sessions
+            if $0.owner == nil { $0.owner = account }
+        }
     }
 
     // MARK: 시계

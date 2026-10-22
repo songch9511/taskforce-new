@@ -123,10 +123,15 @@ struct SettingsLauncherShortcutsSection: View {
 /// Shortcuts › In the panel: Edge 패널에서 지금 이 셸이 듣는 키 (읽기 전용 KeyCombo). 로그인 · 구성이 바뀌면 목록도 따라 바뀐다 (셸의 관찰 값을 읽는다)
 struct SettingsPanelKeysSection: View {
     var body: some View {
-        SettingsSection("In the panel") {
-            ForEach(SettingsPanelKeys.rows(for: SettingsWindowModel.shared.panelKeysShell), id: \.label) { row in
-                SettingsTrayRow(row.label) {
-                    KeyCombo(row.keys)
+        // 셸이 나중에 생겨도 다시 그리도록 버전을 읽는다. 듣는 키가 하나도 없으면 머리말도 그리지 않는다
+        let _ = SettingsWindowModel.shared.panelKeysShellVersion
+        let rows = SettingsPanelKeys.rows(for: SettingsWindowModel.shared.panelKeysShell)
+        if !rows.isEmpty {
+            SettingsSection("In the panel") {
+                ForEach(rows, id: \.label) { row in
+                    SettingsTrayRow(row.label) {
+                        KeyCombo(row.keys)
+                    }
                 }
             }
         }

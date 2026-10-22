@@ -45,6 +45,11 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
     public private(set) var hasEarlier = false
     /// 앞쪽을 읽는 중이다 (단추가 한 번에 하나만 돈다)
     public private(set) var loadingEarlier = false
+    /// 보는 쪽이 맨 아래에 붙어 있다 (패널의 스크롤 위치가 알린다). 위로 거슬러 읽는 중이면 false: 그동안은 라이브 줄이 붙어도 위쪽 줄을 버리지 않는다 (읽던 글이 사라지거나 밀리지 않게).
+    /// 맨 아래로 돌아오면 그때 상한에 맞춘다. 상한의 두 배를 넘으면 붙어 있지 않아도 버린다 (메모리 상한)
+    public var pinnedToBottom = true {
+        didSet { if pinnedToBottom, !oldValue { trimToLimit() } }
+    }
 
     public let sessionID: String
     @ObservationIgnored private let cwd: String?
@@ -245,6 +250,8 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
     /// 버린 줄의 id는 지금 보이는 것에서 빼고 (다시 읽혀도 중복으로 걸러지지 않게), 커서의 가장 앞 자리를 남은 가장 앞 줄의 자리로 옮겨 구멍이 없게 하며
     /// (버린 줄의 몫은 읽기 총량에서 돌려받는다), `hasEarlier`를 올린다. 기록 안의 자리를 모르는 줄(견본)이면 커서는 그대로다
     private func trimToLimit() {
+        // 위로 거슬러 읽는 중에는 상한의 두 배까지 둔다
+        guard pinnedToBottom || turns.count > turnLimit * 2 else { return }
         let excess = turns.count - turnLimit
         guard excess > 0 else { return }
         for turn in turns.prefix(excess) { shownIDs.remove(turn.id) }

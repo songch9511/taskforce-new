@@ -520,8 +520,10 @@ final class IssueSampleGateway: ChatGateway, IssueScreensGateway, TaskforceReque
         try await gate(detail)
         let seed = (IssueSnapshotData.seeds + IssueSnapshotData.longTitles).first { IssueSnapshotData.issue($0.number) == id }
         let number = seed?.number ?? 0
+        // 끝난 시드(done)는 끝난 이슈로 돌려준다 (다시 켠 뒤 표시만 남은 이슈를 id로 읽는 길)
+        let status = seed?.state == .done ? "done" : "open"
         let record = try TaskforceJSON.decoder().decode(ActionRecord.self, from: Data("""
-        {"id":"\(id.uuidString.lowercased())","title":"\(seed?.title ?? "")","scope_summary":null,"owner":"me","counterpart":null,"due_date":null,"status":"open",
+        {"id":"\(id.uuidString.lowercased())","title":"\(seed?.title ?? "")","scope_summary":null,"owner":"me","counterpart":null,"due_date":null,"status":"\(status)",
          "needs_confirmation":false,"confirm_reasons":[],"started_at":null,"last_activity_at":"2026-10-14T01:00:00.000Z","created_at":"2026-10-13T01:00:00.000Z","number":\(number)}
         """.utf8))
         let slack = IssueSnapshotData.id(1, "50000000")

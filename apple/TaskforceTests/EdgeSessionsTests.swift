@@ -236,8 +236,9 @@ struct EdgeSessionsTests {
         #expect(railDone.load().issues[Fx.issue(141)] != nil, "표시도 지우지 않는다")
         // 다음 날 앱을 다시 켰다: 같은 저장소를 새 셸이 읽는다. 목록을 읽어도 표시를 지우지 않는다
         let relaunched = X().make(railDone: railDone)
+        relaunched.shell.lookupFinishedIssue = { _ in .unknown }
         relaunched.shell.update(Self.nextDay)
-        #expect(railDone.load().issues[Fx.issue(141)] != nil, "다시 켠 뒤 목록을 읽어도 아직 끝난 일의 표시는 남는다")
+        #expect(railDone.load().issues[Fx.issue(141)] != nil, "다시 켠 뒤 목록을 읽어도 (이슈를 id로 읽지 못하면) 표시는 남는다")
         // 열어 보면 내려가고 저장도 지워진다
         base.shell.markIssueOpened(Fx.issue(141))
         #expect(issueRing(base.shell) == nil && railDone.load().issues.isEmpty)
@@ -252,6 +253,202 @@ struct EdgeSessionsTests {
         // 다시 열렸다 (To Do · In Progress, 일하지는 않는다)
         base.shell.update(Fx.snapshot(seeds: Fx.seeds.filter { $0.number != 141 } + [Self.reopenedIssue]))
         #expect(railDone.load().issues.isEmpty && issueRing(base.shell)?.kind != .done, "더는 끝난 일이 아니다")
+    }
+
+    // MARK: 다시 켠 뒤 표시만 남은 이슈: id로 읽어 링을 되살린다
+
+    /// 138("Privacy policy beta 1.4")은 끝난 이슈다. 이 스냅샷에는 오늘 끝난 일 · 열린 일 어디에도 없다 (다음 날 다시 켰다)
+    private static var todayWithout138: EdgeWorkSnapshot { Fx.snapshot(seeds: Fx.seeds.filter { $0.number != 138 && $0.state != .done }) }
+
+    private func ring138(_ shell: EdgeShellModel) -> RailEntry? { shell.slots.first { $0.id == Fx.issue(138) } }
+
+    /// 읽기를 열 때까지 붙잡아 두는 문 · 읽기를 센다
+    private final class Gate: @unchecked Sendable {
+        var continuation: CheckedContinuation<Void, Never>?
+        func wait() async { await withCheckedContinuation { continuation = $0 } }
+        func open() { continuation?.resume(); continuation = nil }
+    }
+
+    private final class Asked: @unchecked Sendable {
+        let lock = NSLock()
+        var ids: [UUID] = []
+        func record(_ id: UUID) { lock.withLock { ids.append(id) } }
+        var count: Int { lock.withLock { ids.count } }
+    }
+
+    /// 기존 RLS 읽기(`issueDetail`)로: 샘플 서버는 138을 끝난 이슈(done)로 돌려준다
+    @Test func aMarkedIssueThatIsNotInTodaysListIsReadByIdAndItsRingComesBackWithItsTitle() async throws {
+        let railDone = InMemoryRailDoneStore()
+        railDone.save(RailDoneMarks(issues: [Fx.issue(138): Date()], owner: SampleData.userID))
+        let base = X().make(railDone: railDone)
+        #expect(ring138(base.shell) == nil, "아직 읽기 전: 제목을 모르니 링이 없다")
+        base.shell.update(Self.todayWithout138)
+        #expect(await until { ring138(base.shell) != nil })
+        let ring = try #require(ring138(base.shell))
+        #expect(ring.kind == .done && ring.title == "Privacy policy beta 1.4" && ring.activity == "Done", "끝난 링이 제목과 함께 돌아온다")
+        #expect(railDone.load().issues[Fx.issue(138)] != nil, "표시는 그대로")
+        let saved = String(decoding: try JSONEncoder().encode(railDone.load()), as: UTF8.self)
+        #expect(!saved.contains("Privacy"), "제목은 어디에도 저장하지 않는다")
+        // 열어 보면 내려가고 저장도 지워진다
+        base.shell.markIssueOpened(Fx.issue(138))
+        #expect(ring138(base.shell) == nil && railDone.load().issues.isEmpty)
+    }
+
+    /// 다시 열린 이슈(139는 열린 일): 끝남 표시를 버린다
+    @Test func aMarkedIssueThatWasReopenedLosesItsMarkAfterItIsReadById() async {
+        let railDone = InMemoryRailDoneStore()
+        railDone.save(RailDoneMarks(issues: [Fx.issue(139): Date()], owner: SampleData.userID))
+        let base = X().make(railDone: railDone)
+        base.shell.update(Fx.snapshot(seeds: Fx.seeds.filter { $0.number != 139 && $0.state != .done }))
+        #expect(await until { railDone.load().issues.isEmpty })
+        #expect(base.shell.slots.first { $0.id == Fx.issue(139) } == nil)
+    }
+
+    @Test func aMarkedIssueThatIsGoneOrCancelledLosesItsMarkAndAnUnreadableOneKeepsItAndIsAskedAgainLater() async {
+        let railDone = InMemoryRailDoneStore()
+        railDone.save(RailDoneMarks(issues: [Fx.issue(138): Date(), Fx.issue(154): Date()], owner: SampleData.userID))
+        let time = EdgeShellModelTests.ManualTime()
+        defer { withExtendedLifetime(time) {} }
+        let base = X().make(railDone: railDone, time: time)
+        let asked = Asked()
+        base.shell.lookupFinishedIssue = { id in
+            asked.record(id)
+            // 138은 지워졌거나 취소했다, 154는 읽지 못했다
+            return id == Fx.issue(138) ? .gone : .unknown
+        }
+        let snapshot = Fx.snapshot(seeds: Fx.seeds.filter { $0.number != 138 && $0.number != 154 && $0.state != .done })
+        base.shell.update(snapshot)
+        #expect(await until { railDone.load().issues[Fx.issue(138)] == nil })
+        #expect(railDone.load().issues[Fx.issue(154)] != nil && asked.count == 2, "읽지 못한 이슈의 표시는 그대로다")
+        // 곧 다시 알려도 다시 읽지 않는다 (읽지 못했을 때의 재시도 간격)
+        base.shell.update(snapshot)
+        try? await Task.sleep(for: .milliseconds(40))
+        #expect(asked.count == 2, "간격 안에서는 다시 읽지 않는다")
+        time.advance(EdgeShellModel.orphanRetryInterval + 1)
+        base.shell.update(snapshot)
+        #expect(await until { asked.count == 3 })
+        #expect(railDone.load().issues[Fx.issue(154)] != nil, "여전히 읽지 못하면 표시는 그대로")
+    }
+
+    @Test func aLookupThatFinishesAfterTheAccountChangedIsIgnored() async {
+        let railDone = InMemoryRailDoneStore()
+        railDone.save(RailDoneMarks(issues: [Fx.issue(138): Date()], owner: SampleData.userID))
+        let base = X().make(railDone: railDone)
+        let gate = Gate()
+        let summary = Fx.action(Fx.seeds.first { $0.number == 138 }!)
+        base.shell.lookupFinishedIssue = { _ in
+            await gate.wait()
+            return .finished(summary)
+        }
+        base.shell.update(Self.todayWithout138)
+        try? await Task.sleep(for: .milliseconds(30))
+        base.shell.accountChanged(UUID())
+        gate.open()
+        try? await Task.sleep(for: .milliseconds(50))
+        #expect(ring138(base.shell) == nil, "읽는 사이 계정이 바뀌었으면 그 결과(다른 계정의 이슈)를 링으로 그리지 않는다")
+    }
+
+    /// 링이 돌아온 이슈(마지막으로 본 모습이 메모리에 있다)는 재시도 간격이 지나도 다시 읽지 않는다
+    @Test func aRingThatCameBackIsNotReadAgainEvenAfterTheRetryInterval() async {
+        let railDone = InMemoryRailDoneStore()
+        railDone.save(RailDoneMarks(issues: [Fx.issue(138): Date()], owner: SampleData.userID))
+        let time = EdgeShellModelTests.ManualTime()
+        defer { withExtendedLifetime(time) {} }
+        let base = X().make(railDone: railDone, time: time)
+        let asked = Asked()
+        let summary = Fx.action(Fx.seeds.first { $0.number == 138 }!)
+        base.shell.lookupFinishedIssue = { id in
+            asked.record(id)
+            return .finished(summary)
+        }
+        base.shell.update(Self.todayWithout138)
+        #expect(await until { ring138(base.shell) != nil })
+        time.advance(EdgeShellModel.orphanRetryInterval + 1)
+        base.shell.update(Self.todayWithout138)
+        try? await Task.sleep(for: .milliseconds(40))
+        #expect(asked.count == 1, "이미 모습을 아는 이슈는 다시 읽지 않는다")
+    }
+
+    /// 읽기가 아직 돌고 있으면 (재시도 간격이 지났어도) 같은 이슈를 또 읽기 시작하지 않는다
+    @Test func aReadThatIsStillRunningIsNotStartedAgain() async {
+        let railDone = InMemoryRailDoneStore()
+        railDone.save(RailDoneMarks(issues: [Fx.issue(138): Date()], owner: SampleData.userID))
+        let time = EdgeShellModelTests.ManualTime()
+        defer { withExtendedLifetime(time) {} }
+        let base = X().make(railDone: railDone, time: time)
+        let asked = Asked()
+        let gate = Gate()
+        base.shell.lookupFinishedIssue = { id in
+            asked.record(id)
+            await gate.wait()
+            return .unknown
+        }
+        base.shell.update(Self.todayWithout138)
+        #expect(await until { asked.count == 1 })
+        time.advance(EdgeShellModel.orphanRetryInterval + 1)
+        base.shell.update(Self.todayWithout138)
+        try? await Task.sleep(for: .milliseconds(40))
+        #expect(asked.count == 1, "돌고 있는 읽기가 끝나기 전에는 또 시작하지 않는다")
+        gate.open()
+    }
+
+    /// 새 계정이 같은 이슈 id의 끝남 표시를 이미 가진 경우에도(표시 검사만으로는 못 거른다) 이전 계정에서 읽던 결과가 새 계정의 링을 덮지 않는다
+    @Test func aLateResultOfThePreviousAccountNeverOverwritesTheNewAccountsRing() async {
+        let railDone = InMemoryRailDoneStore()
+        railDone.save(RailDoneMarks(issues: [Fx.issue(141): Date()], owner: SampleData.userID))
+        let base = X().make(railDone: railDone)
+        let gate = Gate()
+        let other = Fx.action(Fx.Seed(number: 141, title: "The previous account's issue", state: .done, dueOffset: nil, projects: [Fx.taskforce]))
+        base.shell.lookupFinishedIssue = { _ in
+            await gate.wait()
+            return .finished(other)
+        }
+        base.shell.update(Self.nextDay)
+        try? await Task.sleep(for: .milliseconds(30))
+        // 계정이 B로 바뀌고, B도 141이 끝났다 (오늘 끝난 일에서는 곧 빠진다)
+        base.shell.accountChanged(UUID())
+        base.shell.update(Fx.snapshot(seeds: Fx.seeds))
+        base.shell.update(Fx.snapshot(seeds: Fx.seeds.filter { $0.number != 141 } + [Self.finishedIssue]))
+        base.shell.update(Self.nextDay)
+        #expect(issueRing(base.shell)?.title == Self.finishedIssue.title, "B의 링은 B가 본 모습이다")
+        gate.open()
+        try? await Task.sleep(for: .milliseconds(50))
+        #expect(issueRing(base.shell)?.title == Self.finishedIssue.title, "이전 계정에서 읽던 결과가 늦게 와도 B의 링을 덮지 않는다")
+    }
+
+    /// 목록이 아직 없으면(읽는 중 · 오프라인 · 실패) 모든 표시가 목록에 없어 보인다: 그때는 읽지 않는다 (불필요한 읽기 · 요청 폭주를 막는다)
+    @Test func noMarkIsReadWhileThereIsNoListYet() async {
+        let railDone = InMemoryRailDoneStore()
+        railDone.save(RailDoneMarks(issues: [Fx.issue(138): Date()], owner: SampleData.userID))
+        let base = X().make(railDone: railDone)
+        let asked = Asked()
+        base.shell.lookupFinishedIssue = { id in
+            asked.record(id)
+            return .unknown
+        }
+        for load in [WorkLoad.loading, .offline, .failed] { base.shell.update(Fx.snapshot(seeds: [], load: load)) }
+        try? await Task.sleep(for: .milliseconds(40))
+        #expect(asked.count == 0 && railDone.load().issues[Fx.issue(138)] != nil)
+        // 목록이 오면 그때 읽는다
+        base.shell.update(Self.todayWithout138)
+        #expect(await until { asked.count == 1 })
+    }
+
+    @Test func aMarkIsReadOnlyWhenTheShellKeepsMarksUntilOpened() async {
+        // 새 Issues 화면이 없는 셸(노치 레일)은 표시를 열 때까지 두지 않는다 (3초): 목록에서 빠진 표시를 이슈로 읽지 않는다
+        let shell = EdgeShellModel(schedule: { _, _ in EdgeTimer() }, chatsEnabled: true, windowsEnabled: true)
+        var asked = 0
+        shell.lookupFinishedIssue = { _ in
+            asked += 1
+            return .unknown
+        }
+        shell.update(Fx.snapshot(seeds: Fx.seeds))
+        shell.update(Fx.snapshot(seeds: Fx.seeds.filter { $0.number != 141 } + [Self.finishedIssue]))
+        #expect(issueRing(shell)?.kind == .done, "3초 모드에서도 방금 끝난 링은 있다 (표시가 쌓여 있다)")
+        // 그 표시가 아직 안 지워졌는데 이슈가 어느 목록에도 없다
+        shell.update(Self.nextDay)
+        try? await Task.sleep(for: .milliseconds(30))
+        #expect(asked == 0)
     }
 
     // MARK: 끝남 표시의 주인 계정 (보안 P3-1)
@@ -269,6 +466,59 @@ struct EdgeSessionsTests {
         #expect(railDone.load() == RailDoneMarks(owner: SampleData.userID), "저장본도 비우고 이 계정을 주인으로 적는다")
         base.shell.update(Fx.snapshot(seeds: Fx.seeds.filter { $0.number != 141 } + [Self.finishedIssue]))
         #expect(issueRing(base.shell) == nil, "이슈 표시도 버렸다: 레일에 없던 일이 끝났다고 초록을 띄우지 않는다")
+    }
+
+    /// 계정이 곧바로 A에서 B로 바뀐다 (로그아웃 없이): "떠남"(저장본 비움)과 "계정을 앎"(주인 적기)이 어느 순서로 와도 B의 표시에는 B의 도장이 찍힌다
+    /// (도장이 늦게 온 떠남에 지워져 다음에 켰을 때 B의 표시가 통째로 버려지는 일이 없다)
+    @Test func aDirectAccountSwitchStampsTheNewOwnerWhicheverOrderTheLeaveAndTheChangeArrive() async {
+        final class Who: @unchecked Sendable { var id = SampleData.userID }
+        for leaveFirst in [true, false] {
+            let who = Who()
+            let b = UUID()
+            let railDone = InMemoryRailDoneStore()
+            let doneStore = InMemoryClaudeAppDoneStore()
+            let script = DeskScript()
+            let scope = AccountScope(currentAccount: { who.id })
+            let desktop = ClaudeAppSessionsModel(poll: { script.poll() }, scope: scope, done: doneStore)
+            let base = X().make(sessions: .basic, desktop: desktop, railDone: railDone, scope: scope)
+            let name = "leaveFirst \(leaveFirst)"
+            // A의 표시: 데스크톱 · Taskforce 세션 · 이슈
+            script.sessions = [Self.live(10, .busy)]
+            await desktop.pollOnce()
+            script.sessions = [Self.live(10, .idle)]
+            await desktop.pollOnce()
+            base.shell.update(Fx.snapshot(seeds: Fx.seeds))
+            base.shell.update(Fx.snapshot(seeds: Fx.seeds.filter { $0.number != 141 } + [Self.finishedIssue]))
+            #expect(railDone.load().owner == SampleData.userID && doneStore.owner == SampleData.userID, Comment(rawValue: name))
+            // 곧바로 B로 바뀐다
+            who.id = b
+            if leaveFirst {
+                scope.accountLeft()
+                base.shell.accountChanged(b)
+            } else {
+                base.shell.accountChanged(b)
+                scope.accountLeft()
+            }
+            #expect(railDone.load().issues.isEmpty && doneStore.load().isEmpty, Comment(rawValue: "\(name): A의 표시는 B에게 남지 않는다"))
+            // B의 표시: 이슈 · Taskforce 세션 · 데스크톱
+            base.shell.update(Fx.snapshot(seeds: Fx.seeds))
+            base.shell.update(Fx.snapshot(seeds: Fx.seeds.filter { $0.number != 141 } + [Self.finishedIssue]))
+            #expect(railDone.load().issues[Fx.issue(141)] != nil && railDone.load().owner == b, Comment(rawValue: "\(name): 이슈 표시를 쓰자마자 B의 도장이 있다 (세션 표시가 대신 찍어 주기 전에)"))
+            base.gateway.sessions = .basic
+            await base.issues.sessions.refresh()
+            base.gateway.sessions = .finished
+            await base.issues.sessions.refresh()
+            script.sessions = [Self.live(10, .busy)]
+            await desktop.pollOnce()
+            script.sessions = [Self.live(10, .idle)]
+            await desktop.pollOnce()
+            #expect(railDone.load().issues[Fx.issue(141)] != nil && railDone.load().sessions[Fx.session(1)] != nil && doneStore.load()[Self.id(10)] != nil, Comment(rawValue: "\(name): B의 표시가 저장됐다"))
+            #expect(railDone.load().owner == b && doneStore.owner == b, Comment(rawValue: "\(name): 모두 B의 도장이 찍혀 있다"))
+            // 다시 켠다: B로 로그인하면 B의 표시는 남는다
+            let relaunched = X().make(signedIn: false, railDone: railDone)
+            relaunched.shell.accountChanged(b)
+            #expect(railDone.load().issues[Fx.issue(141)] != nil && railDone.load().sessions[Fx.session(1)] != nil, Comment(rawValue: "\(name): 다시 켜도 남는다"))
+        }
     }
 
     @Test func marksOfThisAccountSurviveALaterLaunchOfTheShell() async {
@@ -366,6 +616,36 @@ struct EdgeSessionsTests {
         shell.onChats = { chats += 1 }
         shell.pressControl(.chats)
         #expect(chats == 1 && shell.controls == [.allWork, .chats, .more], "노치 레일의 Chats는 지금 그대로다")
+    }
+
+    /// 노치 레일의 Projects(All work) 칸은 목록이 그대로일 때만 닫는다: 고른 행 · 검색어 · 필터가 있으면 옛 동작대로 그것을 비우고 목록을 보인다
+    @Test func theOldNotchRailClosesProjectsOnlyWhenNoRowIsSelectedAndNoSearchOrFilterIsActive() {
+        let shell = EdgeShellModel(schedule: { _, _ in EdgeTimer() }, chatsEnabled: true, windowsEnabled: true)
+        // 고른 행이 있다
+        shell.open(itemID: UUID())
+        #expect(shell.panelOpen && shell.currentID != nil)
+        shell.pressControl(.allWork)
+        #expect(shell.panelOpen && shell.view == .allWork && shell.currentID == nil, "고른 행을 비우고 목록을 보인다 (닫지 않는다)")
+        shell.pressControl(.allWork)
+        #expect(!shell.panelOpen, "목록이 그대로이면 닫는다")
+        // 검색어가 있다
+        shell.openAllWork()
+        shell.setFilter(WorkFilter(query: "deck"))
+        shell.pressControl(.allWork)
+        #expect(shell.panelOpen && shell.workFilter == WorkFilter(), "검색어를 비우고 목록을 보인다")
+        shell.pressControl(.allWork)
+        #expect(!shell.panelOpen)
+        // 필터가 있다
+        shell.openAllWork()
+        shell.setFilter(WorkFilter(project: .ungrouped, status: .waiting))
+        shell.pressControl(.allWork)
+        #expect(shell.panelOpen && shell.workFilter == WorkFilter(), "필터를 비우고 목록을 보인다")
+        // 필터 카드가 열려 있다 (필터는 비었다): 목록이 그대로가 아니다 — 카드를 닫고 목록을 보인다
+        shell.setFiltersOpen(true)
+        shell.pressControl(.allWork)
+        #expect(shell.panelOpen && !shell.filtersOpen, "열린 필터 카드를 닫고 목록을 보인다")
+        shell.pressControl(.allWork)
+        #expect(!shell.panelOpen)
     }
 
     @Test func thePanelKeysToggleTheirPanelTooAndCommandThreeIsGone() async throws {
