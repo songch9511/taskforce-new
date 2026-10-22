@@ -433,10 +433,9 @@ struct SessionViewMacTests {
         tail.showEarlier()
         #expect(tail.window == 64 << 10)
         tail.showEarlier()
+        #expect(tail.window == 256 << 10, "16 KiB → 64 KiB → 256 KiB (보안 P3: 상한은 256 KiB)")
         tail.showEarlier()
-        #expect(tail.window == 1 << 20)
-        tail.showEarlier()
-        #expect(tail.window == 1 << 20, "상한을 넘지 않는다")
+        #expect(tail.window == 256 << 10, "상한을 넘지 않는다")
         #expect(await eventually { tail.state == .unavailable })
         let before = windows.seen.count
         tail.retry()

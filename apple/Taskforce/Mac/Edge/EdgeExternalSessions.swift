@@ -339,7 +339,9 @@ extension EdgeShellModel {
         let reader = BackgroundTaskTail(claudeDirectory: NSHomeDirectory() + "/.claude")
         let taskID = task.id
         let kind = task.kind
-        return BackgroundTaskTailModel(taskID: taskID, read: { window in reader.read(sessionID: sessionID, cwd: cwd, taskID: taskID, kind: kind, window: window) })
+        return BackgroundTaskTailModel(taskID: taskID, update: { window, cursor in
+            reader.update(sessionID: sessionID, cwd: cwd, taskID: taskID, kind: kind, window: window, since: cursor)
+        })
     }
 }
 

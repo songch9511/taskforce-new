@@ -104,6 +104,13 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
             windowsEnabled: windows, issues: chat?.issues, externalSessions: externalSessions, desktopSessions: desktop?.sessions,
             railDone: chat?.issues != nil ? doneStores.rail : nil, claudeAppOpened: desktop?.opened
         )
+        // 세션 보기가 이 Mac에 두는 것(열어 본 시각 저장본 · 일 목록 판)은 계정과 함께 간다 (보안 P3-1): 로그인이 바뀔 때 셸이, 계정이 기기를 떠날 때(로그아웃 · 세션 만료 · 계정 삭제) 계정 경계가 비운다
+        let backgroundSessions = BackgroundTaskAccount(openStore: doneStores.backgroundOpen, board: chat?.backgroundBoard ?? .shared)
+        shell.backgroundSessions = backgroundSessions
+        chat?.scope.onLeft {
+            backgroundSessions.leave()
+            SessionMarkdownCache.shared.removeAll()
+        }
         rail = EdgeRailPanelController(shell: shell)
         panel = EdgePanelController(shell: shell, chat: chat)
         claudePanel = shell.desktop != nil ? EdgeClaudeAppPanelController(shell: shell, backgroundOpen: doneStores.backgroundOpen) : nil

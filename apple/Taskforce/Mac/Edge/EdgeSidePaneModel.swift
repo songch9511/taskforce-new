@@ -43,16 +43,16 @@ enum SidePaneLayout {
 @Observable
 final class SessionSidePaneModel {
     /// 일 목록 (쓰는 쪽이 먹인다)
-    var tasks = BackgroundTaskList()
+    var tasks = BackgroundTaskList() { didSet { windowMayHaveChanged() } }
     /// 패널 왼쪽 끝에서 화면 왼쪽 끝까지의 여유 (컨트롤러가 창 자리에서 잰다). 모르면 넉넉하다고 본다
-    var room: CGFloat = .greatestFiniteMagnitude
+    var room: CGFloat = .greatestFiniteMagnitude { didSet { windowMayHaveChanged() } }
 
-    private(set) var expanded = false
+    private(set) var expanded = false { didSet { windowMayHaveChanged() } }
     private(set) var selectedID: String?
     /// 이 세션의 목록을 마지막으로 열어 본 시각 (이 Mac에 저장)
-    private(set) var openedAt: Date?
+    private(set) var openedAt: Date? { didSet { windowMayHaveChanged() } }
     /// 세션이 닫힌 때 (Claude에서 닫음): 그때까지 돌던 일은 Stopped다
-    private(set) var closedAt: Date?
+    private(set) var closedAt: Date? { didSet { windowMayHaveChanged() } }
     /// 열린 일의 출력 꼬리 (일을 누르면 만들고, 뒤로 · 접으면 멈추고 버린다). 못 읽는 세션이면 nil
     private(set) var tail: BackgroundTaskTailModel?
     /// 소유자가 준다: 그 일의 출력 꼬리 읽기를 만든다 (이 Mac의 기록 · 임시 폴더에서). 없으면 일을 눌러도 꼬리는 못 읽음이다
@@ -67,16 +67,39 @@ final class SessionSidePaneModel {
         self.clock = clock
     }
 
+    /// 옆줄이 창에 요구하는 폭(`windowExtra`)이 바뀌었다: 컨트롤러가 **그 자리에서** 창 틀을 맞춘다 (모델이 바뀐 바로 그 호출 안에서: 다음 루프 · 관찰의 한 박자를 기다리면 내용이 낡은 창에 잠깐 잘리거나 쏠린다)
+    @ObservationIgnored var onWindowChange: (() -> Void)?
+    @ObservationIgnored private var notifiedExtra: CGFloat = 0
+    @ObservationIgnored private var batching = 0
+
+    private func windowMayHaveChanged() {
+        guard batching == 0 else { return }
+        let extra = windowExtra
+        guard extra != notifiedExtra else { return }
+        notifiedExtra = extra
+        onWindowChange?()
+    }
+
+    /// 한 번에 여러 값을 바꾸는 동안은 중간 폭으로 창을 맞추지 않는다 (끝난 뒤 한 번)
+    private func batched(_ body: () -> Void) {
+        batching += 1
+        body()
+        batching -= 1
+        windowMayHaveChanged()
+    }
+
     /// 다른 세션으로 바뀌었다: 그 세션의 열어 본 시각을 읽고 접힌 채로 시작한다
     func attach(session key: String?) {
         guard key != sessionKey else { return }
         sessionKey = key
-        openedAt = key.flatMap { store.openedAt(session: $0) }
-        expanded = false
-        dropTail()
-        selectedID = nil
-        closedAt = nil
-        tasks = BackgroundTaskList()
+        batched {
+            openedAt = key.flatMap { store.openedAt(session: $0) }
+            expanded = false
+            dropTail()
+            selectedID = nil
+            closedAt = nil
+            tasks = BackgroundTaskList()
+        }
     }
 
     private func dropTail() {
@@ -155,7 +178,10 @@ final class SessionSidePaneModel {
     }
 }
 
-/// 한 일의 출력 꼬리 상태 (DZ v2 E10): 열려 있는 동안 1초마다 이어 읽는다 (도는 일만. 끝난 일은 한 번 읽고 멈춘다). 읽기는 메인 밖에서 한다. 글 · 경로를 로그에 남기지 않는다
+/// 한 일의 출력 꼬리 상태 (DZ v2 E10): 열려 있는 동안 1초마다 이어 읽는다 (도는 일만. 끝난 일은 한 번 읽고 멈춘다). 읽기는 메인 밖에서 한다. 글 · 경로를 로그에 남기지 않는다.
+/// - **읽기는 한 번에 하나다**: 읽는 중에 창을 넓히거나 Try again을 누르면 그 읽기가 끝나기를 기다렸다가 다시 읽는다 (같은 파일을 겹쳐 읽지 않는다)
+/// - **마지막으로 부탁한 것이 이긴다**: 창 · Try again이 바뀐 뒤에 끝난 옛 읽기의 결과는 버린다 (느린 옛 창의 결과가 새 창의 결과를 덮지 않는다)
+/// - 이어 읽기: 크기가 그대로면 화면을 건드리지 않고, 에이전트는 새로 붙은 줄만 받아 덧붙인다 (`BackgroundTaskTail.update`)
 @MainActor
 @Observable
 final class BackgroundTaskTailModel {
@@ -170,27 +196,45 @@ final class BackgroundTaskTailModel {
     }
 
     static let interval: Duration = .seconds(1)
-    /// "Show earlier"가 창을 넓히는 배수 (16 KiB → 64 KiB → 256 KiB → 1 MiB)
+    /// "Show earlier"가 창을 넓히는 배수 (16 KiB → 64 KiB → 256 KiB, 그 이상은 없다)
     static let widening = 4
 
     private(set) var state = State.loading
     private(set) var window: Int
     let taskID: String
-    @ObservationIgnored private let read: @Sendable (Int) -> BackgroundTaskTail.Result
+    @ObservationIgnored private let source: @Sendable (Int, BackgroundTaskTail.Cursor?) -> BackgroundTaskTail.Update
     @ObservationIgnored private let limits: BackgroundTaskTail.Limits
     @ObservationIgnored private var loop: Task<Void, Never>?
     /// 그 일이 아직 도는가 (끝난 일은 한 번 읽고 멈춘다). 열 때 소유자가 준다
     @ObservationIgnored private var isRunning: @MainActor () -> Bool = { false }
     @ObservationIgnored private let pause: @Sendable (Duration) async -> Void
+    /// 앞 읽기가 남긴 자리 · 에이전트의 지금까지 받은 줄 (이어 읽기가 덧붙인다)
+    @ObservationIgnored private var cursor: BackgroundTaskTail.Cursor?
+    @ObservationIgnored private var agentTurns: [ClaudeAppTurn] = []
+    @ObservationIgnored private var agentEarlier = false
+    /// 창 · Try again · 멈춤이 바뀔 때마다 오른다: 그 전에 시작한 읽기의 결과는 낡았다
+    @ObservationIgnored private var generation = 0
+    @ObservationIgnored private var reading = false
+    @ObservationIgnored private var readAgain = false
+    /// 멈췄다 (뒤로 · 접기 · 다른 일): 더 읽지 않고 읽는 중이던 결과도 버린다
+    @ObservationIgnored private var stopped = false
 
-    /// - read: 창 크기(바이트)를 받아 그 일의 꼬리를 읽는다 (메인 밖에서 불린다)
-    init(
+    /// - read: 창 크기(바이트)를 받아 그 일의 꼬리를 통째로 읽는다 (메인 밖에서 불린다). 이어 읽기는 하지 않는다
+    convenience init(
         taskID: String, limits: BackgroundTaskTail.Limits = .standard, read: @escaping @Sendable (Int) -> BackgroundTaskTail.Result,
+        pause: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+    ) {
+        self.init(taskID: taskID, limits: limits, update: { window, _ in .replace(read(window), nil) }, pause: pause)
+    }
+
+    /// - update: 창 크기와 앞 읽기의 자리를 받아 바뀐 것만 돌려준다 (메인 밖에서 불린다)
+    init(
+        taskID: String, limits: BackgroundTaskTail.Limits = .standard, update: @escaping @Sendable (Int, BackgroundTaskTail.Cursor?) -> BackgroundTaskTail.Update,
         pause: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     ) {
         self.taskID = taskID
         self.limits = limits
-        self.read = read
+        self.source = update
         self.pause = pause
         window = limits.tailBytes
     }
@@ -209,6 +253,7 @@ final class BackgroundTaskTailModel {
     func start(isRunning: @escaping @MainActor () -> Bool) {
         self.isRunning = isRunning
         guard loop == nil else { return }
+        stopped = false
         let pause = pause
         loop = Task { [weak self] in
             while !Task.isCancelled {
@@ -224,28 +269,77 @@ final class BackgroundTaskTailModel {
     func stop() {
         loop?.cancel()
         loop = nil
+        stopped = true
+        generation += 1
     }
 
     /// "Show earlier": 창을 넓혀 더 앞을 본다 (상한까지). 더 넓힐 수 없으면 아무 일도 없다
     func showEarlier() {
         guard window < limits.maxTailBytes else { return }
         window = min(window * Self.widening, limits.maxTailBytes)
+        generation += 1
         Task { await readOnce() }
     }
 
     /// Try again
     func retry() {
         state = .loading
+        generation += 1
+        cursor = nil
         Task { await readOnce() }
     }
 
+    /// 한 번 읽는다. 이미 읽는 중이면 그 읽기가 끝난 뒤 한 번 더 읽도록 맡기고 돌아온다 (읽기는 겹치지 않는다)
     func readOnce() async {
-        let read = read
-        let window = window
-        let result = await Task.detached(priority: .userInitiated) { read(window) }.value
-        guard !Task.isCancelled else { return }
-        let next = Self.state(for: result, running: isRunning())
-        if next != state { state = next }
+        guard !stopped else { return }
+        guard !reading else {
+            readAgain = true
+            return
+        }
+        reading = true
+        defer { reading = false }
+        repeat {
+            readAgain = false
+            let started = generation
+            let source = source
+            let window = window
+            let saved = cursor
+            let update = await Task.detached(priority: .userInitiated) { source(window, saved) }.value
+            guard !Task.isCancelled else { return }
+            // 읽는 사이 창 · Try again · 멈춤이 바뀌었다: 낡은 결과는 버린다 (멈춘 것이면 다시 읽지 않고, 아니면 바뀐 값으로 다시 읽는다)
+            guard started == generation else {
+                readAgain = !stopped
+                continue
+            }
+            apply(update)
+        } while readAgain
+    }
+
+    private func apply(_ update: BackgroundTaskTail.Update) {
+        switch update {
+        case .unchanged:
+            break
+        case .replace(let result, let next):
+            cursor = next
+            if case .output(.agent(let turns, let earlier)) = result {
+                agentTurns = turns
+                agentEarlier = earlier
+            } else {
+                agentTurns = []
+                agentEarlier = false
+            }
+            let value = Self.state(for: result, running: isRunning())
+            if value != state { state = value }
+        case .append(let turns, let next):
+            cursor = next
+            guard !turns.isEmpty else { return }
+            agentTurns += turns
+            if agentTurns.count > limits.maxTurns {
+                agentTurns.removeFirst(agentTurns.count - limits.maxTurns)
+                agentEarlier = true
+            }
+            state = .agent(agentTurns, hasEarlier: agentEarlier)
+        }
     }
 
     deinit { loop?.cancel() }

@@ -1312,6 +1312,9 @@ public actor ClaudeCodeProcess: AgentProcess {
             lineage.forget()
             if let lockFile = sessionLockFile(spawn.agentSessionID) { ClaudeSessionLock.release(lockFile, spawnID: spawn.id) }
         }
+        // 끝을 증명했다: 이 spawn이 돌리던 백그라운드 일도 함께 끝났다 (구성원까지 끝나야 끝이다). 끝 알림이 오지 않은 일은 영영 Running으로 남으므로
+        // 이 세션의 아직 도는 줄 알았던 일을 지금 멈춘 것으로 한다 (스냅샷 "도는 일 없음"). 끝 알림이 이미 온 일은 그대로다. 이 Mac의 판에만 쓴다
+        backgroundTasks.apply(.snapshot(runningTaskIDs: []), session: spawn.agentSessionID)
         let actions = spawn.mapper.finish()
         ClaudeCodeLaunch.removeConfig(spawn.files)
         hookServer?.unregister(nonce: spawn.nonce)

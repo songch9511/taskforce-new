@@ -122,12 +122,15 @@ public enum ClaudeMapperAction: Equatable, Sendable {
     case backgroundTask(BackgroundTaskEvent)
 }
 
-/// stream-json 사건 → 형태 있는 사건 + 자체 점검 ②③④⑥ (순수, I/O 0). 처음 `result` 뒤의 사건은 무시한다 (비어 있지 않은 resume가 턴을 하나 더 돌린 r2-cc2mcp-2)
+/// stream-json 사건 → 형태 있는 사건 + 자체 점검 ②③④⑥ (순수, I/O 0). 처음 `result` 뒤의 사건은 무시한다 (비어 있지 않은 resume가 턴을 하나 더 돌린 r2-cc2mcp-2).
+/// 단 하나의 예외: 처음 `result` 뒤에도 CLI는 백그라운드 일이 끝날 때까지 `task_*` · `background_tasks_changed`를 낸다 (실측 2.1.308). 그 줄들은 **이 Mac의 판에만** 가는 사건(`backgroundTask`)이라 계속 반영한다
 public struct ClaudeEventMapper: Sendable {
     public let config: ClaudeMapperConfig
     private var sessionStartOK = false
     private var accepted: Bool
     public private(set) var terminal = false
+    /// 끝난 까닭이 `result`다 (자체 점검 실패 · 닫기로 멈춘 것이 아니다): 이때만 뒤의 task 줄을 판에 반영한다
+    private var endedByResult = false
     private var interruptRequested = false
     private var authFailed = false
     private var rateLimited = false
@@ -171,7 +174,11 @@ public struct ClaudeEventMapper: Sendable {
     }
 
     public mutating func consume(_ event: ClaudeStreamEvent, facts: ClaudeSpawnFacts, now: Date) -> [ClaudeMapperAction] {
-        guard !terminal else { return [] }
+        guard !terminal else {
+            // 서버로 가는 사건 · 진행 신호 · 자체 점검은 끝났다. 판에만 가는 일의 줄은 계속 반영한다
+            guard endedByResult, case .task(let payload?) = event else { return [] }
+            return backgroundActions(payload, now: now)
+        }
         if case .close(let requestID) = config.mode { return consumeClosing(event, requestID: requestID) }
         var out: [ClaudeMapperAction] = []
         switch event {
@@ -270,6 +277,7 @@ public struct ClaudeEventMapper: Sendable {
             out += flushText() + flushArtifacts()
             out.append(.resultSeen)
             terminal = true
+            endedByResult = true
             if info.isDeferred {
                 if let id = info.deferredToolUseID, let pending = facts.pending, pending.id == id {
                     confirmed = pending
@@ -395,11 +403,10 @@ public struct ClaudeEventMapper: Sendable {
         }
     }
 
-    /// 이름: **모델이 쓴 글만**. 에이전트는 설명을 늘 모델이 쓴다. 그 밖(명령 등)은 CLI가 모델이 안 쓰면 명령 글 자체를 description 자리에 주므로,
-    /// 그 도구 호출의 `input.description`(모델이 쓴 글)과 같다고 확인될 때만 이름으로 쓴다. 확인할 수 없으면 nil (화면은 도구 이름을 보인다)
+    /// 이름: **모델이 쓴 글만**. CLI는 모델이 안 쓰면 명령 글 자체를 description 자리에 주므로, 그 도구 호출의 `input.description`(모델이 쓴 글)과 같다고 확인될 때만 이름으로 쓴다.
+    /// 에이전트도 같다 (보안 P3-6: 모델이 늘 쓴다는 보장에 기대지 않는다. 프롬프트가 그 자리에 오면 이름이 아니다). 확인할 수 없으면 nil (화면은 도구 이름을 보인다)
     private func vettedName(_ description: String?, tool: String?, kind: BackgroundTaskKind) -> String? {
         guard let description, !description.isEmpty else { return nil }
-        if kind == .agent { return description }
         guard let tool, let written = toolDescriptions[tool], written == description else { return nil }
         return description
     }

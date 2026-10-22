@@ -117,7 +117,8 @@ private struct MessageHugsTextKey: EnvironmentKey {
 }
 
 extension EnvironmentValues {
-    fileprivate var messageHugsText: Bool {
+    /// 앱의 글 뷰(`SessionMarkdownView`)도 이 값을 따른다: 말풍선 안에서는 글 폭에 맞춘다
+    public var messageHugsText: Bool {
         get { self[MessageHugsTextKey.self] }
         set { self[MessageHugsTextKey.self] = newValue }
     }

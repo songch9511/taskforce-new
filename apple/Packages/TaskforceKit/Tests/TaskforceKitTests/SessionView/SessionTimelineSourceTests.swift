@@ -111,6 +111,42 @@ struct SessionTimelineSourceTests {
         #expect(data.items.map(\.id) == [id(1), "a", id(2), id(3), "b", id(4)])
     }
 
+    /// 리뷰 P3: 단계는 **사용자의 말마다 정한 창** `[말의 시각 − 여유, …)`에 든 턴의 것이다. 서버 시계가 이 Mac보다 조금 앞서면 말 바로 뒤의 단계가 말보다 이른 시각으로 보인다 (여유 안이면 그 말의 턴)
+    @Test func aStepJustBeforeTheNextAskBelongsToThatAskNotToTheTurnBefore() {
+        let data = SessionTimelineSource.chat(
+            [chat(1, user: true, 0), chat(2, user: false, 30), chat(3, user: true, 100), chat(4, user: false, 160)],
+            steps: [turn("skew", .tool(name: "Read", description: nil), 97), turn("later", .tool(name: "Grep", description: nil), 120)]
+        )
+        #expect(data.items.map(\.id) == [id(1), id(2), id(3), "skew", "later", id(4)], "97초는 100초의 말 − 5초 창 안이다: 다음 턴의 첫 단계")
+        #expect(data.items.map(\.role) == [.user, .assistant, .user, .step, .step, .assistant])
+    }
+
+    @Test func theWindowEdgeIsInclusiveAndAStepBeforeItStaysInTheEarlierTurn() {
+        let asks = [chat(1, user: true, 0), chat(2, user: false, 30), chat(3, user: true, 100), chat(4, user: false, 160)]
+        let before = SessionTimelineSource.chat(asks, steps: [turn("x", .tool(name: "Read", description: nil), 94.9)])
+        #expect(before.items.map(\.id) == [id(1), id(2), "x", id(3), id(4)], "94.9초: 앞 턴의 끝 (답 뒤)")
+        let edge = SessionTimelineSource.chat(asks, steps: [turn("y", .tool(name: "Read", description: nil), 95)])
+        #expect(edge.items.map(\.id) == [id(1), id(2), id(3), "y", id(4)], "95초 = 100 − 5: 다음 턴")
+    }
+
+    @Test func aStepBetweenTheAnswerAndTheNextWindowStaysAfterTheAnswerOfItsOwnTurn() {
+        let data = SessionTimelineSource.chat(
+            [chat(1, user: true, 0), chat(2, user: false, 30), chat(3, user: true, 100), chat(4, user: false, 160)], steps: [turn("tail", .tool(name: "Bash", description: nil), 60)]
+        )
+        #expect(data.items.map(\.id) == [id(1), id(2), "tail", id(3), id(4)])
+    }
+
+    @Test func aStepAfterAnEarlierAnswerStillLetsThatTurnCopyItsAnswer() {
+        let data = SessionTimelineSource.chat([chat(1, user: true, 0), chat(2, user: false, 30), chat(3, user: true, 100)], steps: [turn("tail", .tool(name: "Bash", description: nil), 60)])
+        let entries = SessionTimeline.build(data.items, state: .finished)
+        #expect(entries.contains { if case .footer(let footer) = $0 { footer.copyText == "answer 2" } else { false } }, "답 뒤에 단계가 붙어도 그 턴의 복사는 남는다")
+    }
+
+    @Test func aChatThatStartsWithoutAnAskAnchorsTheFirstWindowAtItsFirstMessage() {
+        let data = SessionTimelineSource.chat([chat(1, user: false, 50), chat(2, user: true, 100), chat(3, user: false, 130)], steps: [turn("a", .tool(name: "Read", description: nil), 46), turn("b", .tool(name: "Read", description: nil), 96)])
+        #expect(data.items.map(\.id) == ["a", id(1), id(2), "b", id(3)], "46은 첫 글(50) − 5 창 안이라 첫 덩어리(같은 시각이면 답 앞), 96은 다음 말(100) 창")
+    }
+
     @Test func stepsOlderThanTheChatAreLeftOutSoAnAdoptedSessionsHistoryDoesNotFloodThePanel() {
         let data = SessionTimelineSource.chat(
             [chat(1, user: true, 1000), chat(2, user: false, 1060)],

@@ -36,6 +36,7 @@ struct SessionPanelFrame<Panel: View>: View {
                 side(overlaying: false)
                     .frame(width: plan.outside)
                     .frame(maxHeight: .infinity)
+                    .transition(.opacity)
             }
             ZStack(alignment: .leading) {
                 HStack(spacing: 0) {
@@ -51,6 +52,7 @@ struct SessionPanelFrame<Panel: View>: View {
                     side(overlaying: true)
                         .frame(width: SidePaneLayout.paneWidth)
                         .frame(maxHeight: .infinity)
+                        .transition(.opacity)
                 }
             }
             .frame(width: EdgePanelMetrics.width)
@@ -63,10 +65,20 @@ struct SessionPanelFrame<Panel: View>: View {
             }
             .clipShape(SidePaneShapes.panel(attachedLeading: attached))
         }
-        .animation(TFMotion.move(TFMotion.panelMove, reduceMotion: reduceMotion), value: pane.expanded)
+        // 옆줄이 처음 나타나거나 사라질 때만 불투명도로 (그때 레이아웃에서 바뀌는 것은 옆줄이 서는 자리뿐이다). 폭 · 높이 · 안쪽 여백은 움직이지 않는다 (DZ v2 E8): 창 틀은 모델이 바뀐 자리에서 바로 맞춰지고 내용은 처음부터 최종 크기다
+        .animation(TFMotion.ease(TFMotion.panelFade), value: Appearance(attached: attached, overlay: plan.overlay))
+        // 창이 모델을 따라오지 못한 한 박자에도 패널(레일 쪽 가장자리)은 제자리다: 오른쪽 끝에 붙인다
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
     }
 
-    /// 바깥의 옆줄 한 겹 (접힘이면 띠, 펼침이면 옆줄): 면은 같고 안만 바뀐다
+    /// 옆줄 한 겹이 나타나거나 사라지는 경우 (바깥 옆줄 · 자리가 모자랄 때 덮는 펼침)
+    private struct Appearance: Equatable {
+        var attached: Bool
+        var overlay: Bool
+    }
+
+    /// 바깥의 옆줄 한 겹 (접힘이면 띠, 펼침이면 옆줄): 면은 같고 안만 바뀐다.
+    /// 접힘 ↔ 펼침의 움직임(불투명도 · 이동 · 크기 조정)은 이 안쪽 두 겹에만 건다: 바깥 틀의 폭은 애니메이션이 닿지 않는다
     private func side(overlaying: Bool) -> some View {
         SidePaneSurface(overlaying: overlaying) {
             ZStack {
@@ -78,6 +90,7 @@ struct SessionPanelFrame<Panel: View>: View {
                         .transition(.opacity)
                 }
             }
+            .animation(TFMotion.move(TFMotion.panelMove, reduceMotion: reduceMotion), value: pane.expanded)
         }
     }
 }

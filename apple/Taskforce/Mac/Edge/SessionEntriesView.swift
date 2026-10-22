@@ -28,24 +28,26 @@ struct SessionEntriesView<Item: View>: View {
     }
 
     var body: some View {
+        let footerIDs = Set(entries.compactMap { entry -> String? in if case .footer(let footer) = entry { footer.id } else { nil } })
         LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
             ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
-                entryView(entry, index: index)
+                entryView(entry, index: index, footerIDs: footerIDs)
             }
         }
     }
 
     @ViewBuilder
-    private func entryView(_ entry: SessionEntry, index: Int) -> some View {
+    private func entryView(_ entry: SessionEntry, index: Int, footerIDs: Set<String>) -> some View {
         let gap = Self.gap(before: entry, at: index)
         switch entry {
         case .item(let id):
             item(id)
                 .padding(.top, gap)
                 .onHover { inside in
-                    // 이 답 밑에 줄이 있으면 답 위 호버가 줄의 복사 아이콘을 드러낸다
-                    guard case .footer(let footer)? = index + 1 < entries.count ? entries[index + 1] : nil, footer.id == "footer-\(id)" else { return }
-                    if inside { state.hoveredFooter = footer.id } else if state.hoveredFooter == footer.id { state.hoveredFooter = nil }
+                    // 이 답의 줄(턴의 끝에 있다: 답 뒤에 이벤트 줄 · 단계가 붙어도 같은 이름이다)이 있으면 답 위 호버가 줄의 복사 아이콘을 드러낸다
+                    let footer = "footer-\(id)"
+                    guard footerIDs.contains(footer) else { return }
+                    if inside { state.hoveredFooter = footer } else if state.hoveredFooter == footer { state.hoveredFooter = nil }
                 }
         case .steps(let run):
             if run.isGroup, state.isOpen(run) {

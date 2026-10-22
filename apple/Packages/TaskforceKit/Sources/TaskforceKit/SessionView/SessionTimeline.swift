@@ -146,10 +146,15 @@ public enum SessionTimeline {
             }
             let elapsed = SessionTime.elapsed(from: start, to: turn.compactMap(\.time).max())
             let workedFor = elapsed.flatMap { $0 >= SessionTime.hideBelow ? $0 : nil }
+            // 복사할 글 = 턴의 **마지막 답** (답 뒤에 이벤트 줄 · 단계가 붙어도 사라지지 않는다). 줄은 턴의 끝에 서고, 이름은 복사를 가진 답을 따른다 (그 답 위의 호버가 줄을 드러낸다)
             var copy: String?
-            if last.role == .assistant, let text = last.text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { copy = text }
+            var owner = last
+            if let answer = turn.last(where: { $0.role == .assistant }), let text = answer.text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                copy = text
+                owner = answer
+            }
             if workedFor != nil || copy != nil {
-                entries.append(.footer(SessionFooter(id: "footer-\(last.id)", workedFor: workedFor, copyText: copy)))
+                entries.append(.footer(SessionFooter(id: "footer-\(owner.id)", workedFor: workedFor, copyText: copy)))
             }
         }
         return entries

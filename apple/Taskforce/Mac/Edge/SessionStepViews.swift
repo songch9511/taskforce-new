@@ -55,18 +55,30 @@ final class SessionStepsState {
 
     func isOpen(step id: String) -> Bool { openSteps.contains(id) }
 
-    /// 줄을 누른다: 닫혀 있으면 열고 본문을 읽는다 (읽기는 밖에서). 이미 읽은 본문은 다시 읽지 않는다
+    /// 줄을 누른다: 닫혀 있으면 열고 본문을 읽는다 (읽기는 밖에서). **완성된 본문(결과가 있다)만** 다시 읽지 않는다.
+    /// 읽지 못한 것(`none`)이나 결과가 아직 없던 것(그때 도구가 도는 중이었다)은 담아 두지 않는다: 다시 열면 다시 읽는다 (한 번 실패하면 영영 빈 줄로 남지 않게)
     func toggle(step id: String, load: @escaping (String) async -> ClaudeAppToolDetail?) {
         if openSteps.remove(id) != nil { return }
         openSteps.insert(id)
-        guard details[id] == nil else { return }
+        if case .loaded(let detail)? = details[id], detail.result != nil { return }
+        guard details[id] != .loading else { return }
+        if details[id] == nil { remember(id) }
         details[id] = .loading
-        remember(id)
         Task { [weak self] in
             let found = await load(id)
             guard let self, self.openSteps.contains(id) || self.details[id] == .loading else { return }
             self.details[id] = found.map(Detail.loaded) ?? Detail.none
         }
+    }
+
+    /// 다른 세션으로 바뀌었다: 줄 · 묶음 id는 세션 안에서만 겹치지 않는다 (기록 줄 위치 · 서버 글 id). 앞 세션의 열림 · 읽은 본문이 남아 다른 세션의 같은 id에 붙지 않게 모두 비운다
+    func reset() {
+        chosen = [:]
+        shownAll = []
+        openSteps = []
+        details = [:]
+        detailOrder = []
+        hoveredFooter = nil
     }
 
     private func remember(_ id: String) {
@@ -133,15 +145,25 @@ struct SessionStepRowView: View {
                 .overlay(alignment: .leading) {
                     if focused { RoundedRectangle(cornerRadius: TFRadius.sm, style: .continuous).strokeBorder(TFColor.borderAccent, lineWidth: 2).padding(.leading, -6) }
                 }
-                .accessibilityLabel(accessibilityName ?? line)
-                .accessibilityValue(failed ? SessionViewCopy.failed : "")
+                // 눌러 펴는 줄은 펼침 상태를 값으로 말한다 (aria-expanded에 해당). 실패는 이름에 붙는다 (값은 펼침 상태 하나만)
+                .accessibilityLabel(SessionAccessibility.name(accessibilityName ?? line, failed: failed))
+                .accessibilityValue(SessionAccessibility.state(expanded: isOpen))
                 .accessibilityAddTraits(.isButton)
         } else {
             row
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel(failed ? "\(line), \(SessionViewCopy.failed)" : line)
+                .accessibilityLabel(SessionAccessibility.name(line, failed: failed))
         }
     }
+}
+
+/// 세션 보기의 접근성 말 (뷰가 그대로 쓴다: 시험이 말을 고정한다). 접힘 · 펼침은 이름이 아니라 **값**이다 (VoiceOver가 "Collapsed" · "Expanded"로 읽는다)
+enum SessionAccessibility {
+    /// 접힘 · 펼침 값 (묶음 머리 · 눌러 펴는 줄 · 옆줄 띠 · 옆줄)
+    static func state(expanded: Bool) -> String { expanded ? SessionViewCopy.expanded : SessionViewCopy.collapsed }
+
+    /// 줄의 이름: 실패한 줄은 이름 끝에 ", Failed"
+    static func name(_ line: String, failed: Bool) -> String { failed ? "\(line), \(SessionViewCopy.failed)" : line }
 }
 
 /// 펼친 줄의 본문 (E4): Input · Result 두 코드 블록 (각 16 KiB, 결과가 아직 기록에 없으면 Result 블록이 없다). 줄 밑 4 · 블록 사이 8 · 아래 8
@@ -187,9 +209,10 @@ struct SessionFooterView: View {
     }
 }
 
-/// 도는 턴의 시계 줄 (E6): "Working · m:ss"가 초마다 올라간다 (말뿐: 아이콘 · 스피너 · 색 없음). 접근성은 초마다 읽지 않고 "Working"만
+/// 도는 턴의 시계 줄 (E6): "Working · m:ss"가 초마다 올라간다 (말뿐: 아이콘 · 스피너 · 색 없음). 접근성은 초마다 읽지 않고 "Working"만이고 시작할 때 한 번 알린다 (끝은 밑줄의 "Worked for"가 알린다)
 struct SessionClockView: View {
     let clock: SessionClock
+    @State private var announced = false
 
     var body: some View {
         TimelineView(.periodic(from: clock.since, by: 1)) { context in
@@ -203,6 +226,11 @@ struct SessionClockView: View {
         .frame(height: 18)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(SessionViewCopy.working)
+        .onAppear {
+            guard !announced else { return }
+            announced = true
+            AccessibilityNotification.Announcement(SessionViewCopy.working).post()
+        }
     }
 }
 #endif

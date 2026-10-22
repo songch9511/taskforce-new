@@ -22,12 +22,29 @@ final class EdgeSessionPanelPresentation {
     var localTarget: AgentLocalTranscriptTarget?
     /// 위로 올려 읽는 중이 아니다 (맨 아래를 따라간다)
     var scrollPinned = true
+    /// 본문이 다시 계산돼도 대화 · 단계가 그대로면 타임라인을 다시 만들지 않는다
+    @ObservationIgnored let timeline = SessionTimelineMemo<SessionPanelTimelineInput, SessionPanelTimeline>()
 
     init(backgroundOpen: any BackgroundTaskOpenStore = InMemoryBackgroundTaskOpenStore()) {
         pane = SessionSidePaneModel(store: backgroundOpen)
     }
 
     var contentHeight: CGFloat { headHeight + bodyHeight + footerHeight }
+
+    /// 지금 보는 세션 (같으면 아무 일도 없다)
+    private(set) var sessionKey: String?
+
+    /// 다른 세션을 연다: 옆줄이 그 세션의 것으로 바뀌고, 이 Mac 기록 연결을 끊고, 위로 올려 읽던 자리 · 열어 둔 줄 · 읽은 본문을 비운다 (줄 id는 세션 안에서만 겹치지 않는다)
+    func beginSession(_ key: String) {
+        guard key != sessionKey else { return }
+        sessionKey = key
+        scrollPinned = true
+        steps.reset()
+        timeline.reset()
+        pane.attach(session: key)
+        attachLocal(nil)
+        localTarget = nil
+    }
 
     /// 이 Mac의 기록 읽기를 붙인다 (다른 세션으로 바뀌면 앞 것은 멈춘다)
     func attachLocal(_ conversation: ClaudeAppConversation?) {
@@ -39,6 +56,28 @@ final class EdgeSessionPanelPresentation {
     /// 패널이 보이는 동안만 기록의 꼬리를 읽는다
     func followLocal() {
         if shown { local?.start() } else { local?.stop() }
+    }
+}
+
+/// Taskforce 패널 타임라인의 입력 (같으면 같은 타임라인): 서버 대화의 글 · 이 Mac 기록의 단계 · 진행 상태
+struct SessionPanelTimelineInput: Equatable {
+    var turns: [ChatTurn]
+    var steps: [ClaudeAppTurn]
+    var state: SessionRunState
+}
+
+/// Taskforce 패널의 타임라인: 줄 · 단계 · 글 찾기표 (서버 글 · 이 Mac 기록의 단계)
+struct SessionPanelTimeline {
+    let data: SessionTimelineData
+    let entries: [SessionEntry]
+    let turns: [String: ChatTurn]
+    let steps: [String: ClaudeAppTurn]
+
+    init(_ input: SessionPanelTimelineInput) {
+        data = SessionTimelineSource.chat(input.turns, steps: input.steps)
+        entries = SessionTimeline.build(data.items, state: input.state)
+        turns = Dictionary(input.turns.map { ($0.id.uuidString, $0) }, uniquingKeysWith: { first, _ in first })
+        steps = Dictionary(input.steps.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
     }
 }
 
@@ -117,24 +156,32 @@ struct SessionPanelView: View {
     /// 어댑터의 `task_*` 줄로 만든 일 목록(`BackgroundTaskBoard`)은 기록의 일 목록과 합쳐 옆줄에 보낸다 (둘 다 이 Mac 안에서만)
     private func followLocal(_ session: AgentSessionItem) async {
         let key = session.id.uuidString.lowercased()
-        presentation.pane.attach(session: key)
+        let presentation = presentation
+        let shell = shell
+        let runtime = runtime
+        presentation.beginSession(key)
         presentation.pane.setClosed(session.isClosed)
-        presentation.attachLocal(nil)
-        presentation.localTarget = nil
         // 꼬리 읽기는 이 Mac의 기록이 묶은 Claude 세션 id · 세션 cwd로만 (아직 모르면 못 읽음)
         presentation.pane.makeTail = { [shell, weak presentation] task in
             guard let target = presentation?.localTarget else { return BackgroundTaskTailModel(taskID: task.id, read: { _ in .unreadable }) }
             return shell.makeBackgroundTail(target.providerSessionID, target.cwd, task)
         }
-        var lookups = 0
+        let sessionID = session.id
+        let follower = SessionLocalFollower(
+            find: { await runtime.localTranscriptTarget(sessionID) }, isShown: { presentation.shown },
+            taskKey: { shell.openSessionItem?.lastTaskState.map { "\($0)" } },
+            onChange: { target in
+                presentation.localTarget = target
+                presentation.attachLocal(target.map { shell.makeConversation($0.providerSessionID, $0.cwd) })
+            }
+        )
+        let clock = ContinuousClock()
+        let started = clock.now
         var lastBoardVersion = -1
         var lastLocal: BackgroundTaskList?
         while !Task.isCancelled {
-            if presentation.localTarget == nil, lookups < Self.localLookups, let target = await runtime.localTranscriptTarget(session.id) {
-                presentation.localTarget = target
-                presentation.attachLocal(shell.makeConversation(target.providerSessionID, target.cwd))
-            }
-            lookups += 1
+            let elapsed = clock.now - started
+            await follower.tick(now: Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18)
             let board = runtime.backgroundBoard
             let local = presentation.local?.backgroundTasks
             if presentation.shown, board.version != lastBoardVersion || local != lastLocal {
@@ -146,9 +193,6 @@ struct SessionPanelView: View {
             try? await Task.sleep(for: .seconds(1))
         }
     }
-
-    /// 기록을 찾아보는 횟수 (1초 간격): 첫 턴이 끝나기 전에는 어댑터가 아직 묶지 않았다
-    static let localLookups = 30
 
     /// 머리 제목: "{세션 이름} — #{현재 이슈 번호}" (번호를 못 읽었거나 이슈가 정해지지 않으면 이름만, 지어내지 않는다)
     static func title(for session: AgentSessionItem, number: Int?) -> String {
@@ -248,14 +292,16 @@ struct SessionPanelView: View {
     /// 이 세션이 이 Mac에서 돌지 않았으면 단계 없이 말 · 시간 · 복사만이다 (서버 저장은 후속)
     @ViewBuilder
     private func entries(_ session: AgentSessionItem, conversationID: UUID) -> some View {
-        let turns = chat.turns(for: conversationID)
-        let data = SessionTimelineSource.chat(turns, steps: presentation.local?.turns ?? [])
-        let entries = SessionTimeline.build(data.items, state: SessionTimelineSource.runState(task: session.lastTaskState, closed: session.isClosed))
-        let byID = Dictionary(turns.map { ($0.id.uuidString, $0) }, uniquingKeysWith: { first, _ in first })
+        let input = SessionPanelTimelineInput(
+            turns: chat.turns(for: conversationID), steps: presentation.local?.turns ?? [],
+            state: SessionTimelineSource.runState(task: session.lastTaskState, closed: session.isClosed)
+        )
+        let timeline = presentation.timeline.value(for: input) { SessionPanelTimeline(input) }
+        let byID = timeline.turns
         let local = presentation.local
-        let localTurns = Dictionary((local?.turns ?? []).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let localTurns = timeline.steps
         SessionEntriesView(
-            entries: entries, steps: data.steps, state: presentation.steps,
+            entries: timeline.entries, steps: timeline.data.steps, state: presentation.steps,
             loadDetail: { stepID in
                 guard let local, let turn = localTurns[stepID] else { return nil }
                 return await local.detail(of: turn)
@@ -457,6 +503,8 @@ final class EdgeSessionPanelController {
         panel.contentView = hosting
         panel.setAccessibilityLabel("Session")
         wire(runtime)
+        // 옆줄이 바뀌면 창 틀을 그 자리에서 맞춘다 (관찰의 한 박자를 기다리지 않는다: 내용이 낡은 창에 잘리지 않게)
+        presentation.pane.onWindowChange = { [weak self] in self?.fit() }
     }
 
     /// 알약 동작 · Esc · 확인 카드 맞추기를 실제 연결에 잇는다 (OA D4a-3): 이 연결이 세션 route를 모르면(견본 · 시험용 가짜) 알약은 그려지지 않는다

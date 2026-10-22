@@ -368,6 +368,8 @@ final class EdgeShellModel {
     @ObservationIgnored var makeBackgroundTail: @MainActor (String, String?, BackgroundTask) -> BackgroundTaskTailModel = EdgeShellModel.liveBackgroundTail
     /// Esc가 먼저 닫을 옆줄이 있나 (꼬리 → 목록 → 접힘): Claude 세션 패널 컨트롤러가 채운다. 닫았으면 true
     @ObservationIgnored var onEscapeDesktopPane: () -> Bool = { false }
+    /// 세션 보기가 이 Mac에 두는 것(열어 본 시각의 저장본 · 일 목록 판)을 계정과 함께 보내는 곳 (보안 P3-1): 로그인이 바뀔 때 주인을 확정하고, 알던 계정이 떠나면 판을 비운다. 앱이 채운다
+    @ObservationIgnored var backgroundSessions: BackgroundTaskAccount?
     /// 지금 보이는 Claude 데스크톱 세션 (세션 id): 레일 링 · Sessions 줄을 눌러 연다. 메인 패널이 Sessions면 그 왼쪽 패널로, `.claudeApp` 화면이면 레일 옆 한 패널로 선다
     private(set) var desktopPanelID: String? {
         didSet { desktopPanelChanged() }
@@ -1591,6 +1593,9 @@ final class EdgeShellModel {
             orphanTried = [:]
             // 마지막으로 저장한 표시의 사본도 비운다: 남기면 새 계정이 같은 표시를 만들었을 때 "바뀌지 않았다"며 저장하지 않는다
             savedIssueDone = nil
+            // 세션 보기가 이 Mac에 둔 일 목록 판도 앞 계정의 것이다 (보안 P3-1)
+            backgroundSessions?.leave()
+            SessionMarkdownCache.shared.removeAll()
         }
         claimDoneStores(for: account)
         workFilter = WorkFilter()
@@ -1675,6 +1680,8 @@ final class EdgeShellModel {
             railDone.setOwner(account)
         }
         desktop?.adopt(account: account)
+        // 세션 보기의 열어 본 시각 저장본도 같은 규칙이다 (주인이 이 계정이 아니면 비운다, 보안 P3-1)
+        backgroundSessions?.adopt(account: account)
     }
 
     /// 주인이 없는 저장본에는 지금 계정을 주인으로 찍는다: 계정이 바뀔 때 "떠남"(저장본 비움)이 `claimDoneStores`(주인 적기)보다 늦게 와 도장이 지워졌어도

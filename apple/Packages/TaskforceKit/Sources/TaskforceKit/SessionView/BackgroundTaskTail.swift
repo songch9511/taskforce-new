@@ -8,10 +8,12 @@ import Foundation
 /// - **경로는 기록에서 오지 않는다.** (세션 id · 일의 id · 작업 폴더)로 만든다: 일의 id는 영숫자 · `_` · `-` 64자 이하, 세션 id는 소문자 정규 UUID만 (검사가 파일 시스템보다 먼저다).
 ///   명령 일은 `<임시 폴더>/claude-<uid>/<프로젝트 디렉터리>/<세션 id>/tasks/<일 id>.output`, 에이전트 일은 `<~/.claude>/projects/<프로젝트 디렉터리>/<세션 id>/subagents/agent-<일 id>.jsonl`이다.
 ///   에이전트 일의 출력 파일은 기호 링크라서 **따라가지 않고** 그 대상인 세션 폴더의 파일을 직접 연다 (같은 하드닝으로).
-/// - **그 길의 모든 폴더는 이 uid의 진짜 폴더**다 (기호 링크 아님: `lstat`이 폴더이고 `realpath`가 같은 경로, 임시 폴더 자신만 소유자를 보지 않는다). 파일은 이 uid의 **일반 파일**이어야 한다 (기호 링크 · FIFO · 폴더 · 남의 파일은 열지도 않는다).
+/// - **그 길의 모든 폴더는 이 uid의 진짜 폴더**다 (기호 링크 아님: `lstat`이 폴더이고 `realpath`가 같은 경로, 임시 폴더 자신만 소유자 · 쓰기 권한을 보지 않는다). **그룹 · 모두가 쓸 수 있는 폴더는 믿지 않는다** (보안 P3-2: 확인과 읽기 사이에 다른 사용자가 이름을 바꿔치기할 수 없는 폴더만).
+///   파일은 이 uid의 **일반 파일**이어야 한다 (기호 링크 · FIFO · 폴더 · 남의 파일은 열지도 않는다).
 ///   열기는 `O_NOFOLLOW` · `O_NONBLOCK` · 열린 fd의 소유자 · 일반 파일 · `F_GETPATH` 일치 (`ExternalSessionFileSystem.read`): 확인한 뒤 길이 바뀌어도 거절한다.
 ///   프로젝트 디렉터리는 작업 폴더로 짐작하고, 모르거나 맞지 않으면 `claude-<uid>`(또는 `projects`) 아래 **디렉터리 이름만** 나열해(상한 `maxListed`) 그 세션 폴더가 있는 것을 고른다.
-/// - **크기 상한**: 명령 출력은 파일 끝 `window`바이트(기본 16 KiB, "Show earlier"로 넓혀도 1 MiB), 에이전트 기록은 끝 2 MiB 창 안의 완성된 줄(한 줄 1 MiB, 글 한 칸 32 KiB)에서 마지막 200개. 큰 파일을 끝까지 읽지 않는다.
+/// - **크기 상한**: 명령 출력은 파일 끝 `window`바이트(기본 16 KiB, "Show earlier"로 넓혀도 256 KiB), 에이전트 기록은 끝 2 MiB 창 안의 완성된 줄(한 줄 1 MiB, 글 한 칸 32 KiB)에서 마지막 200개. 큰 파일을 끝까지 읽지 않는다.
+/// - **이어 읽기**(`update`): 파일 크기가 그대로면 내용을 읽지 않는다. 에이전트는 마지막으로 읽은 줄의 끝에서부터 새로 붙은 완성된 줄만 읽는다 (줄었거나 창보다 많이 붙었으면 통째로).
 /// - 평문으로만 다룬다: 색 코드(ANSI) · 제어 글자 · 눈에 보이지 않는 서식 글자를 지운다. 메모리에만 두고 **로그를 남기지 않는다**: 이 타입에는 로그 자리가 없고 값의 `description`은 글 · 경로 · id를 찍지 않는다.
 public struct BackgroundTaskTail: Sendable, CustomStringConvertible, CustomDebugStringConvertible {
     public struct Limits: Equatable, Sendable {
@@ -27,7 +29,7 @@ public struct BackgroundTaskTail: Sendable, CustomStringConvertible, CustomDebug
 
         public static let standard = Limits()
 
-        public init(tailBytes: Int = 16 << 10, maxTailBytes: Int = 1 << 20, windowBytes: Int = 2 << 20, maxLineBytes: Int = 1 << 20, maxTurns: Int = 200, maxTextBytes: Int = 32 << 10) {
+        public init(tailBytes: Int = 16 << 10, maxTailBytes: Int = 256 << 10, windowBytes: Int = 2 << 20, maxLineBytes: Int = 1 << 20, maxTurns: Int = 200, maxTextBytes: Int = 32 << 10) {
             self.tailBytes = tailBytes
             self.maxTailBytes = maxTailBytes
             self.windowBytes = windowBytes
@@ -65,6 +67,20 @@ public struct BackgroundTaskTail: Sendable, CustomStringConvertible, CustomDebug
         public var debugDescription: String { description }
     }
 
+    /// 앞 읽기가 남긴 자리 (화면이 쥐고 있다가 다음 `update`에 준다). 값의 뜻은 읽는 쪽만 안다
+    public struct Cursor: Equatable, Sendable {
+        var size: Int64
+        /// 명령: 읽은 창 크기. 에이전트: 다음에 읽을 자리 (완성된 줄의 끝)
+        var position: Int64
+    }
+
+    /// 이어 읽은 결과: 그대로이거나, 화면의 것을 통째로 바꾸거나(`replace`), 에이전트의 새 줄만 덧붙인다 (`append`). 믿을 수 없게 된 길은 커서 없이 `replace`다
+    public enum Update: Equatable, Sendable {
+        case unchanged
+        case replace(Result, Cursor?)
+        case append([ClaudeAppTurn], Cursor)
+    }
+
     private let fileSystem: ExternalSessionFileSystem
     /// `$HOME/.claude`
     private let claudeDirectory: String
@@ -88,10 +104,45 @@ public struct BackgroundTaskTail: Sendable, CustomStringConvertible, CustomDebug
     public func read(sessionID: String, cwd: String?, taskID: String, kind: BackgroundTaskKind, window: Int = Limits.standard.tailBytes) -> Result {
         guard ExternalSessionRules.isCanonicalUUID(sessionID), BackgroundTaskText.isValidTaskID(taskID) else { return .unreadable }
         switch kind {
-        case .agent: return readAgent(sessionID: sessionID, cwd: cwd, agentID: taskID)
-        case .command, .other: return readCommand(sessionID: sessionID, cwd: cwd, taskID: taskID, window: window)
+        case .agent:
+            switch agentFile(sessionID: sessionID, cwd: cwd, agentID: taskID) {
+            case .failed(let result): return result
+            case .file(let path, let entry): return agentWindow(path: path, size: max(0, entry.size), sessionID: sessionID, agentID: taskID).result
+            }
+        case .command, .other:
+            switch commandFile(sessionID: sessionID, cwd: cwd, taskID: taskID) {
+            case .failed(let result): return result
+            case .file(let path, let entry): return commandTail(path: path, size: max(0, entry.size), wanted: wanted(window))
+            }
         }
     }
+
+    /// 이어 읽기: 크기가 그대로면 읽지 않고(`unchanged`), 에이전트는 마지막으로 읽은 줄의 끝부터 새로 붙은 완성된 줄만 읽는다 (`append`).
+    /// 처음 · 줄었다 · 창이 바뀌었다 · 창보다 많이 붙었다 · 길을 믿을 수 없게 됐다면 통째로 (`replace`: 믿을 수 없는 길은 커서 없이)
+    public func update(sessionID: String, cwd: String?, taskID: String, kind: BackgroundTaskKind, window: Int = Limits.standard.tailBytes, since cursor: Cursor?) -> Update {
+        guard ExternalSessionRules.isCanonicalUUID(sessionID), BackgroundTaskText.isValidTaskID(taskID) else { return .replace(.unreadable, nil) }
+        switch kind {
+        case .agent:
+            switch agentFile(sessionID: sessionID, cwd: cwd, agentID: taskID) {
+            case .failed(let result): return .replace(result, nil)
+            case .file(let path, let entry): return updateAgent(path: path, size: max(0, entry.size), sessionID: sessionID, agentID: taskID, since: cursor)
+            }
+        case .command, .other:
+            switch commandFile(sessionID: sessionID, cwd: cwd, taskID: taskID) {
+            case .failed(let result): return .replace(result, nil)
+            case .file(let path, let entry):
+                let size = max(0, entry.size)
+                let bytes = wanted(window)
+                if let cursor, cursor.size == size, cursor.position == Int64(bytes) { return .unchanged }
+                let result = commandTail(path: path, size: size, wanted: bytes)
+                guard case .output = result else { return .replace(result, nil) }
+                return .replace(result, Cursor(size: size, position: Int64(bytes)))
+            }
+        }
+    }
+
+    /// 명령 출력의 창 크기 (0 이하는 기본, 상한 `maxTailBytes`)
+    private func wanted(_ window: Int) -> Int { min(max(window <= 0 ? limits.tailBytes : window, 1), limits.maxTailBytes) }
 
     // MARK: 길 확인
 
@@ -101,10 +152,11 @@ public struct BackgroundTaskTail: Sendable, CustomStringConvertible, CustomDebug
         case bad
     }
 
-    /// 진짜 폴더인가: `lstat`이 폴더(기호 링크면 아니다)이고 `realpath`가 같은 경로(길 어디에도 기호 링크가 없다). `owned`면 이 uid의 것
+    /// 진짜 폴더인가: `lstat`이 폴더(기호 링크면 아니다)이고 `realpath`가 같은 경로(길 어디에도 기호 링크가 없다).
+    /// `owned`면 이 uid의 것이고 **그룹 · 모두가 쓸 수 없다** (쓸 수 있으면 확인과 읽기 사이에 이름을 바꿔치기할 수 있다). 임시 폴더 자신(`owned: false`)은 모두가 쓰는 폴더라 예외다
     private func directory(_ path: String, owned: Bool = true) -> Check {
         guard let entry = fileSystem.lstat(path) else { return .missing }
-        guard entry.kind == .directory, !owned || entry.owner == fileSystem.userID, fileSystem.realpath(path) == path else { return .bad }
+        guard entry.kind == .directory, !owned || (entry.owner == fileSystem.userID && !entry.othersCanWrite), fileSystem.realpath(path) == path else { return .bad }
         return .ok
     }
 
@@ -125,7 +177,7 @@ public struct BackgroundTaskTail: Sendable, CustomStringConvertible, CustomDebug
             }
         }
         guard case .entries(let entries) = fs.list(base, ExternalSessionRegistry.maxListed + 1), entries.count <= ExternalSessionRegistry.maxListed else { return .unreadable }
-        let names = entries.filter { $0.kind == .directory && $0.owner == fs.userID && ExternalSessionReadAllowList.isProjectDirectory($0.name) }.map(\.name).sorted()
+        let names = entries.filter { $0.kind == .directory && $0.owner == fs.userID && !$0.othersCanWrite && ExternalSessionReadAllowList.isProjectDirectory($0.name) }.map(\.name).sorted()
         var best: (name: String, modified: Date)?
         for name in names {
             guard let session = fs.lstat(base + "/" + name + "/" + sessionID) else { continue }
@@ -142,44 +194,53 @@ public struct BackgroundTaskTail: Sendable, CustomStringConvertible, CustomDebug
         return (.ok, entry)
     }
 
+    /// 길을 따라가 읽을 파일 하나를 찾은 결과 (믿을 수 없거나 없으면 그 `Result`)
+    private enum Found {
+        case file(path: String, entry: ExternalSessionFileSystem.Entry)
+        case failed(Result)
+    }
+
     // MARK: 명령 일
 
-    private func readCommand(sessionID: String, cwd: String?, taskID: String, window: Int) -> Result {
+    private func commandFile(sessionID: String, cwd: String?, taskID: String) -> Found {
         let base = temporaryRoot + "/claude-\(fileSystem.userID)"
         switch directory(temporaryRoot, owned: false) {
-        case .missing: return .missing
-        case .bad: return .unreadable
+        case .missing: return .failed(.missing)
+        case .bad: return .failed(.unreadable)
         case .ok: break
         }
         switch directory(base) {
-        case .missing: return .missing
-        case .bad: return .unreadable
+        case .missing: return .failed(.missing)
+        case .bad: return .failed(.unreadable)
         case .ok: break
         }
         let project: String
         switch locate(in: base, sessionID: sessionID, cwd: cwd) {
         case .found(let name): project = name
-        case .missing: return .missing
-        case .unreadable: return .unreadable
+        case .missing: return .failed(.missing)
+        case .unreadable: return .failed(.unreadable)
         }
         let sessionFolder = base + "/" + project + "/" + sessionID
         for folder in [sessionFolder, sessionFolder + "/tasks"] {
             switch directory(folder) {
-            case .missing: return .missing
-            case .bad: return .unreadable
+            case .missing: return .failed(.missing)
+            case .bad: return .failed(.unreadable)
             case .ok: break
             }
         }
         let path = sessionFolder + "/tasks/" + taskID + ".output"
         let (check, entry) = regularFile(path)
         switch check {
-        case .missing: return .missing
-        case .bad: return .unreadable
+        case .missing: return .failed(.missing)
+        case .bad: return .failed(.unreadable)
         case .ok: break
         }
-        guard let entry else { return .unreadable }
-        let wanted = min(max(window <= 0 ? limits.tailBytes : window, 1), limits.maxTailBytes)
-        let size = max(0, entry.size)
+        guard let entry else { return .failed(.unreadable) }
+        return .file(path: path, entry: entry)
+    }
+
+    /// 파일 끝 `wanted`바이트를 보이는 글로
+    private func commandTail(path: String, size: Int64, wanted: Int) -> Result {
         guard size > 0 else { return .output(.text("", hasEarlier: false)) }
         let length = Int(min(Int64(wanted), size))
         let offset = size - Int64(length)
@@ -189,45 +250,68 @@ public struct BackgroundTaskTail: Sendable, CustomStringConvertible, CustomDebug
 
     // MARK: 에이전트 일
 
-    private func readAgent(sessionID: String, cwd: String?, agentID: String) -> Result {
+    private func agentFile(sessionID: String, cwd: String?, agentID: String) -> Found {
         let fs = fileSystem
         guard let rootEntry = fs.lstat(claudeDirectory), rootEntry.kind == .directory || rootEntry.kind == .symlink, let root = fs.realpath(claudeDirectory),
-              let realRoot = fs.lstat(root), realRoot.kind == .directory, realRoot.owner == fs.userID else { return .missing }
+              let realRoot = fs.lstat(root), realRoot.kind == .directory, realRoot.owner == fs.userID, !realRoot.othersCanWrite else { return .failed(.missing) }
         let projects = root + "/projects"
         switch directory(projects) {
-        case .missing: return .missing
-        case .bad: return .unreadable
+        case .missing: return .failed(.missing)
+        case .bad: return .failed(.unreadable)
         case .ok: break
         }
         let project: String
         switch locate(in: projects, sessionID: sessionID, cwd: cwd) {
         case .found(let name): project = name
-        case .missing: return .missing
-        case .unreadable: return .unreadable
+        case .missing: return .failed(.missing)
+        case .unreadable: return .failed(.unreadable)
         }
         let sessionFolder = projects + "/" + project + "/" + sessionID
         for folder in [sessionFolder, sessionFolder + "/subagents"] {
             switch directory(folder) {
-            case .missing: return .missing
-            case .bad: return .unreadable
+            case .missing: return .failed(.missing)
+            case .bad: return .failed(.unreadable)
             case .ok: break
             }
         }
         let path = sessionFolder + "/subagents/agent-" + agentID + ".jsonl"
         let (check, entry) = regularFile(path)
         switch check {
-        case .missing: return .missing
-        case .bad: return .unreadable
+        case .missing: return .failed(.missing)
+        case .bad: return .failed(.unreadable)
         case .ok: break
         }
-        guard let entry else { return .unreadable }
-        let size = max(0, entry.size)
-        guard size > 0 else { return .output(.agent([], hasEarlier: false)) }
+        guard let entry else { return .failed(.unreadable) }
+        return .file(path: path, entry: entry)
+    }
+
+    /// 끝 창(`windowBytes`)의 완성된 줄에서 읽은 에이전트의 말 · 단계 + 다음 이어 읽기 자리 (창 안의 마지막 완성된 줄의 끝)
+    private func agentWindow(path: String, size: Int64, sessionID: String, agentID: String) -> (result: Result, cursor: Cursor?) {
+        guard size > 0 else { return (.output(.agent([], hasEarlier: false)), Cursor(size: 0, position: 0)) }
         let length = Int(min(Int64(limits.windowBytes), size))
         let offset = size - Int64(length)
-        guard let data = fs.read(path, offset, length) else { return .unreadable }
-        let (turns, dropped) = agentTurns(in: data, start: offset, sessionID: sessionID, agentID: agentID)
-        return .output(.agent(turns, hasEarlier: offset > 0 || dropped))
+        guard let data = fileSystem.read(path, offset, length) else { return (.unreadable, nil) }
+        let (turns, dropped) = agentTurns(in: data, start: offset, startsAtLine: offset == 0, sessionID: sessionID, agentID: agentID)
+        let consumed = data.lastIndex(of: 0x0A).map { $0 - data.startIndex + 1 } ?? 0
+        return (.output(.agent(turns, hasEarlier: offset > 0 || dropped)), Cursor(size: size, position: offset + Int64(consumed)))
+    }
+
+    private func updateAgent(path: String, size: Int64, sessionID: String, agentID: String, since cursor: Cursor?) -> Update {
+        if let cursor {
+            if size == cursor.size { return .unchanged }
+            // 붙었다 (줄었거나 창보다 많이 붙은 것은 아래에서 통째로): 마지막으로 읽은 줄의 끝에서부터 새로 붙은 부분만
+            if size > cursor.size, cursor.position <= size, size - cursor.position <= Int64(limits.windowBytes) {
+                let length = Int(size - cursor.position)
+                guard length > 0, let data = fileSystem.read(path, cursor.position, length) else { return .replace(.unreadable, nil) }
+                // 개행이 오지 않은 줄은 아직 쓰는 중이다: 완성된 줄까지만 (아무 줄도 완성되지 않았으면 그대로)
+                guard let last = data.lastIndex(of: 0x0A) else { return .unchanged }
+                let consumed = last - data.startIndex + 1
+                let (turns, _) = agentTurns(in: Data(data.prefix(consumed)), start: cursor.position, startsAtLine: true, sessionID: sessionID, agentID: agentID)
+                return .append(turns, Cursor(size: size, position: cursor.position + Int64(consumed)))
+            }
+        }
+        let window = agentWindow(path: path, size: size, sessionID: sessionID, agentID: agentID)
+        return .replace(window.result, window.cursor)
     }
 
     // MARK: 글 정리
@@ -375,7 +459,7 @@ public struct BackgroundTaskTail: Sendable, CustomStringConvertible, CustomDebug
     }
 
     /// 끝 창의 완성된 줄에서 이 에이전트의 말 · 도구 단계 (마지막 `maxTurns`개). 두 번째 값: 앞을 버렸다
-    private func agentTurns(in data: Data, start: Int64, sessionID: String, agentID: String) -> ([ClaudeAppTurn], Bool) {
+    private func agentTurns(in data: Data, start: Int64, startsAtLine: Bool, sessionID: String, agentID: String) -> ([ClaudeAppTurn], Bool) {
         var spans: [Range<Int>] = []
         var lineStart = 0
         data.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) in
@@ -388,8 +472,8 @@ public struct BackgroundTaskTail: Sendable, CustomStringConvertible, CustomDebug
                 position = index + 1
             }
         }
-        // 창이 줄 가운데에서 시작하면 그 조각은 줄이 아니다. 개행 없이 끝난 줄은 아직 쓰는 중이다 (읽지 않는다)
-        if start > 0, !spans.isEmpty { spans.removeFirst() }
+        // 창이 줄 가운데에서 시작하면 그 조각은 줄이 아니다 (이어 읽기는 줄 경계에서 시작한다). 개행 없이 끝난 줄은 아직 쓰는 중이다 (읽지 않는다)
+        if !startsAtLine, !spans.isEmpty { spans.removeFirst() }
         let decoder = JSONDecoder()
         var turns: [ClaudeAppTurn] = []
         for span in spans where !span.isEmpty && span.count <= limits.maxLineBytes {

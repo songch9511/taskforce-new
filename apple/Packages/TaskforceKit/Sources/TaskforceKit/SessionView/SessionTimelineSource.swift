@@ -69,25 +69,39 @@ public enum SessionTimelineSource {
             return SessionTimelineItem(id: id, role: .assistant, time: turn.createdAt, text: turn.textDeleted ? nil : turn.visibleText)
         }
         guard let first = turns.first?.createdAt else { return SessionTimelineData(items: [], steps: [:]) }
-        var stepItems: [SessionTimelineItem] = []
+        // 사용자의 말마다 덩어리 하나 (첫 말 앞의 글들은 시작을 모르는 덩어리). 단계는 **시각이 든 창의 덩어리**의 것이다:
+        // 덩어리의 창은 그 첫 글의 시각 − `stepSlack`부터 다음 덩어리의 창 앞까지. 이 Mac의 시계가 서버보다 조금 늦어도 말 바로 뒤의 단계가 앞 턴으로 새지 않는다.
+        // 첫 창보다 이른 단계는 이 대화의 것이 아니다 (입양한 세션의 지난 기록이 패널을 덮지 않게)
+        var groups: [[SessionTimelineItem]] = []
+        for item in chatItems {
+            if item.role == .user || groups.isEmpty { groups.append([item]) } else { groups[groups.count - 1].append(item) }
+        }
+        let anchors = groups.map { $0.first?.time ?? first }
+        let windowStarts = anchors.map { $0.addingTimeInterval(-stepSlack) }
+        var perGroup = [[(order: Int, item: SessionTimelineItem)]](repeating: [], count: groups.count)
         var infos: [String: SessionStepInfo] = [:]
-        for turn in localSteps {
-            guard case .tool(let name, let description) = turn.kind, let time = turn.timestamp, time >= first.addingTimeInterval(-stepSlack) else { continue }
-            // 시계 어긋남 여유 안의 단계는 첫 글과 같은 시각으로 본다 (그 사용자의 말 바로 뒤)
-            stepItems.append(SessionTimelineItem(id: turn.id, role: .step, time: max(time, first), stepName: name))
+        for (order, turn) in localSteps.enumerated() {
+            guard case .tool(let name, let description) = turn.kind, let time = turn.timestamp, let index = windowStarts.lastIndex(where: { $0 <= time }) else { continue }
+            // 창 안이지만 말보다 이른 시각의 단계는 그 말과 같은 시각으로 본다 (그 사용자의 말 바로 뒤)
+            perGroup[index].append((order, SessionTimelineItem(id: turn.id, role: .step, time: max(time, anchors[index]), stepName: name)))
             infos[turn.id] = step(turn, name: name, description: description)
         }
-        stepItems.sort { ($0.time ?? .distantPast) < ($1.time ?? .distantPast) }
         var merged: [SessionTimelineItem] = []
-        var next = 0
-        for item in chatItems {
-            while next < stepItems.count, comesBefore(stepItems[next], item) {
-                merged.append(stepItems[next])
-                next += 1
+        for (index, group) in groups.enumerated() {
+            let steps = perGroup[index].sorted { a, b in
+                let ta = a.item.time ?? .distantPast, tb = b.item.time ?? .distantPast
+                return ta != tb ? ta < tb : a.order < b.order
+            }.map(\.item)
+            var next = 0
+            for item in group {
+                while next < steps.count, comesBefore(steps[next], item) {
+                    merged.append(steps[next])
+                    next += 1
+                }
+                merged.append(item)
             }
-            merged.append(item)
+            merged += steps[next...]
         }
-        merged += stepItems[next...]
         return SessionTimelineData(items: merged, steps: infos)
     }
 

@@ -75,6 +75,7 @@ struct SidePaneStrip: View {
         }
         .animation(TFMotion.ease(TFMotion.hoverFade), value: hovering)
         .accessibilityLabel(model.effective.accessibleName)
+        .accessibilityValue(SessionAccessibility.state(expanded: false))
         .accessibilityAddTraits(.isButton)
     }
 
@@ -191,6 +192,27 @@ struct SidePaneTaskRow: View {
     }
 }
 
+/// 1초 시계는 도는 일이 있을 때만 필요하다 (끝난 줄의 글은 `now`에 기대지 않는다: `BackgroundTask.meta`). 도는 일이 없으면 목록을 1초마다 다시 그리지 않는다
+enum SidePaneClock {
+    static func ticks(_ tasks: BackgroundTaskList) -> Bool { tasks.runningCount > 0 }
+    static func ticks(_ task: TaskforceKit.BackgroundTask) -> Bool { task.status == .running }
+
+}
+
+/// `ticking`이면 1초마다 `now`를 새로 주고, 아니면 그릴 때의 시각 하나로 그린다 (타이머가 없다)
+struct SidePaneClockView<Content: View>: View {
+    let ticking: Bool
+    @ViewBuilder var content: (Date) -> Content
+
+    var body: some View {
+        if ticking {
+            TimelineView(.periodic(from: .now, by: 1)) { context in content(context.date) }
+        } else {
+            content(Date())
+        }
+    }
+}
+
 /// 펼친 옆줄: 목록 또는 (일을 눌렀으면) 출력 꼬리. 머리는 고정이고 줄은 안에서 스크롤한다
 struct SidePaneBody: View {
     @Bindable var model: SessionSidePaneModel
@@ -207,6 +229,7 @@ struct SidePaneBody: View {
         .frame(maxHeight: .infinity, alignment: .top)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(SessionViewCopy.backgroundTasks)
+        .accessibilityValue(SessionAccessibility.state(expanded: true))
     }
 
     // MARK: 목록
@@ -218,10 +241,10 @@ struct SidePaneBody: View {
                 AnyView(TFIconButton(.disclosureClosed, label: SessionViewCopy.hideBackgroundTasks, size: 14) { model.collapse() }.padding(.vertical, -2))
             })
             ScrollView {
-                TimelineView(.periodic(from: .now, by: 1)) { context in
+                SidePaneClockView(ticking: SidePaneClock.ticks(tasks)) { now in
                     VStack(spacing: TFSpace.xxs) {
                         ForEach(tasks.ordered) { task in
-                            SidePaneTaskRow(task: task, now: context.date) { model.select(task.id) }
+                            SidePaneTaskRow(task: task, now: now) { model.select(task.id) }
                         }
                     }
                     .padding(EdgeInsets(top: 0, leading: TFSpace.sm, bottom: TFSpace.md, trailing: TFSpace.sm))
@@ -235,8 +258,8 @@ struct SidePaneBody: View {
 
     private func tailView(_ task: TaskforceKit.BackgroundTask) -> some View {
         VStack(spacing: 0) {
-            TimelineView(.periodic(from: .now, by: 1)) { context in
-                SidePaneHeader(title: task.title, status: nil, statusText: SidePaneMeta.text(task, now: context.date), leading: {
+            SidePaneClockView(ticking: SidePaneClock.ticks(task)) { now in
+                SidePaneHeader(title: task.title, status: nil, statusText: SidePaneMeta.text(task, now: now), leading: {
                     TFIconButton(.back, label: SessionViewCopy.back, size: 14) { model.back() }.padding(.leading, -TFSpace.sm)
                 })
             }

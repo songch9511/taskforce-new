@@ -14,6 +14,9 @@ public enum SessionViewCopy {
     public static let failed = "Failed"
     /// 접힌 묶음의 접근성 이름 (화면에는 개수가 없다)
     public static func steps(_ count: Int) -> String { "\(count) steps" }
+    /// 묶음 머리 · 띠 · 옆줄의 접근성 값 (DZ v2: 묶음 · 줄 단추는 `aria-expanded` 상태를 가진다). 화면에는 보이지 않는다
+    public static let expanded = "Expanded"
+    public static let collapsed = "Collapsed"
 
     // 승인된 재사용
     public static let showAll = "Show all"

@@ -84,6 +84,67 @@ struct BackgroundTaskListTests {
         #expect(tasks.tasks.first { $0.id == "c" }?.status == .done)
     }
 
+    /// 리뷰 P3: 스냅샷으로 멈춘 일 · 시각 없는 끝은 "지금" 끝난 것이다 (끝 시각이 없으면 "막 끝난 일은 열어 보기 전까지 남는다" 규칙이 거짓이 된다)
+    @Test func aTaskStoppedByASnapshotEndsAtTheMomentItWasSeenMissing() {
+        var tasks = list([started("a", 1), started("b", 2)])
+        tasks.apply(.snapshot(runningTaskIDs: ["b"]), now: at(40))
+        let stopped = tasks.tasks.first { $0.id == "a" }
+        #expect(stopped?.status == .stopped && stopped?.endedAt == at(40), "멈춘 일은 알아챈 시각에 끝났다")
+        #expect(stopped?.duration == 39)
+        #expect(tasks.tasks.first { $0.id == "b" }?.endedAt == nil, "도는 일은 끝 시각이 없다")
+        // 그 전에 목록을 열어 본 적이 있어도(열어 본 시각 < 멈춘 시각) 막 끝난 일은 본 것이 아니다
+        #expect(BackgroundTaskVisibility.isVisible(tasks: tasks.tasks.filter { $0.id == "a" }, openedAt: at(30)))
+        #expect(!BackgroundTaskVisibility.isVisible(tasks: tasks.tasks.filter { $0.id == "a" }, openedAt: at(45)))
+    }
+
+    @Test func aFinishWithoutATimeEndsAtTheTimeItWasApplied() {
+        var tasks = list([started("a", 1)])
+        tasks.apply(.finished(taskID: "a", kind: .command, status: .done, exitCode: 0, at: nil), now: at(50))
+        #expect(only(tasks).status == .done && only(tasks).endedAt == at(50) && only(tasks).duration == 49)
+        // 시작 줄 없이 끝 줄만 온 일도 같다
+        tasks.apply(.finished(taskID: "z", kind: .agent, status: .failed, exitCode: nil, at: nil), now: at(70))
+        #expect(tasks.tasks.first { $0.id == "z" }?.endedAt == at(70))
+    }
+
+    @Test func aFinishTimeThatIsKnownIsNeverReplacedByTheApplyTime() {
+        var tasks = list([started("a", 1)])
+        tasks.apply(finished("a", .done, code: 0, 20), now: at(99))
+        #expect(only(tasks).endedAt == at(20))
+        tasks.apply(.snapshot(runningTaskIDs: []), now: at(120))
+        #expect(only(tasks).status == .done && only(tasks).endedAt == at(20), "끝난 일은 스냅샷에 없어도 그대로다")
+    }
+
+    /// 리뷰 P3: `task_updated`(상태만)가 `task_notification`(끝낸 코드 · 종류)보다 먼저 온다. 늦게 온 값은 비어 있던 칸을 채운다
+    @Test func theExitCodeAndKindAreFilledInWhenALaterLineBringsThemAfterTheTaskFinished() {
+        var tasks = list([started("a", kind: .other, 1)])
+        tasks.apply(.finished(taskID: "a", kind: nil, status: .failed, exitCode: nil, at: at(10)), now: at(10))
+        #expect(only(tasks).status == .failed && only(tasks).exitCode == nil && only(tasks).kind == .other)
+        tasks.apply(.finished(taskID: "a", kind: .command, status: .failed, exitCode: 3, at: at(11)), now: at(11))
+        #expect(only(tasks).exitCode == 3 && only(tasks).kind == .command && only(tasks).endedAt == at(10), "끝 시각은 먼저 안 값이 이긴다")
+        tasks.apply(.finished(taskID: "a", kind: .agent, status: .failed, exitCode: 9, at: at(12)), now: at(12))
+        #expect(only(tasks).exitCode == 3 && only(tasks).kind == .command, "이미 있는 값은 덮지 않는다")
+    }
+
+    @Test func aLateExitCodeOfADifferentOutcomeIsNotBorrowed() {
+        var tasks = list([started("a", 1), finished("a", .done, code: nil, kind: nil, 10)])
+        tasks.apply(.finished(taskID: "a", kind: .command, status: .failed, exitCode: 7, at: at(11)), now: at(11))
+        #expect(only(tasks).status == .done && only(tasks).exitCode == nil, "다른 끝의 코드는 가져오지 않는다 (끝난 상태는 알림으로만 고친다)")
+        tasks.apply(.finished(taskID: "a", kind: .command, status: .done, exitCode: 0, at: at(12)), now: at(12))
+        #expect(only(tasks).exitCode == 0)
+    }
+
+    @Test func aSnapshotAfterTheFinishNeverTurnsADoneTaskIntoAStoppedOne() {
+        // 실측(2.1.308): task_updated → task_notification → background_tasks_changed [남은 일] 순서다
+        var tasks = list([started("a", 1), started("b", 2)])
+        tasks.apply(finished("a", .done, code: nil, kind: nil, 20), now: at(20))
+        tasks.apply(.finished(taskID: "a", kind: .command, status: .done, exitCode: 0, at: at(20)), now: at(20))
+        tasks.apply(.snapshot(runningTaskIDs: ["b"]), now: at(20))
+        #expect(tasks.tasks.first { $0.id == "a" }?.status == .done && tasks.tasks.first { $0.id == "a" }?.exitCode == 0)
+        #expect(tasks.tasks.first { $0.id == "b" }?.status == .running)
+        tasks.apply(.snapshot(runningTaskIDs: []), now: at(40))
+        #expect(tasks.tasks.first { $0.id == "b" }?.status == .stopped && tasks.tasks.first { $0.id == "b" }?.endedAt == at(40))
+    }
+
     @Test func aSnapshotNamingAnUnknownTaskDoesNotMakeOne() {
         var tasks = BackgroundTaskList()
         tasks.apply(.snapshot(runningTaskIDs: ["ghost"]))

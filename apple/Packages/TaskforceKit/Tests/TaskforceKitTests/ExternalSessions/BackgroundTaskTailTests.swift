@@ -412,6 +412,209 @@ extension ExternalSessionSuites {
             }
         }
 
+        // MARK: 리뷰 P3: 보이는 명령 꼬리 상한 256 KiB
+
+        @Test func theShownCommandTailIsCappedAtTwoHundredFiftySixKilobytes() throws {
+            try withHome { home in
+                #expect(BackgroundTaskTail.Limits.standard.maxTailBytes == 256 << 10, "승인된 상한 (이전에는 1 MiB)")
+                let lines = (0..<40_000).map { "line \($0) " + String(repeating: "z", count: 40) }
+                try output(home, lines.joined(separator: "\n") + "\n")
+                let recorder = RecordingFileSystem()
+                let capped = try #require(text(read(tail(home, fileSystem: recorder.fileSystem), window: 1 << 30)))
+                #expect(capped.text.utf8.count <= 256 << 10 && capped.hasEarlier)
+                #expect(recorder.reads.allSatisfy { $0.length <= 256 << 10 }, "한 번에 256 KiB를 넘게 읽지 않는다")
+            }
+        }
+
+        // MARK: 리뷰 P3 (보안 P3-2): 길의 폴더가 그룹 · 모두에게 쓰기 가능하면 믿지 않는다
+
+        /// `lstat`의 권한 비트를 바꿔 끼운다 (진짜 폴더는 그대로 두고 `suffix`로 끝나는 길만)
+        private func withMode(_ mode: UInt16, on suffix: String) -> ExternalSessionFileSystem {
+            let base = ExternalSessionFileSystem.live
+            return ExternalSessionFileSystem(
+                userID: base.userID, realpath: base.realpath,
+                lstat: { path in
+                    guard var entry = base.lstat(path) else { return nil }
+                    if path.hasSuffix(suffix) { entry.mode = mode }
+                    return entry
+                },
+                list: base.list, read: base.read
+            )
+        }
+
+        @Test func aFolderOnTheCommandPathThatOthersCanWriteIsRefused() throws {
+            try withHome { home in
+                try output(home, "hello")
+                #expect(text(read(tail(home))) != nil, "보통(0755)의 길은 읽는다")
+                for suffix in ["/claude-\(getuid())", "/\(directory)", "/\(session)", "/tasks"] {
+                    for mode in [UInt16(0o775), UInt16(0o757), UInt16(0o777), UInt16(0o772)] {
+                        #expect(read(tail(home, fileSystem: withMode(mode, on: suffix))) == .unreadable, "쓰기 가능한 폴더 \(suffix) 모드 \(String(mode, radix: 8))")
+                    }
+                    #expect(text(read(tail(home, fileSystem: withMode(0o700, on: suffix)))) != nil, "내 것만 쓰는 폴더는 읽는다 \(suffix)")
+                }
+            }
+        }
+
+        @Test func theTemporaryRootItselfMayBeWorldWritableWithTheStickyBit() throws {
+            try withHome { home in
+                try output(home, "hello")
+                #expect(text(read(tail(home, fileSystem: withMode(0o1777, on: "/tmp")))) != nil, "임시 폴더 자신은 모두가 쓰는 폴더다 (소유자 검사와 같은 예외)")
+            }
+        }
+
+        @Test func aFolderOnTheAgentPathThatOthersCanWriteIsRefused() throws {
+            try withHome { home in
+                let agent = "a02862466294fcd8e"
+                let sub = try subagentsDirectory(home)
+                try (agentLine("assistant", blocks: [["type": "text", "text": "hi"]]) + "\n").write(toFile: sub + "/agent-\(agent).jsonl", atomically: false, encoding: .utf8)
+                #expect(read(tail(home), task: agent, kind: .agent) != .unreadable)
+                for suffix in ["/projects", "/\(directory)", "/\(session)", "/subagents"] {
+                    #expect(read(tail(home, fileSystem: withMode(0o775, on: suffix)), task: agent, kind: .agent) == .unreadable, "쓰기 가능한 폴더 \(suffix)")
+                    #expect(read(tail(home, fileSystem: withMode(0o757, on: suffix)), task: agent, kind: .agent) == .unreadable)
+                }
+            }
+        }
+
+        @Test func theRealFileSystemReportsTheModeBitsAndAWorldOrGroupWritableFolderIsRefusedWithoutAnyFake() throws {
+            try withHome { home in
+                try output(home, "hello")
+                let tasks = try tasksDirectory(home)
+                func setMode(_ mode: Int) throws { try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: tasks) }
+                #expect(ExternalSessionFileSystem.live.lstat(tasks)?.othersCanWrite == false, "보통의 폴더(0755)")
+                #expect(text(read(tail(home))) != nil)
+                for mode in [0o777, 0o775, 0o757, 0o772] {
+                    try setMode(mode)
+                    #expect(ExternalSessionFileSystem.live.lstat(tasks)?.othersCanWrite == true, "모드 \(String(mode, radix: 8))의 쓰기 비트를 진짜 파일 시스템에서 읽는다")
+                    #expect(read(tail(home)) == .unreadable, "모드 \(String(mode, radix: 8))")
+                }
+                try setMode(0o700)
+                #expect(ExternalSessionFileSystem.live.lstat(tasks)?.othersCanWrite == false)
+                #expect(text(read(tail(home))) != nil)
+            }
+        }
+
+        // MARK: 리뷰 P3: 이어 읽기 (크기가 그대로면 읽지 않고, 에이전트는 마지막 자리부터)
+
+        private func update(
+            _ reader: BackgroundTaskTail, since cursor: BackgroundTaskTail.Cursor? = nil, task: String? = nil, kind: BackgroundTaskKind = .command, window: Int = BackgroundTaskTail.Limits.standard.tailBytes
+        ) -> BackgroundTaskTail.Update {
+            reader.update(sessionID: session, cwd: cwd, taskID: task ?? taskID, kind: kind, window: window, since: cursor)
+        }
+
+        private func record(_ message: String) { Issue.record(Comment(rawValue: message)) }
+
+        @Test func anUnchangedCommandFileIsNotReadAgainAndAGrownOneIsReadFromItsEnd() throws {
+            try withHome { home in
+                let path = try output(home, "first\nsecond\n")
+                let recorder = RecordingFileSystem()
+                let reader = tail(home, fileSystem: recorder.fileSystem)
+                let first = update(reader)
+                guard case .replace(.output(.text(let text, _)), let saved?) = first else { record("처음 읽기는 통째로 바꾼다: \(first)"); return }
+                #expect(text == "first\nsecond")
+                let readsAfterFirst = recorder.reads.count
+                #expect(update(reader, since: saved) == .unchanged)
+                #expect(recorder.reads.count == readsAfterFirst, "크기가 그대로면 파일 내용을 읽지 않는다 (lstat만)")
+                let handle = try #require(FileHandle(forWritingAtPath: path))
+                try handle.seekToEnd()
+                try handle.write(contentsOf: Data("third\n".utf8))
+                try handle.close()
+                guard case .replace(.output(.text(let grown, _)), let next?) = update(reader, since: saved) else { record("커졌으면 다시 읽는다"); return }
+                #expect(grown == "first\nsecond\nthird" && next != saved)
+                #expect(update(reader, since: next) == .unchanged)
+            }
+        }
+
+        @Test func aDifferentWindowRereadsEvenWhenTheFileDidNotChange() throws {
+            try withHome { home in
+                try output(home, (0..<4000).map { "line \($0) " + String(repeating: "q", count: 40) }.joined(separator: "\n") + "\n")
+                let reader = tail(home)
+                guard case .replace(.output(.text(let small, _)), let saved?) = update(reader) else { record("읽지 못했다"); return }
+                guard case .replace(.output(.text(let wide, _)), _) = update(reader, since: saved, window: 64 << 10) else { record("창이 바뀌면 다시 읽는다"); return }
+                #expect(wide.utf8.count > small.utf8.count)
+            }
+        }
+
+        @Test func aMissingOrUnreadableTargetIsAlwaysReportedAsItIsAndKeepsNoCursor() throws {
+            try withHome { home in
+                #expect(update(tail(home)) == .replace(.missing, nil))
+                #expect(update(tail(home), task: "../escape") == .replace(.unreadable, nil))
+                try output(home, "x")
+                let reader = tail(home)
+                guard case .replace(.output, let saved?) = update(reader) else { record("읽지 못했다"); return }
+                #expect(update(tail(home, fileSystem: withMode(0o777, on: "/tasks")), since: saved) == .replace(.unreadable, nil), "믿을 수 없게 된 길은 커서가 있어도 거절이다")
+            }
+        }
+
+        private func writeAgent(_ home: ExternalHome, _ lines: [String], agent: String = "a02862466294fcd8e", terminate: Bool = true) throws -> String {
+            let path = try subagentsDirectory(home) + "/agent-\(agent).jsonl"
+            try (lines.joined(separator: "\n") + (terminate ? "\n" : "")).write(toFile: path, atomically: false, encoding: .utf8)
+            return path
+        }
+
+        private func append(_ text: String, to path: String) throws {
+            let handle = try #require(FileHandle(forWritingAtPath: path))
+            try handle.seekToEnd()
+            try handle.write(contentsOf: Data(text.utf8))
+            try handle.close()
+        }
+
+        @Test func anAgentFileIsReadIncrementallyFromTheLastCompleteLine() throws {
+            try withHome { home in
+                let agent = "a02862466294fcd8e"
+                let path = try writeAgent(home, [agentLine("assistant", blocks: [["type": "text", "text": "turn 1"]]), agentLine("assistant", blocks: [["type": "text", "text": "turn 2"]])])
+                let recorder = RecordingFileSystem()
+                let reader = tail(home, fileSystem: recorder.fileSystem)
+                guard case .replace(.output(.agent(let firstTurns, false)), let saved?) = update(reader, task: agent, kind: .agent) else { record("처음 읽기"); return }
+                #expect(firstTurns.map(\.kind) == [.assistant("turn 1"), .assistant("turn 2")])
+                let readsAfterFirst = recorder.reads.count
+                #expect(update(reader, since: saved, task: agent, kind: .agent) == .unchanged)
+                #expect(recorder.reads.count == readsAfterFirst, "크기가 그대로면 읽지 않는다")
+                let consumed = try #require(FileManager.default.attributesOfItem(atPath: path)[.size] as? Int64)
+                try append(agentLine("assistant", blocks: [["type": "text", "text": "turn 3"]]) + "\n" + agentLine("assistant", blocks: [["type": "tool_use", "id": "t", "name": "Read", "input": ["file_path": "/x/y/ko.json"]]]) + "\n", to: path)
+                guard case .append(let newTurns, let next) = update(reader, since: saved, task: agent, kind: .agent) else { record("붙은 줄만 받는다"); return }
+                #expect(newTurns.map(\.kind) == [.assistant("turn 3"), .tool(name: "Read", description: nil)] && newTurns.map(\.target) == [nil, "ko.json"])
+                let incremental = try #require(recorder.reads.last)
+                #expect(incremental.offset == consumed, "마지막으로 읽은 줄의 끝에서부터 읽는다")
+                // 처음부터 통째로 읽어도 같은 id다 (두 번 읽은 것이 겹치지 않는다)
+                guard case .output(.agent(let all, _)) = read(tail(home), task: agent, kind: .agent) else { record("통째 읽기"); return }
+                #expect(Array(all.suffix(2)).map(\.id) == newTurns.map(\.id) && Set(all.map(\.id)).count == all.count)
+                #expect(update(reader, since: next, task: agent, kind: .agent) == .unchanged)
+            }
+        }
+
+        @Test func aLineStillBeingWrittenIsWaitedForAndReadOnceItIsComplete() throws {
+            try withHome { home in
+                let agent = "a02862466294fcd8e"
+                let path = try writeAgent(home, [agentLine("assistant", blocks: [["type": "text", "text": "turn 1"]])])
+                let reader = tail(home)
+                guard case .replace(.output, let saved?) = update(reader, task: agent, kind: .agent) else { record("처음 읽기"); return }
+                let line = agentLine("assistant", blocks: [["type": "text", "text": "turn 2"]])
+                try append(String(line.prefix(30)), to: path)
+                #expect(update(reader, since: saved, task: agent, kind: .agent) == .unchanged, "개행이 오지 않은 줄은 아직 쓰는 중이다")
+                try append(String(line.dropFirst(30)) + "\n", to: path)
+                guard case .append(let turns, _) = update(reader, since: saved, task: agent, kind: .agent) else { record("완성된 줄"); return }
+                #expect(turns.map(\.kind) == [.assistant("turn 2")])
+            }
+        }
+
+        @Test func aFileThatShrankOrGrewByMoreThanTheWindowIsReadAgainInFull() throws {
+            try withHome { home in
+                let agent = "a02862466294fcd8e"
+                let path = try writeAgent(home, (0..<5).map { agentLine("assistant", blocks: [["type": "text", "text": "old \($0)"]]) })
+                let reader = tail(home, limits: BackgroundTaskTail.Limits(windowBytes: 4096))
+                guard case .replace(.output, let saved?) = update(reader, task: agent, kind: .agent) else { record("처음 읽기"); return }
+                // 줄었다 (다른 파일로 바뀌었다)
+                _ = try writeAgent(home, [agentLine("assistant", blocks: [["type": "text", "text": "new"]])])
+                guard case .replace(.output(.agent(let again, _)), _) = update(reader, since: saved, task: agent, kind: .agent) else { record("줄었으면 통째로 다시"); return }
+                #expect(again.map(\.kind) == [.assistant("new")])
+                // 창보다 많이 붙었다
+                guard case .replace(.output, let small?) = update(reader, task: agent, kind: .agent) else { record("다시 읽기"); return }
+                try append((0..<200).map { agentLine("assistant", blocks: [["type": "text", "text": "big \($0) " + String(repeating: "w", count: 60)]]) }.joined(separator: "\n") + "\n", to: path)
+                guard case .replace(.output(.agent(let latest, let earlier)), _) = update(reader, since: small, task: agent, kind: .agent) else { record("창을 넘으면 끝 창을 통째로"); return }
+                #expect(earlier && latest.last.map { if case .assistant(let text) = $0.kind { text.hasPrefix("big 199") } else { false } } == true)
+            }
+        }
+
         // MARK: 값
 
         @Test func theValuesNeverPrintTheirText() throws {

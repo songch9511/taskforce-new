@@ -106,6 +106,8 @@ struct SessionCopyButton: View {
             if focused { RoundedRectangle(cornerRadius: TFRadius.sm, style: .continuous).strokeBorder(TFColor.borderAccent, lineWidth: 2).padding(-3) }
         }
         .opacity(visible ? 1 : 0)
+        .allowsHitTesting(visible)
+        // 보이지 않는 아이콘 자리를 눌러 복사되지 않는다 (보안 P3-4). 답 위 · 줄 위 호버가 드러내면(`revealed`) 눌린다. 키보드 포커스는 이것과 상관없이 닿는다
         .onHover { hovering = $0 }
         .animation(TFMotion.ease(TFMotion.hoverFade), value: visible)
         .animation(TFMotion.ease(TFMotion.hoverFade), value: hovering)

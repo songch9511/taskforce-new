@@ -37,34 +37,71 @@ enum SessionMarkdownRender {
     }
 }
 
-/// 답의 글. 문단 사이 8 · 블록 사이 8 · 목록 항목 사이 4 · 들여쓰기 20 (E1). 글은 callout 15/21, 선택 · 복사 가능
+/// 같은 글을 다시 해석하지 않는다 (화면은 글이 그대로여도 몇 번씩 다시 그려진다: 1초 시계 · 스크롤 · 호버). 해석은 순수 함수라 원문이 열쇠다. 메모리에만, `capacity`개까지 (오래된 것부터 버린다). 계정이 떠나면 비운다
+@MainActor
+final class SessionMarkdownCache {
+    static let shared = SessionMarkdownCache()
+    static let capacity = 128
+
+    private var parsed: [String: [SafeMarkdown.Block]] = [:]
+    private var order: [String] = []
+    /// 해석한 횟수 (시험이 센다)
+    private(set) var parses = 0
+
+    func blocks(for source: String) -> [SafeMarkdown.Block] {
+        if let hit = parsed[source] { return hit }
+        parses += 1
+        let blocks = SafeMarkdown.parse(source)
+        parsed[source] = blocks
+        order.append(source)
+        if order.count > Self.capacity { parsed[order.removeFirst()] = nil }
+        return blocks
+    }
+
+    func removeAll() {
+        parsed = [:]
+        order = []
+    }
+}
+
+/// 답의 글. 문단 사이 8 · 블록 사이 8 · 목록 항목 사이 4 · 들여쓰기 20 (E1). 글은 callout 15/21, 선택 · 복사 가능.
+/// 말풍선 안에서는(`Message`가 켠 `messageHugsText`) 글 폭에 맞춘다 (전폭으로 늘리지 않는다)
 struct SessionMarkdownView: View {
     let source: String
+    @Environment(\.messageHugsText) private var hugs
 
     var body: some View {
-        let blocks = SafeMarkdown.parse(source)
-        VStack(alignment: .leading, spacing: TFSpace.sm) {
-            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
-                switch block {
-                case .paragraph(let inlines): paragraph(inlines)
-                case .heading(let inlines): paragraph(inlines, bold: true)
-                case .code(let language, let text): SessionCodeBlockView(label: language, text: text)
-                case .list(let ordered, let items): list(items, ordered: ordered)
+        let blocks = SessionMarkdownCache.shared.blocks(for: source)
+        filling(
+            VStack(alignment: .leading, spacing: TFSpace.sm) {
+                ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+                    switch block {
+                    case .paragraph(let inlines): paragraph(inlines)
+                    case .heading(let inlines): paragraph(inlines, bold: true)
+                    case .code(let language, let text): SessionCodeBlockView(label: language, text: text)
+                    case .list(let ordered, let items): list(items, ordered: ordered)
+                    }
                 }
             }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        )
+    }
+
+    /// 말풍선이 아니면 줄 폭을 채운다
+    @ViewBuilder
+    private func filling<Content: View>(_ content: Content) -> some View {
+        if hugs { content } else { content.frame(maxWidth: .infinity, alignment: .leading) }
     }
 
     private func paragraph(_ inlines: [SafeMarkdown.Inline], bold: Bool = false) -> some View {
-        Text(SessionMarkdownRender.attributed(inlines, bold: bold))
-            .font(TFFont.callout)
-            .tracking(-0.24)
-            .lineSpacing(3)
-            .foregroundStyle(TFColor.textPrimary)
-            .fixedSize(horizontal: false, vertical: true)
-            .textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        filling(
+            Text(SessionMarkdownRender.attributed(inlines, bold: bold))
+                .font(TFFont.callout)
+                .tracking(-0.24)
+                .lineSpacing(3)
+                .foregroundStyle(TFColor.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        )
     }
 
     private func list(_ items: [SafeMarkdown.ListItem], ordered: Bool) -> some View {

@@ -259,6 +259,7 @@ public enum SafeMarkdown {
     private static func inlines(_ text: String) -> [Inline] {
         if text.utf8.count > maxInlineBytes { return [.text(text)] }
         let scalars = Array(text.unicodeScalars)
+        var runs = BacktickRuns(scalars)
         var tokens: [Token] = []
         var buffer = String.UnicodeScalarView()
         func flush() {
@@ -275,7 +276,7 @@ public enum SafeMarkdown {
                 var end = index
                 while end < scalars.count, scalars[end] == "`" { end += 1 }
                 let run = end - index
-                if let close = closingRun(scalars, from: end, length: run) {
+                if let close = runs.closing(from: end, length: run) {
                     flush()
                     var content = String(String.UnicodeScalarView(scalars[end..<close]))
                     if content.hasPrefix(" "), content.hasSuffix(" "), content.contains(where: { $0 != " " }) { content = String(content.dropFirst().dropLast()) }
@@ -302,20 +303,34 @@ public enum SafeMarkdown {
         return pair(tokens)
     }
 
-    /// `from`부터 정확히 `length`개인 백틱 묶음의 시작 (더 길거나 짧은 묶음은 건너뛴다)
-    private static func closingRun(_ scalars: [Unicode.Scalar], from start: Int, length: Int) -> Int? {
-        var index = start
-        while index < scalars.count {
-            if scalars[index] == "`" {
+    /// 한 번 훑어 길이별로 모아 둔 백틱 묶음의 시작들. "여는 묶음과 같은 길이의 다음 묶음"을 찾을 때 매번 끝까지 훑지 않는다 (여는 묶음마다 처음부터 끝까지 읽으면 짝 없는 묶음이 많을수록 느려진다).
+    /// 여는 묶음은 왼쪽에서 오른쪽으로 오므로 길이마다 읽던 자리를 이어 간다 (전체 선형)
+    private struct BacktickRuns {
+        private var starts: [Int: [Int]] = [:]
+        private var cursor: [Int: Int] = [:]
+
+        init(_ scalars: [Unicode.Scalar]) {
+            var index = 0
+            while index < scalars.count {
+                guard scalars[index] == "`" else {
+                    index += 1
+                    continue
+                }
                 var end = index
                 while end < scalars.count, scalars[end] == "`" { end += 1 }
-                if end - index == length { return index }
+                starts[end - index, default: []].append(index)
                 index = end
-            } else {
-                index += 1
             }
         }
-        return nil
+
+        /// `from`부터 정확히 `length`개인 백틱 묶음의 시작 (더 길거나 짧은 묶음은 건너뛴다). 없으면 nil
+        mutating func closing(from start: Int, length: Int) -> Int? {
+            guard let list = starts[length] else { return nil }
+            var position = cursor[length, default: 0]
+            while position < list.count, list[position] < start { position += 1 }
+            cursor[length] = position
+            return position < list.count ? list[position] : nil
+        }
     }
 
     /// `**` 짝 맞추기 (겹치지 않는다: 먼저 닫을 수 있는 것이 닫는다). 짝이 없거나 안이 빈 `**`는 글자 그대로

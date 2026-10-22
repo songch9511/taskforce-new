@@ -248,4 +248,113 @@ struct SessionViewSnapshotTests {
             }
         }
     }
+
+    // MARK: 옆줄이 열리고 닫히는 동안의 창 · 내용 프레임 (리뷰 P2-3의 실행 증거)
+
+    /// 창 이미지 한 장을 고정 폭 캔버스의 오른쪽에 붙여 PNG로 쓴다 (프레임을 이어 보면 오른쪽 가장자리가 움직이는지 보인다)
+    private func writeFrame(_ image: CGImage, windowWidth: CGFloat, canvasWidth: CGFloat, to url: URL) {
+        let scale: CGFloat = 2
+        let height = CGFloat(image.height) / scale
+        guard let context = CGContext(
+            data: nil, width: Int(canvasWidth * scale), height: Int(height * scale), bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return }
+        context.setFillColor(CGColor(srgbRed: 0.49, green: 0.53, blue: 0.58, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: canvasWidth * scale, height: height * scale))
+        context.draw(image, in: CGRect(x: (canvasWidth - windowWidth) * scale, y: 0, width: windowWidth * scale, height: height * scale))
+        guard let composed = context.makeImage() else { return }
+        try? NSBitmapImageRep(cgImage: composed).representation(using: .png, properties: [:])?.write(to: url)
+    }
+
+    /// 한 프레임: 창의 위치 · 폭과, 가운데 줄에서 실제로 그려진(불투명도 0.9 넘는) 가장 왼쪽 · 오른쪽 픽셀의 화면 좌표
+    private struct FrameSample {
+        var millis: Int
+        var phase: String
+        var windowMinX: CGFloat
+        var windowWidth: CGFloat
+        var drawnLeft: CGFloat?
+        var drawnRight: CGFloat?
+    }
+
+    private func sample(_ window: NSWindow, millis: Int, phase: String, drawn: Bool = true, image: Bool = false, directory: URL? = nil, index: Int = 0) -> FrameSample {
+        var frame = FrameSample(millis: millis, phase: phase, windowMinX: window.frame.minX, windowWidth: window.frame.width, drawnLeft: nil, drawnRight: nil)
+        guard drawn, let view = window.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return frame }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        let scale = CGFloat(rep.pixelsWide) / max(view.bounds.width, 1)
+        let row = rep.pixelsHigh / 2
+        var first: Int?
+        var last: Int?
+        for x in 0..<rep.pixelsWide {
+            guard let color = rep.colorAt(x: x, y: row), color.alphaComponent > 0.9 else { continue }
+            if first == nil { first = x }
+            last = x
+        }
+        if let first, let last {
+            frame.drawnLeft = window.frame.minX + CGFloat(first) / scale
+            frame.drawnRight = window.frame.minX + CGFloat(last + 1) / scale
+        }
+        if image, let directory, let cg = rep.cgImage {
+            writeFrame(cg, windowWidth: window.frame.width, canvasWidth: EdgePanelMetrics.width + 256 + 8, to: directory.appendingPathComponent(String(format: "%@-%03d.png", phase, index)))
+        }
+        return frame
+    }
+
+    @Test func recordsTheWindowAndContentFramesWhileTheSidePaneOpensAndCloses() async throws {
+        guard let directory = output(ProcessInfo.processInfo.environment), EdgeRailPanelController.screen != nil else { return }
+        let frames = directory.appendingPathComponent("frames", isDirectory: true)
+        try? FileManager.default.createDirectory(at: frames, withIntermediateDirectories: true)
+        let previousAppearance = NSApp.appearance
+        defer { NSApp.appearance = previousAppearance }
+        NSApp.appearance = NSAppearance(named: .aqua)
+
+        let w = await EdgeSessionsTests().rig(rows: [1], live: [EdgeSessionsTests.live(1, .busy)])
+        // 움직임을 끄지 않는다: 실제로 쓰는 전환이 도는 동안의 프레임을 본다
+        w.shell.reduceMotion = false
+        w.shell.makeConversation = { id, cwd in
+            ClaudeAppConversation(sessionID: id, cwd: cwd, source: SampleSource(turns: Self.longTurns, signals: ClaudeAppTranscriptSignals(background: Self.tasks()), details: Self.details))
+        }
+        let claude = EdgeClaudeAppPanelController(shell: w.shell)
+        let entry = try #require(w.shell.slots.first { $0.source == .claudeApp(sessionID: EdgeSessionsTests.id(1)) })
+        w.shell.openRailEntry(entry)
+        claude.panel.appearance = NSAppearance(named: .aqua)
+        claude.show()
+        await pause(1.4)
+        claude.fit()
+        await pause(0.5)
+
+        var samples: [FrameSample] = []
+        func record(_ phase: String, action: @MainActor () -> Void) async {
+            samples.append(sample(claude.panel, millis: -1, phase: "\(phase)-before", image: true, directory: frames, index: 0))
+            let started = ContinuousClock.now
+            action()
+            var index = 1
+            while true {
+                let elapsed = ContinuousClock.now - started
+                let millis = Int(elapsed.components.seconds * 1000 + elapsed.components.attoseconds / 1_000_000_000_000_000)
+                if millis > 700 { break }
+                // 창 틀은 싸게 자주(4ms), 그려진 픽셀은 비싸서 가끔 (한 장에 수십 ms)
+                samples.append(sample(claude.panel, millis: millis, phase: phase, drawn: index % 6 == 0, image: index % 12 == 0, directory: frames, index: index))
+                index += 1
+                await pause(0.004)
+            }
+            samples.append(sample(claude.panel, millis: 700, phase: "\(phase)-after", image: true, directory: frames, index: 999))
+        }
+        await record("expand") { claude.presentation.pane.expand() }
+        await record("collapse") { claude.presentation.pane.collapse() }
+
+        var csv = "phase,t_ms,window_minX,window_width,window_maxX,drawn_left,drawn_right\n"
+        for item in samples {
+            let left = item.drawnLeft.map { String(format: "%.1f", $0) } ?? ""
+            let right = item.drawnRight.map { String(format: "%.1f", $0) } ?? ""
+            csv += "\(item.phase),\(item.millis),\(String(format: "%.1f", item.windowMinX)),\(String(format: "%.1f", item.windowWidth)),\(String(format: "%.1f", item.windowMinX + item.windowWidth)),\(left),\(right)\n"
+        }
+        try csv.write(to: frames.appendingPathComponent("expand-collapse-frames.csv"), atomically: true, encoding: .utf8)
+        // 창의 오른쪽 가장자리(레일 쪽)는 움직이지 않고, 그려진 내용의 오른쪽도 그 가장자리에 붙어 있다
+        let rights = Set(samples.map { ($0.windowMinX + $0.windowWidth).rounded() })
+        #expect(rights.count == 1, "창의 오른쪽 가장자리가 움직였다: \(rights.sorted())")
+        let drawnRights = Set(samples.compactMap { $0.drawnRight?.rounded() })
+        #expect(drawnRights.count <= 1 || (drawnRights.max() ?? 0) - (drawnRights.min() ?? 0) <= 1, "그려진 내용의 오른쪽이 움직였다: \(drawnRights.sorted())")
+        w.shell.dismiss()
+        claude.hide()
+    }
 }

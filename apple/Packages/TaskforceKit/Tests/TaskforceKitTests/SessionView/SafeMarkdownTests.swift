@@ -244,6 +244,86 @@ struct SafeMarkdownTests {
         #expect(clock.now - started < .seconds(30), "한 번의 파싱은 입력 길이에 비례해야 한다 (디버그 빌드 · 바쁜 기계에서도 넉넉한 상한)")
     }
 
+    /// 리뷰 P3: 백틱 짝 찾기를 선형으로 바꿨다. 느리고 단순한 기준 구현(여는 묶음과 **같은 길이**의 다음 묶음이 닫는다)과 무작위 글에서 같은 결과를 내는지 본다
+    /// (이 시험은 바꾸기 전에도 통과한다: 의미를 지키는 것을 잠그는 시험이다. 바꾸기 전 복잡도는 관찰이 아니라 코드에서 정했다)
+    private func referenceInlines(_ text: String) -> [I] {
+        let scalars = Array(text.unicodeScalars)
+        var out: [I] = []
+        var buffer = String.UnicodeScalarView()
+        func flush() {
+            if !buffer.isEmpty {
+                out.append(.text(String(buffer)))
+                buffer = String.UnicodeScalarView()
+            }
+        }
+        var index = 0
+        while index < scalars.count {
+            guard scalars[index] == "`" else {
+                buffer.append(scalars[index])
+                index += 1
+                continue
+            }
+            var end = index
+            while end < scalars.count, scalars[end] == "`" { end += 1 }
+            let run = end - index
+            var probe = end
+            var close: Int?
+            while probe < scalars.count {
+                guard scalars[probe] == "`" else {
+                    probe += 1
+                    continue
+                }
+                var stop = probe
+                while stop < scalars.count, scalars[stop] == "`" { stop += 1 }
+                if stop - probe == run {
+                    close = probe
+                    break
+                }
+                probe = stop
+            }
+            if let close {
+                flush()
+                var content = String(String.UnicodeScalarView(scalars[end..<close]))
+                if content.hasPrefix(" "), content.hasSuffix(" "), content.contains(where: { $0 != " " }) { content = String(content.dropFirst().dropLast()) }
+                out.append(.code(content))
+                index = close + run
+            } else {
+                buffer.append(contentsOf: scalars[index..<end])
+                index = end
+            }
+        }
+        flush()
+        return out
+    }
+
+    @Test func codeSpansMatchTheSlowReferenceOnRandomBacktickText() {
+        var seed: UInt64 = 0x9E37_79B9_7F4A_7C15
+        func next(_ bound: Int) -> Int {
+            seed = seed &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            return Int((seed >> 33) % UInt64(bound))
+        }
+        let alphabet = ["`", "`", "`", "a", "b", " "]
+        for round in 0..<600 {
+            let length = 1 + next(60)
+            let body = (0..<length).map { _ in alphabet[next(alphabet.count)] }.joined()
+            // 앞뒤를 글자로 막아 문단 다듬기 · 울타리 · 목록이 끼어들지 않게 한다
+            let text = "x" + body + "x"
+            #expect(SafeMarkdown.parse(text) == [.paragraph(referenceInlines(text))], "무작위 \(round): \(text.debugDescription)")
+        }
+    }
+
+    @Test func manyBacktickRunsOfDifferentLengthsAreMatchedQuickly() {
+        // 길이가 모두 다른 묶음 120개 (짝이 없다) · 길이가 번갈아 나오는 묶음 수천 개 (서로 짝이 된다)
+        let distinct = (1...120).map { String(repeating: "`", count: $0) + "a" }.joined(separator: " ")
+        let alternating = String(repeating: "`a ``b ", count: 1_000)
+        let clock = ContinuousClock()
+        let started = clock.now
+        let parsed = [SafeMarkdown.parse("x " + distinct + " x"), SafeMarkdown.parse("x " + alternating + " x")]
+        #expect(clock.now - started < .seconds(2))
+        #expect(parsed[0] == [.paragraph(referenceInlines("x " + distinct + " x"))])
+        #expect(parsed[1] == [.paragraph(referenceInlines("x " + alternating + " x"))])
+    }
+
     @Test func parsingNeverLosesTextThatIsNotMarkup() {
         let source = "Plain words, 한국어도 그대로, emoji 😀, and punctuation: (a) [b] {c} <d> & e."
         #expect(SafeMarkdown.plainText(of: SafeMarkdown.parse(source)) == source)

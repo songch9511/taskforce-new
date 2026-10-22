@@ -29,12 +29,13 @@ public final class BackgroundTaskBoard: @unchecked Sendable, CustomStringConvert
         return (1...maxKeyLength).contains(key.utf8.count) ? key : nil
     }
 
-    public func apply(_ event: BackgroundTaskEvent, session: String) {
+    /// - now: 끝 시각을 모르는 끝의 끝 시각 (시험은 값을 준다)
+    public func apply(_ event: BackgroundTaskEvent, session: String, now: Date = Date()) {
         guard let key = Self.key(session) else { return }
         lock.withLock {
             let existing = lists[key]
             var list = existing ?? BackgroundTaskList()
-            list.apply(event)
+            list.apply(event, now: now)
             guard list != (existing ?? BackgroundTaskList()) else { return }
             lists[key] = list
             recency.removeAll { $0 == key }
@@ -52,7 +53,17 @@ public final class BackgroundTaskBoard: @unchecked Sendable, CustomStringConvert
         return lock.withLock { lists[key] ?? BackgroundTaskList() }
     }
 
-    /// 그 세션의 목록을 비운다 (세션을 잊을 때 · 계정이 떠날 때)
+    /// 모든 세션의 목록을 비운다 (계정이 떠날 때: 로그아웃 · 다른 계정)
+    public func clearAll() {
+        lock.withLock {
+            guard !lists.isEmpty else { return }
+            lists = [:]
+            recency = []
+            _version += 1
+        }
+    }
+
+    /// 그 세션의 목록을 비운다 (세션을 잊을 때)
     public func clear(session: String) {
         guard let key = Self.key(session) else { return }
         lock.withLock {

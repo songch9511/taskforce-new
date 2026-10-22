@@ -122,7 +122,8 @@ public struct BackgroundTaskList: Equatable, Sendable, CustomStringConvertible, 
 
     private static func cleaned(_ name: String?) -> String? { name.flatMap(ExternalSessionRules.sanitizedTitle) }
 
-    public mutating func apply(_ event: BackgroundTaskEvent) {
+    /// - now: 끝 시각을 모르는 끝(시각 없는 끝 · 스냅샷에서 사라짐)의 끝 시각: 그 사건을 받은 때 끝난 것이다 (끝 시각이 없으면 "막 끝난 일은 열어 보기 전까지 남는다" 규칙이 거짓이 된다). 시험은 값을 준다
+    public mutating func apply(_ event: BackgroundTaskEvent, now: Date = Date()) {
         switch event {
         case .started(let id, let toolUseID, let kind, let name, let at):
             if let index = index(of: id) {
@@ -143,22 +144,28 @@ public struct BackgroundTaskList: Equatable, Sendable, CustomStringConvertible, 
                 case .running:
                     tasks[index].status = status
                     tasks[index].exitCode = exitCode
-                    tasks[index].endedAt = at
+                    tasks[index].endedAt = at ?? now
                 case .stopped where status == .done || status == .failed:
                     // 알림이 늦게 왔다: 멈춤을 알림의 끝으로 고친다
                     tasks[index].status = status
                     tasks[index].exitCode = exitCode
                     tasks[index].endedAt = at ?? tasks[index].endedAt
+                case let current where current == status && status != .stopped:
+                    // `task_updated`(상태만)가 `task_notification`(끝낸 코드)보다 먼저 온다: 같은 끝의 늦은 줄은 비어 있던 끝낸 코드를 채운다 (다른 끝의 코드는 가져오지 않는다)
+                    if tasks[index].exitCode == nil, let exitCode { tasks[index].exitCode = exitCode }
                 default:
                     break
                 }
             } else {
-                tasks.append(BackgroundTask(id: id, kind: kind ?? .other, name: nil, status: status, exitCode: exitCode, endedAt: at))
+                tasks.append(BackgroundTask(id: id, kind: kind ?? .other, name: nil, status: status, exitCode: exitCode, endedAt: at ?? now))
                 bound()
             }
         case .snapshot(let running):
             let alive = Set(running)
-            for index in tasks.indices where tasks[index].status == .running && !alive.contains(tasks[index].id) { tasks[index].status = .stopped }
+            for index in tasks.indices where tasks[index].status == .running && !alive.contains(tasks[index].id) {
+                tasks[index].status = .stopped
+                tasks[index].endedAt = now
+            }
         }
     }
 
@@ -249,24 +256,31 @@ public enum BackgroundTaskVisibility {
 public protocol BackgroundTaskOpenStore: AnyObject, Sendable {
     func openedAt(session: String) -> Date?
     func markOpened(session: String, at: Date)
-    /// 계정이 떠났다: 남기지 않는다
+    /// 열어 본 시각을 모두 지운다 (주인은 그대로: 주인은 부르는 쪽이 정한다)
     func clear()
+    /// 이 저장본의 주인 계정 (끝남 표시의 `RailDoneStore`와 같다). 모르면 nil
+    var owner: UUID? { get }
+    func setOwner(_ owner: UUID?)
 }
 
 public final class InMemoryBackgroundTaskOpenStore: BackgroundTaskOpenStore, @unchecked Sendable {
     private let lock = NSLock()
     private var opened: [String: Date] = [:]
+    private var _owner: UUID?
 
     public init() {}
 
     public func openedAt(session: String) -> Date? { lock.withLock { opened[session] } }
     public func markOpened(session: String, at date: Date) { lock.withLock { opened[session] = date } }
     public func clear() { lock.withLock { opened = [:] } }
+    public var owner: UUID? { lock.withLock { _owner } }
+    public func setOwner(_ owner: UUID?) { lock.withLock { _owner = owner } }
 }
 
 /// 이 Mac의 설정(앱 도메인)에 JSON 하나로 둔다. 읽을 수 없으면 비어 있는 것으로 시작한다. 가장 새 `maxSessions`개만 남긴다
 public final class UserDefaultsBackgroundTaskOpenStore: BackgroundTaskOpenStore, @unchecked Sendable {
     public static let key = "taskforce.sessionView.backgroundOpened"
+    public static let ownerKey = "taskforce.sessionView.backgroundOpenedOwner"
     public static let maxSessions = 64
     private let defaults: any RailDoneDefaults
     private let lock = NSLock()
@@ -296,6 +310,37 @@ public final class UserDefaultsBackgroundTaskOpenStore: BackgroundTaskOpenStore,
 
     public func clear() {
         lock.withLock { defaults.set(nil, forKey: Self.key) }
+    }
+
+    public var owner: UUID? {
+        lock.withLock { (defaults.object(forKey: Self.ownerKey) as? String).flatMap(UUID.init(uuidString:)) }
+    }
+
+    public func setOwner(_ owner: UUID?) {
+        lock.withLock { defaults.set(owner?.uuidString, forKey: Self.ownerKey) }
+    }
+}
+
+/// 보안 P3-1: 열어 본 시각(이 Mac의 저장본)과 이 Mac의 일 목록 판은 계정과 함께 간다 (끝남 표시의 `RailDoneStore` · `ClaudeAppSessionsModel.adopt`와 같은 규칙).
+/// 로그인한 계정이 주인이 아니면(다른 계정이거나 모르면) 저장본을 비우고, 알던 계정이 떠나면 판을 비운다
+public struct BackgroundTaskAccount: Sendable {
+    public let openStore: any BackgroundTaskOpenStore
+    public let board: BackgroundTaskBoard
+
+    public init(openStore: any BackgroundTaskOpenStore, board: BackgroundTaskBoard) {
+        self.openStore = openStore
+        self.board = board
+    }
+
+    /// 이 계정을 저장본의 주인으로 확정한다: 주인이 이 계정이 아니면(다른 계정이거나 모르면) 이 계정의 것이 아니라서 비운다. 같은 계정을 다시 알려도 아무 일도 없다
+    public func adopt(account: UUID) {
+        if openStore.owner != account { openStore.clear() }
+        openStore.setOwner(account)
+    }
+
+    /// 알던 계정이 떠났다 (로그아웃 · 다른 계정): 이 Mac의 일 목록 판을 비운다
+    public func leave() {
+        board.clearAll()
     }
 }
 #endif

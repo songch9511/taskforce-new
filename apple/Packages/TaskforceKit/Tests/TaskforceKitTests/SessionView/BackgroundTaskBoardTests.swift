@@ -53,6 +53,39 @@ struct BackgroundTaskBoardTests {
         #expect(board.tasks(session: "session-1").tasks.isEmpty, "가장 오래 안 쓴 세션이 빠진다")
     }
 
+    /// 리뷰 P1: 프로세스가 끝났는데 도는 줄 알았던 일은 끝난 것이다 (스냅샷 `[]` = 도는 일 없음). 끝 시각은 그때다
+    @Test func aSnapshotOfNothingStopsEveryRunningTaskOfTheSessionAtTheGivenTime() {
+        let board = BackgroundTaskBoard()
+        board.apply(.started(taskID: "a", toolUseID: nil, kind: .command, name: nil, at: at), session: "s1")
+        board.apply(.started(taskID: "b", toolUseID: nil, kind: .agent, name: nil, at: at), session: "s1")
+        board.apply(.finished(taskID: "b", kind: .agent, status: .done, exitCode: nil, at: at.addingTimeInterval(3)), session: "s1")
+        board.apply(.started(taskID: "c", toolUseID: nil, kind: .command, name: nil, at: at), session: "s2")
+        let version = board.version
+        board.apply(.snapshot(runningTaskIDs: []), session: "s1", now: at.addingTimeInterval(30))
+        let list = board.tasks(session: "s1").tasks
+        #expect(list.first { $0.id == "a" }?.status == .stopped && list.first { $0.id == "a" }?.endedAt == at.addingTimeInterval(30))
+        #expect(list.first { $0.id == "b" }?.status == .done, "끝난 일은 그대로")
+        #expect(board.tasks(session: "s2").tasks.first?.status == .running, "다른 세션은 건드리지 않는다")
+        #expect(board.version == version + 1)
+        board.apply(.snapshot(runningTaskIDs: []), session: "s1", now: at.addingTimeInterval(60))
+        #expect(board.version == version + 1, "바뀐 것이 없으면 판이 바뀐 것이 아니다")
+    }
+
+    @Test func clearAllDropsEveryTasksListAndTheVersionRisesOnlyWhenSomethingWasThere() {
+        let board = BackgroundTaskBoard()
+        board.clearAll()
+        let empty = board.version
+        board.apply(.started(taskID: "a", toolUseID: nil, kind: .command, name: nil, at: at), session: "s1")
+        board.apply(.started(taskID: "b", toolUseID: nil, kind: .command, name: nil, at: at), session: "s2")
+        let before = board.version
+        board.clearAll()
+        #expect(board.sessionCount == 0 && board.tasks(session: "s1").tasks.isEmpty && board.tasks(session: "s2").tasks.isEmpty)
+        #expect(board.version == before + 1)
+        board.clearAll()
+        #expect(board.version == before + 1)
+        #expect(empty < before)
+    }
+
     @Test func manyWritersAtOnceDoNotCorruptTheList() async {
         let board = BackgroundTaskBoard()
         await withTaskGroup(of: Void.self) { group in

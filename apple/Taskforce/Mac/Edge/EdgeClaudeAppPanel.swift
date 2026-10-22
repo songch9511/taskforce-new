@@ -19,12 +19,45 @@ final class EdgeClaudeAppPanelPresentation {
     let pane: SessionSidePaneModel
     /// 단계 묶음 · 줄의 보이는 상태
     let steps = SessionStepsState()
+    /// 본문이 다시 계산돼도 대화가 그대로면 타임라인을 다시 만들지 않는다
+    @ObservationIgnored let timeline = SessionTimelineMemo<ClaudeTimelineInput, ClaudeTimeline>()
 
     init(backgroundOpen: any BackgroundTaskOpenStore = InMemoryBackgroundTaskOpenStore()) {
         pane = SessionSidePaneModel(store: backgroundOpen)
     }
 
     var contentHeight: CGFloat { headHeight + bodyHeight + footerHeight }
+
+    /// 지금 보는 세션 (같으면 아무 일도 없다)
+    private(set) var sessionKey: String?
+
+    /// 다른 세션을 연다: 옆줄이 그 세션의 것으로 바뀌고, 열어 둔 줄 · 읽은 본문은 비운다 (줄 id는 세션 안에서만 겹치지 않는다)
+    func beginSession(_ key: String) {
+        guard key != sessionKey else { return }
+        sessionKey = key
+        steps.reset()
+        timeline.reset()
+        pane.attach(session: key)
+    }
+}
+
+/// Claude 패널 타임라인의 입력 (같으면 같은 타임라인)
+struct ClaudeTimelineInput: Equatable {
+    var turns: [ClaudeAppTurn]
+    var state: SessionRunState
+}
+
+/// Claude 패널의 타임라인: 줄 · 단계 · 글 찾기표
+struct ClaudeTimeline {
+    let data: SessionTimelineData
+    let entries: [SessionEntry]
+    let turns: [String: ClaudeAppTurn]
+
+    init(_ input: ClaudeTimelineInput) {
+        data = SessionTimelineSource.claude(input.turns)
+        entries = SessionTimeline.build(data.items, state: input.state)
+        turns = Dictionary(input.turns.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    }
 }
 
 /// Claude 세션 패널 (DS PanelHeader 세션 변형 · 본문 · 띠): 폭 380, 모서리 18, `panel` 재료, 높이는 내용에 맞춰 320–520.
@@ -105,7 +138,7 @@ struct ClaudeAppSessionPanelView: View {
         }
         // 옆줄(백그라운드 일): 이 세션의 일 목록을 먹이고, 닫힌 세션이면 돌던 일을 멈춘 것으로 하고, 꼬리 읽기는 이 세션의 이 Mac 기록 · 임시 폴더에서
         .task(id: id) {
-            presentation.pane.attach(session: id)
+            presentation.beginSession(id)
             presentation.pane.makeTail = { [weak shell] task in
                 let cwd = shell?.desktop?.session(id: id)?.cwd ?? shell?.desktopRow(id)?.folderPath
                 return (shell?.makeBackgroundTail ?? EdgeShellModel.liveBackgroundTail)(id, cwd, task)
@@ -147,9 +180,9 @@ struct ClaudeAppSessionPanelView: View {
             }
         case .ready:
             // 단계 묶기 · 일한 시간 · 답 밑 줄(복사) · 도는 중 시계: 두 패널이 같은 순수 규칙(`SessionTimeline`)을 쓴다
-            let data = SessionTimelineSource.claude(conversation.turns)
-            let entries = SessionTimeline.build(data.items, state: SessionTimelineSource.runState(status, closed: closed))
-            let turns = Dictionary(conversation.turns.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            let input = ClaudeTimelineInput(turns: conversation.turns, state: SessionTimelineSource.runState(status, closed: closed))
+            let timeline = presentation.timeline.value(for: input) { ClaudeTimeline(input) }
+            let turns = timeline.turns
             VStack(alignment: .leading, spacing: 0) {
                 if conversation.hasEarlier {
                     HStack {
@@ -161,7 +194,7 @@ struct ClaudeAppSessionPanelView: View {
                     .padding(.bottom, TFSpace.md)
                 }
                 SessionEntriesView(
-                    entries: entries, steps: data.steps, state: presentation.steps,
+                    entries: timeline.entries, steps: timeline.data.steps, state: presentation.steps,
                     loadDetail: { stepID in
                         guard let turn = turns[stepID] else { return nil }
                         return await conversation.detail(of: turn)
@@ -257,6 +290,8 @@ final class EdgeClaudeAppPanelController {
         // Esc: 옆줄이 열려 있으면 꼬리 → 목록 → 접힘을 먼저 (그다음 패널)
         let presentation = presentation
         shell.onEscapeDesktopPane = { presentation.pane.escape() }
+        // 옆줄이 바뀌면 창 틀을 그 자리에서 맞춘다 (관찰의 한 박자를 기다리지 않는다: 내용이 낡은 창에 잘리지 않게)
+        presentation.pane.onWindowChange = { [weak self] in self?.fit() }
     }
 
     var isVisible: Bool { panel.isVisible }
