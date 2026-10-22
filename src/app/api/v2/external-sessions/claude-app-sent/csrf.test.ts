@@ -26,7 +26,7 @@ beforeEach(() => {
   mocks.createCookieClient.mockResolvedValue({ auth: { getClaims: claims() } } as unknown as SupabaseClient);
   mocks.createSupabaseClient.mockReturnValue({ auth: { getClaims: claims() } } as unknown as SupabaseClient);
   mocks.insert.mockResolvedValue({ error: null });
-  mocks.admin.mockReturnValue({ from: () => ({ insert: mocks.insert }) });
+  mocks.admin.mockReturnValue({ from: () => ({ insert: mocks.insert }), rpc: () => ({ throwOnError: () => Promise.resolve({ data: null, error: null }) }) });
 });
 afterEach(() => {
   vi.clearAllMocks();

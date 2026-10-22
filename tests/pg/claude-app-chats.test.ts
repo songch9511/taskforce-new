@@ -230,13 +230,13 @@ describe("저장과 겹치는 지우기 · bridge 해제 (연결 둘)", () => {
   });
 });
 
-describe("속도 제한 claude_app_chat (연결 여럿)", () => {
-  it("연결 여덟이 동시에 열 번씩 80번을 불러도 정확히 30번만 통과한다 (사용자 · 종류별 잠금)", async () => {
+describe("속도 제한 claude_app_chat · claude_app_sent (연결 여럿)", () => {
+  it.each(["claude_app_chat", "claude_app_sent"])("%s: 연결 여덟이 동시에 열 번씩 80번을 불러도 정확히 30번만 통과한다 (사용자 · 종류별 잠금)", async (kind) => {
     const owner = randomUUID();
     await q("insert into auth.users (id, email) values ($1, $2)", [owner, `${owner}@example.com`]);
     const clients = await Promise.all(Array.from({ length: 8 }, () => connect(DB_NAME)));
     try {
-      const take = async (client: pg.Client) => (await client.query<{ at: string | null }>("select public.take_rate_limit($1, 'claude_app_chat', 30, 600) as at", [owner])).rows[0].at;
+      const take = async (client: pg.Client) => (await client.query<{ at: string | null }>("select public.take_rate_limit($1, $2, 30, 600) as at", [owner, kind])).rows[0].at;
       const results = (
         await Promise.all(
           clients.map(async (client) => {
@@ -248,7 +248,7 @@ describe("속도 제한 claude_app_chat (연결 여럿)", () => {
       ).flat();
       expect(results).toHaveLength(80);
       expect(results.filter((at) => at === null)).toHaveLength(30);
-      expect(await count("select 1 from public.rate_limit_events where user_id = $1 and kind = 'claude_app_chat'", [owner])).toBe(30);
+      expect(await count("select 1 from public.rate_limit_events where user_id = $1 and kind = $2", [owner, kind])).toBe(30);
     } finally {
       await Promise.allSettled(clients.map((client) => client.end()));
     }

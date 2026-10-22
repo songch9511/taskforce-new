@@ -82,6 +82,21 @@ describe("DELETE claude-app-chats/{id}: 쿠키 CSRF · 인증", () => {
     expect((await DELETE(del({ authorization: "Bearer token-123", "sec-fetch-site": "cross-site" }), ctx)).status).toBe(204);
     expect(mocks.rpc).toHaveBeenCalledTimes(2);
   });
+
+  // 지우는 길은 플래그가 꺼져 있어도 열려 있다. 그래도 인증과 쿠키 CSRF는 그대로다 (BYOK 키 DELETE와 같다)
+  it("플래그가 꺼져 있고 베타 명단이 없어도 CSRF · 인증은 그대로다: 다른 사이트 쿠키 401, 로그인 없음 401, 같은 출처 204", async () => {
+    vi.unstubAllEnvs();
+    vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://project.example.test");
+    vi.stubEnv("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY", "sb_publishable_local-test");
+    for (const headers of CROSS_SITE) expect((await DELETE(del(headers), ctx)).status, JSON.stringify(headers)).toBe(401);
+    mocks.createCookieClient.mockResolvedValue({ auth: { getClaims: vi.fn().mockResolvedValue({ data: null, error: new Error("no session") }) } } as unknown as SupabaseClient);
+    expect((await DELETE(del({ "sec-fetch-site": "same-origin" }), ctx)).status).toBe(401);
+    expect(mocks.rpc).not.toHaveBeenCalled();
+    mocks.createCookieClient.mockResolvedValue({ auth: { getClaims: claims() } } as unknown as SupabaseClient);
+    expect((await DELETE(del({ "sec-fetch-site": "same-origin" }), ctx)).status).toBe(204);
+    expect((await DELETE(del({ authorization: "Bearer token-123", "sec-fetch-site": "cross-site" }), ctx)).status).toBe(204);
+    expect(mocks.rpc.mock.calls.map((call) => call[0])).toEqual(["delete_claude_app_chat", "delete_claude_app_chat"]);
+  });
 });
 
 describe("GET claude-app-chats/status: 인증", () => {

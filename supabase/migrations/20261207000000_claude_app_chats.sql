@@ -18,8 +18,9 @@
 --   4) metric_events 종류 검사: 바로 앞 목록(20261206000000_claude_app_session_metrics.sql, claude_app_session_opened까지)의 전체 + claude_app_message_sent · claude_app_chat_deleted.
 --      앱 insert 정책(owner_insert_client_app_types)은 그대로다: 앱이 이 종류를 직접 남기지 못한다. 이 PR은 PR-D2(20261206)보다 **늦게** 병합한다.
 --      (앞으로 이 검사를 다시 만드는 마이그레이션은 이 두 종류를 목록에 이어 가져야 한다 — tests/metrics/agent-event-registry.test.ts가 최신 목록을 등록부와 대조한다.)
---   5) 속도 제한 종류 claude_app_chat (사용자별 10분에 120번은 route가 정한다, src/lib/api/claude-app-chats.ts CLAUDE_APP_CHAT_LIMIT):
---      rate_limit_events 종류 검사는 20261204000000의 목록 그대로 + claude_app_chat 하나, take_rate_limit은 그 파일의 본문 그대로 + 종류 하나 (create or replace).
+--   5) 속도 제한 종류 claude_app_chat (저장 요청) · claude_app_sent (보내기 결과 지표 route): 둘 다 사용자별 10분에 120번이고 한도 값은 route가 정한다
+--      (src/lib/api/claude-app-chats.ts CLAUDE_APP_CHAT_LIMIT · CLAUDE_APP_SENT_LIMIT). 종류를 나눠 한쪽이 차도 다른 쪽이 굶지 않는다.
+--      rate_limit_events 종류 검사는 20261204000000의 목록 그대로 + 이 둘, take_rate_limit은 그 파일의 본문 그대로 + 이 둘 (create or replace).
 --
 -- 함수 규칙 (invoker + search_path 빈 값, public · anon · authenticated 실행 권한 없음, service role만 — report_external_sessions 같은 형제 서버 전용 함수와 같다):
 --   - security definer가 아니다: 호출자는 서버의 service role(admin 클라이언트)뿐이고 쓰는 표는 service role이 이미 쓸 수 있다. 권한을 올려 줄 이유가 없다.
@@ -321,13 +322,13 @@ alter table public.metric_events add constraint metric_events_type_check
   ));
 
 -- ─────────────────────────────────────────────
--- 5) 속도 제한 종류 claude_app_chat
+-- 5) 속도 제한 종류 claude_app_chat · claude_app_sent
 -- ─────────────────────────────────────────────
--- 새 종류 claude_app_chat 하나만 더한다 (저장 요청 · 보내기 결과 지표는 사용자별 10분에 120번, route가 저장 함수 전에 센다).
+-- 새 종류 둘만 더한다: claude_app_chat = 저장 요청(PUT), claude_app_sent = 보내기 결과 지표 route. 둘 다 사용자별 10분에 120번이고 route가 쓰기 전에 센다.
 -- 앞 목록 · 본문은 20261204000000_agent_session_attach.sql의 take_rate_limit 그대로다 (종류 목록 두 곳만 다르다).
 alter table public.rate_limit_events drop constraint rate_limit_events_kind_check;
 alter table public.rate_limit_events add constraint rate_limit_events_kind_check
-  check(kind in ('ask','connection_start','action_create','run_create','bridge_register','bridge_events','bridge_ack','bridge_poll','bridge_decide','ai_key','agent_attach','claude_app_chat'));
+  check(kind in ('ask','connection_start','action_create','run_create','bridge_register','bridge_events','bridge_ack','bridge_poll','bridge_decide','ai_key','agent_attach','claude_app_chat','claude_app_sent'));
 
 create or replace function public.take_rate_limit(p_user_id uuid, p_kind text, p_max int, p_window_seconds int,p_bridge_id uuid default null)
 returns timestamptz
@@ -355,7 +356,7 @@ begin
     order by r.created_at desc offset p_max - 1 limit 1;
     if v_nth is not null then return v_nth + v_window; end if;
     insert into public.missing_reports (user_id, created_at) values (p_user_id, clock_timestamp());
-  elsif p_kind in ('ask', 'connection_start', 'action_create', 'run_create', 'bridge_register','bridge_events','bridge_ack','bridge_poll','bridge_decide','ai_key','agent_attach','claude_app_chat') then
+  elsif p_kind in ('ask', 'connection_start', 'action_create', 'run_create', 'bridge_register','bridge_events','bridge_ack','bridge_poll','bridge_decide','ai_key','agent_attach','claude_app_chat','claude_app_sent') then
     if p_bridge_id is not null then
       select e.created_at into v_nth from public.rate_limit_events e
       where e.user_id = p_user_id and e.kind = p_kind and e.bridge_id = p_bridge_id and e.created_at > v_since

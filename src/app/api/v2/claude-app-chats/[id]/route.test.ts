@@ -30,34 +30,46 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("DELETE /api/v2/claude-app-chats/{id}", () => {
-  it("기본값(플래그 꺼짐)은 404: 인증 · DB 0", async () => {
-    expect((await call()).status).toBe(404);
-    expect(mocks.auth).not.toHaveBeenCalled();
-    expect(mocks.admin).not.toHaveBeenCalled();
+// 저장된 데이터를 지우는 길은 늘 열려 있다 (BYOK 키 DELETE와 같다): CLAUDE_APP_CHATS_ENABLED · 대화 v2 · adapter 플래그와 베타 명단을 보지 않는다.
+// 그래도 로그인(Bearer · 쿠키 + CSRF)이 필요하고 자기 행만 지운다.
+describe("DELETE /api/v2/claude-app-chats/{id}: 늘 열려 있다", () => {
+  it("플래그가 모두 꺼져 있고 베타 명단이 없어도 지운다 (204)", async () => {
+    const response = await call();
+    expect(response.status).toBe(204);
+    expect(mocks.auth).toHaveBeenCalledTimes(1);
+    expect(mocks.rpc.mock.calls).toEqual([["delete_claude_app_chat", { p_user_id: USER, p_chat_id: CHAT }]]);
   });
 
-  it.each(Object.keys(FLAGS))("%s 하나만 꺼져도 404 (인증 · DB 0)", async (flag) => {
+  it.each(Object.keys(FLAGS))("%s 하나만 꺼져도 지운다 (나머지는 켜짐)", async (flag) => {
     open();
     vi.stubEnv(flag, "false");
-    expect((await call()).status).toBe(404);
-    expect(mocks.auth).not.toHaveBeenCalled();
-    expect(mocks.admin).not.toHaveBeenCalled();
+    expect((await call()).status).toBe(204);
+    expect(mocks.rpc).toHaveBeenCalledTimes(1);
   });
 
-  it("명단 밖은 404 · 로그인하지 않았으면 401 (삭제 0)", async () => {
+  it("명단 밖 사용자 · 명단이 비어 있는 배포도 자기 대화를 지운다", async () => {
     open();
     mocks.auth.mockResolvedValue({ user: { id: OTHER } });
-    expect((await call()).status).toBe(404);
+    expect((await call()).status).toBe(204);
+    expect(mocks.rpc.mock.calls[0]).toEqual(["delete_claude_app_chat", { p_user_id: OTHER, p_chat_id: CHAT }]);
+    vi.stubEnv("AGENT_BETA_USER_IDS", "");
+    expect((await call()).status).toBe(204);
+  });
+
+  it("로그인하지 않았으면 401이고 DB를 부르지 않는다 (플래그가 켜져 있어도 꺼져 있어도)", async () => {
     mocks.auth.mockResolvedValue(null);
     expect((await call()).status).toBe(401);
+    open();
+    expect((await call()).status).toBe(401);
+    expect(mocks.admin).not.toHaveBeenCalled();
     expect(mocks.rpc).not.toHaveBeenCalled();
   });
 
-  it("지우면 204: delete_claude_app_chat(인증된 사용자 id, 채팅 id)만 부른다", async () => {
+  it("지우면 204 + Cache-Control no-store: delete_claude_app_chat(인증된 사용자 id, 채팅 id)만 부른다", async () => {
     open();
     const response = await call();
     expect(response.status).toBe(204);
+    expect(response.headers.get("cache-control")).toBe("no-store");
     expect(await response.text()).toBe("");
     expect(mocks.rpc.mock.calls).toEqual([["delete_claude_app_chat", { p_user_id: USER, p_chat_id: CHAT }]]);
   });
@@ -68,8 +80,7 @@ describe("DELETE /api/v2/claude-app-chats/{id}", () => {
     expect((await call()).status).toBe(404);
   });
 
-  it("uuid가 아닌 id는 404이고 DB를 부르지 않는다", async () => {
-    open();
+  it("uuid가 아닌 id는 404이고 DB를 부르지 않는다 (플래그가 꺼져 있어도 같다)", async () => {
     for (const id of ["nope", "status", "c0c0c0c0", `${CHAT}0`]) expect((await call(id)).status, id).toBe(404);
     expect(mocks.rpc).not.toHaveBeenCalled();
   });

@@ -98,12 +98,23 @@ describe("마이그레이션 경계 (20261207000000_claude_app_chats)", () => {
     expect(later).toEqual([]);
   });
 
-  it("take_rate_limit 본문은 20261204의 정의에서 종류 claude_app_chat 하나만 더한다", () => {
+  it("take_rate_limit 본문은 20261204의 정의에서 종류 claude_app_chat · claude_app_sent 둘만 더한다", () => {
     const before = takeRateLimitBody(readFileSync(path.join(MIGRATIONS, PREVIOUS_RATE_LIMIT_MIGRATION), "utf8"));
     const after = takeRateLimitBody(migration);
     expect(after).not.toBe(before);
-    expect(after.replace(",'claude_app_chat'", "")).toBe(before);
+    expect(after.replace(",'claude_app_chat','claude_app_sent'", "")).toBe(before);
     expect(after.match(/'claude_app_chat'/g)).toHaveLength(1);
+    expect(after.match(/'claude_app_sent'/g)).toHaveLength(1);
+  });
+
+  it("이 파일 뒤에 속도 제한 종류 검사 · take_rate_limit을 다시 만드는 마이그레이션이 없다 (있으면 두 새 종류를 이어 가져와야 한다)", () => {
+    const after = readdirSync(MIGRATIONS).filter((name) => name > FILE && name.endsWith(".sql"));
+    for (const name of after) {
+      const text = stripComments(readFileSync(path.join(MIGRATIONS, name), "utf8"));
+      if (!/rate_limit_events_kind_check|function public\.take_rate_limit\(/i.test(text)) continue;
+      expect(text, name).toContain("claude_app_chat");
+      expect(text, name).toContain("claude_app_sent");
+    }
   });
 
   it("이 파일 뒤에 같은 종류 검사를 다시 만드는 마이그레이션이 없다 (있으면 두 새 종류를 이어 가져와야 한다)", () => {

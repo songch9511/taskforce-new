@@ -71,8 +71,8 @@ describe("metric_events 종류 검사 (20261207000000)", () => {
 });
 
 describe("rate_limit_events 종류 · take_rate_limit (20261207000000)", () => {
-  it("종류 목록 = 20261204 목록 + claude_app_chat", () => {
-    expect(kindList(NEW_FILE)).toEqual([...KINDS_20261204, "claude_app_chat"]);
+  it("종류 목록 = 20261204 목록 + claude_app_chat + claude_app_sent", () => {
+    expect(kindList(NEW_FILE)).toEqual([...KINDS_20261204, "claude_app_chat", "claude_app_sent"]);
     expect(kindList(ATTACH_FILE)).toEqual(KINDS_20261204);
   });
 });
@@ -126,5 +126,24 @@ describe("DB: 새 종류가 받아들여진다", () => {
     await expect(db.query("insert into public.rate_limit_events (user_id, kind) values ($1, 'claude_app_other')", [a])).rejects.toMatchObject({ code: "23514" });
     // bridge 종류는 여전히 bridge id가 있어야 한다 (본문을 그대로 이어 받았다)
     await expect(take(a, "bridge_poll")).rejects.toThrow(/invalid bridge/);
+  });
+
+  it("take_rate_limit: claude_app_sent(보내기 결과 지표)는 claude_app_chat(저장)과 따로 센다 — 한쪽이 차도 다른 쪽은 열려 있다", async () => {
+    const a = await user();
+    const b = await user();
+    const take = async (owner: string, kind: string, max = 3) => (await db.query<{ at: Date | null }>("select public.take_rate_limit($1, $2, $3, 600) as at", [owner, kind, max])).rows[0].at;
+    for (let i = 0; i < 3; i++) expect(await take(a, "claude_app_sent")).toBeNull();
+    const retry = await take(a, "claude_app_sent");
+    expect(retry).toBeInstanceOf(Date);
+    expect(retry!.getTime() - Date.now()).toBeGreaterThan(9 * 60_000);
+    // 저장 종류는 영향이 없다 (그리고 반대도 같다)
+    for (let i = 0; i < 3; i++) expect(await take(a, "claude_app_chat")).toBeNull();
+    expect(await take(a, "claude_app_chat")).toBeInstanceOf(Date);
+    expect(await take(b, "claude_app_sent")).toBeNull();
+    for (const kind of ["claude_app_chat", "agent_attach", "ask"]) expect(await take(b, kind), kind).toBeNull();
+    const { rows } = await db.query<{ n: number }>("select count(*)::int as n from public.rate_limit_events where user_id = $1 and kind = 'claude_app_sent'", [a]);
+    expect(rows[0].n).toBe(3);
+    // 종류 검사가 받는다 (take_rate_limit 밖의 직접 insert도)
+    await db.query("insert into public.rate_limit_events (user_id, kind) values ($1, 'claude_app_sent')", [b]);
   });
 });

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   CLAUDE_APP_CHAT_LIMIT,
+  CLAUDE_APP_SENT_LIMIT,
   handleClaudeAppChatStatus,
   handleClaudeAppSent,
   handleDeleteClaudeAppChat,
@@ -35,9 +36,11 @@ function deps(over: Partial<ClaudeAppChatsDeps<TestUser>> = {}) {
   const remove = vi.fn(async (): Promise<"deleted" | "not_found"> => "deleted");
   const recordSent = vi.fn(async () => {});
   const takeLimit = vi.fn(async (): Promise<Date | null> => null);
+  const takeSentLimit = vi.fn(async (): Promise<Date | null> => null);
   const authenticate = vi.fn(async () => ({ user: { id: USER } }));
-  const value: ClaudeAppChatsDeps<TestUser> = { enabled: () => true, sentEnabled: () => true, authenticate, betaAllowed: () => true, takeLimit, save, remove, recordSent, ...over };
-  return { value, save, remove, recordSent, takeLimit, authenticate };
+  const betaAllowed = vi.fn(() => true);
+  const value: ClaudeAppChatsDeps<TestUser> = { enabled: () => true, sentEnabled: () => true, authenticate, betaAllowed, takeLimit, takeSentLimit, save, remove, recordSent, ...over };
+  return { value, save, remove, recordSent, takeLimit, takeSentLimit, authenticate, betaAllowed };
 }
 
 const put = (body: unknown, headers: Record<string, string> = {}) =>
@@ -303,6 +306,8 @@ describe("로그에 글이 없다", () => {
     await handleDeleteClaudeAppChat(del(), CHAT, deps({ remove: async () => Promise.reject(secret) }).value);
     await handleClaudeAppSent(sent({ result: "not_sent", reason: "bypass" }), deps().value);
     await handleClaudeAppSent(sent({ result: "not_sent", reason: "bypass" }), deps({ recordSent: async () => Promise.reject(secret) }).value);
+    await handleClaudeAppSent(sent({ result: "not_sent", reason: "bypass" }), deps({ takeSentLimit: async () => new Date(Date.now() + 1000) }).value);
+    await handleClaudeAppSent(sent({ result: "not_sent", reason: "bypass" }), deps({ takeSentLimit: async () => Promise.reject(secret) }).value);
     const logged = JSON.stringify([info.mock.calls, error.mock.calls, warn.mock.calls, log.mock.calls]);
     expect(logged).toContain("claude_app_chat_save");
     expect(logged).toContain("claude_app_chat_save_failed");
@@ -315,21 +320,36 @@ describe("로그에 글이 없다", () => {
 // ───────────────────────── DELETE ─────────────────────────
 
 describe("DELETE /api/v2/claude-app-chats/{id}", () => {
-  it("꺼져 있으면 404 · 로그인하지 않았으면 401 · 베타 명단 밖이면 404 (삭제 0)", async () => {
-    const off = deps({ enabled: () => false });
-    expect((await handleDeleteClaudeAppChat(del(), CHAT, off.value)).status).toBe(404);
-    expect(off.authenticate).not.toHaveBeenCalled();
+  // 저장된 데이터를 지우는 길은 늘 열려 있다 (BYOK 키 DELETE와 같다: gate · 베타 명단을 보지 않고, 로그인 · 쿠키 CSRF · 자기 행만).
+  it("로그인하지 않았으면 401: 아무것도 지우지 않는다 (인증이 첫 검사다)", async () => {
     const anonymous = deps({ authenticate: async () => null });
     expect((await handleDeleteClaudeAppChat(del(), CHAT, anonymous.value)).status).toBe(401);
-    const outside = deps({ betaAllowed: () => false });
-    expect((await handleDeleteClaudeAppChat(del(), CHAT, outside.value)).status).toBe(404);
-    for (const d of [off, anonymous, outside]) expect(d.remove).not.toHaveBeenCalled();
+    expect(anonymous.remove).not.toHaveBeenCalled();
+    // 로그인하지 않은 요청은 id 모양도 알려 주지 않는다 (401이 404보다 먼저다)
+    expect((await handleDeleteClaudeAppChat(del(), "nope", anonymous.value)).status).toBe(401);
   });
 
-  it("지우면 204. 지우는 것은 인증된 사용자의 채팅뿐이다", async () => {
+  it("저장 플래그 · 대화 v2 · adapter 플래그가 모두 꺼져 있어도 지운다 (enabled · sentEnabled 모두 false) — 저장된 데이터는 늘 지울 수 있다", async () => {
+    const d = deps({ enabled: () => false, sentEnabled: () => false });
+    const response = await handleDeleteClaudeAppChat(del(), CHAT, d.value);
+    expect(response.status).toBe(204);
+    expect(d.authenticate).toHaveBeenCalledTimes(1);
+    expect(d.remove).toHaveBeenCalledExactlyOnceWith({ user: { id: USER } }, CHAT);
+  });
+
+  it("베타 명단을 보지 않는다: 명단 밖 사용자도 자기 대화를 지운다 (명단은 새 저장을 여는 문이지 지우는 문이 아니다)", async () => {
+    const d = deps({ betaAllowed: () => false });
+    expect((await handleDeleteClaudeAppChat(del(), CHAT, d.value)).status).toBe(204);
+    expect(d.betaAllowed).not.toHaveBeenCalled();
+    expect(d.remove).toHaveBeenCalledTimes(1);
+  });
+
+  it("지우면 204 + Cache-Control no-store(BYOK 키 DELETE와 같다). 지우는 것은 인증된 사용자의 채팅뿐이다", async () => {
     const d = deps();
     const response = await handleDeleteClaudeAppChat(del(), CHAT, d.value);
     expect(response.status).toBe(204);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.text()).toBe("");
     expect(d.remove).toHaveBeenCalledExactlyOnceWith({ user: { id: USER } }, CHAT);
   });
 
@@ -372,6 +392,37 @@ describe("POST /api/v2/external-sessions/claude-app-sent", () => {
     expect((await handleClaudeAppSent(sent({ result: "received" }), outside.value)).status).toBe(404);
     expect(off.recordSent).not.toHaveBeenCalled();
     expect(outside.recordSent).not.toHaveBeenCalled();
+    expect(off.takeSentLimit).not.toHaveBeenCalled();
+    expect(outside.takeSentLimit).not.toHaveBeenCalled();
+  });
+
+  it("속도 제한은 사용자별 10분에 120번이고 저장(claude_app_chat)과 따로 센다", () => {
+    expect(CLAUDE_APP_SENT_LIMIT).toEqual({ max: 120, windowMs: 10 * 60_000 });
+    expect(CLAUDE_APP_CHAT_LIMIT).toEqual({ max: 120, windowMs: 10 * 60_000 });
+  });
+
+  it("지표를 남기기 전에 속도 제한을 센다 (저장 속도 제한 takeLimit은 쓰지 않는다): 한도에 찼으면 429 + Retry-After, 지표 0", async () => {
+    const d = deps({ takeSentLimit: async () => new Date(Date.now() + 90_000) });
+    const response = await handleClaudeAppSent(sent({ result: "not_sent", reason: "bypass" }), d.value);
+    expect(response.status).toBe(429);
+    expect(await response.json()).toMatchObject({ error: { code: "rate_limited" } });
+    expect(Number(response.headers.get("retry-after"))).toBeGreaterThanOrEqual(89);
+    expect(d.recordSent).not.toHaveBeenCalled();
+    expect(d.takeLimit).not.toHaveBeenCalled();
+    const ok = deps();
+    expect((await handleClaudeAppSent(sent({ result: "not_sent", reason: "bypass" }), ok.value)).status).toBe(204);
+    expect(ok.takeSentLimit).toHaveBeenCalledExactlyOnceWith({ user: { id: USER } });
+    expect(ok.takeSentLimit.mock.invocationCallOrder[0]).toBeLessThan(ok.recordSent.mock.invocationCallOrder[0]);
+    expect(ok.takeLimit).not.toHaveBeenCalled();
+  });
+
+  it("아무것도 쓰지 않는 호출(저장이 켜져 있을 때의 received · 잘못된 본문)은 속도 제한도 쓰지 않는다", async () => {
+    const on = deps({ enabled: () => true });
+    expect((await handleClaudeAppSent(sent({ result: "received" }), on.value)).status).toBe(204);
+    expect(on.takeSentLimit).not.toHaveBeenCalled();
+    const bad = deps();
+    expect((await handleClaudeAppSent(sent({ result: "queued" }), bad.value)).status).toBe(400);
+    expect(bad.takeSentLimit).not.toHaveBeenCalled();
   });
 
   it("not_sent는 이유와 함께(또는 이유 없이) 지표로 남기고 204", async () => {

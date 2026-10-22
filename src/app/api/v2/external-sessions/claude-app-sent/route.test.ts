@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ admin: vi.fn(), auth: vi.fn(), insert: vi.fn() }));
+const mocks = vi.hoisted(() => ({ admin: vi.fn(), auth: vi.fn(), insert: vi.fn(), rpc: vi.fn() }));
 
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: mocks.admin }));
@@ -22,7 +22,9 @@ function base(extra: Record<string, string> = {}) {
 beforeEach(() => {
   mocks.auth.mockResolvedValue({ user: { id: USER } });
   mocks.insert.mockResolvedValue({ error: null });
-  mocks.admin.mockReturnValue({ from: (table: string) => ({ insert: (row: unknown) => mocks.insert(table, row) }) });
+  // 속도 제한(take_rate_limit, 종류 claude_app_sent)은 기본 통과(null)
+  mocks.rpc.mockImplementation(() => ({ throwOnError: () => Promise.resolve({ data: null, error: null }) }));
+  mocks.admin.mockReturnValue({ from: (table: string) => ({ insert: (row: unknown) => mocks.insert(table, row) }), rpc: mocks.rpc });
 });
 afterEach(() => {
   vi.clearAllMocks();
@@ -59,12 +61,36 @@ describe("POST /api/v2/external-sessions/claude-app-sent", () => {
     expect(mocks.insert).toHaveBeenCalledExactlyOnceWith("metric_events", { user_id: USER, type: "claude_app_message_sent", props: { result: "not_sent", reason: "bypass" } });
   });
 
-  it("저장 플래그가 켜져 있으면 received는 남기지 않는다 (204), not_sent는 남긴다", async () => {
+  it("저장 플래그가 켜져 있으면 received는 남기지 않는다 (204, 속도 제한도 쓰지 않는다), not_sent는 남긴다", async () => {
     base({ CLAUDE_APP_CHATS_ENABLED: "true" });
     expect((await call({ result: "received" })).status).toBe(204);
     expect(mocks.insert).not.toHaveBeenCalled();
+    expect(mocks.rpc).not.toHaveBeenCalled();
     expect((await call({ result: "not_sent", reason: "session_closed" })).status).toBe(204);
     expect(mocks.insert).toHaveBeenCalledExactlyOnceWith("metric_events", { user_id: USER, type: "claude_app_message_sent", props: { result: "not_sent", reason: "session_closed" } });
+  });
+
+  it("속도 제한(claude_app_sent, 사용자별 10분 120번)을 지표 insert 전에 센다. 인증된 사용자 id로만", async () => {
+    base();
+    expect((await call({ result: "not_sent", reason: "bypass" })).status).toBe(204);
+    expect(mocks.rpc.mock.calls).toEqual([["take_rate_limit", { p_user_id: USER, p_kind: "claude_app_sent", p_max: 120, p_window_seconds: 600 }]]);
+    expect(mocks.rpc.mock.invocationCallOrder[0]).toBeLessThan(mocks.insert.mock.invocationCallOrder[0]);
+  });
+
+  it("한도에 찼으면 429 + Retry-After이고 지표를 남기지 않는다", async () => {
+    base();
+    mocks.rpc.mockImplementation(() => ({ throwOnError: () => Promise.resolve({ data: new Date(Date.now() + 120_000).toISOString(), error: null }) }));
+    const response = await call({ result: "not_sent", reason: "bypass" });
+    expect(response.status).toBe(429);
+    expect(Number(response.headers.get("retry-after"))).toBeGreaterThanOrEqual(119);
+    expect(await response.json()).toMatchObject({ error: { code: "rate_limited" } });
+    expect(mocks.insert).not.toHaveBeenCalled();
+  });
+
+  it("잘못된 본문(strict 400)은 속도 제한을 쓰지 않는다", async () => {
+    base();
+    expect((await call({ result: "received", user_id: OTHER })).status).toBe(400);
+    expect(mocks.rpc).not.toHaveBeenCalled();
   });
 
   it("본문이 사용자 id · 글 · 제목 칸을 실어도 받지 않는다 (strict 400)", async () => {
