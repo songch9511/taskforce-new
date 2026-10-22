@@ -1,7 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { EXTERNAL_SESSION_STATES, externalSessionReportRequestSchema, externalSessionsShownRequestSchema, metricEventRequestSchema } from "./contract";
-import { EXTERNAL_SESSION_RETENTION_DAYS, handleExternalSessionsShown, handleReportExternalSessions, type ExternalSessionReportOutcome, type ExternalSessionsDeps } from "./external-sessions";
+import { EXTERNAL_SESSION_STATES, claudeAppSessionOpenedRequestSchema, externalSessionReportRequestSchema, externalSessionsShownRequestSchema, metricEventRequestSchema } from "./contract";
+import {
+  EXTERNAL_SESSION_RETENTION_DAYS,
+  handleClaudeAppSessionOpened,
+  handleExternalSessionsShown,
+  handleReportExternalSessions,
+  type ExternalSessionReportOutcome,
+  type ExternalSessionsDeps,
+} from "./external-sessions";
 
 vi.mock("server-only", () => ({}));
 
@@ -13,9 +20,19 @@ const session = (n: number, over: Record<string, unknown> = {}) => ({ id: ref(n)
 function deps(over: Partial<ExternalSessionsDeps<{ user: { id: string } }>> = {}) {
   const report = vi.fn(async (): Promise<ExternalSessionReportOutcome> => ({ status: "ok", kept: 1, removed: 0 }));
   const recordShown = vi.fn(async (): Promise<"recorded" | "duplicate"> => "recorded");
+  const recordClaudeAppOpened = vi.fn(async (): Promise<"recorded" | "duplicate"> => "recorded");
   const authenticate = vi.fn(async () => ({ user: { id: USER } }));
-  const value: ExternalSessionsDeps<{ user: { id: string } }> = { enabled: () => true, reportEnabled: () => true, authenticate, betaAllowed: () => true, report, recordShown, ...over };
-  return { value, report, recordShown, authenticate };
+  const value: ExternalSessionsDeps<{ user: { id: string } }> = {
+    enabled: () => true,
+    reportEnabled: () => true,
+    authenticate,
+    betaAllowed: () => true,
+    report,
+    recordShown,
+    recordClaudeAppOpened,
+    ...over,
+  };
+  return { value, report, recordShown, recordClaudeAppOpened, authenticate };
 }
 
 const put = (body: unknown, headers: Record<string, string> = {}) =>
@@ -171,8 +188,29 @@ describe("계약 스키마", () => {
   it("v1 metric-events 스키마는 동결 그대로다: app_opened만 받는다 (새 지표는 v2)", () => {
     expect(metricEventRequestSchema.safeParse({ type: "app_opened" }).success).toBe(true);
     expect(metricEventRequestSchema.safeParse({ type: "app_opened", action_id: "5e5e5e5e-0000-4000-8000-000000000001" }).success).toBe(true);
-    for (const bad of [{ type: "external_sessions_shown", props: { rows_bucket: "2-5", held_bucket: "0" } }, { type: "session_attached" }, { type: "agent_message_sent" }]) {
+    for (const bad of [
+      { type: "external_sessions_shown", props: { rows_bucket: "2-5", held_bucket: "0" } },
+      { type: "session_attached" },
+      { type: "agent_message_sent" },
+      { type: "claude_app_session_opened" },
+    ]) {
       expect(metricEventRequestSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+    }
+  });
+
+  it("claude_app_session_opened 본문은 비어 있다: 종류만이고 어떤 칸도 받지 않는다 (strict)", () => {
+    expect(claudeAppSessionOpenedRequestSchema.safeParse({}).success).toBe(true);
+    for (const bad of [
+      { title: "x" },
+      { user_id: "11111111-0000-4000-8000-000000000001" },
+      { session_id: "5e5e5e5e-0000-4000-8000-000000000001" },
+      { type: "claude_app_session_opened" },
+      { source: "rail" },
+      [],
+      null,
+      "x",
+    ]) {
+      expect(claudeAppSessionOpenedRequestSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
     }
   });
 
@@ -248,5 +286,69 @@ describe("handleExternalSessionsShown", () => {
     expect((await handleExternalSessionsShown(post(shown), d.value)).status).toBe(500);
     expect(JSON.stringify(log.mock.calls)).not.toContain("secret detail");
     expect(JSON.stringify(log.mock.calls)).toContain("external_sessions_shown_failed");
+  });
+});
+
+// 데스크톱 세션 보기를 연 날의 지표 claude_app_session_opened (OA PR-D2): 종류만 (본문 · 칸 0), 하루 한 번, 목록 gate · 베타 명단은 `shown`과 같다
+describe("handleClaudeAppSessionOpened", () => {
+  const post = (body: unknown = {}) =>
+    new Request("https://api.example.dev/api/v2/external-sessions/claude-app-opened", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+  it("꺼져 있으면 404 · 로그인 없으면 401 · 베타 명단 밖이면 404 (저장 0)", async () => {
+    const off = deps({ enabled: () => false });
+    expect((await handleClaudeAppSessionOpened(post(), off.value)).status).toBe(404);
+    expect(off.authenticate).not.toHaveBeenCalled();
+    const anonymous = deps({ authenticate: async () => null });
+    expect((await handleClaudeAppSessionOpened(post(), anonymous.value)).status).toBe(401);
+    const outside = deps({ betaAllowed: () => false });
+    expect((await handleClaudeAppSessionOpened(post(), outside.value)).status).toBe(404);
+    for (const d of [off, anonymous, outside]) expect(d.recordClaudeAppOpened).not.toHaveBeenCalled();
+  });
+
+  it("본문 없이도 · 빈 객체로도 저장하고 204, 같은 날 두 번째도 204", async () => {
+    const d = deps();
+    const response = await handleClaudeAppSessionOpened(post({}), d.value);
+    expect(response.status).toBe(204);
+    expect(d.recordClaudeAppOpened).toHaveBeenCalledExactlyOnceWith({ user: { id: USER } });
+    const empty = deps();
+    const noBody = new Request("https://api.example.dev/api/v2/external-sessions/claude-app-opened", { method: "POST" });
+    expect((await handleClaudeAppSessionOpened(noBody, empty.value)).status).toBe(204);
+    expect(empty.recordClaudeAppOpened).toHaveBeenCalledTimes(1);
+    const again = deps({ recordClaudeAppOpened: async () => "duplicate" });
+    expect((await handleClaudeAppSessionOpened(post(), again.value)).status).toBe(204);
+  });
+
+  it.each([{ title: "x" }, { session_id: "5e5e5e5e-0000-4000-8000-000000000001" }, { user_id: USER }, { source: "rail" }])("어떤 칸을 실어도 400 (저장 0): %j", async (body) => {
+    const d = deps();
+    expect((await handleClaudeAppSessionOpened(post(body), d.value)).status).toBe(400);
+    expect(d.recordClaudeAppOpened).not.toHaveBeenCalled();
+  });
+
+  it("제목 보고 gate가 꺼져 있어도 열린다: 제목을 보내지 않는 지표라 따로 간다", async () => {
+    const d = deps({ reportEnabled: () => false });
+    expect((await handleClaudeAppSessionOpened(post(), d.value)).status).toBe(204);
+    expect(d.recordClaudeAppOpened).toHaveBeenCalledTimes(1);
+  });
+
+  it("본문은 1 KiB까지만 읽는다: 끝없는 본문에 400 (저장 0)", async () => {
+    const d = deps();
+    const pulled = { n: 0 };
+    const stream = new Request("https://api.example.dev/api/v2/external-sessions/claude-app-opened", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: endless(512, pulled),
+      duplex: "half",
+    } as RequestInit);
+    expect((await handleClaudeAppSessionOpened(stream, d.value)).status).toBe(400);
+    expect(d.recordClaudeAppOpened).not.toHaveBeenCalled();
+    expect(pulled.n).toBeLessThanOrEqual(6);
+  });
+
+  it("저장이 실패하면 500이고 로그에 오류 이름과 코드뿐이다", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const d = deps({ recordClaudeAppOpened: async () => Promise.reject(Object.assign(new Error("secret detail"), { code: "XX000" })) });
+    expect((await handleClaudeAppSessionOpened(post(), d.value)).status).toBe(500);
+    expect(JSON.stringify(log.mock.calls)).not.toContain("secret detail");
+    expect(JSON.stringify(log.mock.calls)).toContain("claude_app_session_opened_failed");
   });
 });

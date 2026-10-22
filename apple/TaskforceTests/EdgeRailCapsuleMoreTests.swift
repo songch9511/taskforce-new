@@ -48,7 +48,12 @@ struct EdgeRailCapsuleMoreTests {
         card.present(model: model(), label: "More", capsule: capsule, over: host) {}
         let window = try #require(card.window)
         let visible = (host.screen ?? NSScreen.main)?.visibleFrame ?? host.frame
-        #expect(window.frame == RailMoreCardGeometry.frame(size: window.frame.size, capsule: capsule, visible: visible))
+        let beside = RailMoreCardGeometry.frame(size: window.frame.size, capsule: capsule, visible: visible)
+        // 사용자 결정(2026-10-22): More 카드는 가운데로 옮기지 않는다. ⋯ 옆(DS `beside`): 셋째 캡슐 왼쪽 10pt, 아래 끝은 그 캡슐과 같다
+        #expect(window.frame == beside, "DS beside 그대로 (레일 중심선에 가운데 맞춤이 아니다)")
+        #expect(window.frame.maxX == capsule.minX - RailMoreCardGeometry.gap, "셋째 캡슐 왼쪽 10pt")
+        #expect(window.frame.minY == min(capsule.minY, visible.maxY - window.frame.height), "아래 끝은 셋째 캡슐과 같다 (화면 위로 넘칠 때만 안으로)")
+        #expect(abs(window.frame.midY - host.frame.midY) > 1, "레일 창의 가운데로 끌려가지 않는다")
         #expect(window.frame.width >= RailMoreCard.minWidth)
         let hosting = try #require(window.contentView as? EdgeRailMoreCardHostingView)
         #expect(hosting.accessibilityRole() == .menu && hosting.accessibilityLabel() == "More" && hosting.isAccessibilityElement())
@@ -145,6 +150,30 @@ struct EdgeRailCapsuleMoreTests {
         #expect(opened == ["settings"] && !rail.moreCard.isOpen && rig.shell.moreFocusSerial == focus + 2)
     }
 
+    /// 사용자 결정(2026-10-22): 레일이 여는 다른 패널은 레일 중심선에 가운데지만 More 카드는 ⋯ 옆(DS `beside`)이다 — 레일을 화면 어디에 두든 카드 아래 끝은 셋째 캡슐 아래 끝이다
+    @Test func theCardStaysBesideTheMoreButtonWhereverTheRailStands() async throws {
+        let rig = try await TaskforceRig.make()
+        let rail = EdgeRailPanelController(shell: rig.shell)
+        rail.moreCard.shows = false
+        rig.shell.pointer(inside: true)
+        rig.time.advance(0.2)
+        #expect(rig.shell.isExpanded)
+        var bottoms: [CGFloat] = []
+        for originY in [CGFloat(120), 380] {
+            rail.panel.setFrame(CGRect(origin: CGPoint(x: 1200, y: originY), size: EdgeRailCapsuleLayout.windowSize), display: false)
+            rail.toggleMoreCard()
+            let local = try #require(rig.shell.capsuleLayout.thirdCapsuleFrame)
+            let capsule = rail.panel.convertToScreen(rail.hosting.convert(NSRect(x: local.minX, y: local.minY, width: local.width, height: local.height), to: nil))
+            let window = try #require(rail.moreCard.window)
+            let visible = (rail.panel.screen ?? NSScreen.main)?.visibleFrame ?? rail.panel.frame
+            #expect(window.frame == RailMoreCardGeometry.frame(size: window.frame.size, capsule: capsule, visible: visible), "레일 창 아래 \(originY)")
+            #expect(window.frame.maxX == capsule.minX - RailMoreCardGeometry.gap)
+            bottoms.append(window.frame.minY)
+            rail.toggleMoreCard()
+        }
+        #expect(abs(bottoms[1] - bottoms[0] - 260) < 0.001, "레일이 260 올라가면 카드도 같은 만큼 따라 올라간다 (가운데 맞춤이면 같은 자리에 머문다)")
+    }
+
     // MARK: 칠해진 칸은 하나 (검토 1)
 
     @Test func exactlyOneRailItemLooksSelectedWhileTheTaskforceConversationIsOpen() async throws {
@@ -156,9 +185,9 @@ struct EdgeRailCapsuleMoreTests {
         rig.shell.assistantWindowFront = true
         let lit = rig.shell.controls.filter { rig.shell.railControlHighlighted($0) }
         #expect(lit.isEmpty && rig.shell.taskforceBell?.selected == true, "Taskforce 대화가 열려 있으면 bell만 칠해진다")
-        // 패널이 닫히면 창이 앞인 Chats만 칠해진다 (그때는 bell이 없다)
+        // 패널이 닫히면 칠해진 칸이 없다: 캡슐 레일에는 Chats 칸이 없어 창이 앞이어도 칠할 칸이 없다 (계약 24장)
         rig.shell.dismiss()
-        #expect(rig.shell.controls.filter { rig.shell.railControlHighlighted($0) } == [.chats])
+        #expect(rig.shell.controls.filter { rig.shell.railControlHighlighted($0) }.isEmpty)
         // 호버는 늘 칠한다 (포인터 피드백)
         rig.shell.assistantWindowFront = false
         rig.shell.hover(control: .allWork)
@@ -368,10 +397,10 @@ struct EdgeRailCapsuleMoreTests {
         #expect(litControls() == [.more], "Projects가 열려 있어도 More 카드가 열려 있으면 칠해진 칸은 ⋯ 하나")
         rig.shell.setMenuOpen(false)
         #expect(litControls() == [.allWork], "카드가 닫히면 Projects 선택이 돌아온다 (선택은 지워진 적 없다)")
-        // Chats: Assistant 창이 앞이다 (패널은 닫혀 있다)
+        // Assistant 창이 앞이다 (패널은 닫혀 있다): Chats 칸이 없어 칠해진 칸이 없다
         rig.shell.dismiss()
         rig.shell.assistantWindowFront = true
-        #expect(litControls() == [.chats])
+        #expect(litControls().isEmpty)
         rig.shell.setMenuOpen(true)
         #expect(litControls() == [.more])
         rig.shell.setMenuOpen(false)

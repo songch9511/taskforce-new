@@ -2,6 +2,7 @@ import SwiftUI
 
 /// Rail item (0.2.0 디자인 시스템 Molecules): 레일의 일 하나. 32pt 정사각형(`radius-md`) 안의 `ActivityRing`이고, 누르면 그 일을 연다.
 /// 접근성 이름 · 툴팁은 "제목 · 상태 · 활동" (상태 = `TaskStatusMark`의 To Do · In Progress · Done, 활동 = 링의 말 또는 활동 글).
+/// 업무 상태가 없는 칸(Claude 데스크톱 세션: Taskforce 업무가 아니다, OA PR-D2 DZ E)은 상태 없이 "제목 · 활동"이다.
 /// 숨은 레일에서는 링이 14pt로 노치 가운데에 있고, 펼친 레일에서는 18pt(×1.286)로 자란다. 자리 · 크기는 바뀌지 않고 transform만 바뀐다.
 /// **캡슐 모양**(`look: .capsule`, OA U3): 칸은 원이고 링은 늘 18pt(14 × 1.286)다 — 접힘은 열 전체가 .72배로 줄어 약 13pt가 된다. 노치로 미는 일이 없다.
 public struct RailItem: View {
@@ -9,7 +10,7 @@ public struct RailItem: View {
 
     let kind: ActivityRing.Kind
     let title: String
-    let state: TaskStatusMark.State
+    let state: TaskStatusMark.State?
     let activity: String
     let expanded: Bool
     let highlighted: Bool
@@ -18,10 +19,11 @@ public struct RailItem: View {
     let look: ActivityRing.Look
     let action: () -> Void
 
+    /// - state: 업무 상태. 없으면(Claude 데스크톱 세션) 이름 · 툴팁이 "제목 · 활동"이다
     /// - notchShift: 숨은 레일에서 링을 노치 가운데로 옮기는 거리(왼쪽, pt). 레일이 펼치면 0
     /// - highlighted: 호버 · 지금 연 일 · 열린 메뉴 (`bezel/hover`로 칸 전체를 칠한다, 펼친 레일에서만)
     public init(
-        kind: ActivityRing.Kind, title: String, state: TaskStatusMark.State, activity: String,
+        kind: ActivityRing.Kind, title: String, state: TaskStatusMark.State?, activity: String,
         expanded: Bool, highlighted: Bool = false, notchShift: CGFloat = 0, reduceMotion: Bool = false, look: ActivityRing.Look = .classic,
         action: @escaping () -> Void
     ) {
@@ -37,9 +39,10 @@ public struct RailItem: View {
         self.action = action
     }
 
-    /// "Title · State · Activity"
-    nonisolated public static func accessibilityLabel(title: String, state: TaskStatusMark.State, activity: String) -> String {
-        "\(title) · \(state.label) · \(activity)"
+    /// "Title · State · Activity" (상태가 없으면 "Title · Activity")
+    nonisolated public static func accessibilityLabel(title: String, state: TaskStatusMark.State?, activity: String) -> String {
+        guard let state else { return "\(title) · \(activity)" }
+        return "\(title) · \(state.label) · \(activity)"
     }
 
     public var body: some View {

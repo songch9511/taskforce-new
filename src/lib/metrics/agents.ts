@@ -65,6 +65,8 @@ export const AGENT_EVENTS: readonly AgentEventSpec[] = [
   { type: "external_sessions_shown", sources: [{ kind: "ts", file: "src/lib/api/external-sessions.ts" }], dims: [], activity: true },
   // 외부 세션 이어받기로 세션 행이 새로 생겼을 때(OA 외부 세션 PR2s): 사용자가 Resume here를 확인한 일이라 활동이다. attach_agent_session이 세션 · 대화와 같은 트랜잭션에서 남기고(대화만 다시 만든 호출은 세지 않는다) props는 adapter뿐이다
   { type: "session_attached", sources: [sql("attach_agent_session")], dims: [], activity: true },
+  // 사용자가 Claude 데스크톱 세션 보기(레일 링 · Sessions의 줄)를 연 날 (하루 한 번, OA PR-D2). 앱이 POST /api/v2/external-sessions/claude-app-opened로 알리고 route가 서버 권한으로 남긴다. 종류만 (props 0)이라 dims가 없다
+  { type: "claude_app_session_opened", sources: [{ kind: "ts", file: "src/lib/api/external-sessions.ts" }], dims: [], activity: true },
   // Taskforce에서 Claude 데스크톱 세션으로 보낸 글 (OA PR-D3s, 계약 25.6): 사용자 글 하나당 하나. 저장이 켜져 있으면 save_claude_app_chat이 **새로 저장된 사용자 글마다** 같은 트랜잭션에서 남기고({result:"received"}),
   // 저장이 꺼져 있거나 못 보낸 글(not_sent + 이유 코드)은 Mac이 POST /api/v2/external-sessions/claude-app-sent로 알리고 route가 서버 권한으로 남긴다. props는 결과 코드뿐이다 (글 · 제목 · id 0)
   { type: "claude_app_message_sent", sources: [sql("save_claude_app_chat"), { kind: "ts", file: "src/lib/api/claude-app-chats.ts" }], dims: ["result", "reason"], activity: true },

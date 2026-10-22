@@ -69,6 +69,26 @@ extension ExternalSessionSuites {
             }
         }
 
+        /// 파일 이름 `<pid>.json`과 안의 `pid`가 다르면 등록으로 치지 않는다 (PR-D1 보안 검토 P3): 늘 다시 읽을 pid(`alwaysRead`)는 이름으로 고르는데,
+        /// 이름과 다른 pid를 내세운 파일이 이 판정을 속이거나 다른 항목의 읽기 기억을 가로채지 못한다
+        @Test func aRegistryFileWhoseContentPidIsNotItsNameIsNotAnEntry() throws {
+            try withHome { home in
+                try home.registry(pid: 100, json: A.registry(pid: 200, id: F.uuid(1), status: "busy"))
+                try home.registry(pid: 101, json: A.registry(pid: 101, id: F.uuid(2), status: "idle"))
+                #expect(readEntries(home).map(\.pid) == [101], "이름 100.json 안에 pid 200이라고 쓴 파일은 건너뛴다")
+                var reuse = ExternalSessionRegistry.Reuse()
+                let recording = RecordingFileSystem()
+                _ = ExternalSessionRegistry.read(fileSystem: recording.fileSystem, sessionsDirectory: home.sessions, now: now, reuse: &reuse, alwaysRead: [])
+                let mark = recording.reads.count
+                // 안의 pid(200)를 늘 읽을 목록에 넣어도 이름이 다른 파일은 항목이 아니라서 읽기 기억을 건드리지 않는다. 이름(101)이 맞는 항목만 다시 읽는다
+                _ = ExternalSessionRegistry.read(fileSystem: recording.fileSystem, sessionsDirectory: home.sessions, now: now, reuse: &reuse, alwaysRead: [200, 101])
+                #expect(recording.reads[mark...].map(\.path) == [home.sessions + "/101.json"])
+                // 하나뿐이고 틀린 파일이면 읽을 수 있는 등록이 없다 (형식이 바뀐 것처럼 신호 1을 건너뛴다)
+                try FileManager.default.removeItem(atPath: home.sessions + "/101.json")
+                #expect(ExternalSessionRegistry.read(fileSystem: .live, sessionsDirectory: home.sessions, now: now) == .unavailable)
+            }
+        }
+
         @Test func theRegistryCarriesTheStatusTheWaitReasonAndWhenItChanged() throws {
             try withHome { home in
                 try home.registry(pid: 100, json: A.registry(pid: 100, id: F.uuid(1), status: "busy"))

@@ -49,8 +49,10 @@ public enum TFIcon: String, CaseIterable, Sendable {
     case attach = "paperclip"
     /// 레일 맨 위 Review 타일 (OA U1, Lucide `clipboard-check`): 결정 · 결과의 입구
     case review = "clipboard-check"
-    /// 레일 셋째 캡슐의 On this Mac (OA 외부 세션 PR1, Lucide `laptop`): 이 Mac의 Claude Code 세션 목록의 입구
+    /// (OA 외부 세션 PR1, Lucide `laptop`) 레일 셋째 캡슐의 On this Mac이었다. PR-D2에서 그 칸이 Sessions로 합쳐져 레일에는 더 없다 (DS 글리프 세트에는 남겨 둔다)
     case laptop = "laptop"
+    /// 레일 첫 캡슐의 Sessions 버튼 (OA PR-D2, DZ 승인 2026-10-22, Lucide 1.48.0 `layers`): Taskforce 세션과 이 Mac의 Claude 세션을 모두 한 곳에서 보는 입구
+    case sessions = "layers"
 
     // OA U2: 프로젝트 아이콘 풀 12종 (서버 `PROJECT_ICON_POOL`, DS ProjectIcon). 풀 밖 이름은 `project`(folder)
     case rocket = "rocket"

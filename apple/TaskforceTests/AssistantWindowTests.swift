@@ -393,7 +393,7 @@ struct AssistantWindowTests {
         #expect(step(menu: false, composing: false, inner: false) == .hide && asked == 2, "그 밖에는 창을 숨긴다")
     }
 
-    @Test func theKeysAWindowListensToAreEscapeCommandWAndTheFourShellCommands() {
+    @Test func theKeysAWindowListensToAreEscapeCommandWAndTheShellCommands() {
         func intent(_ code: Int, _ flags: NSEvent.ModifierFlags = []) -> AssistantWindowManager.KeyIntent? {
             AssistantWindowManager.KeyIntent.of(keyCode: code, flags: flags)
         }
@@ -402,8 +402,21 @@ struct AssistantWindowTests {
         #expect(intent(kVK_ANSI_W) == nil && intent(kVK_ANSI_W, [.command, .shift]) == nil)
         #expect(intent(kVK_ANSI_1, .command) == .review && intent(kVK_ANSI_2, .command) == .allWork)
         #expect(intent(kVK_ANSI_3, .command) == .chats && intent(kVK_ANSI_N, .command) == .newChat)
+        #expect(intent(kVK_ANSI_4, .command) == .sessions, "⌘4 Sessions도 Assistant 창이 듣는다 (OA PR-D2)")
+        #expect(intent(kVK_ANSI_4) == nil && intent(kVK_ANSI_4, [.command, .shift]) == nil, "수정 키 없는 4는 글자다")
         #expect(intent(kVK_ANSI_3) == nil, "수정 키 없는 3은 글자다")
         #expect(intent(kVK_ANSI_A, .command) == nil)
+    }
+
+    /// Sessions 버튼이 없는 셸(Release · 게이트 꺼짐 · 로그인 전)에서 ⌘4는 Review가 꺼진 ⌘1처럼 지나간다 (먹지 않는다)
+    @Test func commandFourFromAWindowPassesWhenTheShellHasNoSessionsButton() throws {
+        let r = try rig()
+        defer { r.defaults.cleanup() }
+        let id = try #require(r.manager.openNewWindow())
+        #expect(!r.shell.sessionsVisible)
+        #expect(!r.manager.perform(.sessions, in: id))
+        #expect(!r.shell.panelOpen && r.shell.view != .sessions)
+        #expect(!r.manager.perform(.sessions, in: UUID()), "없는 창의 키는 처리하지 않는다")
     }
 
     @Test func theShellCommandsFromAWindowGoToTheShell() throws {

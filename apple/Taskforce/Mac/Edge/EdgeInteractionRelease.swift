@@ -93,7 +93,7 @@ extension EdgeInteraction {
 extension EdgeKeyCommand {
     /// 셸이 듣는 키 명령 전부 (Release 표면 확인용)
     @MainActor static func allCommandsListened(by shell: EdgeShellModel) -> [EdgeKeyCommand] {
-        [.escape, .review, .allWork, .chats, .newChat].filter { shell.listens(to: $0) }
+        [.escape, .review, .allWork, .chats, .sessions, .newChat].filter { shell.listens(to: $0) }
     }
 }
 #endif

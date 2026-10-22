@@ -45,10 +45,13 @@ struct IssueComponentTests {
 
     // MARK: 링
 
+    /// 링의 VoiceOver 이름(`ActivityRing.Kind`)과 세션 링의 말(`AgentSessionRing.label`)은 끝남 하나만 다르다: 끝난 링은 열어 볼 때까지 남아 몇 시간이 될 수 있어
+    /// 링의 이름은 "Done"이고(OA PR-D2, 계약 23장), 링의 말 "Done just now"는 끝남을 3초만 두는 옛 모드의 활동 글이다 (열 때까지 남는 모드는 활동 글을 "Done"으로 덮는다)
     @Test func everySessionRingHasARingKindAndTheNamesAgree() {
-        for ring in AgentSessionRing.allCases {
+        for ring in AgentSessionRing.allCases where ring != .done {
             #expect(ActivityRing.Kind(ring).accessibilityLabel == ring.label, "\(ring)")
         }
+        #expect(ActivityRing.Kind(AgentSessionRing.done).accessibilityLabel == "Done" && AgentSessionRing.done.label == "Done just now")
         #expect(AgentSessionRing.allCases.count == 7 && ActivityRing.Kind.allCases.count == 7)
     }
 

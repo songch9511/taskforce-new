@@ -5,6 +5,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 
 import { authenticateRequest, type ApiContext } from "./auth";
 import {
+  claudeAppSessionOpenedRequestSchema,
   externalSessionReportRequestSchema,
   externalSessionsShownRequestSchema,
   type ExternalSessionReportRequest,
@@ -86,6 +87,8 @@ export type ExternalSessionsDeps<User extends AppUser> = {
   report: (user: User, input: ExternalSessionReportRequest) => Promise<ExternalSessionReportOutcome>;
   /** 지표 external_sessions_shown: 같은 날 두 번째는 "duplicate" (서버가 조용히 넘긴다) */
   recordShown: (user: User, input: ExternalSessionsShownRequest) => Promise<"recorded" | "duplicate">;
+  /** 지표 claude_app_session_opened (종류만, 칸 0): 같은 날 두 번째는 "duplicate" */
+  recordClaudeAppOpened: (user: User) => Promise<"recorded" | "duplicate">;
 };
 
 const NOT_FOUND = "없는 경로입니다.";
@@ -130,6 +133,26 @@ export async function handleExternalSessionsShown<User extends AppUser>(request:
   }
 }
 
+/**
+ * POST /api/v2/external-sessions/claude-app-opened: 사용자가 Claude 데스크톱 세션 보기를 연 날의 지표 (OA PR-D2). **종류만**: 본문은 빈 객체뿐이고(칸이 하나라도 있으면 400)
+ * 어떤 세션인지 · 제목 · 폴더는 서버에 오지 않는다. 응답은 늘 204 (같은 날 두 번째도). gate · 명단은 `shown`과 같고 제목 보고 gate는 보지 않는다
+ */
+export async function handleClaudeAppSessionOpened<User extends AppUser>(request: Request, deps: ExternalSessionsDeps<User>): Promise<Response> {
+  if (!deps.enabled()) return errorResponse(404, "not_found", NOT_FOUND);
+  const user = await deps.authenticate(request);
+  if (!user) return unauthorized();
+  if (!deps.betaAllowed(user.user.id)) return errorResponse(404, "not_found", NOT_FOUND);
+  const body = await parseCappedBody(request, claudeAppSessionOpenedRequestSchema, MAX_SHOWN_BODY_BYTES);
+  if ("error" in body) return body.error;
+  try {
+    await deps.recordClaudeAppOpened(user);
+    return new Response(null, { status: 204 });
+  } catch (error) {
+    console.error(JSON.stringify({ event: "claude_app_session_opened_failed", error: error instanceof Error ? error.name : "unknown", ...(codeOf(error) ? { code: codeOf(error) } : {}) }));
+    return errorResponse(500, "internal_error", "이벤트를 남기지 못했습니다.");
+  }
+}
+
 const rpcResultSchema = z.union([z.strictObject({ status: z.literal("ok"), kept: z.number().int().min(0), removed: z.number().int().min(0) }), z.strictObject({ status: z.literal("not_found") })]);
 
 export const realExternalSessionsDeps = (): ExternalSessionsDeps<ApiContext> => ({
@@ -145,6 +168,13 @@ export const realExternalSessionsDeps = (): ExternalSessionsDeps<ApiContext> => 
   // 앱의 열 권한(type · action_id)을 넓히지 않으려고 구간 값을 검증한 뒤 서버 권한으로 남긴다. 하루 한 번(UTC 날짜별 부분 unique 인덱스): 두 번째는 23505
   recordShown: async ({ user }, input) => {
     const { error } = await createAdminClient().from("metric_events").insert({ user_id: user.id, type: "external_sessions_shown", props: input });
+    if (error?.code === "23505") return "duplicate";
+    if (error) throw error;
+    return "recorded";
+  },
+  // 종류만 (props 0). 하루 한 번(UTC 날짜별 부분 unique 인덱스, 20261206000000): 두 번째는 23505
+  recordClaudeAppOpened: async ({ user }) => {
+    const { error } = await createAdminClient().from("metric_events").insert({ user_id: user.id, type: "claude_app_session_opened", props: {} });
     if (error?.code === "23505") return "duplicate";
     if (error) throw error;
     return "recorded";

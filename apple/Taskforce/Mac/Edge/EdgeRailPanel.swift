@@ -258,11 +258,11 @@ struct EdgeRailView: View {
                 ForEach(shell.controls, id: \.self) { control in
                     let frame = layout.controlFrame(control)
                     RailButton(icon: shell.railIcon(for: control), label: shell.label(for: control), highlighted: highlighted(control)) {
-                        switch control {
-                        case .allWork: shell.openAllWork()
-                        case .chats: shell.openChats()
-                        case .onThisMac: shell.openOnThisMac()
-                        case .more: onMore(frame)
+                        // 눌린 칸의 패널이 이미 열려 있으면 닫는다 (계약 24장 토글). More는 메뉴가 따로 연다
+                        if control == .more {
+                            onMore(frame)
+                        } else {
+                            shell.pressControl(control)
                         }
                     }
                     .offset(x: frame.minX, y: frame.minY)
@@ -399,6 +399,11 @@ final class EdgeRailPanelController {
         screen.frame.maxY - EdgeRailLayout.topFromScreen
     }
 
+    /// 캡슐 레일의 중심선 (화면 좌표, 아래가 0): 열은 늘 창의 세로 가운데에서 자라고 창은 화면 세로 가운데라(`show()`) 중심선은 화면 `midY`다. 레일이 여는 패널이 이 선에 가운데로 선다 (`EdgePanelMetrics.centeredFrame`)
+    static func railCenterY(on screen: NSScreen) -> CGFloat {
+        screen.frame.midY
+    }
+
     /// 창 크기 (캡슐 레일은 가장 큰 열이 들어가는 크기로 늘 같다)
     static func windowSize(for shell: EdgeShellModel) -> NSRect {
         if shell.issueScreensEnabled {
@@ -422,6 +427,19 @@ final class EdgeRailPanelController {
             display: true
         )
         panel.orderFrontRegardless()
+    }
+
+    /// 지금 화면에 있는 **레일 전체**(보이는 모든 캡슐)의 세로 가운데 (화면 좌표, 아래가 0). 레일이 여는 패널이 이 선에 가운데로 선다 (`EdgePanelMetrics.centeredFrame`).
+    /// 누른 버튼이 든 캡슐이 아니라 레일 전체다: 같은 패널이 어느 캡슐의 버튼으로 열리든 같은 자리에 선다. 레일 창의 실제 자리에서 잰다
+    /// (열은 늘 창의 세로 가운데에서 자라고 창은 화면 가운데라 보통 화면 `midY`와 같다 — 창이 옮겨졌어도 패널은 레일을 따라간다). 레일 창이 안 떠 있거나 캡슐이 없으면 nil
+    var centerLineY: CGFloat? {
+        guard panel.isVisible, shell.issueScreensEnabled else { return nil }
+        let layout = shell.capsuleLayout
+        let capsules = [layout.bellCapsuleFrame, layout.sessionsCapsuleFrame, layout.thirdCapsuleFrame].compactMap { $0 }
+        // 캡슐이 하나도 없는 쉼(막대 하나)은 열이 창의 가운데에 앉아 있다
+        guard let top = capsules.map(\.minY).min(), let bottom = capsules.map(\.maxY).max() else { return panel.frame.midY }
+        // 레일 창 좌표(위가 0) → 화면 좌표
+        return panel.frame.maxY - (top + bottom) / 2
     }
 
     func hide() {
@@ -493,6 +511,8 @@ final class EdgeRailPanelController {
             if hit.bell { return layout.bellFrame }
             if hit.plus { return layout.plusFrame }
             if let id = hit.item, let index = shell.slots.firstIndex(where: { $0.id == id }) { return layout.ringFrame(index) }
+            // Sessions는 첫 캡슐의 버튼이다 (셋째 캡슐의 칸이 아니다)
+            if hit.control == .sessions { return layout.sessionsButtonFrame }
             return hit.control.flatMap { layout.controlFrame($0) }
         }()
         tooltip.update(anchor: anchor, in: panel)

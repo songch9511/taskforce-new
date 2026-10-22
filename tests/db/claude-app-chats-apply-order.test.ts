@@ -1,9 +1,8 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { D2_MIGRATION_NAME, D2_MIGRATION_SQL } from "./d2-migration-stand-in";
 import { supabaseSchemaScripts } from "./local-supabase";
 import { openPglite } from "./pglite-template";
 
@@ -12,6 +11,7 @@ import { openPglite } from "./pglite-template";
 // 그래서 20261207은 맨 앞에서 20261206이 적용됐는지 확인하고, 아니면 예외로 멈춘다 (운영 DB는 파일을 하나씩 적용하므로 순서를 사람이 지킨다).
 
 const MIGRATIONS = path.resolve(__dirname, "../../supabase/migrations");
+const D2_MIGRATION_NAME = "20261206000000_claude_app_session_metrics.sql";
 const MINE = "20261207000000_claude_app_chats.sql";
 const mineSql = readFileSync(path.join(MIGRATIONS, MINE), "utf8");
 const code = mineSql.split("\n").filter((line) => !line.trim().startsWith("--")).join("\n").trim();
@@ -80,18 +80,15 @@ describe("적용 순서 가드 (20261207 → 20261206)", { timeout: 90_000 }, ()
     const between = readdirSync(MIGRATIONS).filter((name) => name.endsWith(".sql") && name > D2_MIGRATION_NAME && name < MINE);
     expect(between, "20261206과 20261207 사이에 파일이 끼면 그 파일이 종류 검사를 건드리는지 본다").toEqual(between.filter((name) => !/metric_events_type_check/i.test(strip(readFileSync(path.join(MIGRATIONS, name), "utf8")))));
     // D2 파일 자신은 종류 검사를 만든다 (20261207의 '앞 목록'의 집)
-    if (existsSync(path.join(MIGRATIONS, D2_MIGRATION_NAME))) {
-      expect(strip(readFileSync(path.join(MIGRATIONS, D2_MIGRATION_NAME), "utf8"))).toMatch(/metric_events_type_check/i);
-    }
-    // 20261204와 20261206 사이(20261205 등)가 종류 검사를 만지면 20261206의 앞 목록이 바뀐다: 그것은 D2/병합 쪽이 맞춘다 — 여기서는 20261206 이후만 고정한다
+    expect(strip(readFileSync(path.join(MIGRATIONS, D2_MIGRATION_NAME), "utf8"))).toMatch(/metric_events_type_check/i);
+    // 20261204(session_attached까지)와 20261206 사이에도 종류 검사를 다시 만드는 파일이 없다: 20261206의 앞 목록은 20261204의 것이다
+    const before = readdirSync(MIGRATIONS).filter((name) => name.endsWith(".sql") && name > "20261204000000_agent_session_attach.sql" && name < D2_MIGRATION_NAME);
+    expect(before.filter((name) => /metric_events_type_check/i.test(strip(readFileSync(path.join(MIGRATIONS, name), "utf8"))))).toEqual([]);
   });
 
-  it("20261206의 대체 SQL은 D2 브랜치의 파일과 한 글자도 다르지 않다 (D2의 파일이 이 브랜치에 있으면 같은지 본다)", () => {
-    const file = path.join(MIGRATIONS, D2_MIGRATION_NAME);
-    if (!existsSync(file)) {
-      expect(D2_MIGRATION_SQL).toContain("claude_app_session_opened");
-      return;
-    }
-    expect(readFileSync(file, "utf8")).toBe(D2_MIGRATION_SQL);
+  it("실제 20261206 파일(PR-D2)이 claude_app_session_opened를 종류 검사에 더하고, 20261207의 새 목록이 그것을 이어 가져온다", () => {
+    const d2 = readFileSync(path.join(MIGRATIONS, D2_MIGRATION_NAME), "utf8");
+    expect(d2).toContain("claude_app_session_opened");
+    expect(mineSql).toContain("claude_app_session_opened");
   });
 });

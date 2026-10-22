@@ -204,6 +204,40 @@ extension ExternalSessionSuites {
             }
         }
 
+        /// 중복 판정의 열쇠는 (msg_id, 검증된 보낸 pid, 플러그인) 셋이다 (PR-D1 보안 검토 P3): 다른 프로세스가 남의 msg_id를 흉내 내 진짜 메시지를 가리지 못한다
+        @Test func twoPeersThatShareAMessageIDButNotTheSenderOrPluginAreBothShown() throws {
+            try withHome { home in
+                let spoof = F.json([
+                    "type": "user", "isMeta": true, "sessionId": id, "message": ["role": "user", "content": A.wrapperSentinel],
+                    "origin": ["kind": "peer", "plugin": "tf-relay", "verifiedPeerPid": 9999, "msg_id": "m1", "body": "from another process"],
+                ])
+                let otherPlugin = F.json([
+                    "type": "attachment", "sessionId": id,
+                    "attachment": ["type": "queued_command", "prompt": A.wrapperSentinel, "origin": ["kind": "peer", "plugin": "other-mod", "verifiedPeerPid": 4321, "msg_id": "m1", "body": "from another mod"]],
+                ])
+                try home.transcript(directory: directory, id: id, lines: [peerUser(msg: "m1", body: "hello"), spoof, otherPlugin, peerQueued(msg: "m1", body: "hello")])
+                guard let first = page(reader(home).open(sessionID: id, cwd: cwd)) else { return }
+                #expect(texts(first.turns) == ["hello", "from another process", "from another mod"], "같은 msg_id라도 보낸 pid · 플러그인이 다르면 다른 메시지다 (같은 셋만 한 번)")
+            }
+        }
+
+        /// 사용자가 친 줄에는 `origin`이 없다: `origin`이 있는데 peer가 아닌 줄은 사용자 말이 아니라 건너뛰고, 친 말(user)은 origin 없이 나온다
+        @Test func aTypedUserTurnCarriesNoOriginAndOnlyPeerTurnsCarryAPeer() throws {
+            try withHome { home in
+                try home.transcript(directory: directory, id: id, lines: [L.user(id: id, text: "typed"), peerUser(msg: "m1", body: "hello"), L.assistant(id: id, text: "ok")])
+                guard let page = page(reader(home).open(sessionID: id, cwd: cwd)) else { return }
+                for turn in page.turns {
+                    switch turn.kind {
+                    case .user: #expect(texts([turn]) == ["typed"], "친 말은 `.user`로, 출처 값이 없다")
+                    case .peer(_, let peer): #expect(peer.messageID == "m1")
+                    default: break
+                    }
+                }
+                #expect(page.turns.filter { if case .user = $0.kind { true } else { false } }.count == 1)
+                #expect(page.turns.filter { if case .peer = $0.kind { true } else { false } }.count == 1)
+            }
+        }
+
         @Test func aPeerMessageAlreadyShownIsNotShownAgainByLiveUpdatesOrEarlierPages() throws {
             try withHome { home in
                 let path = try home.transcript(directory: directory, id: id, lines: [L.user(id: id, text: "typed"), peerUser(msg: "m1", body: "hello"), peerQueued(msg: "m2", body: "second")])

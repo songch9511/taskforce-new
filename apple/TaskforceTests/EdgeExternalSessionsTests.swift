@@ -125,6 +125,8 @@ struct EdgeExternalSessionsTests {
         let scope: AccountScope
         let recheck: Recheck
         let gate: ScanGate
+        let gateway: IssueSampleGateway
+        let issues: IssueRuntime
     }
 
     static func row(
@@ -136,22 +138,34 @@ struct EdgeExternalSessionsTests {
         )
     }
 
-    func make(gated: Bool = true, store: Bool = true, signedIn: Bool = true) -> Rig {
+    /// - sessions: 가짜 서버의 Taskforce 세션 (기본은 없음: On this Mac 시험이 Taskforce 줄에 가려지지 않게)
+    /// - desktop · railDone · opened: 데스크톱 세션 모델 · 안 연 끝남 저장소 · 지표 (`EdgeSessionsTests`가 채운다)
+    /// - scope: 데스크톱 모델 · 지표와 같은 계정 경계를 쓰려면 넘긴다. time: 손으로 돌리는 시계 (호버 · 끝남 표시를 시간으로 본다)
+    func make(
+        gated: Bool = true, store: Bool = true, signedIn: Bool = true, sessions: IssueSampleGateway.SessionScenario = .none,
+        desktop: ClaudeAppSessionsModel? = nil, railDone: (any RailDoneStore)? = nil, opened: ClaudeAppOpenedMetric? = nil,
+        scope givenScope: AccountScope? = nil, time: EdgeShellModelTests.ManualTime? = nil
+    ) -> Rig {
         let counter = Counter()
         let gate = ScanGate()
         let recheck = Recheck()
-        let scope = AccountScope(currentAccount: { SampleData.userID })
+        let scope = givenScope ?? AccountScope(currentAccount: { SampleData.userID })
         let seen = InMemoryExternalSessionSeenStore(Date(timeIntervalSinceNow: -10_000))
         let external = ExternalSessionsStore(scope: scope, scan: { await gate.scan(counter) }, recheck: { recheck.ask($0) }, seen: seen, pollInterval: 3600)
-        let issues = IssueRuntime(gateway: IssueSampleGateway(), scope: scope)
+        let gateway = IssueSampleGateway()
+        gateway.sessions = sessions
+        let issues = IssueRuntime(gateway: gateway, scope: scope)
         let contexts = WorkContextStore(gateway: IssueSampleContextGateway(), scope: scope)
+        let schedule: EdgeSchedule
+        if let time { schedule = time.schedule } else { schedule = { _, _ in EdgeTimer() } }
         let shell = EdgeShellModel(
-            schedule: { _, _ in EdgeTimer() }, clock: { Date() }, contexts: contexts, chatsEnabled: true, windowsEnabled: true, issues: gated ? issues : nil, externalSessions: store ? external : nil
+            schedule: schedule, clock: time?.clock ?? { Date() }, contexts: contexts, chatsEnabled: true, windowsEnabled: true,
+            issues: gated ? issues : nil, externalSessions: store ? external : nil, desktopSessions: desktop, railDone: railDone, claudeAppOpened: opened
         )
         let app = FakeClaudeApp()
         shell.claudeApp = app
         if signedIn { shell.accountChanged(SampleData.userID) }
-        return Rig(shell: shell, store: external, counter: counter, seen: seen, app: app, scope: scope, recheck: recheck, gate: gate)
+        return Rig(shell: shell, store: external, counter: counter, seen: seen, app: app, scope: scope, recheck: recheck, gate: gate, gateway: gateway, issues: issues)
     }
 
     func until(_ condition: () -> Bool) async -> Bool {
@@ -164,59 +178,64 @@ struct EdgeExternalSessionsTests {
 
     // MARK: 게이트 · 레일 칸
 
-    @Test func theRailHasNoOnThisMacUnlessTheStoreExistsTheIssueScreensAreOnAndSomeoneIsSignedIn() {
+    @Test func theSessionsButtonNeedsTheIssueScreensAndASignedInAccountAndTheMacListAlsoNeedsTheStore() {
         let base: [EdgeShellModel.Control] = [.allWork, .chats, .more]
-        #expect(make(store: false).shell.controls == base, "목록이 없으면(BridgeFlag 꺼짐) 칸도 없다")
-        #expect(make(gated: false).shell.controls == base, "새 Issues 화면이 꺼진 셸은 지금 그대로")
-        #expect(make(signedIn: false).shell.controls == base, "로그인하지 않았으면 없다")
-        #expect(make().shell.controls == [.allWork, .chats, .onThisMac, .more], "More 앞에 든다")
+        #expect(make().shell.controls == [.allWork, .more], "캡슐 레일(새 Issues 화면)의 셋째 캡슐은 Projects · More 둘이다: Chats 칸이 없고 Sessions도 칸이 아니다 (첫 캡슐(링 · +)의 맨 위 버튼)")
+        #expect(make(gated: false).shell.controls == base, "새 Issues 화면이 꺼진 노치 레일은 지금 그대로 Projects · Chats · More")
+        #expect(make().shell.controls == make(signedIn: false).shell.controls && make().shell.controls == make(store: false).shell.controls, "로그인 · 목록과 상관없이 같다")
+        #expect(make().shell.sessionsVisible && make(store: false).shell.sessionsVisible, "목록(BridgeFlag)이 없어도 Taskforce 세션은 Sessions에서 본다")
+        #expect(!make(gated: false).shell.sessionsVisible, "새 Issues 화면이 꺼진 셸은 지금 그대로: 버튼이 없다")
+        #expect(!make(signedIn: false).shell.sessionsVisible, "로그인하지 않았으면 없다")
+        #expect(make().shell.externalSessionsVisible && !make(store: false).shell.externalSessionsVisible, "On this Mac 절은 목록이 있을 때만")
         #expect(make(gated: false).shell.externalSessions == nil, "게이트가 꺼진 셸은 목록을 아예 들지 않는다")
+        #expect(make().shell.capsuleLayout.sessionsButton && !make(gated: false).shell.capsuleLayout.sessionsButton)
         #expect(EdgeShellModel.Control.defaultControls == base, "기본 칸 목록은 그대로다")
     }
 
     @Test func allCasesIsTheCompleteListAndTheDefaultColumnIsSeparate() {
-        #expect(EdgeShellModel.Control.allCases == [.allWork, .chats, .onThisMac, .more], "allCases는 빠짐없이: 새 칸이 생겨도 allCases를 믿는 코드가 조용히 틀리지 않는다")
-        #expect(EdgeShellModel.Control.defaultControls == [.allWork, .chats, .more], "게이트가 꺼진 셋째 캡슐의 칸")
+        #expect(EdgeShellModel.Control.allCases == [.allWork, .chats, .sessions, .more], "allCases는 빠짐없이: 새 칸이 생겨도 allCases를 믿는 코드가 조용히 틀리지 않는다")
+        #expect(EdgeShellModel.Control.defaultControls == [.allWork, .chats, .more], "노치 레일의 셋째 칸")
+        #expect(EdgeShellModel.Control.capsuleControls == [.allWork, .more], "캡슐 레일의 셋째 캡슐: Chats 칸이 없다 (계약 24장)")
         #expect(EdgeRailLayout(notchCount: 2, restCount: 1, expanded: true, idle: false).controls == EdgeShellModel.Control.defaultControls)
-        #expect(EdgeRailCapsuleLayout(mode: .expanded, bell: false, compactRingCount: 0, ringCount: 0).controls == EdgeShellModel.Control.defaultControls)
-        #expect(SettingsPanelKeys.rows.map(\.label).prefix(2) == ["All work", "Chats"], "단축키 목록은 칸이 늘어도 단축키가 있는 것만")
+        #expect(EdgeRailCapsuleLayout(mode: .expanded, bell: false, compactRingCount: 0, ringCount: 0).controls == EdgeShellModel.Control.capsuleControls)
     }
 
-    @Test func theControlNamesItsIconAndTooltipWithoutAShortcut() {
+    @Test func theSessionsButtonNamesItsIconAndTooltipWithItsShortcut() {
         let time = EdgeShellModelTests.ManualTime()
         let scope = AccountScope(currentAccount: { SampleData.userID })
-        let external = ExternalSessionsStore(scope: scope, scan: { ExternalSessionScan(rows: []) }, seen: InMemoryExternalSessionSeenStore(), pollInterval: 3600)
         let shell = EdgeShellModel(
-            schedule: time.schedule, clock: time.clock, chatsEnabled: true, windowsEnabled: true, issues: IssueRuntime(gateway: IssueSampleGateway(), scope: scope), externalSessions: external
+            schedule: time.schedule, clock: time.clock, chatsEnabled: true, windowsEnabled: true, issues: IssueRuntime(gateway: IssueSampleGateway(), scope: scope)
         )
         shell.accountChanged(SampleData.userID)
-        #expect(shell.label(for: .onThisMac) == "On this Mac")
-        #expect(shell.railIcon(for: .onThisMac) == .laptop && TFIcon.laptop.rawValue == "laptop")
-        #expect(EdgeShellModel.Control.onThisMac.shortcut == nil)
+        #expect(shell.label(for: .sessions) == "Sessions" && SessionsPanelCopy.title == "Sessions")
+        #expect(shell.railIcon(for: .sessions) == .sessions && TFIcon.sessions.rawValue == "layers")
+        #expect(EdgeShellModel.Control.sessions.shortcut == "⌘4" && SessionsPanelCopy.shortcut == "⌘4")
         shell.pointer(inside: true)
         time.advance(TFMotion.railHoverDelay + 0.01)
-        shell.hover(control: .onThisMac)
-        #expect(shell.tooltip?.title == "On this Mac" && shell.tooltip?.detail == "")
+        shell.hover(control: .sessions)
+        #expect(shell.tooltip?.title == "Sessions" && shell.tooltip?.detail == "⌘4")
         shell.hover(control: .more)
         #expect(shell.tooltip == nil, "More는 지금처럼 툴팁이 없다")
     }
 
-    @Test func theThirdCapsuleGrowsToFourControlsAndHidesWhenTheRailIsCollapsed() {
+    @Test func theThirdCapsuleStaysAtTwoControlsAndHidesWhenTheRailIsCollapsed() {
         let rig = make()
-        let expanded = EdgeRailCapsuleLayout(mode: .expanded, bell: false, compactRingCount: 0, ringCount: 0, controls: rig.shell.controls)
-        #expect(expanded.thirdCapsuleDrawn?.height == 146)
+        let expanded = EdgeRailCapsuleLayout(mode: .expanded, bell: false, compactRingCount: 0, ringCount: 0, controls: rig.shell.controls, sessionsButton: true)
+        #expect(expanded.thirdCapsuleDrawn?.height == 78, "Projects · More 둘 (Chats 칸이 없다, 계약 24장)")
         #expect(rig.shell.controls.allSatisfy { expanded.controlDrawn($0) != nil })
+        #expect(expanded.controlDrawn(.chats) == nil, "Chats는 셋째 캡슐에 없다")
         let order = rig.shell.controls.compactMap { expanded.controlDrawn($0)?.minY }
-        #expect(order == order.sorted(), "위에서부터 Projects · Chats · On this Mac · More")
-        let compact = EdgeRailCapsuleLayout(mode: .compact, bell: true, compactRingCount: 2, ringCount: 2, controls: rig.shell.controls)
-        #expect(compact.thirdCapsuleDrawn == nil && compact.controlDrawn(.onThisMac) == nil, "접힌 레일에서는 셋째 캡슐째 보이지 않는다")
+        #expect(order == order.sorted(), "위에서부터 Projects · More")
+        #expect(expanded.controlDrawn(.sessions) == nil, "Sessions는 셋째 캡슐에 없다")
+        let compact = EdgeRailCapsuleLayout(mode: .compact, bell: true, compactRingCount: 2, ringCount: 2, controls: rig.shell.controls, sessionsButton: true)
+        #expect(compact.thirdCapsuleDrawn == nil && compact.controlDrawn(.more) == nil && compact.sessionsButtonDrawn == nil, "접힌 레일에서는 셋째 캡슐째 보이지 않고 Sessions · +도 접힌다")
         let rest = EdgeRailCapsuleLayout(mode: .rest, bell: false, compactRingCount: 0, ringCount: 0, controls: rig.shell.controls)
         #expect(rest.thirdCapsuleDrawn == nil)
-        #expect(expanded.controlFrame(.onThisMac).map { expanded.hitsRail(CGPoint(x: $0.midX, y: $0.midY)) } == true)
+        #expect(expanded.sessionsButtonFrame.map { expanded.hitsRail(CGPoint(x: $0.midX, y: $0.midY)) } == true)
     }
 
     @Test func theWindowAlwaysHoldsTheBiggestColumn() {
-        let tall = EdgeRailCapsuleLayout(mode: .expanded, bell: true, compactRingCount: 3, ringCount: 4, controls: [.allWork, .chats, .onThisMac, .more])
+        let tall = EdgeRailCapsuleLayout(mode: .expanded, bell: true, compactRingCount: 3, ringCount: 4, controls: EdgeShellModel.Control.capsuleControls, sessionsButton: true)
         let bottom = tall.thirdCapsuleDrawn?.maxY ?? .infinity
         #expect(bottom + EdgeRailCapsuleLayout.room <= EdgeRailCapsuleLayout.windowHeight + 0.001)
         #expect(tall.columnHeight == EdgeRailCapsuleLayout.maxColumnHeight)
@@ -224,31 +243,34 @@ struct EdgeExternalSessionsTests {
 
     // MARK: 패널 열기 · 훑기
 
-    @Test func openingOnThisMacShowsThePanelAndStartsScanningAndLeavingStopsIt() async {
+    @Test func openingSessionsShowsThePanelAndStartsScanningTheMacAndLeavingStopsIt() async {
         let rig = make()
         rig.counter.set([Self.row(1)])
-        rig.shell.openOnThisMac()
-        #expect(rig.shell.panelOpen && rig.shell.view == .onThisMac && rig.store.isOpen)
-        #expect(rig.shell.view.title == "On this Mac")
+        rig.shell.openSessions()
+        #expect(rig.shell.panelOpen && rig.shell.view == .sessions && rig.store.isOpen)
+        #expect(rig.shell.view.title == "Sessions")
         #expect(await until { rig.store.phase == .ready })
-        #expect(rig.shell.railControlHighlighted(.onThisMac) && !rig.shell.railControlHighlighted(.allWork) && !rig.shell.railControlHighlighted(.chats))
+        #expect(rig.shell.railControlHighlighted(.sessions) && !rig.shell.railControlHighlighted(.allWork) && !rig.shell.railControlHighlighted(.chats))
         rig.shell.openAllWork()
         #expect(!rig.store.isOpen, "다른 화면으로 가면 훑기를 멈춘다")
-        rig.shell.openOnThisMac()
+        rig.shell.openSessions()
         #expect(rig.store.isOpen)
         rig.shell.dismiss()
         #expect(!rig.store.isOpen && !rig.shell.panelOpen, "패널을 접어도 멈춘다")
     }
 
-    @Test func aShellWithoutTheStoreIgnoresTheOpen() {
-        let rig = make(store: false)
-        rig.shell.openOnThisMac()
-        #expect(!rig.shell.panelOpen && rig.shell.view == .allWork)
-        rig.shell.openPanel(.onThisMac)
-        #expect(!rig.shell.panelOpen, "어느 길로도 열리지 않는다")
+    @Test func aShellWithoutTheIssueScreensOrAnAccountIgnoresTheOpenButOneWithoutTheStoreStillOpensSessions() {
+        let ungated = make(gated: false)
+        ungated.shell.openSessions()
+        #expect(!ungated.shell.panelOpen && ungated.shell.view == .allWork)
+        ungated.shell.openPanel(.sessions)
+        #expect(!ungated.shell.panelOpen, "어느 길로도 열리지 않는다")
         let signedOut = make(signedIn: false)
-        signedOut.shell.openOnThisMac()
+        signedOut.shell.openSessions()
         #expect(!signedOut.shell.panelOpen)
+        let noStore = make(store: false)
+        noStore.shell.openSessions()
+        #expect(noStore.shell.panelOpen && noStore.shell.view == .sessions, "목록이 없어도 Taskforce 세션은 본다")
     }
 
     @Test func theRailExpandingScansOnceForTheDotAndTheOpenListDoesNotScanAgain() async {
@@ -264,7 +286,7 @@ struct EdgeExternalSessionsTests {
         time.advance(TFMotion.railHoverDelay + 0.01)
         #expect(shell.railHovered)
         #expect(await until { counter.scans == 1 }, "레일이 펼쳐질 때 한 번 훑는다")
-        shell.openOnThisMac()
+        shell.openSessions()
         #expect(await until { counter.scans == 2 }, "목록을 열 때 한 번 더")
         shell.pointer(inside: false)
         time.advance(1)
@@ -282,27 +304,27 @@ struct EdgeExternalSessionsTests {
         rig.counter.set([Self.row(1, created: Date(timeIntervalSinceNow: -50_000)), Self.row(2, created: Date(timeIntervalSinceNow: -60))])
         await rig.store.refresh()
         #expect(rig.store.hasNew)
-        rig.shell.openOnThisMac()
+        rig.shell.openSessions()
         #expect(!rig.store.hasNew)
         rig.shell.dismiss()
     }
 
     @Test func theAccountLeavingClosesTheListAndGoesBackToAllWork() async {
         let rig = make()
-        rig.shell.openOnThisMac()
-        #expect(rig.shell.view == .onThisMac)
+        rig.shell.openSessions()
+        #expect(rig.shell.view == .sessions)
         rig.shell.accountChanged(nil)
         #expect(rig.shell.view == .allWork && !rig.store.isOpen)
-        #expect(!rig.shell.externalSessionsVisible && rig.shell.controls == [.allWork, .chats, .more])
+        #expect(!rig.shell.externalSessionsVisible && !rig.shell.sessionsVisible && rig.shell.controls == [.allWork, .more])
     }
 
-    @Test func theLastViewReopenedByTheShortcutIsTheListWhenItWasOpenAndItIsNotAnOpenItem() {
+    @Test func theLastViewReopenedByTheShortcutIsSessionsWhenItWasOpenAndItIsNotAnOpenItem() {
         let rig = make()
-        rig.shell.openOnThisMac()
+        rig.shell.openSessions()
         #expect(rig.shell.openItem == nil, "Assistant 칩이 따라갈 항목이 아니다")
         rig.shell.dismiss()
         rig.shell.togglePanel()
-        #expect(rig.shell.panelOpen && rig.shell.view == .onThisMac)
+        #expect(rig.shell.panelOpen && rig.shell.view == .sessions)
     }
 
     // MARK: Open in Claude (F4: 그 세션을 데스크톱 앱에서 연다, 가짜 실행기)
@@ -749,8 +771,10 @@ struct EdgeExternalSessionsTests {
     private func panelWithRow(
         _ content: ExternalSessionLineContent, onAction: @escaping () -> Void, key: Bool, disabled: Bool = false
     ) -> (panel: EdgeKeyPanel, hosting: NSHostingView<AnyView>) {
+        // Open in Claude는 포인터를 올리거나 포커스가 있을 때만 보인다 (DZ 승인 2026-10-22): 합성 클릭은 포인터를 올리지 않으니 호버한 것으로 그린다 (Debug 시험 자리)
+        ExternalSessionLineSnapshot.hoveredTitles.insert(content.title)
         let hosting = NSHostingView(rootView: AnyView(
-            ExternalSessionLineView(content: content) { _ in onAction() }.disabled(disabled).frame(width: 380).padding(8).background(TFColor.bgPanel)
+            ExternalSessionLineView(content: content, onAction: { _ in onAction() }).disabled(disabled).frame(width: 380).padding(8).background(TFColor.bgPanel)
         ))
         hosting.frame = NSRect(x: 0, y: 0, width: 396, height: 80)
         let panel = EdgeKeyPanel(contentRect: hosting.frame, styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView], backing: .buffered, defer: false)
@@ -846,7 +870,8 @@ struct EdgeExternalSessionsTests {
                 Self.row(2, status: .held(.claudeApp), group: "/Users/tester/proj2", client: .claudeDesktop),
             ])
             await rig.store.refresh()
-            rig.shell.openOnThisMac()
+            ExternalSessionLineSnapshot.hoveredTitles.formUnion(["Session 1", "Session 2"])
+            rig.shell.openSessions()
             let presentation = EdgePanelPresentation()
             presentation.shown = true
             let hosting = NSHostingView(rootView: EdgePanelView(shell: rig.shell, presentation: presentation, chat: nil))
@@ -890,7 +915,8 @@ struct EdgeExternalSessionsTests {
         let rig = make()
         rig.counter.set([Self.row(1, status: .available, group: "/Users/tester/proj1", client: .claudeDesktop)])
         await rig.store.refresh()
-        rig.shell.openOnThisMac()
+        ExternalSessionLineSnapshot.hoveredTitles.insert("Session 1")
+        rig.shell.openSessions()
         let presentation = EdgePanelPresentation()
         presentation.shown = true
         let hosting = NSHostingView(rootView: EdgePanelView(shell: rig.shell, presentation: presentation, chat: nil))
@@ -949,7 +975,8 @@ struct EdgeExternalSessionsTests {
         let rig = make()
         rig.counter.set([Self.row(1, status: .available, group: "/Users/tester/proj1", client: .claudeDesktop)])
         await rig.store.refresh()
-        rig.shell.openOnThisMac()
+        ExternalSessionLineSnapshot.hoveredTitles.insert("Session 1")
+        rig.shell.openSessions()
         let presentation = EdgePanelPresentation()
         presentation.shown = true
         let hosting = NSHostingView(rootView: EdgePanelView(shell: rig.shell, presentation: presentation, chat: nil))
@@ -1014,26 +1041,6 @@ struct EdgeExternalSessionsTests {
     @Test func recheckWithoutABridgeHostOrAScanIsUnknown() async {
         let environment = ExternalSessionsEnvironment(host: { nil })
         #expect(await environment.recheck(Self.uuid(1)) == nil)
-    }
-
-    // MARK: 묶음 머리의 프로젝트 이름
-
-    @Test func aGroupFolderThatIsATaskforceProjectFolderUsesTheProjectName() async {
-        let gateway = IssueSampleContextGateway()
-        gateway.seeds = IssueSnapshotData.seeds
-        let scope = AccountScope(currentAccount: { SampleData.userID })
-        let contexts = WorkContextStore(gateway: gateway, scope: scope)
-        await contexts.refresh()
-        let shell = EdgeShellModel(schedule: { _, _ in EdgeTimer() }, clock: { Date() }, contexts: contexts, chatsEnabled: true, windowsEnabled: true)
-        let name = contexts.contexts[Fx.taskforce]?.name
-        #expect(name != nil)
-        shell.projectFolders = { [Fx.taskforce: "/Users/tester/taskforce-app"] }
-        #expect(shell.externalProjectName(forFolder: "/Users/tester/taskforce-app") == name)
-        #expect(shell.externalProjectName(forFolder: "/Users/tester/other") == nil)
-        shell.projectFolders = { [:] }
-        #expect(shell.externalProjectName(forFolder: "/Users/tester/taskforce-app") == nil)
-        shell.projectFolders = { [UUID(): "/Users/tester/taskforce-app"] }
-        #expect(shell.externalProjectName(forFolder: "/Users/tester/taskforce-app") == nil, "모르는 프로젝트 id")
     }
 
     // MARK: 이 Mac의 값

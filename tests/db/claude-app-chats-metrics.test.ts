@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 
 import type { PGlite } from "@electric-sql/pglite";
@@ -10,8 +10,7 @@ import { asUser, createLocalSupabase } from "./local-supabase";
 // 대화 저장 마이그레이션(20261207000000)이 다시 만드는 두 목록 (OA PR-D3s, 계약 25.2.1 · 25.11):
 //   · metric_events_type_check = 바로 앞 목록(20261206000000, PR-D2) 전체 + claude_app_message_sent · claude_app_chat_deleted
 //   · rate_limit_events_kind_check · take_rate_limit = 20261204000000 본문 그대로 + claude_app_chat
-// 이 PR은 PR-D2(20261206000000)보다 **늦게** 병합된다. D2가 아직 이 브랜치에 없어도 시험이 돌도록 20261206의 목록을 글자 그대로 아래에 두고,
-// D2의 파일이 있으면(병합 뒤) 그 파일의 목록과 이 글자 그대로의 목록이 같은지도 본다.
+// PR-D2(20261206000000)는 이미 병합됐다. 20261206의 목록을 글자 그대로 아래에 두고, 실제 D2 파일의 목록과 같은지 본다 (D2가 목록을 바꾸면 여기서 어긋남을 잡는다).
 
 const MIGRATIONS = path.resolve(__dirname, "../../supabase/migrations");
 const NEW_FILE = "20261207000000_claude_app_chats.sql";
@@ -60,12 +59,11 @@ describe("metric_events 종류 검사 (20261207000000)", () => {
     for (const type of typeList(ATTACH_FILE)) expect(next, type).toContain(type);
   });
 
-  it("D2의 파일이 있으면 그 목록이 위 글자 그대로의 목록과 같다 (D2 병합 뒤 어긋남을 잡는다)", () => {
-    if (!existsSync(path.join(MIGRATIONS, D2_FILE))) return;
+  it("실제 D2 파일(20261206)의 목록이 위 글자 그대로의 목록과 같다 (D2가 목록을 바꾸면 어긋남을 잡는다)", () => {
     expect(typeList(D2_FILE)).toEqual(LIST_20261206);
   });
 
-  it("D2가 병합되기 전에도 D2 종류를 거절하지 않는다: 20261207이 가장 나중 정의이고 D2 종류를 담는다", () => {
+  it("D2 종류를 거절하지 않는다: 20261207이 가장 나중 정의이고 D2 종류를 담는다", () => {
     expect(typeList(NEW_FILE)).toContain("claude_app_session_opened");
   });
 });

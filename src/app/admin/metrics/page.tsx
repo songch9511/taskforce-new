@@ -56,8 +56,9 @@ const AGENT_TYPE_LABELS: Record<string, string> = {
   project_icon_changed: "프로젝트 아이콘 바꿈",
   project_archived: "프로젝트 보관",
   assistant_opened: "Assistant 열기 (아직 남기는 곳 없음)",
-  external_sessions_shown: "외부 세션 목록(On this Mac) 보임 (하루 한 번)",
+  external_sessions_shown: "Sessions 패널의 On this Mac 목록 보임 (하루 한 번)",
   session_attached: "외부 세션 이어받기 (Resume here 성공)",
+  claude_app_session_opened: "Claude 데스크톱 세션 보기 열기 (하루 한 번)",
   claude_app_message_sent: "Claude 데스크톱 세션으로 글 보냄 (받음 · 못 보냄)",
   claude_app_chat_deleted: "저장된 Claude 데스크톱 대화 지움",
 };

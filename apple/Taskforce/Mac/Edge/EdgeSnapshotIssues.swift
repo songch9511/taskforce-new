@@ -160,6 +160,14 @@ enum IssueSnapshotData {
                 SessionSeed(number: 2, name: "Lifetime plan section", connection: codex, status: .bound, state: .idle, issues: [139], created: 2),
                 SessionSeed(number: 8, name: "Rings and rail", connection: claude, status: .bound, state: .awaitingAnswer, issues: [141], created: 3),
             ]
+        case .finished:
+            return [
+                SessionSeed(number: 1, name: "Pricing copy draft", connection: claude, status: .bound, state: .completed, issues: [139], created: 1),
+                SessionSeed(number: 2, name: "Lifetime plan section", connection: codex, status: .bound, state: .idle, issues: [139], created: 2),
+                SessionSeed(number: 8, name: "Rings and rail", connection: claude, status: .bound, state: .awaitingAnswer, issues: [141], created: 3),
+                SessionSeed(number: 3, name: "Trial wording", connection: claude, status: .bound, state: .running, issues: [141], created: 4),
+                SessionSeed(number: 4, name: "Spike: bridge reconnect backoff", connection: claude, status: .closed, state: .idle, issues: [141], created: 5),
+            ]
         case .awaiting:
             return [
                 SessionSeed(number: 1, name: "Pricing copy draft", connection: claude, status: .bound, state: .awaitingAnswer, issues: [139], created: 1),
@@ -335,6 +343,8 @@ final class IssueSampleGateway: ChatGateway, IssueScreensGateway, TaskforceReque
 
     enum SessionScenario: Sendable {
         case none, basic, awaiting, external, closedAndStates, nine, longName, longNamePair, many
+        /// `.basic`을 한 번 읽은 다음에 바꾸면 "Pricing copy draft"가 방금 끝난 세션(done)이 된다 (OA PR-D2 Sessions: 끝난 줄 · 쉬는 줄 · 닫힌 줄이 함께 있다)
+        case finished
     }
 
     enum ReadScenario: Sendable {
@@ -510,8 +520,10 @@ final class IssueSampleGateway: ChatGateway, IssueScreensGateway, TaskforceReque
         try await gate(detail)
         let seed = (IssueSnapshotData.seeds + IssueSnapshotData.longTitles).first { IssueSnapshotData.issue($0.number) == id }
         let number = seed?.number ?? 0
+        // 끝난 시드(done)는 끝난 이슈로 돌려준다 (다시 켠 뒤 표시만 남은 이슈를 id로 읽는 길)
+        let status = seed?.state == .done ? "done" : "open"
         let record = try TaskforceJSON.decoder().decode(ActionRecord.self, from: Data("""
-        {"id":"\(id.uuidString.lowercased())","title":"\(seed?.title ?? "")","scope_summary":null,"owner":"me","counterpart":null,"due_date":null,"status":"open",
+        {"id":"\(id.uuidString.lowercased())","title":"\(seed?.title ?? "")","scope_summary":null,"owner":"me","counterpart":null,"due_date":null,"status":"\(status)",
          "needs_confirmation":false,"confirm_reasons":[],"started_at":null,"last_activity_at":"2026-10-14T01:00:00.000Z","created_at":"2026-10-13T01:00:00.000Z","number":\(number)}
         """.utf8))
         let slack = IssueSnapshotData.id(1, "50000000")
@@ -838,6 +850,7 @@ enum IssueSnapshot {
     static func compose(_ edge: EdgeShellController, to url: URL) {
         var windows: [NSWindow] = [edge.panel.panel, edge.rail.panel].filter(\.isVisible)
         if let session = edge.sessionPanel?.panel, session.isVisible { windows.append(session) }
+        if let claude = edge.claudePanel?.panel, claude.isVisible { windows.append(claude) }
         if let menu = edge.menu.window, menu.isVisible { windows.append(menu) }
         if let card = edge.rail.moreCard.window, card.isVisible { windows.append(card) }
         guard let first = windows.first else { return }

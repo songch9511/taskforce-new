@@ -3,7 +3,7 @@ import SwiftUI
 import TaskforceKit
 import TaskforceUI
 
-/// 캡슐 레일 (OA U3, 디자인 EdgeRail): 늘 `bezel` 검정의 캡슐 셋 — ① Taskforce bell ② 살아 있는 세션 링과 `+` ③ Projects · Chats · More.
+/// 캡슐 레일 (OA U3, 디자인 EdgeRail): 늘 `bezel` 검정의 캡슐 셋 — ① Taskforce bell ② Sessions · `+` · 살아 있는 세션 링 ③ Projects · Chats · More.
 /// 한 구역은 한 캡슐이고 캡슐 사이에 구분선이 없다. 열은 늘 창의 세로 가운데에서 자라며(`EdgeRailCapsuleLayout`) 접힘은 열 전체가 오른쪽 가운데를 기준으로 .72배가 된다.
 /// 투명한 곳은 그리지 않아 클릭이 아래 앱으로 간다. 움직임 줄이기면 접힘 ↔ 펼침 · 열 가운데 맞추기는 바로 바뀌고 캡슐이 나고 지는 것은 불투명도만 움직인다.
 struct EdgeRailCapsuleView: View {
@@ -40,9 +40,18 @@ struct EdgeRailCapsuleView: View {
                 .offset(x: item.minX, y: item.minY)
                 .transition(fade)
             }
-            // ② 살아 있는 세션 링과 New session `+`
+            // ② Sessions 버튼 · New session `+` · 살아 있는 세션 링 (Sessions · `+`는 접힌 레일에서 접힌다)
             if let capsule = layout.sessionsCapsuleDrawn {
                 capsuleBackground(capsule)
+                if let frame = layout.sessionsButtonDrawn {
+                    RailButton(icon: shell.railIcon(for: .sessions), label: shell.label(for: .sessions), highlighted: highlighted(.sessions), circular: true) {
+                        // 이미 열려 있으면 닫는다 (계약 24장 토글)
+                        shell.pressControl(.sessions)
+                    }
+                    .offset(x: frame.minX, y: frame.minY)
+                    .accessibilityHidden(!layout.expanded)
+                    .transition(fade)
+                }
                 ForEach(Array(visibleRings(layout).enumerated()), id: \.element.id) { index, entry in
                     if let frame = layout.ringDrawn(index) {
                         ring(entry, layout: layout).offset(x: frame.minX, y: frame.minY)
@@ -57,20 +66,17 @@ struct EdgeRailCapsuleView: View {
                     .transition(fade)
                 }
             }
-            // ③ Projects · Chats · On this Mac (외부 세션 게이트가 켜졌을 때) · More
+            // ③ Projects · More (Chats 칸은 없다: 계약 24장. 옛 On this Mac 칸은 Sessions 버튼으로 합쳤다, OA PR-D2)
             if let capsule = layout.thirdCapsuleDrawn {
                 capsuleBackground(capsule)
                 ForEach(shell.controls, id: \.self) { control in
                     if let frame = layout.controlDrawn(control) {
-                        RailButton(
-                            icon: shell.railIcon(for: control), label: shell.label(for: control), highlighted: highlighted(control), circular: true,
-                            dot: control == .onThisMac && shell.externalSessions?.hasNew == true, dotAccessibilityLabel: ExternalSessionCopy.accessibilityNewSessions
-                        ) {
-                            switch control {
-                            case .allWork: shell.openAllWork()
-                            case .chats: shell.openChats()
-                            case .onThisMac: shell.openOnThisMac()
-                            case .more: onMore(layout.controlFrame(control) ?? frame)
+                        RailButton(icon: shell.railIcon(for: control), label: shell.label(for: control), highlighted: highlighted(control), circular: true) {
+                            // 눌린 칸의 패널이 이미 열려 있으면 닫는다 (계약 24장 토글). More는 카드가 열리고 닫힌다 (`EdgeRailPanelController.toggleMoreCard`)
+                            if control == .more {
+                                onMore(layout.controlFrame(control) ?? frame)
+                            } else {
+                                shell.pressControl(control)
                             }
                         }
                         .accessibilityFocused(control == .more ? $moreFocused : $otherFocused)

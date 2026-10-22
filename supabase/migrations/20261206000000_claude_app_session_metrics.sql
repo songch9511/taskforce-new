@@ -1,11 +1,4 @@
-// PR-D3s(20261207000000_claude_app_chats)는 PR-D2(20261206000000_claude_app_session_metrics)보다 **늦게 병합**한다. 20261207은 맨 앞에서 20261206이 적용됐는지 확인하고(적용 순서 가드)
-// 아니면 예외를 던지므로, D2의 파일이 아직 이 브랜치에 없는 동안 시험 DB는 아래 글자를 20261206 자리에 대신 적용한다 (tests/db/local-supabase.ts supabaseSchemaScripts).
-// 이 글자는 D2 브랜치의 supabase/migrations/20261206000000_claude_app_session_metrics.sql과 **한 글자도 다르지 않다**: D2의 파일이 있으면 tests/db/claude-app-chats-apply-order.test.ts가
-// 둘이 같은지 본다. D2가 병합돼 그 파일이 생기면 이 대체는 쓰이지 않는다 (이 파일과 local-supabase.ts의 분기는 그때 지워도 된다).
-
-export const D2_MIGRATION_NAME = "20261206000000_claude_app_session_metrics.sql";
-
-export const D2_MIGRATION_SQL = `-- 데스크톱 세션 레일 · Sessions 패널 지표 (OA PR-D2, 계약 handoffs/oa-external-sessions-contract.md 21.6 · 23장):
+-- 데스크톱 세션 레일 · Sessions 패널 지표 (OA PR-D2, 계약 handoffs/oa-external-sessions-contract.md 21.6 · 23장):
 -- 사용자가 Claude 데스크톱 앱의 세션 보기(레일 링 · Sessions의 줄)를 연 날을 센다. **종류만이다**: props도 칸도 없다 (세션 id · 제목 · 폴더는 서버에 오지 않는다).
 --
 -- 이 파일이 하는 일 (새 표 · 함수 · 정책 0):
@@ -43,4 +36,3 @@ create unique index metric_events_claude_app_opened_day_idx
   where type = 'claude_app_session_opened';
 
 commit;
-`;

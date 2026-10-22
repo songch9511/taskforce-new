@@ -3,7 +3,6 @@ import path from "node:path";
 
 import type { PGlite } from "@electric-sql/pglite";
 
-import { D2_MIGRATION_NAME, D2_MIGRATION_SQL } from "./d2-migration-stand-in";
 import { openPglite } from "./pglite-template";
 
 const MIGRATIONS_DIR = path.resolve(__dirname, "../../supabase/migrations");
@@ -38,14 +37,12 @@ const SUPABASE_DEFAULT_GRANTS = `
 
 /**
  * Supabase 흉내 + 모든 마이그레이션 (적용 순서대로). PGlite와 실제 Postgres(tests/pg)가 같은 SQL을 적용한다.
- * PR-D3s의 20261207은 20261206(PR-D2)이 먼저 적용돼야 한다(적용 순서 가드). D2의 파일이 아직 이 브랜치에 없으면 같은 글자의 대체 SQL을 20261206 자리에 끼운다
- * (tests/db/d2-migration-stand-in.ts; D2가 병합돼 파일이 생기면 실제 파일을 쓴다). `without`은 그 이름의 마이그레이션을 뺀다 (적용 순서 가드 시험이 쓴다. 대체도 끼우지 않는다).
+ * PR-D3s의 20261207은 20261206(PR-D2)이 먼저 적용돼야 한다(적용 순서 가드). `without`은 그 이름의 마이그레이션을 뺀다 (적용 순서 가드 시험이 쓴다).
  */
 export async function supabaseSchemaScripts(options: { without?: readonly string[] } = {}): Promise<string[]> {
   const without = new Set(options.without ?? []);
   const files = (await readdir(MIGRATIONS_DIR)).filter((f) => f.endsWith(".sql"));
   const entries = await Promise.all(files.map(async (file) => ({ name: file, sql: await readFile(path.join(MIGRATIONS_DIR, file), "utf8") })));
-  if (!files.includes(D2_MIGRATION_NAME)) entries.push({ name: D2_MIGRATION_NAME, sql: D2_MIGRATION_SQL });
   const migrations = entries.filter((entry) => !without.has(entry.name)).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)).map((entry) => entry.sql);
   return [SUPABASE_STUB, SUPABASE_DEFAULT_GRANTS, ...migrations];
 }

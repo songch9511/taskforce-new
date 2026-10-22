@@ -71,10 +71,13 @@ struct ComponentRuleTests {
         #expect(ActivityRing.Kind.running.arcLength(reduceMotion: true) != ActivityRing.Kind.stopping.arcLength(reduceMotion: true))
     }
 
+    /// 끝난 링은 사용자가 열어 볼 때까지 레일에 남는다 (OA PR-D2, 계약 23장): 몇 시간 된 링에 "just now"는 거짓이라 링의 이름은 "Done"이다
+    /// (3초 모드의 활동 글 "Done just now"는 `RailItem`의 활동 칸이 따로 말한다)
     @Test func activityRingLabels() {
         #expect(ActivityRing.Kind.allCases.map(\.accessibilityLabel) == [
-            "Running", "Stop requested", "Connection lost", "Needs your answer", "Waiting", "Done just now", "Idle",
+            "Running", "Stop requested", "Connection lost", "Needs your answer", "Waiting", "Done", "Idle",
         ])
+        #expect(!ActivityRing.Kind.allCases.map(\.accessibilityLabel).contains { $0.contains("just now") })
     }
 
     /// Result status: 체크는 검토 통과 · 받음에만. 완료 보고(Unconfirmed)는 체크도 굵기도 없다

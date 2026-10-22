@@ -26,14 +26,29 @@ public struct ClaudeAppRailEntry: Identifiable, Equatable, Sendable, CustomStrin
     public var debugDescription: String { description }
 }
 
-/// Taskforce가 본 것의 기억 (메모리에만): 세션마다 (프로세스 pid, 마지막으로 일하는 것을 본 단조 시각, 막 끝난 것을 본 시각). 판정 함수가 값으로 주고받는다.
+/// 아직 열어 보지 않은 done 하나의 표시 (계약 23장: 끝난 링은 사용자가 열어 볼 때까지 레일에 남는다). **다시 켠 뒤에도 남도록 저장할 수 있다** — 이 Mac에만, 세션 id · pid · 본 시각뿐이다.
+/// pid로 같은 프로세스인지 알아본다: 같은 id로 다시 시작한 프로세스의 표시가 아니다
+public struct ClaudeAppDoneMark: Codable, Equatable, Sendable, CustomStringConvertible, CustomDebugStringConvertible {
+    public var pid: Int32
+    /// Taskforce가 끝난 것을 본 벽시계 시각 (표시한다)
+    public var at: Date
+
+    public init(pid: Int32, at: Date) {
+        self.pid = pid
+        self.at = at
+    }
+
+    /// pid를 찍지 않는다
+    public var description: String { "ClaudeAppDoneMark()" }
+    public var debugDescription: String { description }
+}
+
+/// Taskforce가 본 것의 기억 (메모리에만, done 표시만 `doneMarks`로 저장할 수 있다): 세션마다 (프로세스 pid, 마지막으로 일하는 것을 본 단조 시각, 아직 안 연 끝남의 본 시각). 판정 함수가 값으로 주고받는다.
 /// **(id, pid)로 알아본다**: 같은 id로 다시 시작한 프로세스는 옛 프로세스가 일하던 기억을 물려받지 않는다
 public struct ClaudeAppRailMemory: Equatable, Sendable, CustomStringConvertible, CustomDebugStringConvertible {
     struct Track: Equatable, Sendable {
         struct Done: Equatable, Sendable {
-            /// 본 단조 시각 (머무는 시간을 잰다)
-            var uptime: TimeInterval
-            /// 본 벽시계 시각 (표시한다)
+            /// 본 벽시계 시각 (표시한다). 머무는 시간은 없다: 열어 볼 때까지 남는다
             var wall: Date
         }
 
@@ -49,22 +64,37 @@ public struct ClaudeAppRailMemory: Equatable, Sendable, CustomStringConvertible,
 
     public init() {}
 
+    /// 저장해 둔 done 표시로 되살린다 (앱을 다시 켰을 때). 소문자 정규 UUID인 id만 받고, `ClaudeAppRail.maxRestoredMarks`개까지 (넘치면 오래된 것부터 버린다).
+    /// 그 프로세스가 아직 살아 있고 쉬고 있으면 첫 판정에서 done으로 다시 오르고, 아니면(다른 pid · 안 보임) 판정이 기억에서 지운다
+    public init(restoring marks: [String: ClaudeAppDoneMark]) {
+        let valid = marks.filter { ExternalSessionRules.isCanonicalUUID($0.key) }
+        for (id, mark) in valid.sorted(by: { ($0.value.at, $0.key) > ($1.value.at, $1.key) }).prefix(ClaudeAppRail.maxRestoredMarks) {
+            tracks[id] = Track(pid: mark.pid, activeSeen: nil, done: Track.Done(wall: mark.at))
+        }
+    }
+
     /// 일하던 것으로 기억하는 세션 id (시험용)
     var activeIDs: Set<String> { Set(tracks.filter { $0.value.activeSeen != nil }.keys) }
+
+    /// 아직 열어 보지 않은 done의 표시들: 저장해 두었다가 `init(restoring:)`로 되살린다
+    public var doneMarks: [String: ClaudeAppDoneMark] {
+        tracks.compactMapValues { track in track.done.map { ClaudeAppDoneMark(pid: track.pid, at: $0.wall) } }
+    }
 
     /// 개수만 말한다: 세션 id를 찍지 않는다
     public var description: String { "ClaudeAppRailMemory(tracked: \(tracks.count))" }
     public var debugDescription: String { description }
 }
 
-/// 무엇이 레일에 오르나 (DR-S1b, 사용자 승인 2026-10-22 · 코디네이터 결정): `busy` → running, `waiting` → needsYou(approval · answer),
-/// 일하던(busy · waiting) 세션이 쉬게 된 것을 **Taskforce가 본 뒤** 아직 열어 보지 않았으면 done(`doneHold` 동안). 쉬는 세션(idle)은 레일에 없다 — 처음부터 쉬던 세션도 마찬가지다.
+/// 무엇이 레일에 오르나 (DR-S1b, 사용자 승인 2026-10-22 · 23장): `busy` → running, `waiting` → needsYou(approval · answer),
+/// 일하던(busy · waiting) 세션이 쉬게 된 것을 **Taskforce가 본 뒤** 아직 열어 보지 않았으면 done — **열어 볼 때까지 남는다**(타이머 없음). 쉬는 세션(idle)은 레일에 없다 — 처음부터 쉬던 세션도 마찬가지다.
+/// 새 턴이 오면(busy · waiting) done은 running · needsYou로 바뀐다. 프로세스가 끝나 세 번 안 보이면 done도 내린다.
 /// `waiting → idle`도 done이다 (사용자가 답한 뒤 Claude가 끝낸 것이라 busy → idle과 같은 신호).
 /// 순수 함수다: 기억을 값으로 받고 새 기억을 값으로 돌려준다 (파일 · 시계 · 프로세스를 만지지 않는다). 레일 칸의 수 · 순서 규칙(`RailOrdering`)은 Mac 앱의 일이다.
 public enum ClaudeAppRail {
-    /// Done 링이 머무는 시간: Taskforce 세션의 Done 링과 같은 3초
-    public static let doneHold: TimeInterval = 3
-    /// 마지막으로 일하는 것을 본 뒤 이 시간(초)이 지나면 "끝났다"를 새 소식으로 치지 않는다 (오래 모르던 세션 · 폴을 오래 쉰 뒤에 "Done just now"가 뜨지 않게)
+    /// 다시 켤 때 되살리는 done 표시의 상한 (저장소가 커지지 않게)
+    public static let maxRestoredMarks = 64
+    /// 마지막으로 일하는 것을 본 뒤 이 시간(초)이 지나면 "끝났다"를 새 소식으로 치지 않는다 (오래 모르던 세션 · 폴을 오래 쉰 뒤에 "Done"이 뜨지 않게)
     public static let activeLimit: TimeInterval = 30
     /// 판정에 연달아 이만큼(두 번)까지 안 보인 세션은 기억을 지킨다 (등록 읽기가 잠깐 흔들린 것). 넘으면 프로세스가 끝난 것이다
     public static let missingGrace = 2
@@ -76,8 +106,8 @@ public enum ClaudeAppRail {
     }
 
     /// - sessions: 지금 살아 있고 믿는 데스크톱 세션들 (`ClaudeAppStatusPoller.Poll.sessions`)
-    /// - now: 벽시계 (done의 표시 시각에만 쓴다). uptime: **단조 시간** (`ClaudeAppMonotonic.now()`): 머무는 시간 · 기억의 나이를 잰다. 벽시계가 뒤로 가도 얼지 않는다
-    /// - opened: 사용자가 Taskforce에서 열어 둔(또는 방금 연) 세션 id: 그 세션의 done은 오르지 않고 오른 것도 바로 내린다
+    /// - now: 벽시계 (done의 표시 시각에만 쓴다). uptime: **단조 시간** (`ClaudeAppMonotonic.now()`): 일하던 기억의 나이를 잰다. 벽시계가 뒤로 가도 얼지 않는다
+    /// - opened: 사용자가 Taskforce에서 열어 둔(또는 방금 연) 세션 id: 그 세션의 done은 오르지 않고 오른 것도 바로 내린다 (내린 done은 기억에서도 지운다)
     public static func evaluate(sessions: [ClaudeAppSession], memory: ClaudeAppRailMemory, now: Date, uptime: TimeInterval, opened: Set<String> = []) -> Result {
         var next = ClaudeAppRailMemory()
         var entries: [ClaudeAppRailEntry] = []
@@ -102,15 +132,11 @@ public enum ClaudeAppRail {
                 var done = track?.done
                 if session.state == .idle, activeSeen != nil {
                     activeSeen = nil
-                    done = ClaudeAppRailMemory.Track.Done(uptime: uptime, wall: now)
+                    done = ClaudeAppRailMemory.Track.Done(wall: now)
                 }
-                // 열려 있는(방금 연) 세션: done이 오르지 않고 이미 오른 것도 내린다
+                // 열려 있는(방금 연) 세션: done이 오르지 않고 이미 오른 것도 내린다. 그 밖의 done은 열어 볼 때까지 남는다 (타이머 없음)
                 if opened.contains(id) { done = nil }
-                if let shown = done, uptime - shown.uptime < doneHold {
-                    entries.append(ClaudeAppRailEntry(id: id, kind: .done, since: shown.wall))
-                } else {
-                    done = nil
-                }
+                if let shown = done { entries.append(ClaudeAppRailEntry(id: id, kind: .done, since: shown.wall)) }
                 if activeSeen != nil || done != nil { next.tracks[id] = ClaudeAppRailMemory.Track(pid: session.pid, activeSeen: activeSeen, done: done) }
             }
         }

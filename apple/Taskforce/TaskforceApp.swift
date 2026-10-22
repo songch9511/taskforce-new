@@ -111,15 +111,17 @@ enum AppRuntime {
     /// 실제 생성 경로의 본체 (`chatRuntime`이 부르고, 테스트가 같은 함수를 기본 / off / on으로 부른다).
     /// `s3b`가 꺼져 있으면 범위 멤버십 게이트웨이 · 저장소를 **만들지 않는다**: 멤버십 읽기 · 쓰기 · ProjectLink 연결이 없고 All work는 S3 그대로다.
     /// `connectivity`: 연결 경로 (테스트는 nil로 감시를 만들지 않는다)
+    /// `isTestHost`: 이 프로세스가 시험 호스트인가 (기본은 실제 판정). 안 연 끝남 표시의 저장소를 정한다 (`doneStores`) — 시험이 "실사용 앱이면 영속"을 직접 보려고 false를 넘긴다
     static func makeChatRuntime(
         session: SessionStore, services: AppServices, sample: Bool, s3b: Bool, connectivity: AsyncStream<Bool>? = Connectivity.updates(),
-        agentQuestions: Bool = EdgeSurfaces.current.agentQuestions
+        agentQuestions: Bool = EdgeSurfaces.current.agentQuestions, isTestHost: Bool = TestHost.isTestHost()
     ) -> ChatRuntime {
+        let stores = Self.doneStores(sample: sample, isTestHost: isTestHost)
         #if DEBUG
         if sample {
             let gateway = SampleChatGateway(scenario: SampleData.chatScenario)
             let contexts = s3b ? SampleContextGateway(scenario: SampleData.contextScenario) : nil
-            let runtime = ChatRuntime(gateway: gateway, contextGateway: contexts)
+            let runtime = ChatRuntime(gateway: gateway, contextGateway: contexts, doneStores: stores)
             runtime.sampleGateway = gateway
             runtime.sampleContextGateway = contexts
             runtime.scope.bind(to: session, account: { SampleData.userID })
@@ -131,11 +133,17 @@ enum AppRuntime {
         let scope = AccountScope()
         let runtime = ChatRuntime(
             gateway: LiveChatGateway(services: services), contextGateway: s3b ? LiveContextGateway(services: services) : nil, scope: scope, agentQuestions: agentQuestions,
-            secretSubmitter: BridgeLocalSecretSubmitter(scope: scope)
+            secretSubmitter: BridgeLocalSecretSubmitter(scope: scope), doneStores: stores
         )
         runtime.scope.bind(to: session)
         if let connectivity { runtime.followConnectivity(connectivity) }
         return runtime
+    }
+
+    /// 안 연 끝남 표시(레일 링 · 데스크톱 링, 계약 23장)의 저장소: 실사용 앱은 이 Mac의 설정(`defaults`, 영속)이라 앱을 다시 켠 뒤에도 끝난 링이 남는다.
+    /// 시험 호스트 · 견본(`-TFSampleData`)은 메모리뿐이다 (실사용 앱의 설정을 건드리지 않는다)
+    static func doneStores(sample: Bool, isTestHost: Bool = TestHost.isTestHost(), defaults: any RailDoneDefaults = UserDefaults.standard) -> RailDoneStores {
+        sample || isTestHost ? .inMemory() : .persistent(defaults: defaults)
     }
 
     /// 이미 만들어졌으면 그것 (설정 창이 쓴다). 플래그가 꺼져 있으면 nil
