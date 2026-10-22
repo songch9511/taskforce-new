@@ -6,7 +6,7 @@ import Foundation
 // 묻는 조건 (모두 참일 때만):
 // 1. 대화에 세션이 아직 없다
 // 2. 대상이 에이전트이고, 그 연결이 **이 Mac**이다 (다른 Mac이면 묻지 않는다: 그 Mac이 정한다)
-// 3. 보내는 글이 속한 프로젝트에 폴더가 없다 (프로젝트를 모르는 Ungrouped면, 이 대화가 보내기 전에 고른 폴더가 없다)
+// 3. 이 대화가 보내기 전에 고른 폴더가 없다 (대화 폴더는 프로젝트의 폴더보다 먼저다) ∧ 보내는 글이 속한 프로젝트에 폴더가 없다 (프로젝트를 모르는 Ungrouped면 묻는다)
 // 고르면 등록하고 보낸다. 취소하면 보내지 않고 글은 입력 칸에 그대로 둔다. 순수 규칙(`AgentWorkspaceGate`)과 순서를 지키는 일(`AgentWorkspaceSendGate`)만 여기 있다 —
 // 시스템 폴더 창은 앱이 `AgentWorkspacePicking`으로 넣는다 (시험은 가짜 패널).
 //
@@ -25,6 +25,14 @@ public enum AgentWorkspaceCopy {
     public static let overlappingFolder = "Another project already uses this folder or one inside it."
     /// 폴더 경로에 `.git` · `.claude` 같은 민감 폴더 성분이 있을 때 (사용자 승인 2026-10-18, 재검토 1)
     public static let sensitiveFolder = "Choose a project folder, not a .git or settings folder."
+
+    // 대화 머리의 폴더 메뉴 (사용자 승인 2026-10-22). 폴더 창의 메시지 · 버튼은 위 승인된 `chooseFolderForSession` · `choose`를 그대로 쓴다
+    /// 머리 폴더 메뉴의 한 줄: 폴더 창을 열고, 고른 폴더에 같은 에이전트의 **새 대화**를 연다 (이 대화의 폴더는 바뀌지 않는다)
+    public static let newChatInAnotherFolder = "New chat in another folder…"
+    /// 머리 폴더 메뉴의 둘째 줄 (macOS 표준 문구): 지금 폴더를 Finder에서 보인다. 폴더가 없으면 줄이 꺼진다 (오류 글 없음)
+    public static let showInFinder = "Show in Finder"
+    /// 머리 폴더 컨트롤의 접근성 이름 (값은 폴더 이름)
+    public static let folderControl = "Folder"
 }
 
 public enum AgentWorkspaceGate {
@@ -95,12 +103,13 @@ public enum AgentWorkspaceGate {
 
     public static func decide(_ facts: Facts) -> Decision {
         guard facts.targetIsAgent, !facts.conversationHasSession, facts.targetIsThisMac else { return .send }
+        // 이 대화가 폴더를 이미 골랐으면 묻지 않는다: 세션의 폴더는 대화 폴더가 프로젝트의 폴더보다 먼저다 (대화 머리의 "다른 폴더로 새 대화"가 이 길로 폴더를 적는다)
+        if facts.conversationHasFolder { return .send }
         if let first = facts.projects.first {
             // 프로젝트가 여럿이면 하나라도 폴더가 있으면 묻지 않는다 (resolver가 폴더가 있는 프로젝트를 쓴다). 없으면 이름 순 첫 프로젝트의 폴더를 묻는다
             if facts.projects.contains(where: { facts.projectsWithFolder.contains($0.id) }) { return .send }
             return .ask(Ask(scope: .project(first.id), message: AgentWorkspaceCopy.chooseFolder(forProject: first.name)))
         }
-        if facts.conversationHasFolder { return .send }
         return .ask(Ask(scope: .conversation(facts.conversationID), message: AgentWorkspaceCopy.chooseFolderForSession))
     }
 
@@ -165,9 +174,15 @@ public protocol AgentWorkspaceFolders: Sendable {
     func rejectionMessage(forPath path: String, scope: AgentWorkspaceGate.Scope) -> String
     /// 등록한다. 규칙을 통과하지 못하면 던진다
     func register(path: String, scope: AgentWorkspaceGate.Scope) throws
+    /// 이 대화가 쓰는 폴더 — 이 Mac의 등록부가 **이 대화에** 적어 둔 것만 (대화 머리가 보인다): 세션이 **있으면** 그 세션의 로컬 핀뿐(없으면 nil: 다른 Mac의 세션이거나 핀을 꽂기 전이다), 세션이 없으면 이 대화가 보내기 전에 고른 폴더. 없으면 nil. 기본은 nil
+    func folder(forSession session: UUID?, conversation: UUID) -> String?
+    /// 이 대화가 보내기 전에 고른 폴더를 지운다 (대화가 그 폴더를 쓰지 않게 된 때: 대상이 바뀌었다 · 다시 쓰이는 빈 대화 · 버려진 빈 대화 · 창을 못 바꾼 새 대화). 세션 핀은 건드리지 않는다. 기본은 아무 일도 안 한다
+    func forgetFolder(forConversation id: UUID)
 }
 
 extension AgentWorkspaceFolders {
+    public func folder(forSession session: UUID?, conversation: UUID) -> String? { nil }
+    public func forgetFolder(forConversation id: UUID) {}
     public func rejectionMessage(forPath path: String) -> String { AgentWorkspaceCopy.rejected }
     public func accepts(path: String, scope: AgentWorkspaceGate.Scope) -> Bool { accepts(path: path) }
     public func rejectionMessage(forPath path: String, scope: AgentWorkspaceGate.Scope) -> String { rejectionMessage(forPath: path) }

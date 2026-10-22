@@ -11,10 +11,13 @@ public struct DropdownLabel: View {
 
     let title: String
     let size: Size
+    let truncation: Text.TruncationMode
 
-    public init(_ title: String, size: Size = .regular) {
+    /// - truncation: 자리가 모자랄 때 어디를 줄이나. 기본은 끝, 끝이 구별 글자인 이름(폴더 · 파일)은 `.middle`
+    public init(_ title: String, size: Size = .regular, truncation: Text.TruncationMode = .tail) {
         self.title = title
         self.size = size
+        self.truncation = truncation
     }
 
     public var body: some View {
@@ -24,6 +27,7 @@ public struct DropdownLabel: View {
                 .font(TFFont.footnote)
                 .foregroundStyle(TFColor.textPrimary)
                 .lineLimit(1)
+                .truncationMode(truncation)
             Image(systemName: "chevron.down")
                 .font(.system(size: 8, weight: .semibold))
                 .foregroundStyle(TFColor.textSecondary)

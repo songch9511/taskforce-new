@@ -39,8 +39,10 @@ struct AssistantWindowView: View {
     let presentation: AssistantWindowPresentation
     let reduceMotion: Bool
     var actions = AssistantWindowActions()
-
     private var chat: ChatStore { runtime.chat }
+
+    /// 머리의 작업 폴더 (없으면 nil). 런타임의 다시 읽기 신호(`folderRecheck`)를 따라 다시 그려진다: 이 Mac의 폴더 등록부는 관찰되지 않는다 (bridge가 다른 스레드에서 세션 핀을 쓴다)
+    private var folderLine: AgentWorkspaceFolderLine? { runtime.folderLine(for: model) }
 
     /// 대화가 바뀌었는지 보는 서명: 새 글 · 상태가 바뀌면 맨 아래로 내린다
     private struct Signature: Equatable {
@@ -91,6 +93,19 @@ struct AssistantWindowView: View {
         .accessibilityLabel("Assistant")
         // 열린 에이전트 대화의 세션을 좁게 읽는다 (D4a-13b): 대화가 바뀌거나 첫 전달로 세션이 생기면 다시 읽는다. 열린 task가 있으면 저장소가 5초마다 이어 읽는다
         .task(id: runtime.chat.agentSessionID(for: model.conversationID)) { await model.agent?.sessions.refresh() }
+        // 세션이 막 생겼다: 이 Mac의 bridge가 세션 핀을 꽂을 때까지(보통 1–2초) 폴더 줄을 짧게 다시 읽는다 — 이 Mac의 세션으로 알려지기 전에는 핀만 폴더로 보이므로 그동안 줄이 없다.
+        // 다른 Mac의 세션은 핀이 영영 없다 (끝나면 멈춘다). 핀이 이보다 늦게 꽂혀도 세션 저장소의 정기 읽기가 같은 신호를 올린다 (`ChatRuntime.folderRecheck`). 등록부는 메모리 표라 읽기는 싸다
+        .task(id: model.sessionID) {
+            guard model.sessionID != nil, runtime.folderLine(for: model) == nil else { return }
+            for _ in 0..<runtime.folderPollRounds {
+                try? await Task.sleep(for: runtime.folderPollInterval)
+                if Task.isCancelled { return }
+                if runtime.folderLine(for: model) != nil {
+                    runtime.folderRecheck.tick += 1
+                    return
+                }
+            }
+        }
     }
 
     // MARK: 머리
@@ -115,6 +130,9 @@ struct AssistantWindowView: View {
             // 머리 위 2 (DS `.tf-awin .tf-panel-head`): 핸들 아래
             .padding(EdgeInsets(top: 2, leading: TFSpace.lg, bottom: TFSpace.sm, trailing: 10))
             .background(AssistantDragRegion())
+            if model.mode == .chat, !chat.isUnavailable, let folder = folderLine {
+                folderControl(folder)
+            }
             if model.mode == .chat, !chat.isUnavailable, let project = chat.project(for: model.conversationID) {
                 // 연결된 대화의 프로젝트는 머리에 둔다 (DS: Context appears in the header of linked work and linked chats only)
                 ProjectLink(
@@ -127,6 +145,32 @@ struct AssistantWindowView: View {
             }
         }
         .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { presentation.headHeight = $0 }
+    }
+
+    /// 에이전트 대화의 작업 폴더 (이 Mac이 이 대화에 적어 둔 폴더가 있을 때만, 사용자 결정 2026-10-21): 폴더 이름이 값인 Dropdown(DS)이고 전체 경로는 툴팁이다.
+    /// 누르면 시스템 메뉴 두 줄이 열린다 (사용자 승인 2026-10-22) — "New chat in another folder…"는 다른 폴더로 같은 에이전트의 **새 대화**를 열고 (이 세션의 폴더는 바뀌지 않는다),
+    /// "Show in Finder"는 지금 폴더를 Finder에서 보인다 (폴더가 없으면 꺼진다, 오류 글 없음). 컨트롤 밖의 빈 곳은 머리처럼 창을 끈다
+    private func folderControl(_ folder: AgentWorkspaceFolderLine) -> some View {
+        HStack(spacing: 0) {
+            Menu {
+                Button(AgentWorkspaceCopy.newChatInAnotherFolder) { Task { await runtime.startChatInAnotherFolder(model) } }
+                Button(AgentWorkspaceCopy.showInFinder) { runtime.showFolderInFinder(model) }
+                    .disabled(!folder.exists)
+            } label: {
+                DropdownLabel(folder.name, size: .compact, truncation: .middle)
+            }
+            .menuStyle(.button)
+            .menuIndicator(.hidden)
+            .buttonStyle(.plain)
+            .help(folder.tooltip)
+            // 포인터가 컨트롤에 닿으면(메뉴가 열리기 전) 폴더가 있는지 새로 본다: Show in Finder의 켜짐이 그린 뒤에 바뀐 폴더를 따라간다
+            .onHover { inside in if inside { runtime.refreshFolderExistence() } }
+            .accessibilityLabel(AgentWorkspaceCopy.folderControl)
+            .accessibilityValue(folder.name)
+            Spacer(minLength: 0)
+        }
+        .padding(EdgeInsets(top: 0, leading: TFSpace.lg, bottom: TFSpace.sm, trailing: TFSpace.lg))
+        .background(AssistantDragRegion())
     }
 
     // MARK: 본문
@@ -200,6 +244,8 @@ struct AssistantWindowView: View {
                 }
                 // Stop 뒤의 말 (OA D4a-14): 대화 끝에 이벤트 줄 모양 한 줄 (이 창에서만 보이는 로컬 줄, 서버가 취소 요청을 지우면 사라진다)
                 if let line = model.stopLineText { EventLine(line) }
+                // 폴더 메뉴의 "New chat in another folder…"가 폴더를 적지 못했다: 이 대화에 조용한 한 줄 (승인된 글만, 다른 대화로 가면 사라진다)
+                if let line = model.folderNoticeText { EventLine(line) }
                 Color.clear.frame(height: 1).id(AssistantBodyAnchor.bottom)
             }
             .padding(.top, TFSpace.xs)

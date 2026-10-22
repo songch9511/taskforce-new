@@ -28,7 +28,23 @@ struct AgentWorkspaceGateTests {
         #expect(AgentWorkspaceCopy.rejected == "Choose a folder inside your home folder or on an external drive.")
     }
 
+    /// 대화 머리의 폴더 메뉴 (사용자 승인 2026-10-22): 메뉴 두 줄과 컨트롤의 접근성 이름. 폴더 창의 문구는 위 승인된 "Choose a folder for this session" · "Choose"를 그대로 쓴다
+    @Test func theFolderMenuCopyIsExactlyWhatTheUserApproved() {
+        #expect(AgentWorkspaceCopy.newChatInAnotherFolder == "New chat in another folder…")
+        #expect(AgentWorkspaceCopy.showInFinder == "Show in Finder", "macOS 표준 문구")
+        #expect(AgentWorkspaceCopy.folderControl == "Folder")
+    }
+
     // MARK: 규칙
+
+    /// 대화 머리의 "다른 폴더로 새 대화"가 이 대화에 폴더를 적어 준다 — 그 뒤에 프로젝트 칩이 더해져도(폴더 없는 프로젝트) 또 묻지 않는다.
+    /// 세션을 정하는 순서(resolver)도 대화 폴더가 프로젝트보다 먼저라, 프로젝트의 폴더를 묻는 것은 쓰이지도 않을 질문이다
+    @Test func aConversationThatAlreadyChoseItsFolderNeverAsksForAProjectsFolder() {
+        #expect(Gate.decide(Self.facts(projects: [Self.projectA], conversationFolder: true)) == .send)
+        #expect(Gate.decide(Self.facts(projects: [Self.projectA, Self.projectB], conversationFolder: true)) == .send)
+        // 대화가 고른 폴더가 없으면 지금처럼 프로젝트의 폴더를 묻는다
+        #expect(Gate.decide(Self.facts(projects: [Self.projectA], conversationFolder: false)) == .ask(Gate.Ask(scope: .project(Self.projectA.id), message: "Choose a folder for Acme", prompt: "Choose")))
+    }
 
     @Test func aProjectWithoutAFolderAsksOnTheFirstSendOfANewSession() {
         let decision = Gate.decide(Self.facts(projects: [Self.projectA]))
