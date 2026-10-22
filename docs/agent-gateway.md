@@ -537,7 +537,7 @@ Claude 데스크톱 앱에 열린 Claude Code 세션을 이 Mac의 레일에 실
 ### 19-2. 레일 판정 (`ClaudeAppRail.evaluate`, 순수 함수)
 
 - 입력 = 믿는 세션들(상태 포함) + 기억(`ClaudeAppRailMemory`, 값) + 지금 + `opened`(사용자가 Taskforce에서 열어 둔 세션 id). 출력 = 레일 줄 + 새 기억. 파일 · 시계 · 프로세스를 만지지 않는다.
-- `busy` → running, `waiting` → needsYou(approval · answer). **일하던(busy · waiting) 세션이 쉬게 된 것을 Taskforce가 본 뒤** `doneHold`(3초, Taskforce 세션 Done 링과 같다) 동안 done. 열어 보면(`opened`) 바로 내리고 다시 오르지 않는다. 처음부터 쉬던 세션 · 프로세스가 끝난 세션은 레일에 없다(기억에서도 지운다). `unknown`은 기억을 건드리지 않는다(읽기가 잠깐 흔들려도 끝을 놓치지 않는다). `waiting → idle`도 done이다(계약은 busy → idle만 말했다: 사용자가 거절해 턴이 끝난 경우도 "끝났다"로 본다).
+- `busy` → running, `waiting` → needsYou(approval · answer). **일하던(busy · waiting) 세션이 쉬게 된 것을 Taskforce가 본 뒤** `doneHold`(3초, Taskforce 세션 Done 링과 같다) 동안 done. 열어 보면(`opened`) 바로 내리고 다시 오르지 않는다. 처음부터 쉬던 세션 · 프로세스가 끝난 세션은 레일에 없다(기억에서도 지운다). `unknown`은 기억을 건드리지 않는다(읽기가 잠깐 흔들려도 끝을 놓치지 않는다). `waiting → idle`도 done이다(계약은 busy → idle만 말했다. 코디네이터 결정 2026-10-22: 사용자가 답한 뒤 Claude가 끝낸 것이라 busy → idle과 같은 신호다. 거절해 턴이 끝난 경우도 "끝났다"로 본다).
 - 순서: needs-you → running → done, 같은 종류 안에서는 새것(상태가 바뀐 시각, done은 본 시각) 먼저, 같으면 id. 칸 수 · 캡슐 나눔(`RailOrdering`)은 Mac(PR-D2)의 일이다.
 
 ### 19-3. 대화 읽기 (`ClaudeAppTranscriptReader`)
