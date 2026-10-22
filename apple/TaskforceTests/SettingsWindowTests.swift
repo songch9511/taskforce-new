@@ -647,17 +647,53 @@ struct SettingsConnectionLineTests {
 
 @MainActor
 struct SettingsWindowReadOnlyValueTests {
-    /// Edge 패널에서 지금 동작하는 키만 (⌘2 All work · ⌘3 Chats · ⌘4 Sessions · ⌘N New chat). ⌘1 · 1–3은 그 화면이 생길 때
-    @Test func panelKeysAreOnlyTheOnesThatWork() {
-        let rows = SettingsPanelKeys.rows
-        #expect(rows.map(\.label) == ["All work", "Chats", "Sessions", "New chat"])
-        #expect(rows.map(\.keys) == [["⌘", "2"], ["⌘", "3"], ["⌘", "4"], ["⌘", "N"]])
+    /// 이 구성의 셸: 새 Issues 화면(캡슐 레일) 여부 · Chats 여부 · 로그인 여부
+    private func shell(capsule: Bool, chats: Bool = true, signedIn: Bool = true) -> EdgeShellModel {
+        let issues = capsule ? IssueRuntime(gateway: IssueSampleGateway(), scope: AccountScope()) : nil
+        let shell = EdgeShellModel(schedule: { _, _ in EdgeTimer() }, chatsEnabled: chats, windowsEnabled: chats, issues: issues)
+        if signedIn { shell.accountChanged(SampleData.userID) }
+        return shell
+    }
+
+    private func rows(_ shell: EdgeShellModel?) -> [String] { SettingsPanelKeys.rows(for: shell).map(\.label) }
+
+    /// Edge 패널에서 **지금 이 셸이 듣는** 키만 나열한다 (⌘2 All work · ⌘3 Chats(노치 레일만) · ⌘4 Sessions · ⌘N New chat). ⌘1 · 1–3은 그 화면이 생길 때
+    @Test func panelKeysAreOnlyTheOnesTheCurrentShellListensTo() {
+        // 캡슐 레일(새 Issues 화면)에는 Chats 칸 · ⌘3이 없다 (계약 24장): All work · Sessions · New chat
+        let capsule = shell(capsule: true)
+        let rows = SettingsPanelKeys.rows(for: capsule)
+        #expect(rows.map(\.label) == ["All work", "Sessions", "New chat"])
+        #expect(rows.map(\.keys) == [["⌘", "2"], ["⌘", "4"], ["⌘", "N"]])
+        // 노치 레일(옛 구성)은 Chats가 있으면 ⌘3도 있다 (Sessions 버튼이 없으니 ⌘4는 없다)
+        #expect(self.rows(shell(capsule: false)) == ["All work", "Chats", "New chat"])
+        // Chats가 없는 구성(Release)은 ⌘2뿐이다 — ⌘3 · ⌘N을 나열하면 거짓이다 (기존 ⌘3 오류)
+        #expect(self.rows(shell(capsule: false, chats: false)) == ["All work"])
+        // 로그인 전에는 Sessions 버튼이 없다: ⌘4가 없다. 로그인하면 나타난다
+        let early = shell(capsule: true, signedIn: false)
+        #expect(self.rows(early) == ["All work", "New chat"])
+        early.accountChanged(SampleData.userID)
+        #expect(self.rows(early) == ["All work", "Sessions", "New chat"])
+        #expect(SettingsPanelKeys.rows(for: nil).isEmpty, "듣는 셸이 없으면 나열할 키도 없다")
+        // 나열한 키는 모두 실제로 동작하고, 나열하지 않은 키는 이 셸이 듣지 않는다
+        for control in EdgeShellModel.Control.allCases {
+            guard control.shortcut != nil, let command = control.keyCommand else { continue }
+            #expect(capsule.listens(to: command) == rows.contains { $0.label == control.label }, Comment(rawValue: "\(control)"))
+        }
         // 나열하는 키는 실제로 동작하는 키와 같다: 목록의 각 단축키는 `EdgeKeyCommand`가 그 칸으로 해석한다
         #expect(EdgeKeyCommand.of(keyCode: kVK_ANSI_2, flags: .command) == .allWork && EdgeKeyCommand.of(keyCode: kVK_ANSI_3, flags: .command) == .chats)
         #expect(EdgeKeyCommand.of(keyCode: kVK_ANSI_4, flags: .command) == .sessions && EdgeKeyCommand.of(keyCode: kVK_ANSI_N, flags: .command) == .newChat)
         #expect(EdgeShellModel.Control.sessions.shortcut == "⌘4" && EdgeShellModel.Control.more.shortcut == nil)
         #expect(SettingsPanelKeys.keyCaps("⌥Space") == ["⌥", "Space"])
         #expect(SettingsPanelKeys.keyCaps("⇧⌘K") == ["⇧", "⌘", "K"])
+    }
+
+    /// 설정 창은 가장 최근에 만들어진 Edge 셸이 듣는 키를 본다 (컨트롤러가 스스로 올린다)
+    @Test func theSettingsWindowReadsTheShellOfTheLatestController() throws {
+        let account = try AppChatAccount.make()
+        let runtime = ChatRuntime(gateway: IssueSampleGateway(), contextGateway: IssueSampleContextGateway(), scope: account.scope, now: { Date() }, issueScreens: true)
+        let controller = EdgeShellController(launcher: LauncherModel(configurationError: "test"), chat: runtime, assistantWindows: false)
+        #expect(SettingsWindowModel.shared.panelKeysShell === controller.shell)
+        withExtendedLifetime(controller) {}
     }
 
     /// Run with AI: 모름은 모름으로 (읽는 중 · 읽기 실패를 "Not available"로 쓰지 않는다)

@@ -122,6 +122,8 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
             assistant = nil
         }
         super.init()
+        // Settings › Shortcuts가 이 셸이 듣는 키만 보인다
+        SettingsWindowModel.shared.panelKeysShell = shell
         panel.panel.delegate = self
         sessionPanel?.panel.delegate = self
         // 메인 패널이 세로 가운데로 움직이는 동안에도 세션 패널은 그 패널이 닿을 자리의 왼쪽 · 위 맞춤에 선다
@@ -593,7 +595,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         keyMonitor = nil
     }
 
-    /// 패널의 키: Esc 접기 · ⌘1 가장 새 Review(S4) · ⌘2 All work · ⌘3 Chats · ⌘4 Sessions · ⌘N New chat, 그리고 Review 페이지가 보일 때 ← → 단계 · 1 · 2 답 (S4, 텍스트 편집 밖에서만).
+    /// 패널의 키: Esc 접기 · ⌘1 가장 새 Review(S4) · ⌘2 All work · ⌘3 Chats(노치 레일만) · ⌘4 Sessions · ⌘N New chat (⌘2 · ⌘4는 이미 열려 있으면 닫는다: 토글), 그리고 Review 페이지가 보일 때 ← → 단계 · 1 · 2 답 (S4, 텍스트 편집 밖에서만).
     /// 처리했으면 true
     func handleKey(_ event: NSEvent) -> Bool {
         // 질문 카드가 Esc를 먼저 본다 (열린 Other 칸 · 보류 중인 답): OA D4b-m-1
@@ -611,11 +613,12 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
             guard reviewKeysAllowed else { return false }
             shell.openNewestReview()
         case .allWork:
-            shell.openAllWork()
+            // 그 패널이 이미 열려 있으면 닫는다 (계약 24장 토글: 레일 버튼과 같다)
+            shell.toggleAllWork()
         case .chats:
             shell.openChats()
         case .sessions:
-            shell.openSessions()
+            shell.toggleSessions()
         case .newChat:
             shell.newChat()
         }

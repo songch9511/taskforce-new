@@ -145,6 +145,26 @@ struct AgentSessionDoneTests {
         #expect(third.items[0].ring == .idle, "열어 본 것은 다시 켜도 남지 않는다")
     }
 
+    /// 다시 켠 뒤 로그인한 계정이 저장본의 주인이 아니었다 (보안 P3-1): 셸이 저장본을 비우고 이 저장소에게 되살린 표시를 버리게 한다 (저장소 쓰기는 셸의 몫)
+    @Test func discardingTheRestoredMarksMakesTheSessionIdleAgainWithoutTouchingTheStore() async {
+        let done = InMemoryRailDoneStore()
+        done.save(RailDoneMarks(sessions: [Fx.id(1): Fx.t0], issues: [Fx.issue(1): Fx.t0]))
+        let gateway = FakeAgentSessionGateway()
+        gateway.serve(Fx.snapshot(state: .completed))
+        let (store, _, _) = makeStore(gateway, done: done)
+        await store.refresh()
+        #expect(store.items[0].ring == .done, "저장해 둔 표시가 되살아난다")
+        store.discardRestoredDone()
+        #expect(store.items[0].ring == .idle, "버린 표시는 더는 링이 아니다")
+        #expect(done.load().sessions[Fx.id(1)] != nil && done.load().issues[Fx.issue(1)] != nil, "저장소는 건드리지 않는다 (비우는 쪽은 셸이다)")
+        // 새 턴이 끝나면 다시 done이다
+        gateway.serve(Fx.snapshot(state: .running))
+        await store.refresh()
+        gateway.serve(Fx.snapshot(state: .completed))
+        await store.refresh()
+        #expect(store.items[0].ring == .done)
+    }
+
     @Test func aNewCompletionWhileTheAppWasOffReplacesTheOldMark() async {
         let done = InMemoryRailDoneStore()
         done.save(RailDoneMarks(sessions: [Fx.id(1): Fx.t0]))

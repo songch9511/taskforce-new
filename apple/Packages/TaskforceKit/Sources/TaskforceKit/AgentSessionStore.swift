@@ -93,6 +93,14 @@ public final class AgentSessionStore {
         rebuild()
     }
 
+    /// 저장해 둔 표시가 이 계정의 것이 아니었다 (보안 P3-1: 다시 켠 뒤 로그인한 계정이 저장본의 주인과 다르다): 되살린 끝남 표시를 메모리에서 버린다.
+    /// 저장소는 건드리지 않는다 — 저장본은 셸이 비운다 (같은 저장소를 이슈 칸과 나눠 쓴다). 새 턴이 끝나면 다시 done이 된다
+    public func discardRestoredDone() {
+        guard doneStore != nil, !doneObservedAt.isEmpty else { return }
+        doneObservedAt = [:]
+        rebuild()
+    }
+
     /// 계정이 떠남: 모두 비운다 (읽는 중인 요청의 늦은 결과는 `scope.isCurrent`가 버린다). 저장해 둔 끝남 표시도 지운다: 다른 계정에 남지 않는다
     public func reset() {
         readSequence += 1

@@ -45,7 +45,8 @@ struct EdgeRailCapsuleView: View {
                 capsuleBackground(capsule)
                 if let frame = layout.sessionsButtonDrawn {
                     RailButton(icon: shell.railIcon(for: .sessions), label: shell.label(for: .sessions), highlighted: highlighted(.sessions), circular: true) {
-                        shell.openSessions()
+                        // 이미 열려 있으면 닫는다 (계약 24장 토글)
+                        shell.pressControl(.sessions)
                     }
                     .offset(x: frame.minX, y: frame.minY)
                     .accessibilityHidden(!layout.expanded)
@@ -65,17 +66,17 @@ struct EdgeRailCapsuleView: View {
                     .transition(fade)
                 }
             }
-            // ③ Projects · Chats · More (옛 On this Mac 칸은 Sessions 버튼으로 합쳤다, OA PR-D2)
+            // ③ Projects · More (Chats 칸은 없다: 계약 24장. 옛 On this Mac 칸은 Sessions 버튼으로 합쳤다, OA PR-D2)
             if let capsule = layout.thirdCapsuleDrawn {
                 capsuleBackground(capsule)
                 ForEach(shell.controls, id: \.self) { control in
                     if let frame = layout.controlDrawn(control) {
                         RailButton(icon: shell.railIcon(for: control), label: shell.label(for: control), highlighted: highlighted(control), circular: true) {
-                            switch control {
-                            case .allWork: shell.openAllWork()
-                            case .chats: shell.openChats()
-                            case .sessions: shell.openSessions()
-                            case .more: onMore(layout.controlFrame(control) ?? frame)
+                            // 눌린 칸의 패널이 이미 열려 있으면 닫는다 (계약 24장 토글). More는 카드가 열리고 닫힌다 (`EdgeRailPanelController.toggleMoreCard`)
+                            if control == .more {
+                                onMore(layout.controlFrame(control) ?? frame)
+                            } else {
+                                shell.pressControl(control)
                             }
                         }
                         .accessibilityFocused(control == .more ? $moreFocused : $otherFocused)

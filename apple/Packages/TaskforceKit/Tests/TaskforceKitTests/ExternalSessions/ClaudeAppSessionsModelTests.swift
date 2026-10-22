@@ -155,6 +155,48 @@ extension ExternalSessionSuites {
             #expect(model.registryUnavailable && model.sessions.isEmpty && model.rail.isEmpty)
         }
 
+        /// 등록 폴더를 읽을 수 없는 동안은 어떤 세션도 "안 보이는" 것이 아니라 "모르는" 것이다: 기억(끝남 표시)을 건드리지 않는다 (코드 검토 P2)
+        @Test func anUnreadableRegistryDoesNotForgetAFinishedSessionAndItStaysStored() async {
+            let script = ClaudeAppPollScript()
+            let done = InMemoryClaudeAppDoneStore()
+            let clock = ClaudeAppClock()
+            script.serve([session(a, .busy, pid: 100)])
+            let model = make(script, done: done, clock: clock)
+            await model.pollOnce()
+            clock.advance(1)
+            script.serve([session(a, .idle, pid: 100)])
+            await model.pollOnce()
+            #expect(kinds(model) == [a: .done] && done.load()[a]?.pid == 100)
+            let saves = done.saves
+            // 읽을 수 없는 폴이 다섯 번 (기다리는 폴 수 `missingGrace`보다 많다)
+            script.serve([], unavailable: true)
+            for _ in 0..<5 { await model.pollOnce() }
+            #expect(model.registryUnavailable && model.rail.isEmpty, "읽을 수 없는 동안은 아무것도 그리지 않는다")
+            #expect(done.load()[a]?.pid == 100 && done.saves == saves, "저장해 둔 표시는 그대로이고 다시 쓰지도 않는다")
+            // 다시 읽히면 같은 pid의 쉬는 세션: 끝난 링이 그대로 있고 저장도 그대로다
+            script.serve([session(a, .idle, pid: 100)])
+            await model.pollOnce()
+            #expect(!model.registryUnavailable && kinds(model) == [a: .done])
+            #expect(done.load()[a]?.pid == 100)
+        }
+
+        /// `stop()`은 루프의 표를 올린다: 폴이 도는 사이 루프가 멈췄으면 그 폴의 늦은 결과를 반영하지 않는다
+        @Test func aLoopThatWasStoppedWhileAPollWasInFlightDropsThatPoll() async {
+            let script = ClaudeAppPollScript()
+            script.serve([session(a, .busy)])
+            let model = make(script)
+            script.hold()
+            let inFlight = Task { await model.pollOnce() }
+            #expect(await eventually { script.calls == 1 })
+            model.stop()
+            script.release()
+            await inFlight.value
+            #expect(!model.hasPolled && model.rail.isEmpty && model.sessions.isEmpty, "멈춘 뒤에 도착한 폴 결과는 반영하지 않는다 (코드 검토 P3)")
+            // 다시 폴하면 정상으로 반영된다
+            await model.pollOnce()
+            #expect(model.hasPolled && kinds(model) == [a: .running])
+        }
+
         // MARK: 끝남은 열어 볼 때까지
 
         @Test func aFinishedSessionStaysDoneUntilItIsOpenedAndItIsSavedForARelaunch() async {
@@ -366,6 +408,88 @@ extension ExternalSessionSuites {
             #expect(model.rail.isEmpty)
         }
 
+        // MARK: 끝남 표시의 주인 계정 (보안 P3-1)
+
+        private let me = UUID(uuidString: "0B0B0B0B-0000-4000-8000-000000000002")!
+        private let other = UUID(uuidString: "0A0A0A0A-0000-4000-8000-000000000001")!
+
+        @Test func doneMarksOfAnotherAccountAreForgottenWhenThisAccountPolls() async {
+            let script = ClaudeAppPollScript()
+            let done = InMemoryClaudeAppDoneStore()
+            done.save([a: ClaudeAppDoneMark(pid: 100, at: t0)])
+            done.setOwner(other)
+            script.serve([session(a, .idle, pid: 100)])
+            let model = make(script, done: done, scope: AccountScope(currentAccount: { [me] in me }))
+            await model.pollOnce()
+            #expect(model.rail.isEmpty, "다른 계정의 끝남 표시는 이 계정의 링이 아니다")
+            #expect(done.load().isEmpty && done.owner == me, "저장해 둔 것도 지우고 이 계정을 주인으로 적는다")
+        }
+
+        @Test func marksWithAnUnknownOwnerAreForgottenToo() async {
+            let script = ClaudeAppPollScript()
+            let done = InMemoryClaudeAppDoneStore()
+            done.save([a: ClaudeAppDoneMark(pid: 100, at: t0)])
+            script.serve([session(a, .idle, pid: 100)])
+            let model = make(script, done: done, scope: AccountScope(currentAccount: { [me] in me }))
+            await model.pollOnce()
+            #expect(model.rail.isEmpty && done.load().isEmpty && done.owner == me, "주인을 모르는 표시는 이 계정의 것이라고 믿지 않는다")
+        }
+
+        @Test func marksOfThisAccountSurviveARelaunchAndTheOwnerStaysSet() async {
+            let script = ClaudeAppPollScript()
+            let done = InMemoryClaudeAppDoneStore()
+            done.save([a: ClaudeAppDoneMark(pid: 100, at: t0)])
+            done.setOwner(me)
+            script.serve([session(a, .idle, pid: 100)])
+            let model = make(script, done: done, scope: AccountScope(currentAccount: { [me] in me }))
+            await model.pollOnce()
+            #expect(kinds(model) == [a: .done] && done.load()[a]?.pid == 100 && done.owner == me)
+        }
+
+        @Test func aFreshStoreIsStampedWithTheAccountSoTheNextLaunchKeepsItsMarks() async {
+            let script = ClaudeAppPollScript()
+            let done = InMemoryClaudeAppDoneStore()
+            let clock = ClaudeAppClock()
+            script.serve([session(a, .busy, pid: 100)])
+            let model = make(script, done: done, clock: clock, scope: AccountScope(currentAccount: { [me] in me }))
+            await model.pollOnce()
+            clock.advance(1)
+            script.serve([session(a, .idle, pid: 100)])
+            await model.pollOnce()
+            #expect(done.load()[a]?.pid == 100 && done.owner == me)
+            // 같은 계정으로 다시 켜면 표시가 남는다
+            let relaunched = make(script, done: done, scope: AccountScope(currentAccount: { [me] in me }))
+            await relaunched.pollOnce()
+            #expect(kinds(relaunched) == [a: .done])
+        }
+
+        /// 셸이 계정을 알게 되면(처음 로그인) 폴을 기다리지 않고 부른다: 다른 계정의 표시는 그 자리에서 사라진다
+        @Test func adoptingAnAccountDropsAnotherAccountsMarksAtOnce() async {
+            let script = ClaudeAppPollScript()
+            let done = InMemoryClaudeAppDoneStore()
+            done.save([a: ClaudeAppDoneMark(pid: 100, at: t0)])
+            done.setOwner(other)
+            let model = make(script, done: done)
+            model.adopt(account: me)
+            #expect(done.load().isEmpty && done.owner == me)
+            script.serve([session(a, .idle, pid: 100)])
+            await model.pollOnce()
+            #expect(model.rail.isEmpty, "되살릴 표시가 없다")
+            model.adopt(account: me)
+            #expect(done.owner == me, "같은 계정을 다시 알려도 아무 일이 없다")
+        }
+
+        @Test func leavingTheAccountForgetsTheOwnerToo() async {
+            let script = ClaudeAppPollScript()
+            let done = InMemoryClaudeAppDoneStore()
+            let scope = AccountScope(currentAccount: { [me] in me })
+            let model = make(script, done: done, scope: scope)
+            model.adopt(account: me)
+            #expect(done.owner == me)
+            scope.accountLeft()
+            #expect(done.owner == nil && done.load().isEmpty)
+        }
+
         /// 폴이 도는 사이 계정이 떠났다: 그 폴의 늦은 결과(옛 계정의 세션)를 새 계정의 레일에 올리지 않는다
         @Test func aPollThatWasInFlightWhenTheAccountLeftIsDropped() async {
             let script = ClaudeAppPollScript()
@@ -504,8 +628,33 @@ extension ExternalSessionSuites {
             let defaults = FakeRailDefaults()
             let store = UserDefaultsClaudeAppDoneStore(defaults: defaults)
             store.save([a: ClaudeAppDoneMark(pid: 1, at: t0)])
+            store.setOwner(UUID())
             store.clear()
             #expect(defaults.object(forKey: UserDefaultsClaudeAppDoneStore.key) == nil && store.load().isEmpty)
+            #expect(defaults.keys.isEmpty && store.owner == nil, "주인도 함께 지운다")
+        }
+
+        /// 표시의 주인 계정 (보안 P3-1): 소문자 UUID 한 글자열이 따로 하나. 읽을 수 없으면 모른다(nil)
+        @Test func theOwnerIsOneLowercaseUUIDStringAndUnreadableMeansUnknown() {
+            let owner = UUID(uuidString: "0B0B0B0B-0000-4000-8000-000000000002")!
+            let memory = InMemoryClaudeAppDoneStore()
+            #expect(memory.owner == nil)
+            memory.setOwner(owner)
+            #expect(memory.owner == owner)
+            memory.setOwner(nil)
+            #expect(memory.owner == nil)
+            let defaults = FakeRailDefaults()
+            let store = UserDefaultsClaudeAppDoneStore(defaults: defaults)
+            store.setOwner(owner)
+            #expect(defaults.keys == [UserDefaultsClaudeAppDoneStore.ownerKey])
+            #expect(defaults.object(forKey: UserDefaultsClaudeAppDoneStore.ownerKey) as? String == owner.uuidString.lowercased())
+            #expect(UserDefaultsClaudeAppDoneStore(defaults: defaults).owner == owner, "다시 켠 뒤에도 읽는다")
+            for bad: Any in ["nope", 7, Data("x".utf8), ""] {
+                defaults.set(bad, forKey: UserDefaultsClaudeAppDoneStore.ownerKey)
+                #expect(store.owner == nil, "\(type(of: bad))")
+            }
+            store.setOwner(nil)
+            #expect(defaults.object(forKey: UserDefaultsClaudeAppDoneStore.ownerKey) == nil)
         }
     }
 }

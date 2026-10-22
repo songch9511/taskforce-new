@@ -145,6 +145,8 @@ final class SettingsWindowModel {
     let agents = AgentSettingsModel()
     /// Account › Plan & usage의 상태 · 동작 (OA 결제 PR-C). 탭을 옮겨도 진행 중인 요청 · 읽은 값이 남고, 계정이 바뀌면 비운다
     let plan = PlanSummaryStore()
+    /// Shortcuts › In the panel이 "지금 이 셸이 듣는 키"만 보이려고 읽는 셸 (Edge 셸 컨트롤러가 만들어질 때 스스로 올린다). 셸이 없으면 목록이 비어 있다 (`SettingsPanelKeys.rows(for:)`)
+    @ObservationIgnored weak var panelKeysShell: EdgeShellModel?
 
     /// 창 제목: 연 상세, 없으면 탭 이름 (그 탭의 상세만)
     func title(on tab: SettingsWindowTab) -> String {
@@ -560,14 +562,21 @@ struct SettingsConnectionLine: Equatable {
 }
 
 /// Shortcuts › In the panel: Edge 패널에서 지금 실제로 동작하는 키만 (`EdgeShellModel.Control.shortcut` · `EdgeShellController.handleKey`).
+/// **지금 이 셸이 듣는 키만** 나열한다 (`EdgeShellModel.listens(to:)`): Chats가 없는 셸(Release · 캡슐 레일)에는 ⌘3이 없고, Sessions 버튼이 없는 셸(로그인 전 · 게이트 꺼짐)에는 ⌘4가 없다.
 /// 디자인의 ⌘1 Review · 1–3 답하기는 그 화면이 생길 때(S4) 더한다. ⌘N New chat은 B3. ⌘4 Sessions는 레일 칸의 단축키라 `Control.allCases`에서 함께 읽힌다 (OA PR-D2)
 enum SettingsPanelKeys {
     static let newChat = (label: "New chat", shortcut: "⌘N")
 
-    static var rows: [(label: String, keys: [String])] {
-        EdgeShellModel.Control.allCases.compactMap { control in
-            control.shortcut.map { (control.label, keyCaps($0)) }
-        } + [(newChat.label, keyCaps(newChat.shortcut))]
+    /// - shell: 지금 키를 듣는 셸. 없으면(Edge 셸이 만들어지지 않았다) 듣는 키가 없다
+    @MainActor
+    static func rows(for shell: EdgeShellModel?) -> [(label: String, keys: [String])] {
+        guard let shell else { return [] }
+        var rows = EdgeShellModel.Control.allCases.compactMap { control -> (label: String, keys: [String])? in
+            guard let shortcut = control.shortcut, let command = control.keyCommand, shell.listens(to: command) else { return nil }
+            return (control.label, keyCaps(shortcut))
+        }
+        if shell.listens(to: .newChat) { rows.append((newChat.label, keyCaps(newChat.shortcut))) }
+        return rows
     }
 
     /// "⌘2" → ["⌘", "2"] (수식키는 하나씩, 나머지는 키 하나)

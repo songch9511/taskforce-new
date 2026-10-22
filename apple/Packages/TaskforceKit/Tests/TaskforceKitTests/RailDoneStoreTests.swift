@@ -72,6 +72,37 @@ struct RailDoneStoreTests {
         #expect(store.load().issues == [Fx.issue(1): t0], "다른 칸은 그대로")
     }
 
+    /// 표시의 주인 계정 (보안 P3-1): 표시와 같은 JSON에 소문자 UUID 하나로 적는다. 주인을 모르면(없거나 읽을 수 없으면) nil
+    @Test func theOwnerAccountIsSavedWithTheMarksAndReadBackAfterARelaunch() throws {
+        let owner = UUID(uuidString: "0B0B0B0B-0000-4000-8000-000000000002")!
+        let defaults = FakeRailDefaults()
+        let store = UserDefaultsRailDoneStore(defaults: defaults)
+        #expect(store.load().owner == nil)
+        store.save(RailDoneMarks(sessions: [Fx.id(1): t0], issues: [:], owner: owner))
+        #expect(UserDefaultsRailDoneStore(defaults: defaults).load().owner == owner)
+        let data = try #require(defaults.object(forKey: UserDefaultsRailDoneStore.key) as? Data)
+        let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(Set(object.keys) == ["sessions", "issues", "owner"] && object["owner"] as? String == owner.uuidString.lowercased())
+        // 한 칸만 고치는 `update`는 주인을 지우지 않는다
+        store.update { $0.sessions[Fx.id(2)] = t0 }
+        #expect(store.load().owner == owner)
+        store.setOwner(nil)
+        #expect(store.load().owner == nil && store.load().sessions.count == 2)
+        // 읽을 수 없는 주인은 모른다 (표시는 읽는다)
+        for bad in [#""nope""#, "7", "null", #""""#] {
+            let json = #"{"sessions":{"\#(Fx.id(1).uuidString.lowercased())":100},"issues":{},"owner":\#(bad)}"#
+            defaults.set(Data(json.utf8), forKey: UserDefaultsRailDoneStore.key)
+            #expect(store.load().owner == nil && store.load().sessions.count == 1, Comment(rawValue: bad))
+        }
+    }
+
+    @Test func clearRemovesTheOwnerToo() {
+        let store = InMemoryRailDoneStore()
+        store.save(RailDoneMarks(sessions: [Fx.id(1): t0], issues: [:], owner: UUID()))
+        store.clear()
+        #expect(store.load() == RailDoneMarks() && store.load().owner == nil)
+    }
+
     @Test func clearRemovesEverythingSoNothingOfAnOldAccountStays() {
         let defaults = FakeRailDefaults()
         let store = UserDefaultsRailDoneStore(defaults: defaults)

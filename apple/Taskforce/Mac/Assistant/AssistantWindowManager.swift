@@ -352,13 +352,16 @@ final class AssistantWindowManager {
             guard shell.review != nil else { return false }
             shell.openNewestReview()
         case .allWork:
-            shell.openAllWork()
+            // 그 패널이 이미 열려 있으면 닫는다 (계약 24장 토글: 레일 버튼 · 패널의 키와 같다)
+            shell.toggleAllWork()
         case .chats:
+            // Chats 칸이 없는 셸(캡슐 레일, 계약 24장)의 ⌘3은 지나간다
+            guard shell.listens(to: .chats) else { return false }
             shell.openChats()
         case .sessions:
             // Sessions 버튼이 없는 셸(Release · 게이트 꺼짐 · 로그인 전)의 ⌘4는 Review가 꺼진 ⌘1처럼 지나간다
             guard shell.listens(to: .sessions) else { return false }
-            shell.openSessions()
+            shell.toggleSessions()
         case .newChat:
             shell.newChat()
         }

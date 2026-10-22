@@ -198,8 +198,20 @@ final class EdgeShellModel {
     enum Control: String, CaseIterable {
         case allWork, chats, sessions, more
 
-        /// 셋째 캡슐의 기본 칸. `sessions`는 여기 없다: 첫 캡슐(세션 링 · `+`)의 맨 위 버튼이다 (`EdgeShellModel.sessionsVisible`). `allCases`는 빠짐없는 목록이다
+        /// 노치 레일(옛 구성)의 셋째 칸. `sessions`는 여기 없다: 첫 캡슐(세션 링 · `+`)의 맨 위 버튼이다 (`EdgeShellModel.sessionsVisible`). `allCases`는 빠짐없는 목록이다
         static let defaultControls: [Control] = [.allWork, .chats, .more]
+        /// 캡슐 레일(새 Issues 화면)의 셋째 캡슐 칸 (계약 24장, 사용자 결정 2026-10-22): **Chats 칸이 없다** — 새 세션은 `+`가 새 대화 창으로 열고, 지난 대화는 대화 창의 기록 단추와 Sessions 패널에서 찾는다
+        static let capsuleControls: [Control] = [.allWork, .more]
+
+        /// 이 칸을 누르는 키 명령 (없으면 키가 없다)
+        var keyCommand: EdgeKeyCommand? {
+            switch self {
+            case .allWork: .allWork
+            case .chats: .chats
+            case .sessions: .sessions
+            case .more: nil
+            }
+        }
 
         var label: String {
             switch self {
@@ -221,9 +233,11 @@ final class EdgeShellModel {
         }
     }
 
-    /// 이 셸의 셋째 캡슐 칸 (Chats가 꺼져 있으면 Chats 칸이 없다). Sessions는 첫 캡슐의 버튼이라 여기 없다 (옛 On this Mac 칸은 Sessions로 합쳐 없앴다, OA PR-D2)
+    /// 이 셸의 셋째 캡슐 칸. 캡슐 레일(새 Issues 화면)은 Projects · More 둘이다 (Chats 칸 없음, 계약 24장). 노치 레일(옛 구성)은 Chats가 꺼져 있으면 Chats 칸이 없다.
+    /// Sessions는 첫 캡슐의 버튼이라 여기 없다 (옛 On this Mac 칸은 Sessions로 합쳐 없앴다, OA PR-D2)
     var controls: [Control] {
-        chatsEnabled ? Control.defaultControls : Control.defaultControls.filter { $0 != .chats }
+        if issues != nil { return Control.capsuleControls }
+        return chatsEnabled ? Control.defaultControls : Control.defaultControls.filter { $0 != .chats }
     }
 
     /// 고정 칸의 이름. 새 Issues 화면이 켜진 셸의 첫 칸은 "Projects"다 (툴팁 "Projects ⌘2", OA U2b 사용자 결정: U2의 "Issues"를 바꿨다): 꺼져 있으면 "All work"
@@ -245,10 +259,12 @@ final class EdgeShellModel {
 
     static let newSessionLabel = "New session"
 
-    /// 이 셸이 듣는 키 명령인가: Chats가 꺼져 있으면 ⌘3 · ⌘N은 연결이 없어 지나간다 (먹지 않는다). ⌘4(Sessions)는 Sessions 버튼이 있는 셸만 듣는다
+    /// 이 셸이 듣는 키 명령인가: Chats가 꺼져 있으면 ⌘3 · ⌘N은 연결이 없어 지나간다 (먹지 않는다). ⌘3(Chats)은 Chats 칸이 있는 노치 레일만 듣는다 (캡슐 레일은 Chats 칸 · 키가 없다, 계약 24장 —
+    /// 새 대화는 ⌘N · `+`). ⌘4(Sessions)는 Sessions 버튼이 있는 셸만 듣는다
     func listens(to command: EdgeKeyCommand) -> Bool {
         switch command {
-        case .chats, .newChat: chatsEnabled
+        case .chats: chatsEnabled && issues == nil
+        case .newChat: chatsEnabled
         case .sessions: sessionsVisible
         case .escape, .review, .allWork: true
         }
@@ -858,6 +874,36 @@ final class EdgeShellModel {
         readSessionsOnEntry()
     }
 
+    /// 레일의 Sessions 버튼 · ⌘4 (계약 24장, 토글): Sessions가 이미 열려 있으면 패널을 닫고, 아니면 연다
+    func toggleSessions() {
+        guard sessionsVisible else { return }
+        if panelOpen, view == .sessions {
+            dismiss()
+            return
+        }
+        openSessions()
+    }
+
+    /// 레일의 Projects(All work) 칸 · ⌘2 (계약 24장, 토글): Projects 첫 화면이 이미 열려 있으면 패널을 닫는다.
+    /// 이슈 목록 · 상세처럼 쌓인 화면에서는 닫지 않고 Projects 첫 화면으로 간다 (그 화면의 칸을 누른 것이 아니다). 다른 화면이 열려 있으면 연다
+    func toggleAllWork() {
+        if panelOpen, view == .allWork, issues == nil || !nav.canGoBack {
+            dismiss()
+            return
+        }
+        openAllWork()
+    }
+
+    /// 레일의 고정 칸을 눌렀다 (More는 카드가 따로 연다: 레일 컨트롤러가 열고 닫는다). 눌린 칸의 패널이 이미 열려 있으면 닫는다 (토글)
+    func pressControl(_ control: Control) {
+        switch control {
+        case .allWork: toggleAllWork()
+        case .chats: openChats()
+        case .sessions: toggleSessions()
+        case .more: break
+        }
+    }
+
     /// Open in Claude (그 세션을 데스크톱 앱에서 열고, 못 열면 앱만 앞으로): 시험은 가짜로 바꾼다
     @ObservationIgnored var claudeApp: any ClaudeAppOpening = LiveClaudeAppOpener()
 
@@ -969,9 +1015,9 @@ final class EdgeShellModel {
         if externalSessionsVisible, desktop?.rail.contains(where: { desktopRow($0.id) == nil }) == true { externalSessions?.railExpanded() }
     }
 
-    /// Chats: 레일의 Chats · ⌘3. Assistant 창이 있으면 가장 앞 창을 앞으로 가져오고 없으면 연다 (패널은 그대로). 창이 없는 구성은 패널의 Chats로 마지막 대화로 돌아간다
+    /// Chats: 레일의 Chats · ⌘3 (노치 레일만 — 캡슐 레일은 Chats 칸이 없다, 계약 24장). Assistant 창이 있으면 가장 앞 창을 앞으로 가져오고 없으면 연다 (패널은 그대로). 창이 없는 구성은 패널의 Chats로 마지막 대화로 돌아간다
     func openChats() {
-        guard chatsEnabled else { return }
+        guard chatsEnabled, issues == nil else { return }
         if windowsEnabled {
             onChats()
             return
@@ -1521,7 +1567,13 @@ final class EdgeShellModel {
         // 알던 계정이 떠났다(로그아웃 · 다른 계정): 그 계정의 끝남 표시는 이 계정에 없다 (저장본은 `AccountScope`가 비운다). 처음 로그인(앱을 다시 켠 뒤)은 저장해 둔 것을 그대로 둔다
         let hadAccount = self.account != nil
         self.account = account
-        if hadAccount { recentlyDone = [:] }
+        if hadAccount {
+            recentlyDone = [:]
+            carriedDone = [:]
+            // 마지막으로 저장한 표시의 사본도 비운다: 남기면 새 계정이 같은 표시를 만들었을 때 "바뀌지 않았다"며 저장하지 않는다
+            savedIssueDone = nil
+        }
+        claimDoneStores(for: account)
         workFilter = WorkFilter()
         filtersOpen = false
         currentID = nil
@@ -1555,9 +1607,16 @@ final class EdgeShellModel {
             recentlyDone[id] = now
         }
         if doneUntilOpened {
-            // 새 일이 시작하면 그 일의 끝남은 새 상태가 대신한다. 목록을 읽은 뒤에는 오늘 끝난 일에 없는 표시를 지운다 (읽기 전에는 저장해 둔 것을 그대로 둔다)
+            // 새 일이 시작하면 그 일의 끝남은 새 상태가 대신한다. 목록을 읽은 뒤에는 다시 열린 일(To Do · In Progress)의 표시를 지운다 — **더는 끝난 일이 아니다**.
+            // 오늘 끝난 일에서 빠졌어도(자정이 지났거나 다음 날 다시 켰다) 아직 끝난 일의 표시는 사용자가 열어 볼 때까지 남긴다 (읽기 전에는 저장해 둔 것을 그대로 둔다)
             for id in liveIDs where recentlyDone[id] != nil { recentlyDone[id] = nil }
-            if case .loaded = work.load { recentlyDone = recentlyDone.filter { doneIDs.contains($0.key) } }
+            if case .loaded = work.load {
+                let reopened = Set(work.open.map(\.id))
+                recentlyDone = recentlyDone.filter { !reopened.contains($0.key) }
+            }
+            // 마지막으로 본 그 일의 모습: 오늘 끝난 일에서 빠져도 링의 제목 · 상태를 그릴 수 있게 메모리에만 둔다 (다시 켜면 저장해 둔 표시만 남는다)
+            for action in work.doneToday where recentlyDone[action.id] != nil { carriedDone[action.id] = action }
+            carriedDone = carriedDone.filter { recentlyDone[$0.key] != nil }
             persistIssueDone()
         }
         self.work = work
@@ -1577,6 +1636,25 @@ final class EdgeShellModel {
     private var doneUntilOpened: Bool { issues != nil && railDone != nil }
     /// 마지막으로 저장한 이슈의 끝남 표시 (바뀔 때만 쓴다)
     @ObservationIgnored private var savedIssueDone: [UUID: Date]?
+    /// 끝남 표시가 있는 이슈의 마지막으로 본 모습 (메모리에만: 오늘 끝난 일에서 빠진 뒤에도 링을 그린다)
+    @ObservationIgnored private var carriedDone: [UUID: ActionSummary] = [:]
+
+    /// 로그인한 계정이 끝남 표시의 주인인지 가린다 (보안 P3-1, 고정을 계정별로 가지치기하는 것과 같다): 저장본의 주인이 이 계정이 아니면(다른 계정이거나 모르면) 이 계정의 표시가 아니라서
+    /// 저장본과 되살린 표시를 모두 비운다. 그 뒤 이 계정을 주인으로 적는다. Claude 데스크톱 표시도 같은 규칙이다
+    private func claimDoneStores(for account: UUID?) {
+        guard let account else { return }
+        if doneUntilOpened, let railDone {
+            if railDone.load().owner != account {
+                railDone.clear()
+                recentlyDone = [:]
+                carriedDone = [:]
+                savedIssueDone = nil
+                issues?.sessions.discardRestoredDone()
+            }
+            railDone.setOwner(account)
+        }
+        desktop?.adopt(account: account)
+    }
 
     private func persistIssueDone() {
         guard doneUntilOpened, let railDone else { return }
@@ -1593,6 +1671,7 @@ final class EdgeShellModel {
         let sessionIDs = Set(issues?.sessions.sessions(of: [id]).map(\.id) ?? [])
         if !sessionIDs.isEmpty { issues?.sessions.markOpened(sessionIDs) }
         if recentlyDone.removeValue(forKey: id) != nil {
+            carriedDone[id] = nil
             persistIssueDone()
             refreshSlots(at: clock())
         }
@@ -1609,7 +1688,10 @@ final class EdgeShellModel {
 
     private func refreshSlots(at now: Date) {
         if !doneUntilOpened { recentlyDone = recentlyDone.filter { now.timeIntervalSince($0.value) < TFMotion.doneHold } }
-        let entries = Self.entries(work, recentlyDone: recentlyDone, sessions: issues?.sessions.items, confirmRequestsRing: !taskforceEnabled, untilOpened: doneUntilOpened) + desktopEntries()
+        let entries = Self.entries(
+            work, recentlyDone: recentlyDone, sessions: issues?.sessions.items, confirmRequestsRing: !taskforceEnabled, untilOpened: doneUntilOpened,
+            carriedDone: carriedDone.values.sorted { $0.id.uuidString < $1.id.uuidString }
+        ) + desktopEntries()
         live = entries
         slots = RailOrdering.slots(previous: slots.map(\.id), entries: entries)
         if let hoveredID, !slots.contains(where: { $0.id == hoveredID }) { self.hoveredID = nil }
@@ -1647,8 +1729,10 @@ final class EdgeShellModel {
     /// 세션만 있는 이슈(v1 run 없이 세션이 돈다)도 오른다. idle 세션은 링이 아니다
     /// `confirmRequestsRing`: v1 확인 요청이 이슈 링의 needs-you가 되나. **Taskforce 대화가 켜지면 아니다** — 확인 요청은 bell로 가고 링은 세션의 질문만 말한다 (DS "Two kinds of Needs you", OA U3-15)
     /// `untilOpened`: 끝난 링이 열어 볼 때까지 남는 셸이다 — 말이 "Done"이다 ("Done just now"는 링이 몇 시간 남으면 거짓이다, DZ RL3)
+    /// `carriedDone`: 오늘 끝난 일에서 빠졌지만(자정이 지났다) 표시가 남은 일의 마지막으로 본 모습 — 열어 볼 때까지 남는 셸에서만 링으로 그린다
     static func entries(
-        _ work: EdgeWorkSnapshot, recentlyDone: [UUID: Date], sessions: [AgentSessionItem]? = nil, confirmRequestsRing: Bool = true, untilOpened: Bool = false
+        _ work: EdgeWorkSnapshot, recentlyDone: [UUID: Date], sessions: [AgentSessionItem]? = nil, confirmRequestsRing: Bool = true, untilOpened: Bool = false,
+        carriedDone: [ActionSummary] = []
     ) -> [RailEntry] {
         guard let sessions else {
             var entries = work.review.map {
@@ -1683,6 +1767,10 @@ final class EdgeShellModel {
             add(action, v1: v1, state: TaskStatusMark.State(TaskGroup.open(action)))
         }
         for action in work.doneToday where recentlyDone[action.id] != nil { add(action, v1: .done, state: .done) }
+        if untilOpened {
+            // `add`가 이미 오른 이슈(오늘 끝난 일에도 있는)를 거른다
+            for action in carriedDone where recentlyDone[action.id] != nil { add(action, v1: .done, state: .done) }
+        }
         return entries
     }
 }

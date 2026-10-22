@@ -13,25 +13,30 @@ public struct RailDoneMarks: Codable, Equatable, Sendable, CustomStringConvertib
     public var sessions: [UUID: Date]
     /// 이슈(v1 run) id → 일이 끝난 것을 본 시각
     public var issues: [UUID: Date]
+    /// 이 표시의 주인 계정 (보안 P3-1): 로그인한 계정이 이것과 다르면(또는 모르면) 이 표시는 그 계정의 것이 아니라 지운다 (고정을 계정별로 가지치기하는 것과 같다). 모르면 nil
+    public var owner: UUID?
 
-    public init(sessions: [UUID: Date] = [:], issues: [UUID: Date] = [:]) {
+    public init(sessions: [UUID: Date] = [:], issues: [UUID: Date] = [:], owner: UUID? = nil) {
         self.sessions = sessions
         self.issues = issues
+        self.owner = owner
     }
 
-    private enum CodingKeys: String, CodingKey { case sessions, issues }
+    private enum CodingKeys: String, CodingKey { case sessions, issues, owner }
 
-    /// 읽을 수 있는 것만 읽는다: 모르는 모양의 칸 · UUID가 아닌 키는 건너뛴다 (죽지 않는다)
+    /// 읽을 수 있는 것만 읽는다: 모르는 모양의 칸 · UUID가 아닌 키는 건너뛴다 (죽지 않는다). 읽을 수 없는 주인은 모른다(nil)
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         sessions = Self.read(container, .sessions)
         issues = Self.read(container, .issues)
+        owner = (try? container.decode(String.self, forKey: .owner)).flatMap(UUID.init(uuidString:))
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(Self.write(sessions), forKey: .sessions)
         try container.encode(Self.write(issues), forKey: .issues)
+        try container.encodeIfPresent(owner?.uuidString.lowercased(), forKey: .owner)
     }
 
     private static func read(_ container: KeyedDecodingContainer<CodingKeys>, _ key: CodingKeys) -> [UUID: Date] {
@@ -77,6 +82,11 @@ extension RailDoneStore {
         var marks = load()
         body(&marks)
         save(marks)
+    }
+
+    /// 표시의 주인 계정을 적는다 (다른 칸은 그대로). nil이면 모른다
+    public func setOwner(_ owner: UUID?) {
+        update { $0.owner = owner }
     }
 }
 

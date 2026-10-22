@@ -180,20 +180,48 @@ struct AssistantIssueTests {
         // 로그인 전: Sessions 버튼 없음 = 앞 구성의 첫 캡슐 (46 + 34n)
         #expect(!r.shell.sessionsVisible)
         let before = environment.railFrame()
-        #expect(abs(before.height - column(r.shell)) < 0.001 && abs(before.height - (46 + 34 * CGFloat(rings) + 6 + 112)) < 0.001)
+        #expect(abs(before.height - column(r.shell)) < 0.001 && abs(before.height - (46 + 34 * CGFloat(rings) + 6 + 78)) < 0.001, "셋째 캡슐은 칸 둘(Projects · More)이라 78")
         // 로그인 뒤: Sessions 버튼 + `+` + 링 (82 + 34n)
         r.shell.accountChanged(SampleData.userID)
         let after = environment.railFrame()
-        #expect(abs(after.height - column(r.shell)) < 0.001 && abs(after.height - (82 + 34 * CGFloat(rings) + 6 + 112)) < 0.001)
+        #expect(abs(after.height - column(r.shell)) < 0.001 && abs(after.height - (82 + 34 * CGFloat(rings) + 6 + 78)) < 0.001)
         #expect(abs(after.height - before.height - 36) < 0.001, "첫 캡슐이 Sessions 버튼만큼 36 커진다")
         #expect(abs(after.midY - screen.frame.midY) < 0.001 && abs(after.maxX - (screen.frame.maxX - EdgeRailCapsuleLayout.inset)) < 0.001, "열은 화면 세로 가운데, 끝에서 6")
-        // Chats가 꺼진 셸: 셋째 캡슐이 칸 둘이다 (78)
+        // Chats가 꺼진 셸도 같은 열이다: 캡슐 레일의 셋째 캡슐은 늘 칸 둘이다 (78)
         let account = try AppChatAccount.make()
         let narrow = ChatRuntime(gateway: IssueSampleGateway(), contextGateway: IssueSampleContextGateway(), scope: account.scope, now: { Date() }, issueScreens: true)
         let shell = EdgeShellModel(schedule: { _, _ in EdgeTimer() }, chatsEnabled: false, issues: narrow.issues)
         shell.accountChanged(SampleData.userID)
         let twoControls = AssistantWindowManager.Environment.live(panel: EdgePanelController(shell: shell, chat: nil), shell: shell).railFrame()
         #expect(shell.controls.count == 2 && abs(twoControls.height - column(shell)) < 0.001 && abs(twoControls.height - (82 + 6 + 78)) < 0.001)
+        // 노치 레일(Chats 칸 있음)의 열은 칸 셋이다: 칸 수가 높이를 정한다
+        #expect(abs(EdgeRailCapsuleLayout(mode: .expanded, bell: false, compactRingCount: 0, ringCount: 0, controls: [.allWork, .chats, .more], sessionsButton: true).columnHeight - (82 + 6 + 112)) < 0.001)
+    }
+
+    // MARK: 레일 버튼 · 키 토글 (계약 24장) · Chats 칸 없음
+
+    /// Chats 칸이 없는 캡슐 레일의 ⌘3은 Assistant 창에서도 지나간다 (창을 앞으로 가져오지도 않는다)
+    @Test func commandThreeFromAnAssistantWindowPassesBecauseTheCapsuleRailHasNoChatsButton() async throws {
+        let r = try await rig()
+        defer { r.defaults.cleanup(); r.manager.closeAll() }
+        let id = try #require(r.manager.openNewWindow())
+        var events: [String] = []
+        r.shell.onChats = { events.append("chats") }
+        #expect(!r.shell.listens(to: .chats) && !r.manager.perform(.chats, in: id))
+        #expect(events.isEmpty && !r.shell.panelOpen)
+    }
+
+    @Test func theProjectsAndSessionsKeysToggleTheirPanelFromAnAssistantWindow() async throws {
+        let r = try await rig()
+        defer { r.defaults.cleanup(); r.manager.closeAll() }
+        let id = try #require(r.manager.openNewWindow())
+        r.shell.accountChanged(SampleData.userID)
+        #expect(r.manager.perform(.sessions, in: id) && r.shell.panelOpen && r.shell.view == .sessions)
+        #expect(r.manager.perform(.sessions, in: id) && !r.shell.panelOpen, "열려 있는 Sessions에서 ⌘4를 다시 누르면 닫힌다")
+        #expect(r.manager.perform(.allWork, in: id) && r.shell.panelOpen && r.shell.view == .allWork)
+        #expect(r.manager.perform(.allWork, in: id) && !r.shell.panelOpen, "열려 있는 Projects에서 ⌘2를 다시 누르면 닫힌다")
+        // 다른 칸의 패널이 열려 있으면 닫지 않고 그 패널로 간다
+        #expect(r.manager.perform(.sessions, in: id) && r.manager.perform(.allWork, in: id) && r.shell.panelOpen && r.shell.view == .allWork)
     }
 
     // MARK: 키 · 포커스

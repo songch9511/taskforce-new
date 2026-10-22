@@ -4,13 +4,13 @@ import Foundation
 import TaskforceUI
 
 /// 캡슐 레일의 자리 (OA U3, 디자인 EdgeRail · `bundle.css` `.tf-edge` · `.tf-capsule` · `.tf-rest-bar`). 창 좌표, 위가 0.
-/// 레일은 화면 오른쪽 가운데에 검은 캡슐의 열로 떠 있다: ① Taskforce bell ② Sessions 버튼 · New session `+` · 살아 있는 세션 링(넷까지) ③ Projects · Chats · More.
+/// 레일은 화면 오른쪽 가운데에 검은 캡슐의 열로 떠 있다: ① Taskforce bell ② Sessions 버튼 · New session `+` · 살아 있는 세션 링(넷까지) ③ Projects · More (Chats 칸은 없다: 계약 24장, 사용자 결정 2026-10-22).
 /// 그리기와 포인터 판정이 **같은 값**을 쓴다 (이 구조체의 frame들이 곧 판정이다). 모양은 바뀌지 않고 접힘 ↔ 펼침은 열 전체의 transform(.72배, 오른쪽 가운데 기준)뿐이다.
 /// 숫자는 DS 미리보기를 헤드리스 브라우저로 재서 맞췄다: 캡슐 44 · 칸 32 · 칸 사이 2 · 안쪽 6 · 캡슐 사이 6, 세션 캡슐은 "넘치는 칸" 덩어리에 위 2가 더 있어
 /// 링 n개의 접힌 높이 = 14 + 34n.
 /// **Sessions 버튼이 있는 레일**(OA PR-D2, DZ 승인 2026-10-22 `oa-rail-sessions-dz` 배치 A: Sessions → + → 링)은 Sessions · `+`가 링 위에 있고 접힌 레일에서는 둘 다 접힌다 (링만 남는다).
 /// 그 레일의 펼친 높이는 DZ 미리보기를 헤드리스 브라우저로 잰 값이다: 82 + 34n (넷 = 218): Sessions@6 · `+`@40 · 링@76 · 110 · 144 · 180 (머리 덩어리 아래 2, 넷째 링 위 2).
-/// Sessions 버튼이 없는 레일(앞 구성)은 펼친 높이 46 + 34n (넷 + `+` = 182) 그대로다. 셋째 캡슐은 112(칸 셋), bell 캡슐 44. 열은 늘 창의 세로 가운데에서 자란다.
+/// Sessions 버튼이 없는 레일(앞 구성)은 펼친 높이 46 + 34n (넷 + `+` = 182) 그대로다. 셋째 캡슐은 78(칸 둘: Projects · More), bell 캡슐 44. 열은 늘 창의 세로 가운데에서 자란다.
 struct EdgeRailCapsuleLayout: Equatable {
     enum Mode: Equatable {
         /// 살아 있는 링 0 · 요청 0 · 펼침 아님: 막대 하나
@@ -56,8 +56,8 @@ struct EdgeRailCapsuleLayout: Equatable {
     static var windowSize: CGSize { CGSize(width: windowWidth, height: windowHeight) }
 
     static let bellHeight = padding * 2 + item
-    /// 셋째 캡슐의 가장 큰 높이: Projects · Chats · More 셋 (Chats가 꺼져 있으면 둘이라 이보다 낮다 — 창은 늘 가장 큰 열이 들어가는 크기다. On this Mac은 Sessions 버튼으로 합쳐졌다)
-    static let thirdHeight = padding * 2 + 3 * item + 2 * gap
+    /// 셋째 캡슐의 높이: Projects · More 둘 (Chats 칸이 없다, 계약 24장. On this Mac은 Sessions 버튼으로 합쳐졌다). 78
+    static let thirdHeight = padding * 2 + CGFloat(EdgeShellModel.Control.capsuleControls.count) * item + CGFloat(EdgeShellModel.Control.capsuleControls.count - 1) * gap
 
     /// 세션 캡슐의 높이: 접힘은 링 n개(≤ 3), 펼침은 링 n개(≤ 4) + `+`. 링 0의 접힘은 캡슐이 없다 (0).
     /// `sessionsButton`: 펼침에서 Sessions 버튼 · `+`가 링 위에 선다 (DZ를 잰 값: 82 + 34n). 접힘은 그대로다 (둘은 접힌다)
@@ -80,8 +80,8 @@ struct EdgeRailCapsuleLayout: Equatable {
     let compactRingCount: Int
     /// 펼침에서 보일 링 (칸 전체, 넷까지)
     let ringCount: Int
-    /// 셋째 캡슐의 칸 (Projects · Chats · More)
-    var controls: [EdgeShellModel.Control] = EdgeShellModel.Control.defaultControls
+    /// 셋째 캡슐의 칸 (Projects · More)
+    var controls: [EdgeShellModel.Control] = EdgeShellModel.Control.capsuleControls
     /// 세션 캡슐 맨 위에 Sessions 버튼이 있다 (OA PR-D2): 펼침에서 Sessions → `+` → 링. 접힘에서는 둘이 접힌다. 없으면 앞 구성 그대로(링 → `+`)
     var sessionsButton = false
 
@@ -272,10 +272,10 @@ struct EdgeRailCapsuleLayout: Equatable {
 
     /// 화면 좌표(아래가 0)의 펼친 레일 바깥 모양: Assistant 창이 피하는 자리의 왼쪽 가장자리 · 위 가장자리. 펼친 열이 가운데에서 자랄 때의 가장 큰 모양이다
     /// `controls` · `sessionsButton`을 주면 그 레일의 실제 열이다 (Assistant 창이 피하는 자리: `AssistantWindowManager.Environment.live`가 셸의 값을 넘긴다).
-    /// 안 주면 가장 큰 모양(셋째 캡슐 칸 셋 · Sessions 버튼 있음)이다 — 창이 레일을 덜 피하는 쪽으로 틀리지 않게
+    /// 안 주면 캡슐 레일의 기본 모양(셋째 캡슐 칸 둘: Projects · More, Sessions 버튼 있음)이다
     static func expandedRailFrame(
         screenMaxX: CGFloat, midY: CGFloat, bell: Bool, rings: Int,
-        controls: [EdgeShellModel.Control] = [.allWork, .chats, .more], sessionsButton: Bool = true
+        controls: [EdgeShellModel.Control] = EdgeShellModel.Control.capsuleControls, sessionsButton: Bool = true
     ) -> CGRect {
         let layout = EdgeRailCapsuleLayout(mode: .expanded, bell: bell, compactRingCount: 0, ringCount: rings, controls: controls, sessionsButton: sessionsButton)
         let window = windowFrame(screenMaxX: screenMaxX, midY: midY)

@@ -185,9 +185,9 @@ struct EdgeRailCapsuleMoreTests {
         rig.shell.assistantWindowFront = true
         let lit = rig.shell.controls.filter { rig.shell.railControlHighlighted($0) }
         #expect(lit.isEmpty && rig.shell.taskforceBell?.selected == true, "Taskforce 대화가 열려 있으면 bell만 칠해진다")
-        // 패널이 닫히면 창이 앞인 Chats만 칠해진다 (그때는 bell이 없다)
+        // 패널이 닫히면 칠해진 칸이 없다: 캡슐 레일에는 Chats 칸이 없어 창이 앞이어도 칠할 칸이 없다 (계약 24장)
         rig.shell.dismiss()
-        #expect(rig.shell.controls.filter { rig.shell.railControlHighlighted($0) } == [.chats])
+        #expect(rig.shell.controls.filter { rig.shell.railControlHighlighted($0) }.isEmpty)
         // 호버는 늘 칠한다 (포인터 피드백)
         rig.shell.assistantWindowFront = false
         rig.shell.hover(control: .allWork)
@@ -397,10 +397,10 @@ struct EdgeRailCapsuleMoreTests {
         #expect(litControls() == [.more], "Projects가 열려 있어도 More 카드가 열려 있으면 칠해진 칸은 ⋯ 하나")
         rig.shell.setMenuOpen(false)
         #expect(litControls() == [.allWork], "카드가 닫히면 Projects 선택이 돌아온다 (선택은 지워진 적 없다)")
-        // Chats: Assistant 창이 앞이다 (패널은 닫혀 있다)
+        // Assistant 창이 앞이다 (패널은 닫혀 있다): Chats 칸이 없어 칠해진 칸이 없다
         rig.shell.dismiss()
         rig.shell.assistantWindowFront = true
-        #expect(litControls() == [.chats])
+        #expect(litControls().isEmpty)
         rig.shell.setMenuOpen(true)
         #expect(litControls() == [.more])
         rig.shell.setMenuOpen(false)

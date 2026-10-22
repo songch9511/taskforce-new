@@ -31,7 +31,8 @@ extension APIClient {
         }
     }
 
-    /// 사용자가 Claude 데스크톱 세션 보기를 열었다 (`claude_app_session_opened`, OA PR-D2): **종류만** — 본문은 빈 객체이고 세션 id · 제목 · 폴더는 보내지 않는다. 서버는 204로 답한다 (같은 날 두 번째도)
+    /// 사용자가 Claude 데스크톱 세션 보기를 열었다 (`claude_app_session_opened`, OA PR-D2): **종류만** — 본문은 빈 객체이고 세션 id · 제목 · 폴더는 보내지 않는다. 서버는 204로 답한다 (같은 날 두 번째도).
+    /// **404는 "서버에 닿았지만 세지 않았다"다** (아직 이 route가 없는 서버): 던지지 않는다 — 앱이 그날을 닿은 것으로 적어 열 때마다 다시 보내 서버를 두드리지 않는다 (코드 검토 P3). 그 밖의 실패는 던져 나중에 다시 보낸다
     public func claudeAppSessionOpened() async throws {
         struct Empty: Decodable {}
         struct Body: Encodable {}
@@ -39,6 +40,10 @@ extension APIClient {
             let _: Empty = try await send(.post, "external-sessions/claude-app-opened", body: Body(), version: .v2)
         } catch APIError.decoding {
             // 204 본문 없음 (위 `externalSessionsShown`과 같다)
+        } catch APIError.server(status: 404, _, _) {
+            // 닿았지만 세지 않았다 (모양을 갖춘 404)
+        } catch APIError.unexpectedStatus(404) {
+            // 닿았지만 세지 않았다 (route가 없어 HTML 404)
         }
     }
 }

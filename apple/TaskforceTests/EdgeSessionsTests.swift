@@ -214,6 +214,192 @@ struct EdgeSessionsTests {
         #expect(r.railDone.load().sessions.isEmpty)
     }
 
+    // MARK: 이슈의 끝남은 자정이 지나도 · 다시 켜도 열 때까지 남는다 (코드 검토 P3)
+
+    private static let finishedIssue = Fx.Seed(number: 141, title: "Wire EdgeRail rings to live session state", state: .done, dueOffset: nil, projects: [Fx.taskforce])
+    private static let reopenedIssue = Fx.Seed(number: 141, title: "Wire EdgeRail rings to live session state", state: .inProgress, dueOffset: nil, projects: [Fx.taskforce])
+    /// 141이 어느 목록에도 없는 날의 스냅샷 (자정이 지나 오늘 끝난 일이 비었다)
+    private static var nextDay: EdgeWorkSnapshot { Fx.snapshot(seeds: Fx.seeds.filter { $0.number != 141 && $0.state != .done }) }
+
+    private func issueRing(_ shell: EdgeShellModel) -> RailEntry? { shell.slots.first { $0.id == Fx.issue(141) } }
+
+    @Test func aFinishedIssueRingSurvivesTheDoneTodayWindowRollingOverAndALaterRelaunchUntilItIsOpened() async {
+        let railDone = InMemoryRailDoneStore()
+        let base = X().make(railDone: railDone)
+        base.shell.update(Fx.snapshot(seeds: Fx.seeds))
+        #expect(issueRing(base.shell)?.kind == .running, "141은 일하는 중이다")
+        base.shell.update(Fx.snapshot(seeds: Fx.seeds.filter { $0.number != 141 } + [Self.finishedIssue]))
+        #expect(issueRing(base.shell)?.kind == .done && railDone.load().issues[Fx.issue(141)] != nil, "끝났다: 초록 링 + 저장")
+        // 자정이 지났다: 141은 오늘 끝난 일에서 빠졌다 (열린 일도 아니다)
+        base.shell.update(Self.nextDay)
+        #expect(issueRing(base.shell)?.kind == .done && issueRing(base.shell)?.activity == "Done", "오늘 끝난 일에서 빠져도 열어 보기 전에는 링이 남는다")
+        #expect(railDone.load().issues[Fx.issue(141)] != nil, "표시도 지우지 않는다")
+        // 다음 날 앱을 다시 켰다: 같은 저장소를 새 셸이 읽는다. 목록을 읽어도 표시를 지우지 않는다
+        let relaunched = X().make(railDone: railDone)
+        relaunched.shell.update(Self.nextDay)
+        #expect(railDone.load().issues[Fx.issue(141)] != nil, "다시 켠 뒤 목록을 읽어도 아직 끝난 일의 표시는 남는다")
+        // 열어 보면 내려가고 저장도 지워진다
+        base.shell.markIssueOpened(Fx.issue(141))
+        #expect(issueRing(base.shell) == nil && railDone.load().issues.isEmpty)
+    }
+
+    @Test func anIssueThatIsOpenAgainLosesItsDoneMarkBecauseItIsNotFinishedAnymore() async {
+        let railDone = InMemoryRailDoneStore()
+        let base = X().make(railDone: railDone)
+        base.shell.update(Fx.snapshot(seeds: Fx.seeds))
+        base.shell.update(Fx.snapshot(seeds: Fx.seeds.filter { $0.number != 141 } + [Self.finishedIssue]))
+        #expect(railDone.load().issues[Fx.issue(141)] != nil)
+        // 다시 열렸다 (To Do · In Progress, 일하지는 않는다)
+        base.shell.update(Fx.snapshot(seeds: Fx.seeds.filter { $0.number != 141 } + [Self.reopenedIssue]))
+        #expect(railDone.load().issues.isEmpty && issueRing(base.shell)?.kind != .done, "더는 끝난 일이 아니다")
+    }
+
+    // MARK: 끝남 표시의 주인 계정 (보안 P3-1)
+
+    @Test func marksOfAnotherAccountAreForgottenWhenTheShellLearnsTheAccountAndThisAccountBecomesTheOwner() async {
+        let railDone = InMemoryRailDoneStore()
+        railDone.save(RailDoneMarks(sessions: [Fx.session(1): Date()], issues: [Fx.issue(141): Date()], owner: UUID()))
+        let base = X().make(signedIn: false, sessions: .finished, railDone: railDone)
+        await base.issues.sessions.refresh()
+        base.shell.sessionsChanged()
+        #expect(base.issues.sessions.items.contains { $0.ring == .done }, "아직 계정을 모른다: 저장해 둔 표시가 되살아나 있다")
+        base.shell.accountChanged(SampleData.userID)
+        base.shell.sessionsChanged()
+        #expect(!base.issues.sessions.items.contains { $0.ring == .done }, "주인이 다른 세션 표시는 버린다")
+        #expect(railDone.load() == RailDoneMarks(owner: SampleData.userID), "저장본도 비우고 이 계정을 주인으로 적는다")
+        base.shell.update(Fx.snapshot(seeds: Fx.seeds.filter { $0.number != 141 } + [Self.finishedIssue]))
+        #expect(issueRing(base.shell) == nil, "이슈 표시도 버렸다: 레일에 없던 일이 끝났다고 초록을 띄우지 않는다")
+    }
+
+    @Test func marksOfThisAccountSurviveALaterLaunchOfTheShell() async {
+        let railDone = InMemoryRailDoneStore()
+        railDone.save(RailDoneMarks(issues: [Fx.issue(141): Date()], owner: SampleData.userID))
+        let base = X().make(railDone: railDone)
+        #expect(railDone.load().issues[Fx.issue(141)] != nil && railDone.load().owner == SampleData.userID, "같은 계정이면 지우지 않는다")
+        withExtendedLifetime(base) {}
+    }
+
+    @Test func aStoreWithAnUnknownOwnerIsNotTrustedEither() async {
+        let railDone = InMemoryRailDoneStore()
+        railDone.save(RailDoneMarks(issues: [Fx.issue(141): Date()]))
+        let base = X().make(railDone: railDone)
+        #expect(railDone.load() == RailDoneMarks(owner: SampleData.userID))
+        withExtendedLifetime(base) {}
+    }
+
+    /// 저장해 둔 마지막 표시의 사본을 계정이 바뀔 때 비운다: 남기면 새 계정이 같은 표시를 만들었을 때 "바뀌지 않았다"며 저장하지 않는다
+    @Test func theLastSavedCopyIsForgottenWhenTheAccountChangesSoTheNewAccountsSameMarkIsSaved() async {
+        let railDone = InMemoryRailDoneStore()
+        // 시계는 멈춰 둔다: 같은 일이 "같은 때"에 끝나야 두 표시가 같다 (시계 객체는 시험이 끝날 때까지 붙든다: 셸의 시계는 그 객체를 약하게 본다)
+        let time = EdgeShellModelTests.ManualTime()
+        defer { withExtendedLifetime(time) {} }
+        let base = X().make(railDone: railDone, time: time)
+        base.shell.update(Fx.snapshot(seeds: Fx.seeds))
+        base.shell.update(Fx.snapshot(seeds: Fx.seeds.filter { $0.number != 141 } + [Self.finishedIssue]))
+        #expect(railDone.load().issues[Fx.issue(141)] != nil)
+        // 다른 계정으로 바뀌었다 (저장본은 비워진다)
+        base.shell.accountChanged(UUID())
+        #expect(railDone.load().issues.isEmpty)
+        // 새 계정에서 같은 일이 같은 때에 끝났다: 같은 표시도 저장된다
+        base.shell.update(Fx.snapshot(seeds: Fx.seeds))
+        base.shell.update(Fx.snapshot(seeds: Fx.seeds.filter { $0.number != 141 } + [Self.finishedIssue]))
+        #expect(railDone.load().issues[Fx.issue(141)] != nil, "이전 계정의 사본이 남아 있으면 저장을 건너뛴다")
+    }
+
+    @Test func theDesktopModelAdoptsTheAccountWhenTheShellLearnsIt() async {
+        let r = await rig(rows: [10], live: [Self.live(10, .busy)])
+        await r.poll([Self.live(10, .idle)])
+        #expect(r.doneStore.load()[Self.id(10)] != nil && r.doneStore.owner == SampleData.userID, "이 계정을 주인으로 적었다")
+        // 다른 계정의 표시가 저장돼 있는 채로 이 계정이 알려졌다
+        let doneStore = InMemoryClaudeAppDoneStore()
+        doneStore.save([Self.id(10): ClaudeAppDoneMark(pid: 9010, at: Date())])
+        doneStore.setOwner(UUID())
+        let script = DeskScript()
+        let desktop = ClaudeAppSessionsModel(poll: { script.poll() }, done: doneStore)
+        let base = X().make(signedIn: false, desktop: desktop, railDone: InMemoryRailDoneStore())
+        base.shell.accountChanged(SampleData.userID)
+        #expect(doneStore.load().isEmpty && doneStore.owner == SampleData.userID, "셸이 계정을 알면 폴을 기다리지 않고 다른 계정의 표시를 비운다")
+    }
+
+    // MARK: 레일 버튼 · 키 토글 (계약 24장)
+
+    @Test func pressingARailButtonWhoseWindowIsAlreadyOpenClosesItAndAnotherButtonSwitchesToItsOwn() async {
+        let r = await rig(sessions: .basic)
+        let shell = r.shell
+        shell.pressControl(.sessions)
+        #expect(shell.panelOpen && shell.view == .sessions)
+        shell.pressControl(.sessions)
+        #expect(!shell.panelOpen, "열려 있는 Sessions를 다시 누르면 닫힌다")
+        shell.pressControl(.sessions)
+        #expect(shell.panelOpen && shell.view == .sessions, "닫힌 뒤에는 다시 열린다")
+        shell.pressControl(.allWork)
+        #expect(shell.panelOpen && shell.view == .allWork, "다른 칸의 패널이 열려 있으면 닫지 않고 그 칸의 패널로 간다")
+        shell.pressControl(.allWork)
+        #expect(!shell.panelOpen, "열려 있는 Projects를 다시 누르면 닫힌다")
+        // 쌓인 화면(이슈 상세)에서 Projects 칸은 닫지 않고 Projects 첫 화면으로 간다 (그 칸이 가리키는 화면이 아니다)
+        shell.openAllWork()
+        shell.openIssue(Fx.issue(139))
+        #expect(shell.nav.detailID == Fx.issue(139))
+        shell.pressControl(.allWork)
+        #expect(shell.panelOpen && shell.view == .allWork && shell.nav.detailID == nil)
+        shell.pressControl(.allWork)
+        #expect(!shell.panelOpen)
+        // More는 레일 컨트롤러가 카드로 연다: 이 눌림은 아무 일도 하지 않는다
+        shell.pressControl(.more)
+        #expect(!shell.panelOpen)
+    }
+
+    @Test func theSessionsButtonDoesNothingWithoutAnAccountAndTheToggleNeedsOne() async {
+        let base = X().make(signedIn: false)
+        base.shell.pressControl(.sessions)
+        base.shell.toggleSessions()
+        #expect(!base.shell.panelOpen, "Sessions 버튼이 없는 셸은 아무 일도 없다")
+    }
+
+    @Test func theOldNotchRailTogglesProjectsToo() {
+        let shell = EdgeShellModel(schedule: { _, _ in EdgeTimer() }, chatsEnabled: true, windowsEnabled: true)
+        shell.pressControl(.allWork)
+        #expect(shell.panelOpen && shell.view == .allWork)
+        shell.pressControl(.allWork)
+        #expect(!shell.panelOpen)
+        var chats = 0
+        shell.onChats = { chats += 1 }
+        shell.pressControl(.chats)
+        #expect(chats == 1 && shell.controls == [.allWork, .chats, .more], "노치 레일의 Chats는 지금 그대로다")
+    }
+
+    @Test func thePanelKeysToggleTheirPanelTooAndCommandThreeIsGone() async throws {
+        let w = try await windows(live: [])
+        defer {
+            w.shell.dismiss()
+            w.controller.followPanel()
+        }
+        #expect(w.controller.handleKey(try key(kVK_ANSI_4)) && w.shell.panelOpen && w.shell.view == .sessions)
+        #expect(w.controller.handleKey(try key(kVK_ANSI_4)) && !w.shell.panelOpen, "⌘4를 다시 누르면 Sessions가 닫힌다")
+        #expect(w.controller.handleKey(try key(kVK_ANSI_2)) && w.shell.panelOpen && w.shell.view == .allWork)
+        #expect(w.controller.handleKey(try key(kVK_ANSI_2)) && !w.shell.panelOpen, "⌘2를 다시 누르면 Projects가 닫힌다")
+        #expect(!w.controller.handleKey(try key(kVK_ANSI_3)) && !w.shell.panelOpen, "Chats 키(⌘3)는 없다: 지나간다")
+    }
+
+    // MARK: Chats 칸 없음 · + 는 새 세션
+
+    @Test func theCapsuleRailHasNoChatsButtonOrKeyAndPlusOpensANewSessionDirectly() async {
+        let r = await rig()
+        let shell = r.shell
+        #expect(!shell.controls.contains(.chats) && !shell.listens(to: .chats) && shell.listens(to: .newChat))
+        var chats = 0, news: [AssistantOpenItem?] = [], windows = 0
+        shell.onChats = { chats += 1 }
+        shell.onNewSession = { news.append($0) }
+        shell.onNewWindow = { windows += 1 }
+        shell.openChats()
+        shell.pressControl(.chats)
+        #expect(chats == 0 && !shell.panelOpen, "Chats 칸 · 키가 없어 눌러도 아무 일도 없다")
+        shell.newSession(from: .rail)
+        #expect(news.count == 1, "`+`는 새 세션(새 대화 창)을 직접 연다")
+        shell.newChat()
+        #expect(windows == 1, "⌘N도 새 대화 창을 연다")
+    }
+
     @Test func aShellWithoutADoneStoreKeepsTheOldTimedDoneAndItsWords() async {
         let time = EdgeShellModelTests.ManualTime()
         let base = X().make(sessions: .basic, time: time)

@@ -15,7 +15,10 @@ final class ClaudeAppTranscriptScript: ClaudeAppTranscriptSource, @unchecked Sen
     private var _onMain = false
     private var gate: CheckedContinuation<Void, Never>?
     private var holdEarlier = false
+    private var _earlierCursors: [ClaudeAppTranscriptCursor] = []
 
+    /// "Show earlier"가 받은 커서들 (상한에서 앞 줄을 버렸을 때 그 자리를 가리키는지 본다)
+    var earlierCursors: [ClaudeAppTranscriptCursor] { lock.withLock { _earlierCursors } }
     var openCalls: Int { lock.withLock { _openCalls } }
     var earlierCalls: Int { lock.withLock { _earlierCalls } }
     var newerCalls: Int { lock.withLock { _newerCalls } }
@@ -37,6 +40,7 @@ final class ClaudeAppTranscriptScript: ClaudeAppTranscriptSource, @unchecked Sen
     func earlier(_ cursor: ClaudeAppTranscriptCursor) -> ClaudeAppTranscriptLoad {
         lock.withLock {
             _earlierCalls += 1
+            _earlierCursors.append(cursor)
             if Thread.isMainThread { _onMain = true }
             return earliers.isEmpty ? .unreadable : earliers.removeFirst()
         }
@@ -68,8 +72,19 @@ extension ExternalSessionSuites {
         typealias S = ClaudeAppTranscriptScript
         let id = F.uuid(0xF1)
 
-        private func make(_ script: S, sleeper: ClaudeAppLoopSleeper = ClaudeAppLoopSleeper()) -> ClaudeAppConversation {
-            ClaudeAppConversation(sessionID: id, cwd: "/Users/tester/proj", source: script, sleep: { await sleeper.sleep($0) })
+        private func make(_ script: S, sleeper: ClaudeAppLoopSleeper = ClaudeAppLoopSleeper(), limit: Int = ClaudeAppConversation.maxTurns) -> ClaudeAppConversation {
+            ClaudeAppConversation(sessionID: id, cwd: "/Users/tester/proj", source: script, turnLimit: limit, sleep: { await sleeper.sleep($0) })
+        }
+
+        /// 기록 파일 안의 자리(`lineOffset`)가 있는 줄: 상한에서 앞 줄을 버릴 때 "Show earlier"가 그 자리로 이어지는지 본다
+        private func placed(_ n: Int, offset: Int64) -> ClaudeAppTurn {
+            ClaudeAppTurn(id: "t\(n)", kind: n.isMultiple(of: 2) ? .assistant("a\(n)") : .user("u\(n)"), timestamp: nil, truncated: false, lineOffset: offset, toolUseID: nil)
+        }
+
+        private func cursor(earliest: Int64, covered: Int) -> ClaudeAppTranscriptCursor {
+            ClaudeAppTranscriptCursor(
+                sessionID: id, path: "/tmp/x.jsonl", created: Date(timeIntervalSince1970: 1_800_000_000), earliestOffset: earliest, nextOffset: 1000, coveredBytes: covered, discarding: false, peerIDs: []
+            )
         }
 
         private func eventually(_ condition: @MainActor () -> Bool) async -> Bool {
@@ -86,6 +101,7 @@ extension ExternalSessionSuites {
         @Test func theNumbersAreTheDocumentedOnes() {
             #expect(ClaudeAppConversation.tailInterval == 1, "라이브 꼬리는 1초마다")
             #expect(ClaudeAppConversation.maxEmptyWindowsPerPress == 16, "한 번 누를 때 건너뛴 줄뿐인 창을 이만큼까지 넘어간다")
+            #expect(ClaudeAppConversation.maxTurns == 1000, "메모리에 두는 줄은 1000개쯤까지 (보안 P3-4)")
         }
 
         // MARK: 처음 열기
@@ -196,6 +212,73 @@ extension ExternalSessionSuites {
             #expect(await eventually { sleeper.pending == 0 }, "실패하면 꼬리를 멈춘다")
             conversation.retry()
             #expect(await eventually { conversation.phase == .ready && ids(conversation) == ["t1", "t2"] })
+            conversation.stop()
+        }
+
+        /// 꼬리가 한 번 못 읽어 `failed`가 된 뒤 패널을 닫았다 다시 열면 이어서 따라간다: 꼬리를 읽는 데 성공하면 다시 `ready`다 (코드 검토 P3)
+        @Test func aSuccessfulTailReadMakesAFailedConversationReadyAgain() async {
+            let script = S()
+            let sleeper = ClaudeAppLoopSleeper()
+            script.queueOpen(S.page([S.turn(1)]))
+            script.queueNewer(.unreadable, .turns([S.turn(2)], cursor: ClaudeAppTranscriptCursor(sessionID: id), hasMore: false))
+            let conversation = make(script, sleeper: sleeper)
+            conversation.start()
+            #expect(await eventually { conversation.phase == .failed })
+            conversation.stop()
+            conversation.start()
+            #expect(await eventually { script.newerCalls == 2 && ids(conversation) == ["t1", "t2"] })
+            #expect(conversation.phase == .ready, "꼬리를 읽었으니 못 읽음이 아니다")
+            conversation.stop()
+        }
+
+        // MARK: 메모리의 줄 수 상한 (보안 P3-4)
+
+        @Test func theLiveTailKeepsAtMostTheLimitAndDropsTheOldestAndOffersShowEarlier() async {
+            let script = S()
+            let sleeper = ClaudeAppLoopSleeper()
+            script.queueOpen(S.page([S.turn(1), S.turn(2), S.turn(3)]))
+            script.queueNewer(.turns([S.turn(4), S.turn(5), S.turn(6)], cursor: ClaudeAppTranscriptCursor(sessionID: id), hasMore: false))
+            let conversation = make(script, sleeper: sleeper, limit: 4)
+            conversation.start()
+            #expect(await eventually { script.newerCalls == 1 && ids(conversation).count == 4 })
+            #expect(ids(conversation) == ["t3", "t4", "t5", "t6"], "넘친 만큼 오래된 줄부터 버린다")
+            #expect(conversation.hasEarlier, "버린 앞이 있으니 Show earlier를 보인다")
+            script.queueNewer(.turns([S.turn(7)], cursor: ClaudeAppTranscriptCursor(sessionID: id), hasMore: false))
+            sleeper.fire()
+            #expect(await eventually { ids(conversation) == ["t4", "t5", "t6", "t7"] }, "더 붙어도 상한을 넘지 않는다")
+            conversation.stop()
+        }
+
+        @Test func aWindowUnderTheLimitIsNeverTrimmedAndHasNoEarlierOfItsOwn() async {
+            let script = S()
+            let sleeper = ClaudeAppLoopSleeper()
+            script.queueOpen(S.page([S.turn(1), S.turn(2)]))
+            script.queueNewer(.turns([S.turn(3), S.turn(4)], cursor: ClaudeAppTranscriptCursor(sessionID: id), hasMore: false))
+            let conversation = make(script, sleeper: sleeper, limit: 4)
+            conversation.start()
+            #expect(await eventually { ids(conversation) == ["t1", "t2", "t3", "t4"] })
+            #expect(!conversation.hasEarlier, "상한까지는 버리지 않는다")
+            conversation.stop()
+        }
+
+        /// 버린 줄을 "Show earlier"가 다시 읽을 수 있어야 한다: 커서의 가장 앞 자리가 남은 가장 앞 줄로 옮겨 가고 (그 사이에 구멍이 없다), 버린 줄의 id는 다시 보일 수 있다
+        @Test func droppingTheOldestMovesTheCursorSoShowEarlierReadsTheDroppedLinesAgain() async {
+            let script = S()
+            let sleeper = ClaudeAppLoopSleeper()
+            script.queueOpen(.page(ClaudeAppTranscriptPage(
+                turns: [placed(1, offset: 100), placed(2, offset: 200), placed(3, offset: 300)], cursor: cursor(earliest: 100, covered: 500), hasEarlier: true, skippedLines: 0
+            )))
+            script.queueNewer(.turns([placed(4, offset: 400), placed(5, offset: 500)], cursor: cursor(earliest: 100, covered: 500), hasMore: false))
+            script.queueEarlier(S.page([S.turn(1), S.turn(2)], earlier: false))
+            let conversation = make(script, sleeper: sleeper, limit: 3)
+            conversation.start()
+            #expect(await eventually { script.newerCalls == 1 && ids(conversation) == ["t3", "t4", "t5"] })
+            conversation.showEarlier()
+            #expect(await eventually { script.earlierCalls == 1 && !conversation.loadingEarlier })
+            let sent = script.earlierCursors[0]
+            #expect(sent.earliestOffset == 300, "남은 가장 앞 줄(t3)의 자리부터 앞을 읽는다")
+            #expect(sent.coveredBytes == 300, "버린 줄의 몫(200바이트)은 읽기 총량에서 돌려받는다")
+            #expect(ids(conversation) == ["t1", "t2", "t3", "t4", "t5"], "버린 줄이 다시 읽혀 앞에 붙는다 (중복으로 걸러지지 않는다)")
             conversation.stop()
         }
 

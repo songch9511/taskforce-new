@@ -258,11 +258,11 @@ struct EdgeRailView: View {
                 ForEach(shell.controls, id: \.self) { control in
                     let frame = layout.controlFrame(control)
                     RailButton(icon: shell.railIcon(for: control), label: shell.label(for: control), highlighted: highlighted(control)) {
-                        switch control {
-                        case .allWork: shell.openAllWork()
-                        case .chats: shell.openChats()
-                        case .sessions: shell.openSessions()
-                        case .more: onMore(frame)
+                        // 눌린 칸의 패널이 이미 열려 있으면 닫는다 (계약 24장 토글). More는 메뉴가 따로 연다
+                        if control == .more {
+                            onMore(frame)
+                        } else {
+                            shell.pressControl(control)
                         }
                     }
                     .offset(x: frame.minX, y: frame.minY)

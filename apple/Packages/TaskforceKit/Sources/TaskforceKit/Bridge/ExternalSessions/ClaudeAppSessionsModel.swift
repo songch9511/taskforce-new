@@ -44,6 +44,11 @@ public final class ClaudeAppSessionsModel: CustomStringConvertible, CustomDebugS
     @ObservationIgnored private var loop: Task<Void, Never>?
     /// 계정이 떠날 때마다 오른다: 그 전에 시작한 폴의 늦은 결과를 버린다
     @ObservationIgnored private var generation = 0
+    /// `stop()`마다 오른다: 루프가 멈추기 전에 시작한 폴의 늦은 결과를 버린다
+    @ObservationIgnored private var loopToken = 0
+    @ObservationIgnored private let scope: AccountScope?
+    /// 표시의 주인으로 확정한 계정 (`adopt`)
+    @ObservationIgnored private var adoptedOwner: UUID?
 
     /// - poll: `ClaudeAppStatusPoller.poll()` (시험은 가짜). 한 번에 하나씩 차례로 부른다
     /// - done: 안 연 끝남 표시를 두는 곳. 저장해 둔 표시가 있으면 그 프로세스가 아직 살아 쉬고 있을 때 첫 폴에서 done으로 다시 오른다
@@ -53,6 +58,7 @@ public final class ClaudeAppSessionsModel: CustomStringConvertible, CustomDebugS
         sleep: @escaping Sleep = { try? await Task.sleep(for: .seconds($0)) }
     ) {
         self.poll = poll
+        self.scope = scope
         self.done = done
         self.now = now
         self.uptime = uptime
@@ -82,32 +88,63 @@ public final class ClaudeAppSessionsModel: CustomStringConvertible, CustomDebugS
         }
     }
 
+    /// 루프를 멈춘다. 그 전에 시작해 돌고 있던 폴의 늦은 결과는 반영하지 않는다
     public func stop() {
         loop?.cancel()
         loop = nil
+        loopToken += 1
     }
 
-    /// 한 번 폴해 반영한다 (루프가 부른다. 시험 · 시작 직후에도). 폴이 도는 사이 계정이 떠났으면 그 결과를 버린다
+    /// 한 번 폴해 반영한다 (루프가 부른다. 시험 · 시작 직후에도). 폴이 도는 사이 계정이 떠났거나 루프가 멈췄으면 그 결과를 버린다
     public func pollOnce() async {
         let started = generation
+        let token = loopToken
         let result = await poll()
-        guard started == generation else { return }
+        guard started == generation, token == loopToken else { return }
+        // 계정을 알게 됐으면 저장해 둔 표시가 이 계정의 것인지 가린 뒤에 판정한다 (첫 폴이 다른 계정의 표시를 되살리지 않게)
+        if let account = scope?.token?.userID { adopt(account: account) }
         apply(result)
     }
 
     private func apply(_ poll: ClaudeAppStatusPoller.Poll) {
+        // 등록 폴더를 읽을 수 없는 폴은 "세션이 없다"가 아니라 "모른다"다: 판정하지 않고 기억(`memory`)과 저장해 둔 표시를 그대로 둔다.
+        // (판정하면 모든 세션이 안 보이는 것이 되어 기다리는 폴 수(`missingGrace`)가 지나면 끝남 표시가 지워진다.) 레일에는 아무것도 그리지 않는다
+        if poll.registryUnavailable {
+            sessions = []
+            doubled = []
+            registryUnavailable = true
+            rail = []
+            hasPolled = true
+            return
+        }
         let result = ClaudeAppRail.evaluate(sessions: poll.sessions, memory: memory, now: now(), uptime: uptime(), opened: viewing.map { [$0] } ?? [])
         memory = result.memory
         sessions = poll.sessions
         doubled = poll.doubled
-        registryUnavailable = poll.registryUnavailable
+        registryUnavailable = false
         rail = result.entries
         hasPolled = true
-        if let id = viewing, !poll.registryUnavailable {
+        if let id = viewing {
             viewingAbsent = poll.sessions.contains { $0.id == id } ? 0 : viewingAbsent + 1
         }
         viewingClosed = viewing != nil && viewingAbsent > ClaudeAppRail.missingGrace
         saveIfChanged()
+    }
+
+    // MARK: 표시의 주인 계정 (보안 P3-1)
+
+    /// 이 계정을 표시의 주인으로 확정한다 (셸이 로그인을 알 때 · 첫 폴 때): 저장해 둔 표시의 주인이 이 계정이 아니면(다른 계정이거나 모르면) 이 계정의 것이 아니라서 기억 · 저장본을 모두 비운다.
+    /// 같은 계정을 다시 알려도 아무 일도 없다
+    public func adopt(account: UUID) {
+        guard adoptedOwner != account else { return }
+        adoptedOwner = account
+        if done.owner != account {
+            memory = ClaudeAppRailMemory()
+            savedMarks = [:]
+            rail.removeAll { $0.kind == .done }
+            done.clear()
+        }
+        done.setOwner(account)
     }
 
     // MARK: 열어 봄
@@ -142,6 +179,7 @@ public final class ClaudeAppSessionsModel: CustomStringConvertible, CustomDebugS
     /// 계정이 떠남: 비우고 저장해 둔 표시도 지운다 (다른 계정에 남지 않는다). 폴이 도는 중이면 그 결과는 버린다
     private func reset() {
         generation += 1
+        adoptedOwner = nil
         memory = ClaudeAppRailMemory()
         savedMarks = [:]
         viewing = nil

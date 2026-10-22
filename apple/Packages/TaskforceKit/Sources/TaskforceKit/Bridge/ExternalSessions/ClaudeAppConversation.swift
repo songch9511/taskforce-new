@@ -34,6 +34,9 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
     public static let tailInterval: TimeInterval = 1
     /// "Show earlier" 한 번에, 건너뛴 줄뿐이라 빈 쪽인 창을 이만큼까지 넘어간다
     public static let maxEmptyWindowsPerPress = 16
+    /// 메모리에 두는 줄의 상한 (보안 P3-4): 라이브 꼬리가 길게 이어져도 줄 수가 이를 넘지 않는다 (넘치면 오래된 줄부터 버리고 Show earlier로 다시 읽을 수 있게 한다).
+    /// "Show earlier"로 사용자가 앞을 넓힌 것은 읽기 총량 상한(16 MiB)이 막고, 다음 라이브 줄에서 같은 상한으로 다시 맞춘다
+    public static let maxTurns = 1000
 
     public private(set) var phase: Phase = .loading
     /// 오래된 것이 먼저
@@ -47,6 +50,7 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
     @ObservationIgnored private let cwd: String?
     @ObservationIgnored private let source: any ClaudeAppTranscriptSource
     @ObservationIgnored private let sleep: Sleep
+    @ObservationIgnored private let turnLimit: Int
     @ObservationIgnored private var cursor: ClaudeAppTranscriptCursor?
     @ObservationIgnored private var loop: Task<Void, Never>?
     /// 읽기를 한 번에 하나씩 잇는 사슬
@@ -66,12 +70,15 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
     }
 
     /// - cwd: 등록 파일의 작업 폴더 (기록의 프로젝트 디렉터리를 바로 짐작한다)
+    /// - turnLimit: 메모리에 두는 줄의 상한 (기본 `maxTurns`, 시험은 작게)
     public init(
-        sessionID: String, cwd: String?, source: any ClaudeAppTranscriptSource, sleep: @escaping Sleep = { try? await Task.sleep(for: .seconds($0)) }
+        sessionID: String, cwd: String?, source: any ClaudeAppTranscriptSource, turnLimit: Int = ClaudeAppConversation.maxTurns,
+        sleep: @escaping Sleep = { try? await Task.sleep(for: .seconds($0)) }
     ) {
         self.sessionID = sessionID
         self.cwd = cwd
         self.source = source
+        self.turnLimit = max(1, turnLimit)
         self.sleep = sleep
     }
 
@@ -163,6 +170,8 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
             case .turns(let more, let next, let hasMore):
                 cursor = next
                 append(more)
+                // 꼬리를 읽었다: 앞서 못 읽어 `failed`였어도 다시 읽히는 대화다
+                phase = .ready
                 return hasMore ? .again : .next
             case .reset:
                 // 파일이 줄었거나 바뀌었다: 꼬리부터 다시 연다
@@ -175,6 +184,7 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
                 cursor = page.cursor
                 replace(with: page.turns)
                 hasEarlier = page.hasEarlier
+                phase = .ready
                 return .next
             case .unreadable:
                 phase = .failed
@@ -228,6 +238,23 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
         let fresh = more.filter { shownIDs.insert($0.id).inserted }
         guard !fresh.isEmpty else { return }
         turns += fresh
+        trimToLimit()
+    }
+
+    /// 줄 수가 상한을 넘으면 오래된 줄부터 버린다 (보안 P3-4). 버린 앞은 "Show earlier"가 다시 읽을 수 있어야 한다:
+    /// 버린 줄의 id는 지금 보이는 것에서 빼고 (다시 읽혀도 중복으로 걸러지지 않게), 커서의 가장 앞 자리를 남은 가장 앞 줄의 자리로 옮겨 구멍이 없게 하며
+    /// (버린 줄의 몫은 읽기 총량에서 돌려받는다), `hasEarlier`를 올린다. 기록 안의 자리를 모르는 줄(견본)이면 커서는 그대로다
+    private func trimToLimit() {
+        let excess = turns.count - turnLimit
+        guard excess > 0 else { return }
+        for turn in turns.prefix(excess) { shownIDs.remove(turn.id) }
+        turns.removeFirst(excess)
+        hasEarlier = true
+        if var current = cursor, let first = turns.first, first.lineOffset > current.earliestOffset {
+            current.coveredBytes = max(0, current.coveredBytes - Int(first.lineOffset - current.earliestOffset))
+            current.earliestOffset = first.lineOffset
+            cursor = current
+        }
     }
 
     private func prepend(_ older: [ClaudeAppTurn]) {

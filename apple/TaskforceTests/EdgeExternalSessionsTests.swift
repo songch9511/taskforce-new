@@ -180,7 +180,9 @@ struct EdgeExternalSessionsTests {
 
     @Test func theSessionsButtonNeedsTheIssueScreensAndASignedInAccountAndTheMacListAlsoNeedsTheStore() {
         let base: [EdgeShellModel.Control] = [.allWork, .chats, .more]
-        #expect(make().shell.controls == base, "Sessions는 셋째 캡슐의 칸이 아니다: 첫 캡슐(링 · +)의 맨 위 버튼이다")
+        #expect(make().shell.controls == [.allWork, .more], "캡슐 레일(새 Issues 화면)의 셋째 캡슐은 Projects · More 둘이다: Chats 칸이 없고 Sessions도 칸이 아니다 (첫 캡슐(링 · +)의 맨 위 버튼)")
+        #expect(make(gated: false).shell.controls == base, "새 Issues 화면이 꺼진 노치 레일은 지금 그대로 Projects · Chats · More")
+        #expect(make().shell.controls == make(signedIn: false).shell.controls && make().shell.controls == make(store: false).shell.controls, "로그인 · 목록과 상관없이 같다")
         #expect(make().shell.sessionsVisible && make(store: false).shell.sessionsVisible, "목록(BridgeFlag)이 없어도 Taskforce 세션은 Sessions에서 본다")
         #expect(!make(gated: false).shell.sessionsVisible, "새 Issues 화면이 꺼진 셸은 지금 그대로: 버튼이 없다")
         #expect(!make(signedIn: false).shell.sessionsVisible, "로그인하지 않았으면 없다")
@@ -192,10 +194,10 @@ struct EdgeExternalSessionsTests {
 
     @Test func allCasesIsTheCompleteListAndTheDefaultColumnIsSeparate() {
         #expect(EdgeShellModel.Control.allCases == [.allWork, .chats, .sessions, .more], "allCases는 빠짐없이: 새 칸이 생겨도 allCases를 믿는 코드가 조용히 틀리지 않는다")
-        #expect(EdgeShellModel.Control.defaultControls == [.allWork, .chats, .more], "셋째 캡슐의 칸")
+        #expect(EdgeShellModel.Control.defaultControls == [.allWork, .chats, .more], "노치 레일의 셋째 칸")
+        #expect(EdgeShellModel.Control.capsuleControls == [.allWork, .more], "캡슐 레일의 셋째 캡슐: Chats 칸이 없다 (계약 24장)")
         #expect(EdgeRailLayout(notchCount: 2, restCount: 1, expanded: true, idle: false).controls == EdgeShellModel.Control.defaultControls)
-        #expect(EdgeRailCapsuleLayout(mode: .expanded, bell: false, compactRingCount: 0, ringCount: 0).controls == EdgeShellModel.Control.defaultControls)
-        #expect(SettingsPanelKeys.rows.map(\.label).prefix(2) == ["All work", "Chats"], "Settings의 단축키 목록: Sessions ⌘4는 아직 나열하지 않는다 (후속)")
+        #expect(EdgeRailCapsuleLayout(mode: .expanded, bell: false, compactRingCount: 0, ringCount: 0).controls == EdgeShellModel.Control.capsuleControls)
     }
 
     @Test func theSessionsButtonNamesItsIconAndTooltipWithItsShortcut() {
@@ -216,13 +218,14 @@ struct EdgeExternalSessionsTests {
         #expect(shell.tooltip == nil, "More는 지금처럼 툴팁이 없다")
     }
 
-    @Test func theThirdCapsuleStaysAtThreeControlsAndHidesWhenTheRailIsCollapsed() {
+    @Test func theThirdCapsuleStaysAtTwoControlsAndHidesWhenTheRailIsCollapsed() {
         let rig = make()
         let expanded = EdgeRailCapsuleLayout(mode: .expanded, bell: false, compactRingCount: 0, ringCount: 0, controls: rig.shell.controls, sessionsButton: true)
-        #expect(expanded.thirdCapsuleDrawn?.height == 112)
+        #expect(expanded.thirdCapsuleDrawn?.height == 78, "Projects · More 둘 (Chats 칸이 없다, 계약 24장)")
         #expect(rig.shell.controls.allSatisfy { expanded.controlDrawn($0) != nil })
+        #expect(expanded.controlDrawn(.chats) == nil, "Chats는 셋째 캡슐에 없다")
         let order = rig.shell.controls.compactMap { expanded.controlDrawn($0)?.minY }
-        #expect(order == order.sorted(), "위에서부터 Projects · Chats · More")
+        #expect(order == order.sorted(), "위에서부터 Projects · More")
         #expect(expanded.controlDrawn(.sessions) == nil, "Sessions는 셋째 캡슐에 없다")
         let compact = EdgeRailCapsuleLayout(mode: .compact, bell: true, compactRingCount: 2, ringCount: 2, controls: rig.shell.controls, sessionsButton: true)
         #expect(compact.thirdCapsuleDrawn == nil && compact.controlDrawn(.more) == nil && compact.sessionsButtonDrawn == nil, "접힌 레일에서는 셋째 캡슐째 보이지 않고 Sessions · +도 접힌다")
@@ -232,7 +235,7 @@ struct EdgeExternalSessionsTests {
     }
 
     @Test func theWindowAlwaysHoldsTheBiggestColumn() {
-        let tall = EdgeRailCapsuleLayout(mode: .expanded, bell: true, compactRingCount: 3, ringCount: 4, controls: [.allWork, .chats, .more], sessionsButton: true)
+        let tall = EdgeRailCapsuleLayout(mode: .expanded, bell: true, compactRingCount: 3, ringCount: 4, controls: EdgeShellModel.Control.capsuleControls, sessionsButton: true)
         let bottom = tall.thirdCapsuleDrawn?.maxY ?? .infinity
         #expect(bottom + EdgeRailCapsuleLayout.room <= EdgeRailCapsuleLayout.windowHeight + 0.001)
         #expect(tall.columnHeight == EdgeRailCapsuleLayout.maxColumnHeight)
@@ -312,7 +315,7 @@ struct EdgeExternalSessionsTests {
         #expect(rig.shell.view == .sessions)
         rig.shell.accountChanged(nil)
         #expect(rig.shell.view == .allWork && !rig.store.isOpen)
-        #expect(!rig.shell.externalSessionsVisible && !rig.shell.sessionsVisible && rig.shell.controls == [.allWork, .chats, .more])
+        #expect(!rig.shell.externalSessionsVisible && !rig.shell.sessionsVisible && rig.shell.controls == [.allWork, .more])
     }
 
     @Test func theLastViewReopenedByTheShortcutIsSessionsWhenItWasOpenAndItIsNotAnOpenItem() {

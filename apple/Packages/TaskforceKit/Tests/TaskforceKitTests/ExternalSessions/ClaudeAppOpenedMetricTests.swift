@@ -80,6 +80,36 @@ extension ExternalSessionSuites {
             await #expect(throws: APIError.self) { try await api.claudeAppSessionOpened() }
         }
 
+        /// 서버에 닿았지만 세지 않았다 (아직 이 route가 없는 서버 = 404): 그날은 닿은 것으로 적는다 — 열 때마다 다시 보내 서버를 두드리지 않는다 (코드 검토 P3)
+        @Test func aNotFoundAnswerIsReachedButNotCountedSoItDoesNotThrow() async throws {
+            for body in [#"{"error":{"code":"not_found","message":"x"}}"#, "<html>Not Found</html>", ""] {
+                let (api, host) = client(status: 404, body: body)
+                try await api.claudeAppSessionOpened()
+                #expect(StubProtocol.requests(host: host).count == 1, "한 번 보냈다")
+            }
+        }
+
+        @Test func otherFailuresStillThrowSoTheyRetryLater() async {
+            for status in [400, 401, 403, 429, 500, 502, 503] {
+                let (api, _) = client(status: status, body: "")
+                await #expect(throws: APIError.self, "\(status)") { try await api.claudeAppSessionOpened() }
+            }
+        }
+
+        @Test func anOlderServerThatAnswers404IsAskedOnceADayNotOnEveryOpen() async {
+            let (api, host) = client(status: 404, body: "<html>Not Found</html>")
+            let clock = ClaudeAppClock(Date(timeIntervalSince1970: 1_800_000_000))
+            let metric = ClaudeAppOpenedMetric(send: { (try? await api.claudeAppSessionOpened()) != nil }, now: { clock.now })
+            metric.opened()
+            #expect(await eventually { metric.lastSentDay != nil })
+            for _ in 0..<5 {
+                clock.advance(ClaudeAppOpenedMetric.retryInterval + 1)
+                metric.opened()
+            }
+            try? await Task.sleep(for: .milliseconds(40))
+            #expect(StubProtocol.requests(host: host).count == 1, "404는 그날 다시 보내지 않는다 (재시도 폭주 없음)")
+        }
+
         // MARK: 하루 한 번
 
         @Test func theFirstOpenOfTheDaySendsOnceAndTheRestOfThatDayDoNot() async {
