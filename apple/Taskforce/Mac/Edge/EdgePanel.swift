@@ -20,7 +20,7 @@ enum EdgePanelMetrics {
     /// 패널 본문의 안쪽 여백. 새 Issues 화면(M1 · M3 · M4)은 디자인대로 좌우 8 · 아래 10(행이 364 폭, 행 안쪽 10이 글 시작을 만든다).
     /// 그 밖의 화면(게이트가 꺼진 All work · Chats · Review)은 지금의 공통 좌우 16 · 아래 12 그대로다
     static func bodyInsets(issueScreens: Bool, view: EdgeShellModel.View) -> EdgeInsets {
-        if issueScreens, view == .allWork || view == .onThisMac {
+        if issueScreens, view == .allWork || view == .sessions {
             return EdgeInsets(top: 0, leading: TFSpace.sm, bottom: 10, trailing: TFSpace.sm)
         }
         return EdgeInsets(top: 0, leading: TFSpace.lg, bottom: TFSpace.md, trailing: TFSpace.lg)
@@ -40,6 +40,56 @@ enum EdgePanelMetrics {
     /// 패널의 오른쪽 가장자리 (화면 좌표): 노치 레일은 끝 − 44 − 12, 캡슐 레일은 끝 − 6 − 44 − 12 = 끝 − 62
     static func rightEdge(screenMaxX: CGFloat, capsule: Bool) -> CGFloat {
         screenMaxX - (capsule ? RailCapsuleMetrics.inset : 0) - EdgeRailLayout.railWidth - gap
+    }
+
+    // MARK: 세로 가운데 (OA PR-D2, 사용자 결정 2026-10-22)
+
+    /// 레일이 여는 패널(Projects · Chats · Sessions, 그리고 데스크톱 링으로 연 Claude 세션 패널)은 **레일의 중심선**에 세로 가운데로 선다: 캡슐 레일의 열은 늘 화면 세로 가운데에서 자라므로(`EdgeRailCapsuleLayout.windowFrame`) 그 중심선은 화면 `midY`다.
+    /// More 카드는 가운데로 옮기지 않는다 (⋯ 옆, `RailMoreCardGeometry`). 메인 패널 왼쪽의 세션 패널 · Claude 세션 패널은 메인 패널의 위 맞춤 그대로다.
+    /// 아래 모서리 y (화면 좌표, 아래가 0): 중심선 위아래로 높이의 절반씩 두되 **보이는 화면**(메뉴 막대 · Dock 뺀 `visibleFrame`) 안으로 넣는다.
+    /// 보이는 화면보다 높은 패널은 위(머리)를 맞춘다: 머리가 잘리지 않고, 넘치는 쪽은 아래다
+    static func centeredOriginY(height: CGFloat, centerY: CGFloat, visible: CGRect) -> CGFloat {
+        let lowest = visible.minY
+        let highest = visible.maxY - height
+        guard highest >= lowest else { return highest }
+        return min(max(centerY - height / 2, lowest), highest)
+    }
+
+    /// 세로 가운데 맞춘 패널 창의 자리: 가로는 지금 그대로(레일 왼쪽 12pt, 폭 380), 세로만 `centeredOriginY`
+    static func centeredFrame(height: CGFloat, centerY: CGFloat, visible: CGRect, screenMaxX: CGFloat, capsule: Bool) -> NSRect {
+        NSRect(x: rightEdge(screenMaxX: screenMaxX, capsule: capsule) - width, y: centeredOriginY(height: height, centerY: centerY, visible: visible), width: width, height: height)
+    }
+
+    /// 열려 있는 동안 높이가 바뀌어 다시 가운데로 가는 움직임의 시간 (패널 페이드와 같다, 움직임 줄이기면 바로)
+    static let recenterDuration: TimeInterval = TFMotion.panelFade
+
+    /// 레일이 여는 패널을 세로 가운데로 세우나. 견본의 "전 · 후" 비교만 끈다 (`-TFEdgeSnapshotTopPlacement`, Debug 전용 — Release 바이너리에는 이 인자가 없다: 늘 가운데)
+    static var centersRailPanels: Bool {
+        #if DEBUG
+        return !ProcessInfo.processInfo.arguments.contains("-TFEdgeSnapshotTopPlacement")
+        #else
+        return true
+        #endif
+    }
+}
+
+/// 열려 있는 패널 창의 자리를 부드럽게 옮긴다 (내용 높이가 바뀌어 다시 가운데로 갈 때 튀지 않게). 메인 패널 · 세션 패널 · Claude 세션 패널이 같은 길을 쓴다
+@MainActor
+enum EdgePanelMotion {
+    /// 0.5pt보다 작은 차이는 움직이지 않는다
+    static func move(_ window: NSWindow, to target: NSRect, reduceMotion: Bool) {
+        let frame = window.frame
+        guard abs(frame.minX - target.minX) > 0.5 || abs(frame.minY - target.minY) > 0.5 || abs(frame.width - target.width) > 0.5 || abs(frame.height - target.height) > 0.5 else { return }
+        if reduceMotion || !window.isVisible {
+            window.setFrame(target, display: true)
+        } else {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = EdgePanelMetrics.recenterDuration
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                window.animator().setFrame(target, display: true)
+            }
+        }
+        window.invalidateShadow()
     }
 }
 
@@ -101,8 +151,11 @@ struct EdgePanelView: View {
                             } else {
                                 PanelEmptyState(title: Self.noChats)
                             }
-                        case .onThisMac:
-                            ExternalSessionsPanelBody(shell: shell)
+                        case .sessions:
+                            SessionsPanelBody(shell: shell)
+                        case .claudeApp:
+                            // 이 화면의 본문은 레일 옆 Claude 세션 패널 창이 그린다 (메인 패널 창은 이때 뜨지 않는다)
+                            Color.clear.frame(height: 0)
                         case .review:
                             // S4 gate가 꺼져 있으면(`review == nil`) 이 화면은 열리지 않는다. Taskforce 대화가 켜진 구성은 요청 카드 한 장 + 끝의 요약이다
                             if let desk = shell.review {
@@ -244,16 +297,21 @@ final class EdgePanelController {
 
     var isVisible: Bool { panel.isVisible }
 
-    /// 지금 본문에 맞는 자리
-    private func targetFrame() -> NSRect? {
+    /// 지금 본문에 맞는 자리 (여는 움직임 중에도 끝에 닿을 자리: Sessions 왼쪽 패널이 이 자리를 기준으로 선다).
+    /// 캡슐 레일(새 Issues 화면)은 레일 중심선에 세로 가운데로 서고 보이는 화면 안으로 들어온다 (`EdgePanelMetrics.centeredFrame`). 노치 레일(Release · 게이트 꺼짐)은 지금 그대로 위가 화면 위에서 120이다
+    func targetFrame() -> NSRect? {
         guard let screen = EdgeRailPanelController.screen else { return nil }
-        return EdgePanelMetrics.frame(
-            height: EdgePanelMetrics.height(body: presentation.bodyHeight, footer: presentation.footerHeight, fits: shell.issueScreensEnabled),
-            railTop: EdgeRailPanelController.railTop(on: screen),
-            screenMaxX: screen.frame.maxX,
-            capsule: shell.issueScreensEnabled
-        )
+        let height = EdgePanelMetrics.height(body: presentation.bodyHeight, footer: presentation.footerHeight, fits: shell.issueScreensEnabled)
+        if shell.issueScreensEnabled, EdgePanelMetrics.centersRailPanels {
+            return EdgePanelMetrics.centeredFrame(
+                height: height, centerY: railCenterY() ?? EdgeRailPanelController.railCenterY(on: screen), visible: screen.visibleFrame, screenMaxX: screen.frame.maxX, capsule: true
+            )
+        }
+        return EdgePanelMetrics.frame(height: height, railTop: EdgeRailPanelController.railTop(on: screen), screenMaxX: screen.frame.maxX, capsule: shell.issueScreensEnabled)
     }
+
+    /// 레일 전체의 세로 가운데 (`EdgeRailPanelController.centerLineY`): 컨트롤러가 레일에 잇는다. 레일 창이 안 떠 있으면(nil) 화면 `midY`다
+    var railCenterY: () -> CGFloat? = { nil }
 
     /// 열었으면 true (화면을 찾지 못하면 false)
     @discardableResult
@@ -321,11 +379,10 @@ final class EdgePanelController {
         }
     }
 
-    /// 본문 높이가 바뀌면 위 모서리를 둔 채로 높이만 맞춘다
+    /// 본문 높이가 바뀌면 높이를 맞추고 다시 가운데로 간다 (캡슐 레일: 위아래로 절반씩 부드럽게, 노치 레일: 위 모서리를 둔 채)
     func fitToContent() {
         guard !opening, panel.isVisible, presentation.shown, let target = targetFrame(), target != panel.frame else { return }
-        panel.setFrame(target, display: true)
-        panel.invalidateShadow()
+        EdgePanelMotion.move(panel, to: target, reduceMotion: shell.reduceMotion)
     }
 
     private static let timing = CAMediaTimingFunction(

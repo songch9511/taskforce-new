@@ -174,8 +174,11 @@ final class EdgeShellModel {
     /// 패널이 보이는 것 (한 번에 하나). `review`는 S4 gate가 켜졌을 때만 열린다 (`review != nil`). 일 상세는 다음 PR에서 더한다
     enum View: String, CaseIterable {
         case allWork, chats, review
-        /// 이 Mac의 Claude Code 세션 목록 (OA 외부 세션 PR1): 레일 셋째 캡슐의 On this Mac. 게이트가 켜진 셸(`externalSessionsVisible`)에서만 열린다
-        case onThisMac
+        /// Sessions (OA PR-D2, 계약 23장): Taskforce 세션과 이 Mac의 Claude 세션을 모두 한 곳에서 본다 (옛 On this Mac은 이 패널의 한 절이다). 새 Issues 화면(캡슐 레일)의 셸에서만 열린다 (`sessionsVisible`)
+        case sessions
+        /// Claude 데스크톱 세션 보기 하나 (읽기 전용, OA PR-D2 계약 21.2 DR-S1d): **레일의 데스크톱 링을 눌러** 연다 — 이슈 패널 없이 한 패널만 레일 옆에 선다.
+        /// Sessions의 줄을 눌러 열면 Sessions 패널은 그대로 두고 그 왼쪽에 선다 (`.sessions` + `desktopPanelID`). 이 화면의 본문은 메인 패널 창이 아니라 Claude 세션 패널 창이 그린다
+        case claudeApp
 
         /// 패널 머리 제목. All work 화면의 머리는 "Your work"다 (디자인 WorkPage · WorkList 견본). 레일 칸 이름은 그대로 All work.
         /// Review의 머리는 그 결정의 항목 이름이다 (디자인 PanelHeader "Launch timing"): 이 값은 항목이 없을 때(빈 · 읽는 중 · 오프라인)의 머리다
@@ -184,42 +187,57 @@ final class EdgeShellModel {
             case .allWork: "Your work"
             case .chats: "Chats"
             case .review: "Review"
-            case .onThisMac: ExternalSessionCopy.sectionTitle
+            case .sessions: SessionsPanelCopy.title
+            // 머리는 Claude 세션 패널이 세션 이름으로 그린다 (이 값은 메인 패널 머리가 아니다)
+            case .claudeApp: AgentMarkKind.claudeCode.accessibilityName
             }
         }
     }
 
     /// 레일의 고정 칸
     enum Control: String, CaseIterable {
-        case allWork, chats, onThisMac, more
+        case allWork, chats, sessions, more
 
-        /// 셋째 캡슐의 기본 칸. On this Mac은 여기 없다: 게이트가 켜진 셸만 더한다 (`EdgeShellModel.controls`). `allCases`는 빠짐없는 목록이다
+        /// 노치 레일(옛 구성)의 셋째 칸. `sessions`는 여기 없다: 첫 캡슐(세션 링 · `+`)의 맨 위 버튼이다 (`EdgeShellModel.sessionsVisible`). `allCases`는 빠짐없는 목록이다
         static let defaultControls: [Control] = [.allWork, .chats, .more]
+        /// 캡슐 레일(새 Issues 화면)의 셋째 캡슐 칸 (계약 24장, 사용자 결정 2026-10-22): **Chats 칸이 없다** — 새 세션은 `+`가 새 대화 창으로 열고, 지난 대화는 대화 창의 기록 단추와 Sessions 패널에서 찾는다
+        static let capsuleControls: [Control] = [.allWork, .more]
+
+        /// 이 칸을 누르는 키 명령 (없으면 키가 없다)
+        var keyCommand: EdgeKeyCommand? {
+            switch self {
+            case .allWork: .allWork
+            case .chats: .chats
+            case .sessions: .sessions
+            case .more: nil
+            }
+        }
 
         var label: String {
             switch self {
             case .allWork: "All work"
             case .chats: "Chats"
-            case .onThisMac: ExternalSessionCopy.sectionTitle
+            case .sessions: SessionsPanelCopy.title
             case .more: "More"
             }
         }
 
-        /// 툴팁의 단축키 (On this Mac · More는 없음)
+        /// 칸의 단축키 (More는 없음): 툴팁(DZ 승인 "Sessions ⌘4")과 Settings › Shortcuts(`SettingsPanelKeys`가 `allCases`에서 읽는다)가 같은 값을 쓴다
         var shortcut: String? {
             switch self {
             case .allWork: "⌘2"
             case .chats: "⌘3"
-            case .onThisMac, .more: nil
+            case .sessions: SessionsPanelCopy.shortcut
+            case .more: nil
             }
         }
     }
 
-    /// 이 셸의 레일 고정 칸 (Chats가 꺼져 있으면 Chats 칸이 없다). 외부 세션 게이트가 켜졌으면 셋째 캡슐의 More 앞에 On this Mac이 든다
+    /// 이 셸의 셋째 캡슐 칸. 캡슐 레일(새 Issues 화면)은 Projects · More 둘이다 (Chats 칸 없음, 계약 24장). 노치 레일(옛 구성)은 Chats가 꺼져 있으면 Chats 칸이 없다.
+    /// Sessions는 첫 캡슐의 버튼이라 여기 없다 (옛 On this Mac 칸은 Sessions로 합쳐 없앴다, OA PR-D2)
     var controls: [Control] {
-        var list = chatsEnabled ? Control.defaultControls : Control.defaultControls.filter { $0 != .chats }
-        if externalSessionsVisible, let more = list.firstIndex(of: .more) { list.insert(.onThisMac, at: more) }
-        return list
+        if issues != nil { return Control.capsuleControls }
+        return chatsEnabled ? Control.defaultControls : Control.defaultControls.filter { $0 != .chats }
     }
 
     /// 고정 칸의 이름. 새 Issues 화면이 켜진 셸의 첫 칸은 "Projects"다 (툴팁 "Projects ⌘2", OA U2b 사용자 결정: U2의 "Issues"를 바꿨다): 꺼져 있으면 "All work"
@@ -234,17 +252,20 @@ final class EdgeShellModel {
         switch control {
         case .allWork: issues != nil ? .project : .allWork
         case .chats: .talk
-        case .onThisMac: .laptop
+        case .sessions: .sessions
         case .more: .more
         }
     }
 
     static let newSessionLabel = "New session"
 
-    /// 이 셸이 듣는 키 명령인가: Chats가 꺼져 있으면 ⌘3 · ⌘N은 연결이 없어 지나간다 (먹지 않는다)
+    /// 이 셸이 듣는 키 명령인가: Chats가 꺼져 있으면 ⌘3 · ⌘N은 연결이 없어 지나간다 (먹지 않는다). ⌘3(Chats)은 Chats 칸이 있는 노치 레일만 듣는다 (캡슐 레일은 Chats 칸 · 키가 없다, 계약 24장 —
+    /// 새 대화는 ⌘N · `+`). ⌘4(Sessions)는 Sessions 버튼이 있는 셸만 듣는다
     func listens(to command: EdgeKeyCommand) -> Bool {
         switch command {
-        case .chats, .newChat: chatsEnabled
+        case .chats: chatsEnabled && issues == nil
+        case .newChat: chatsEnabled
+        case .sessions: sessionsVisible
         case .escape, .review, .allWork: true
         }
     }
@@ -252,7 +273,7 @@ final class EdgeShellModel {
     private(set) var slots: [RailEntry] = []
     /// 노치에 120ms 머물러 펼친 레일 (패널이 열려 있으면 `isExpanded`가 따로 참)
     private(set) var railHovered = false {
-        // 레일이 펼쳐질 때 한 번 훑는다 (레일 입구의 새 세션 점을 위해, 패널이 열려 있으면 이미 훑고 있다)
+        // 레일이 펼쳐질 때 한 번 훑는다 (데스크톱 링의 제목 · 툴팁을 위해, 패널이 열려 있으면 이미 훑고 있다)
         didSet { if railHovered, !oldValue, externalSessionsVisible { externalSessions?.railExpanded() } }
     }
     private(set) var panelOpen = false {
@@ -261,10 +282,14 @@ final class EdgeShellModel {
         didSet {
             if !panelOpen { loadedPanelConversation = nil }
             externalSessionsPanelChanged()
+            desktopPanelChanged()
         }
     }
     private(set) var view: View = .allWork {
-        didSet { externalSessionsPanelChanged() }
+        didSet {
+            externalSessionsPanelChanged()
+            desktopPanelChanged()
+        }
     }
     /// 레일에서 연 일 (패널 목록에서 그 행을 표시)
     private(set) var currentID: UUID?
@@ -326,8 +351,27 @@ final class EdgeShellModel {
     var assistantWindowFront = false
     /// 새 Issues 화면(OA U2): 세션 · 번호 · 상세를 읽는 곳. **없으면 게이트가 꺼진 것이다** — Projects · 이슈 목록 · 상세 · 세션 패널이 없고 All work는 지금 그대로다 (`EdgeSurfaces.issueScreens`)
     let issues: IssueRuntime?
-    /// 이 Mac의 Claude Code 세션 목록 (OA 외부 세션 PR1). **없으면 게이트가 꺼진 것이다**(새 Issues 화면 ∧ `BridgeFlag` ∧ 로그인): 레일 칸도 패널도 훑기도 서버 보고도 없다
+    /// 이 Mac의 Claude Code 세션 목록 (OA 외부 세션 PR1). **없으면 게이트가 꺼진 것이다**(새 Issues 화면 ∧ `BridgeFlag` ∧ 로그인): Sessions 패널의 On this Mac 절도 훑기도 서버 보고도 없다
     let externalSessions: ExternalSessionsStore?
+    /// Claude 데스크톱 앱에 열린 세션의 살아 있는 상태 (OA PR-D2, 계약 21 · 23장): 레일의 데스크톱 링 · Sessions 줄의 링 · 세션 보기의 상태 말. **목록(`externalSessions`)과 같은 게이트**다: 없으면 데스크톱 링도 세션 보기도 없다
+    let desktop: ClaudeAppSessionsModel?
+    /// 아직 안 연 끝남의 저장 (계약 23장): 있고 새 Issues 화면이 켜진 셸은 끝난 링(초록)이 **열어 볼 때까지** 레일에 남는다 (타이머 없음, 이 Mac에 저장 → 다시 켠 뒤에도). 없으면 지금처럼 3초다 (노치 레일 · 시험)
+    @ObservationIgnored let railDone: (any RailDoneStore)?
+    /// 표시만 남은 끝난 이슈를 id로 읽는다 (기존 RLS 읽기, `IssueRuntime.finished`). 시험은 가짜로 바꾼다. 새 Issues 화면이 없는 셸은 읽지 않는다
+    @ObservationIgnored var lookupFinishedIssue: @MainActor (UUID) async -> FinishedIssueResult = { _ in .unknown }
+    /// 데스크톱 세션 보기를 연 날의 지표 (하루 한 번, 종류만). 없으면 보내지 않는다
+    @ObservationIgnored private let claudeAppOpened: ClaudeAppOpenedMetric?
+    /// 데스크톱 세션 하나의 대화 읽기를 만든다 (세션 id, 등록 파일의 작업 폴더): 실제 앱은 `~/.claude`의 기록을 읽는 `ClaudeAppTranscriptReader`, 시험은 가짜
+    @ObservationIgnored var makeConversation: @MainActor (String, String?) -> ClaudeAppConversation = EdgeShellModel.liveConversation
+    /// 지금 보이는 Claude 데스크톱 세션 (세션 id): 레일 링 · Sessions 줄을 눌러 연다. 메인 패널이 Sessions면 그 왼쪽 패널로, `.claudeApp` 화면이면 레일 옆 한 패널로 선다
+    private(set) var desktopPanelID: String? {
+        didSet { desktopPanelChanged() }
+    }
+    /// 그 세션의 대화 (패널이 보이는 동안 라이브 꼬리를 읽는다). 세션 보기가 없으면 nil
+    private(set) var desktopConversation: ClaudeAppConversation?
+    @ObservationIgnored private var desktopConversationShown = false
+    @ObservationIgnored private var viewedDesktopID: String?
+
     /// 이 실행의 Taskforce 게이트 (`EdgeSurfaces.taskforceConversation`: Debug에서 다섯 인자가 모두 있을 때만, Release 빌드는 늘 false). 셸이 만들어지는 자리에서 한 번 정한다 (OA U3 검토 1)
     let taskforceGate: Bool
     var issueScreensEnabled: Bool { issues != nil }
@@ -425,10 +469,20 @@ final class EdgeShellModel {
         calendar: @escaping () -> Calendar = { Calendar.current }, pinStore: WorkPinStore = WorkPinStore(defaults: nil),
         contexts: WorkContextStore? = nil, review: ReviewDesk? = nil, summary: ReturnSummaryStore? = nil, chatsEnabled: Bool = true,
         windowsEnabled: Bool = false, issues: IssueRuntime? = nil, taskforceGate: Bool = EdgeSurfaces.taskforceConversationForThisRun,
-        externalSessions: ExternalSessionsStore? = nil
+        externalSessions: ExternalSessionsStore? = nil, desktopSessions: ClaudeAppSessionsModel? = nil, railDone: (any RailDoneStore)? = nil,
+        claudeAppOpened: ClaudeAppOpenedMetric? = nil
     ) {
         self.issues = issues
         self.externalSessions = issues == nil ? nil : externalSessions
+        self.desktop = issues == nil || externalSessions == nil ? nil : desktopSessions
+        self.railDone = issues == nil ? nil : railDone
+        if let finished = issues?.finished { lookupFinishedIssue = { await finished.read($0) } }
+        self.claudeAppOpened = issues == nil || externalSessions == nil ? nil : claudeAppOpened
+        if issues != nil, let railDone {
+            // 끝난 링은 열어 볼 때까지 남는다: 세션 저장소도 같은 저장소로 올리고, 저장해 둔 이슈의 끝남을 되살린다
+            issues?.sessions.useDoneStore(railDone)
+            recentlyDone = railDone.load().issues
+        }
         self.taskforceGate = taskforceGate
         self.windowsEnabled = chatsEnabled && windowsEnabled
         self.contexts = contexts
@@ -471,14 +525,13 @@ final class EdgeShellModel {
             return (parts.title, parts.detail + " · " + Self.taskforceShortcut)
         }
         if hoveredPlus { return (Self.newSessionLabel, "") }
+        // "제목 · 상태 · 활동" (Claude 데스크톱 세션은 Taskforce 업무 상태가 없어 "제목 · 활동")
         if let hoveredID, let entry = slots.first(where: { $0.id == hoveredID }) {
-            return (entry.title, "· \(entry.state.label) · \(entry.activity)")
+            return (entry.title, "· " + (entry.state.map { "\($0.label) · " } ?? "") + entry.activity)
         }
         if let hoveredControl, let shortcut = hoveredControl.shortcut {
             return (label(for: hoveredControl), shortcut)
         }
-        // On this Mac은 단축키 없이 이름만 (DS 툴팁 규칙, OA 외부 세션 PR1)
-        if hoveredControl == .onThisMac { return (label(for: .onThisMac), "") }
         return nil
     }
 
@@ -627,7 +680,7 @@ final class EdgeShellModel {
             }
             guard let currentID, let item = workItems.first(where: { $0.id == currentID }) else { return nil }
             return AssistantOpenItem(kind: .action, id: currentID, title: item.action.title)
-        case .chats, .onThisMac:
+        case .chats, .sessions, .claudeApp:
             return nil
         }
     }
@@ -650,14 +703,20 @@ final class EdgeShellModel {
     }
 
     func openPanel(_ view: View) {
-        // On this Mac은 게이트가 켜진 셸에서만 열린다
-        guard view != .onThisMac || externalSessionsVisible else { return }
+        // Sessions는 Sessions 버튼이 있는 셸(새 Issues 화면 ∧ 로그인)에서만 열린다. 열어 둔 데스크톱 세션이 없는 `.claudeApp`은 Sessions로 연다 (⌥ Space의 마지막 화면)
+        let view = view == .claudeApp && desktopPanelID == nil ? View.sessions : view
+        guard view != .sessions || sessionsVisible else { return }
         // Chats가 없는 셸은 Chats 화면으로 열지 않는다 (⌥ Space의 마지막 화면 · 레일 · 키 어느 길로도). Assistant 창이 있는 셸도 패널은 Chats 화면을 열지 않는다
         guard view != .chats || (chatsEnabled && !windowsEnabled) else { return }
         // Review를 떠나면 그 결정에 대한 안내는 거둔다 (돌아오면 지금 상태가 말한다)
         if view != .review { review?.clearNotice() }
         if view == .review, review != nil, !(panelOpen && self.view == .review) { reviewPresentation += 1 }
         if view == .allWork, !(panelOpen && self.view == .allWork) { allWorkPresentation += 1 }
+        // 왼쪽 패널(세션 보기)은 그 맥락 안에서만 산다: Sessions → 다른 화면 · 다른 화면 → Sessions로 가면 닫는다. 데스크톱 세션 보기는 Sessions · `.claudeApp` 밖으로 가면 닫는다
+        if view != self.view {
+            if view == .sessions || self.view == .sessions { sessionPanelID = nil }
+            if view != .sessions, view != .claudeApp { desktopPanelID = nil }
+        }
         self.view = view
         panelOpen = true
         menuOpen = false
@@ -684,8 +743,12 @@ final class EdgeShellModel {
 
     // MARK: On this Mac (OA 외부 세션 PR1)
 
-    /// 레일 셋째 캡슐에 On this Mac이 있나: 새 Issues 화면(캡슐 레일) ∧ 목록이 만들어졌고(`BridgeFlag`) ∧ 로그인. 접힌 레일에서는 셋째 캡슐째 보이지 않는다
+    /// Sessions 패널에 On this Mac 절(이 Mac의 Claude 세션)이 있나: 새 Issues 화면(캡슐 레일) ∧ 목록이 만들어졌고(`BridgeFlag`) ∧ 로그인. 데스크톱 링도 같은 조건이다
     var externalSessionsVisible: Bool { issues != nil && externalSessions != nil && account != nil }
+
+    /// 레일 첫 캡슐에 Sessions 버튼이 있나 (OA PR-D2, 계약 23장): 새 Issues 화면(캡슐 레일) ∧ 로그인. On this Mac 절이 없어도(`BridgeFlag` 꺼짐) Taskforce 세션은 이 패널에서 본다.
+    /// 접힌 레일에서는 Sessions · `+`가 접힌다 (링만 남는다)
+    var sessionsVisible: Bool { issues != nil && account != nil }
 
     // MARK: Open in Claude (F4: 그 세션을 데스크톱 앱에서 연다)
 
@@ -807,30 +870,164 @@ final class EdgeShellModel {
         )
     }
 
-    /// 레일의 On this Mac: 패널에 이 Mac의 세션 목록을 연다 (게이트가 꺼진 셸은 아무 일도 없다)
-    func openOnThisMac() {
-        guard externalSessionsVisible else { return }
-        openPanel(.onThisMac)
+    /// 레일의 Sessions · ⌘4: 패널에 Taskforce 세션과 이 Mac의 Claude 세션을 모두 연다 (Sessions 버튼이 없는 셸은 아무 일도 없다)
+    func openSessions() {
+        guard sessionsVisible else { return }
+        openPanel(.sessions)
+        readSessionsOnEntry()
+    }
+
+    /// 레일의 Sessions 버튼 · ⌘4 (계약 24장, 토글): Sessions가 이미 열려 있으면 패널을 닫고, 아니면 연다
+    func toggleSessions() {
+        guard sessionsVisible else { return }
+        if panelOpen, view == .sessions {
+            dismiss()
+            return
+        }
+        openSessions()
+    }
+
+    /// 레일의 Projects(All work) 칸 · ⌘2 (계약 24장, 토글): Projects 첫 화면이 이미 열려 있으면 패널을 닫는다.
+    /// 이슈 목록 · 상세처럼 쌓인 화면에서는 닫지 않고 Projects 첫 화면으로 간다 (그 화면의 칸을 누른 것이 아니다). 다른 화면이 열려 있으면 연다
+    func toggleAllWork() {
+        if panelOpen, view == .allWork {
+            // 새 Issues 화면: 쌓인 화면이 아니면 닫는다. 노치 레일(옛 구성): 고른 행 · 검색어 · 필터(카드 포함)가 없을 때만 닫는다 —
+            // 있으면 옛 동작대로 그것을 비우고 목록을 보인다 (`openAllWork`)
+            let atFirstScreen = issues != nil
+                ? !nav.canGoBack
+                : currentID == nil && workFilter.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !workFilter.hasActiveFilters && !filtersOpen
+            if atFirstScreen {
+                dismiss()
+                return
+            }
+        }
+        openAllWork()
+    }
+
+    /// 레일의 고정 칸을 눌렀다 (More는 카드가 따로 연다: 레일 컨트롤러가 열고 닫는다). 눌린 칸의 패널이 이미 열려 있으면 닫는다 (토글)
+    func pressControl(_ control: Control) {
+        switch control {
+        case .allWork: toggleAllWork()
+        case .chats: openChats()
+        case .sessions: toggleSessions()
+        case .more: break
+        }
     }
 
     /// Open in Claude (그 세션을 데스크톱 앱에서 열고, 못 열면 앱만 앞으로): 시험은 가짜로 바꾼다
     @ObservationIgnored var claudeApp: any ClaudeAppOpening = LiveClaudeAppOpener()
-    /// 프로젝트 → 그 프로젝트의 작업 폴더 (이 Mac의 등록부): 묶음 머리에 프로젝트 이름을 쓰는 데만 쓴다. 시험은 바꾼다
-    @ObservationIgnored var projectFolders: () -> [UUID: String] = { BridgeHost.shared?.activeWorkspaceRegistry?.projectFolders() ?? [:] }
 
-    /// 목록이 보이는 동안만 훑는다 (패널 열림 ∧ 그 화면): 열면 점을 지우고 10초마다 다시 보고, 닫히거나 다른 화면으로 가면 멈춘다
+    /// 목록이 보이는 동안만 훑는다 (패널 열림 ∧ Sessions 화면): 열면 10초마다 다시 보고, 닫히거나 다른 화면으로 가면 멈춘다
     @ObservationIgnored private var externalSessionsShowing = false
 
     private func externalSessionsPanelChanged() {
-        let showing = panelOpen && view == .onThisMac && externalSessionsVisible
+        let showing = panelOpen && view == .sessions && externalSessionsVisible
         guard showing != externalSessionsShowing else { return }
         externalSessionsShowing = showing
         if showing { externalSessions?.panelOpened() } else { externalSessions?.panelClosed() }
     }
 
-    /// Chats: 레일의 Chats · ⌘3. Assistant 창이 있으면 가장 앞 창을 앞으로 가져오고 없으면 연다 (패널은 그대로). 창이 없는 구성은 패널의 Chats로 마지막 대화로 돌아간다
+    // MARK: Sessions 패널의 줄 · Claude 데스크톱 세션 보기 (OA PR-D2)
+
+    /// Sessions의 Taskforce 줄을 눌렀다: 그 세션 패널이 Sessions 왼쪽에 선다 (이슈 상세의 Sessions 줄을 눌렀을 때와 같은 기존 세션 패널). 같은 줄을 다시 누르면 닫는다.
+    /// 연 세션은 끝남(초록)이 내려간다. 왼쪽 패널은 하나라서 데스크톱 세션 보기는 닫힌다
+    func openSessionRow(_ id: UUID) {
+        guard issues != nil, panelOpen, view == .sessions else { return }
+        desktopPanelID = nil
+        sessionPanelID = sessionPanelID == id ? nil : id
+        if sessionPanelID != nil {
+            issues?.sessions.markOpened(id)
+            Task { await issues?.sessions.refresh() }
+        }
+        loadPanelConversationIfNeeded()
+    }
+
+    /// 데스크톱 세션을 연 길: 레일의 링(`rail`)은 이슈 패널 없이 한 패널만 레일 옆에, Sessions의 줄(`list`)은 Sessions를 두고 그 왼쪽에
+    enum DesktopOpenSource: Equatable {
+        case rail
+        case list
+    }
+
+    /// Claude 데스크톱 세션 보기(읽기 전용)를 연다. 연 세션은 끝남이 내려가고 · 보는 동안 끝나도 done이 되지 않고 · 그날 첫 열기는 지표 `claude_app_session_opened`(종류만)를 남긴다.
+    /// Sessions가 열려 있으면 그 왼쪽에 서고(같은 줄을 다시 누르면 닫는다) 아니면 `.claudeApp` 화면으로 레일 옆 한 패널이 된다
+    func openDesktopSession(_ id: String, from source: DesktopOpenSource) {
+        guard desktop != nil, sessionsVisible else { return }
+        sessionPanelID = nil
+        if panelOpen, view == .sessions {
+            if source == .list, desktopPanelID == id {
+                desktopPanelID = nil
+                return
+            }
+            desktopPanelID = id
+        } else {
+            desktopPanelID = id
+            openPanel(.claudeApp)
+        }
+        desktop?.markOpened(id)
+        claudeAppOpened?.opened()
+    }
+
+    /// 세션 보기의 Open in Claude: 이 Mac 목록에 그 세션의 줄이 있으면 줄의 단추와 같은 길(쉬는 데스크톱 줄만 그 세션을 열고 나머지는 앱만 앞으로), 아직 훑지 않았으면 앱만 앞으로
+    @discardableResult
+    func openDesktopInClaude(_ id: String) -> Task<Void, Never> {
+        if let row = desktopRow(id) { return openInClaude(row) }
+        _ = claudeApp.openClaudeApp()
+        return Task {}
+    }
+
+    /// 데스크톱 세션 보기를 닫는다 (Esc · 같은 줄 다시 누름 · 다른 화면). `.claudeApp` 화면(레일 옆 한 패널)이었으면 패널째 접는다
+    func closeDesktopSession() {
+        desktopPanelID = nil
+        if panelOpen, view == .claudeApp { dismiss() }
+    }
+
+    /// 데스크톱 세션 보기가 실제로 보인다: 패널이 열려 있고 열어 둔 세션이 있고 화면이 Sessions(왼쪽 패널) 또는 `.claudeApp`(레일 옆 한 패널)이다
+    var desktopPanelShown: Bool { panelOpen && desktopPanelID != nil && (view == .sessions || view == .claudeApp) }
+
+    /// 그 세션의 줄 (이 Mac 목록): 제목 · 폴더를 거기서 읽는다. 아직 훑지 않았으면 nil
+    func desktopRow(_ id: String) -> ExternalSessionRow? {
+        externalSessions?.rows.first { $0.id == id }
+    }
+
+    /// 레일 링 · 세션 보기 머리의 제목: 이 Mac 목록의 줄 제목(없으면 폴더 이름, 그것도 없으면 "Untitled"). 목록에 아직 없으면 에이전트 이름
+    func desktopTitle(_ id: String) -> String {
+        desktopRow(id).map(ExternalSessionLineText.title) ?? AgentMarkKind.claudeCode.accessibilityName
+    }
+
+    /// 머리 둘째 줄의 폴더 이름 (경로가 아니다, 엉뚱한 세션에 보내지 않게 하는 확인용): 목록의 줄 → 등록 파일의 작업 폴더
+    func desktopFolderName(_ id: String) -> String? {
+        guard let path = desktopRow(id)?.folderPath ?? desktop?.session(id: id)?.cwd else { return nil }
+        let name = (path as NSString).lastPathComponent
+        return name.isEmpty || name == "/" ? nil : name
+    }
+
+    /// 열어 둔 세션이 바뀌었거나 패널이 보이게 · 숨게 됐다: 대화를 그 세션 것으로 맞추고, 라이브 꼬리는 보이는 동안만 읽고, 보고 있는 세션을 폴 모델에 알린다 (끝나도 done이 되지 않게)
+    private func desktopPanelChanged() {
+        guard desktop != nil || desktopConversation != nil else { return }
+        if let id = desktopPanelID {
+            if desktopConversation?.sessionID != id {
+                desktopConversation?.stop()
+                desktopConversation = makeConversation(id, desktop?.session(id: id)?.cwd ?? desktopRow(id)?.folderPath)
+            }
+        } else if desktopConversation != nil {
+            desktopConversation?.stop()
+            desktopConversation = nil
+        }
+        let shown = desktopPanelShown ? desktopPanelID : nil
+        if shown != nil { desktopConversation?.start() } else { desktopConversation?.stop() }
+        desktop?.setViewing(shown)
+    }
+
+    /// 데스크톱 세션의 상태나 이 Mac 목록(제목)이 바뀌었다 (컨트롤러가 관찰해서 부른다): 레일의 링을 다시 정한다.
+    /// 레일에 오른 세션의 제목을 아직 모르면 이 Mac 목록을 한 번 훑는다 (5초에 한 번까지)
+    func desktopChanged() {
+        refreshSlots(at: clock())
+        if externalSessionsVisible, desktop?.rail.contains(where: { desktopRow($0.id) == nil }) == true { externalSessions?.railExpanded() }
+    }
+
+    /// Chats: 레일의 Chats · ⌘3 (노치 레일만 — 캡슐 레일은 Chats 칸이 없다, 계약 24장). Assistant 창이 있으면 가장 앞 창을 앞으로 가져오고 없으면 연다 (패널은 그대로). 창이 없는 구성은 패널의 Chats로 마지막 대화로 돌아간다
     func openChats() {
-        guard chatsEnabled else { return }
+        guard chatsEnabled, issues == nil else { return }
         if windowsEnabled {
             onChats()
             return
@@ -934,6 +1131,8 @@ final class EdgeShellModel {
         if nav.detailID != id { sessionPanelID = nil }
         nav.openDetail(id)
         currentID = id
+        // 이슈를 열었다: 그 이슈의 끝남(초록)이 내려간다 (계약 23장, 열기 전까지만 남는다)
+        markIssueOpened(id)
         Task { await issues?.details.load(id) }
         readSessionsOnEntry()
     }
@@ -947,6 +1146,8 @@ final class EdgeShellModel {
         nav.openDetail(id, outside: issueItem(id).map(IssueNavigation.fallbackScope) ?? .ungrouped)
         currentID = id
         openPanel(.allWork)
+        // 이슈를 열었다: 그 이슈의 끝남(초록)이 내려간다
+        markIssueOpened(id)
         Task { await issues?.details.load(id) }
         readSessionsOnEntry()
     }
@@ -964,7 +1165,11 @@ final class EdgeShellModel {
     func openSession(_ id: UUID) {
         guard issues != nil, panelOpen, view == .allWork, nav.detailID != nil else { return }
         sessionPanelID = sessionPanelID == id ? nil : id
-        if sessionPanelID != nil { Task { await issues?.sessions.refresh() } }
+        if sessionPanelID != nil {
+            // 연 세션의 끝남(초록)이 내려간다
+            issues?.sessions.markOpened(id)
+            Task { await issues?.sessions.refresh() }
+        }
         loadPanelConversationIfNeeded()
     }
 
@@ -980,8 +1185,8 @@ final class EdgeShellModel {
         onLoadSessionConversation(conversation)
     }
 
-    /// 세션 패널 창이 실제로 보인다: 이슈 패널이 이슈 상세로 열려 있고 세션 패널이 열려 있다 (`EdgeShell.followSessionPanel`과 같은 조건)
-    var sessionPanelShown: Bool { panelOpen && view == .allWork && nav.detailID != nil && openSessionItem != nil }
+    /// 세션 패널 창이 실제로 보인다: 이슈 패널이 이슈 상세로 열려 있거나(OA U2) Sessions가 열려 있고(OA PR-D2) 세션 패널이 열려 있다 (`EdgeShell.followSessionPanel`과 같은 조건)
+    var sessionPanelShown: Bool { panelOpen && ((view == .allWork && nav.detailID != nil) || view == .sessions) && openSessionItem != nil }
 
     func closeSessionPanel() {
         sessionPanelID = nil
@@ -1023,8 +1228,8 @@ final class EdgeShellModel {
             if nav != before { currentID = nav.detailID }
         }
         if issues.sessions.hasRead, let id = sessionPanelID, issues.sessions.item(id: id) == nil { sessionPanelID = nil }
-        // 세션 패널은 이슈 상세 없이 열려 있지 않다 (목록 화면에서 열린 세션 패널은 다음 맞추기에서 닫힌다, OA U3-53)
-        if sessionPanelID != nil, nav.detailID == nil { sessionPanelID = nil }
+        // 세션 패널은 이슈 상세 없이 열려 있지 않다 (목록 화면에서 열린 세션 패널은 다음 맞추기에서 닫힌다, OA U3-53). Sessions 패널은 이슈 상세 없이 세션 패널을 둔다 (OA PR-D2)
+        if sessionPanelID != nil, nav.detailID == nil, view != .sessions { sessionPanelID = nil }
     }
 
     /// 세션 · 번호가 바뀌었다: 레일의 링을 다시 정하고 열어 둔 화면을 맞춘다
@@ -1032,6 +1237,7 @@ final class EdgeShellModel {
         refreshSlots(at: clock())
         reconcileIssues()
         loadPanelConversationIfNeeded()
+        openedWhileViewing()
         sessionsChangedForTaskforce()
         // 새로 읽은 세션으로 열린 Resume 확인 카드를 맞춘다 (대상이 더는 external이 아니면 낡은 카드를 닫는다)
         if let issues, issues.sessions.hasRead { onSessionItemsChanged(issues.sessions.items) }
@@ -1063,6 +1269,13 @@ final class EdgeShellModel {
     /// 레일의 일을 누름. 세션의 질문을 기다리는 링이면 그 이슈 상세 + 그 세션 패널 + 카드 포커스 (OA D4b-m-1, D4bm-57: 질문은 Review에 없고 그 세션에서만 답한다).
     /// S4가 켜져 있고 Needs-you 링이면 그 Review 항목 (그 밖의 링은 그 일, 기존 동작 그대로)
     func openRailEntry(_ entry: RailEntry) {
+        // Claude 데스크톱 세션의 링: 이슈 패널 없이 그 세션 보기 한 패널 (OA PR-D2, DR-S1d). Taskforce 링과 똑같은 모양이고 이름 · 툴팁이 말한다
+        if case .claudeApp(let sessionID) = entry.source {
+            openDesktopSession(sessionID, from: .rail)
+            return
+        }
+        // 링을 눌러 연다: 그 이슈의 끝남(초록)이 내려간다 (계약 23장, 열 때까지 남는다)
+        markIssueOpened(entry.id)
         if entry.kind == .needsYou, questions != nil, let waiting = issues?.sessions.sessions(of: [entry.id]).first(where: { $0.ring == .needsYou }) {
             openQuestion(session: waiting.id)
             return
@@ -1240,6 +1453,19 @@ final class EdgeShellModel {
 
     /// Esc: 안쪽 것(열린 필터 카드 · Chats의 대화 목록)을 먼저 닫고, 그다음 패널을 접는다 (디자인 Focus and keys)
     func escape() {
+        // 레일 옆 한 패널(데스크톱 세션 보기)은 Esc가 패널째 접는다. Sessions 왼쪽의 세션 보기는 Esc가 먼저 그것만 닫는다 (OA PR-D2)
+        if panelOpen, view == .claudeApp {
+            dismiss()
+            return
+        }
+        if panelOpen, view == .sessions, desktopPanelID != nil || sessionPanelID != nil {
+            if desktopPanelID != nil {
+                desktopPanelID = nil
+            } else if !onEscapeSessionOverlay() {
+                sessionPanelID = nil
+            }
+            return
+        }
         if panelOpen, view == .allWork, issues != nil, escapeIssues() {
             return
         }
@@ -1348,7 +1574,17 @@ final class EdgeShellModel {
     /// 토큰 갱신처럼 같은 계정이면 그대로 둔다
     func accountChanged(_ account: UUID?) {
         guard account != self.account else { return }
+        // 알던 계정이 떠났다(로그아웃 · 다른 계정): 그 계정의 끝남 표시는 이 계정에 없다 (저장본은 `AccountScope`가 비운다). 처음 로그인(앱을 다시 켠 뒤)은 저장해 둔 것을 그대로 둔다
+        let hadAccount = self.account != nil
         self.account = account
+        if hadAccount {
+            recentlyDone = [:]
+            carriedDone = [:]
+            orphanTried = [:]
+            // 마지막으로 저장한 표시의 사본도 비운다: 남기면 새 계정이 같은 표시를 만들었을 때 "바뀌지 않았다"며 저장하지 않는다
+            savedIssueDone = nil
+        }
+        claimDoneStores(for: account)
         workFilter = WorkFilter()
         filtersOpen = false
         currentID = nil
@@ -1360,9 +1596,10 @@ final class EdgeShellModel {
         taskforceConfirmationIDs = []
         nav.reset()
         sessionPanelID = nil
+        desktopPanelID = nil
         pins = account.map { pinStore.load(account: $0) } ?? WorkPins()
-        // 이 Mac의 세션 목록은 로그인한 사용자에게만 있다: 열려 있던 화면은 All work로 돌아간다
-        if view == .onThisMac { view = .allWork }
+        // Sessions · 데스크톱 세션 보기는 로그인한 사용자에게만 있다: 열려 있던 화면은 All work로 돌아간다
+        if view == .sessions || view == .claudeApp { view = .allWork }
         externalSessionsPanelChanged()
     }
 
@@ -1376,34 +1613,170 @@ final class EdgeShellModel {
         let wasOnRail = Set(slots.filter { $0.kind != .done }.map(\.id))
         let doneIDs = Set(work.doneToday.map(\.id))
         let liveIDs = Set(work.review.map(\.id)).union(work.working)
-        // 레일에 있던 일이 지금 끝남 → 3초 동안 Done
+        // 레일에 있던 일이 지금 끝남 → Done (옛 레일은 3초, 새 Issues 화면은 열어 볼 때까지)
         for id in wasOnRail where doneIDs.contains(id) && !liveIDs.contains(id) && recentlyDone[id] == nil {
             recentlyDone[id] = now
+        }
+        if doneUntilOpened {
+            // 새 일이 시작하면 그 일의 끝남은 새 상태가 대신한다. 목록을 읽은 뒤에는 다시 열린 일(To Do · In Progress)의 표시를 지운다 — **더는 끝난 일이 아니다**.
+            // 오늘 끝난 일에서 빠졌어도(자정이 지났거나 다음 날 다시 켰다) 아직 끝난 일의 표시는 사용자가 열어 볼 때까지 남긴다 (읽기 전에는 저장해 둔 것을 그대로 둔다)
+            for id in liveIDs where recentlyDone[id] != nil { recentlyDone[id] = nil }
+            if case .loaded = work.load {
+                let reopened = Set(work.open.map(\.id))
+                recentlyDone = recentlyDone.filter { !reopened.contains($0.key) }
+            }
+            // 마지막으로 본 그 일의 모습: 오늘 끝난 일에서 빠져도 링의 제목 · 상태를 그릴 수 있게 메모리에만 둔다 (다시 켜면 저장해 둔 표시만 남는다)
+            for action in work.doneToday where recentlyDone[action.id] != nil { carriedDone[action.id] = action }
+            carriedDone = carriedDone.filter { recentlyDone[$0.key] != nil }
+            persistIssueDone()
+            resolveOrphanDone(work, now: now)
         }
         self.work = work
         reconcileReview(previous: previousReview)
         refreshSlots(at: now)
         reconcileIssues()
+        openedWhileViewing()
         workChangedForTaskforce(previous: previousWork)
     }
 
-    /// Done 3초가 지난 일을 뺀다
+    /// Done 3초가 지난 일을 뺀다 (옛 레일)
     func expireDone() {
         refreshSlots(at: clock())
     }
 
+    /// 끝난 링(초록)이 열어 볼 때까지 남는 셸인가: 새 Issues 화면(캡슐 레일) ∧ 끝남 저장소가 있다 (계약 23장). 아니면 지금처럼 3초다
+    private var doneUntilOpened: Bool { issues != nil && railDone != nil }
+    /// 마지막으로 저장한 이슈의 끝남 표시 (바뀔 때만 쓴다)
+    @ObservationIgnored private var savedIssueDone: [UUID: Date]?
+    /// 끝남 표시가 있는 이슈의 마지막으로 본 모습 (메모리에만: 오늘 끝난 일에서 빠진 뒤에도 링을 그린다)
+    @ObservationIgnored private var carriedDone: [UUID: ActionSummary] = [:]
+
+    /// 로그인한 계정이 끝남 표시의 주인인지 가린다 (보안 P3-1, 고정을 계정별로 가지치기하는 것과 같다): 저장본의 주인이 이 계정이 아니면(다른 계정이거나 모르면) 이 계정의 표시가 아니라서
+    /// 저장본과 되살린 표시를 모두 비운다. 그 뒤 이 계정을 주인으로 적는다. Claude 데스크톱 표시도 같은 규칙이다
+    private func claimDoneStores(for account: UUID?) {
+        guard let account else { return }
+        if doneUntilOpened, let railDone {
+            if railDone.load().owner != account {
+                railDone.clear()
+                recentlyDone = [:]
+                carriedDone = [:]
+                orphanTried = [:]
+                savedIssueDone = nil
+                issues?.sessions.discardRestoredDone()
+            }
+            railDone.setOwner(account)
+        }
+        desktop?.adopt(account: account)
+    }
+
+    /// 주인이 없는 저장본에는 지금 계정을 주인으로 찍는다: 계정이 바뀔 때 "떠남"(저장본 비움)이 `claimDoneStores`(주인 적기)보다 늦게 와 도장이 지워졌어도
+    /// 그 뒤에 쓰는 표시는 주인을 가진다 (순서와 상관없이 맞다). 다른 계정의 주인은 덮어쓰지 않는다
+    private func persistIssueDone() {
+        guard doneUntilOpened, let railDone else { return }
+        let current = recentlyDone
+        let account = account
+        guard current != (savedIssueDone ?? railDone.load().issues) else { return }
+        savedIssueDone = current
+        railDone.update {
+            $0.issues = current
+            if $0.owner == nil { $0.owner = account }
+        }
+    }
+
+    /// 표시만 남은 이슈를 다시 읽는 간격 (읽지 못했을 때)
+    static let orphanRetryInterval: TimeInterval = 60
+    /// 이슈를 마지막으로 읽어 본 때 · 읽는 중인 이슈
+    @ObservationIgnored private var orphanTried: [UUID: Date] = [:]
+    @ObservationIgnored private var orphanInFlight: Set<UUID> = []
+
+    /// 다시 켠 뒤 표시는 있는데 어느 목록에도 없는 이슈(오늘 끝난 일에서 빠졌고 이 실행에서 본 적도 없다): 그 이슈를 id로 읽는다 (기존 RLS 읽기, 제목은 저장하지 않는다).
+    /// 아직 끝난 이슈면 링을 제목과 함께 되살리고(메모리에만), 다시 열렸거나 지워졌거나 취소했으면 표시를 버리고, 읽지 못하면 표시를 두고 `orphanRetryInterval` 뒤에 다시 읽는다.
+    /// 읽는 사이 계정이 바뀌었으면 그 결과를 쓰지 않는다
+    private func resolveOrphanDone(_ work: EdgeWorkSnapshot, now: Date) {
+        guard doneUntilOpened, case .loaded = work.load else { return }
+        let known = Set(work.doneToday.map(\.id)).union(work.open.map(\.id)).union(work.review.map(\.id)).union(work.working).union(carriedDone.keys)
+        let owner = account
+        for id in recentlyDone.keys.sorted(by: { $0.uuidString < $1.uuidString }) where !known.contains(id) && !orphanInFlight.contains(id) {
+            if let tried = orphanTried[id], now.timeIntervalSince(tried) < Self.orphanRetryInterval { continue }
+            orphanTried[id] = now
+            orphanInFlight.insert(id)
+            let lookup = lookupFinishedIssue
+            Task { @MainActor [weak self] in
+                let result = await lookup(id)
+                guard let self else { return }
+                self.orphanInFlight.remove(id)
+                guard self.account == owner, self.recentlyDone[id] != nil else { return }
+                switch result {
+                case .finished(let summary):
+                    self.carriedDone[id] = summary
+                    self.refreshSlots(at: self.clock())
+                case .notFinished, .gone:
+                    self.recentlyDone[id] = nil
+                    self.carriedDone[id] = nil
+                    self.persistIssueDone()
+                    self.refreshSlots(at: self.clock())
+                case .unknown:
+                    break
+                }
+            }
+        }
+    }
+
+    /// 이슈를 열었다 (링 · 목록 · 상세): 그 이슈의 끝남(v1 run의 끝 · 그 이슈 세션들의 끝)을 지운다. 같은 완료는 다시 오르지 않고 새 일이 끝나야 다시 초록이다.
+    /// 새 Issues 화면의 "열 때까지" 셸에서만 뜻이 있다
+    func markIssueOpened(_ id: UUID) {
+        guard doneUntilOpened else { return }
+        let sessionIDs = Set(issues?.sessions.sessions(of: [id]).map(\.id) ?? [])
+        if !sessionIDs.isEmpty { issues?.sessions.markOpened(sessionIDs) }
+        if recentlyDone.removeValue(forKey: id) != nil {
+            carriedDone[id] = nil
+            persistIssueDone()
+            refreshSlots(at: clock())
+        }
+    }
+
+    /// 지금 보고 있는 것(이슈 상세 · 세션 패널)은 끝나도 초록으로 남기지 않는다: 보고 있으니 연 것이다
+    private func openedWhileViewing() {
+        guard doneUntilOpened, panelOpen else { return }
+        if view == .allWork, let id = nav.detailID, recentlyDone[id] != nil || sessions(of: id).contains(where: { $0.ring == .done }) {
+            markIssueOpened(id)
+        }
+        if sessionPanelShown, let item = openSessionItem, item.ring == .done { issues?.sessions.markOpened(item.id) }
+    }
+
     private func refreshSlots(at now: Date) {
-        recentlyDone = recentlyDone.filter { now.timeIntervalSince($0.value) < TFMotion.doneHold }
-        let entries = Self.entries(work, recentlyDone: recentlyDone, sessions: issues?.sessions.items, confirmRequestsRing: !taskforceEnabled)
+        if !doneUntilOpened { recentlyDone = recentlyDone.filter { now.timeIntervalSince($0.value) < TFMotion.doneHold } }
+        let entries = Self.entries(
+            work, recentlyDone: recentlyDone, sessions: issues?.sessions.items, confirmRequestsRing: !taskforceEnabled, untilOpened: doneUntilOpened,
+            carriedDone: carriedDone.values.sorted { $0.id.uuidString < $1.id.uuidString }
+        ) + desktopEntries()
         live = entries
         slots = RailOrdering.slots(previous: slots.map(\.id), entries: entries)
         if let hoveredID, !slots.contains(where: { $0.id == hoveredID }) { self.hoveredID = nil }
         scheduleDoneExpiry(now: now)
     }
 
+    /// Claude 데스크톱 앱에 열린 세션의 링 (OA PR-D2, DR-S1c): Taskforce 세션 링과 같은 캡슐 · 같은 순서 · 용량 규칙을 나눠 쓴다. 업무 상태가 없어 이름 · 툴팁은 "제목 · 활동"이다
+    private func desktopEntries() -> [RailEntry] {
+        guard externalSessionsVisible, let desktop else { return [] }
+        return desktop.rail.compactMap { entry in
+            guard let uuid = UUID(uuidString: entry.id) else { return nil }
+            let kind: ActivityRing.Kind
+            let activity: String
+            switch entry.kind {
+            case .running: (kind, activity) = (.running, ClaudeAppCopy.runningInClaude)
+            case .needsYou(.approval): (kind, activity) = (.needsYou, ClaudeAppCopy.needsApproval)
+            case .needsYou(.answer): (kind, activity) = (.needsYou, ClaudeAppCopy.needsAnswer)
+            case .done: (kind, activity) = (.done, AgentSessionRules.done)
+            }
+            return RailEntry(id: uuid, title: desktopTitle(entry.id), kind: kind, state: nil, activity: activity, source: .claudeApp(sessionID: entry.id))
+        }
+    }
+
     private func scheduleDoneExpiry(now: Date) {
         doneTimer?.cancel()
         doneTimer = nil
+        guard !doneUntilOpened else { return }
         guard let earliest = recentlyDone.values.min() else { return }
         let delay = max(0, TFMotion.doneHold - now.timeIntervalSince(earliest))
         doneTimer = schedule(delay) { [weak self] in self?.expireDone() }
@@ -1413,8 +1786,11 @@ final class EdgeShellModel {
     /// `sessions`가 있으면(새 Issues 화면) 링 하나 = 이슈 하나다: 그 이슈의 v1 링과 닫히지 않은 세션들의 링 중 먼저인 것 (needs-you → unreachable → stopping → running → done → waiting).
     /// 세션만 있는 이슈(v1 run 없이 세션이 돈다)도 오른다. idle 세션은 링이 아니다
     /// `confirmRequestsRing`: v1 확인 요청이 이슈 링의 needs-you가 되나. **Taskforce 대화가 켜지면 아니다** — 확인 요청은 bell로 가고 링은 세션의 질문만 말한다 (DS "Two kinds of Needs you", OA U3-15)
+    /// `untilOpened`: 끝난 링이 열어 볼 때까지 남는 셸이다 — 말이 "Done"이다 ("Done just now"는 링이 몇 시간 남으면 거짓이다, DZ RL3)
+    /// `carriedDone`: 오늘 끝난 일에서 빠졌지만(자정이 지났다) 표시가 남은 일의 마지막으로 본 모습 — 열어 볼 때까지 남는 셸에서만 링으로 그린다
     static func entries(
-        _ work: EdgeWorkSnapshot, recentlyDone: [UUID: Date], sessions: [AgentSessionItem]? = nil, confirmRequestsRing: Bool = true
+        _ work: EdgeWorkSnapshot, recentlyDone: [UUID: Date], sessions: [AgentSessionItem]? = nil, confirmRequestsRing: Bool = true, untilOpened: Bool = false,
+        carriedDone: [ActionSummary] = []
     ) -> [RailEntry] {
         guard let sessions else {
             var entries = work.review.map {
@@ -1427,7 +1803,8 @@ final class EdgeShellModel {
                 entries.append(RailEntry(id: action.id, title: action.title, kind: kind, state: TaskStatusMark.State(TaskGroup.open(action)), activity: activity))
             }
             for action in work.doneToday where recentlyDone[action.id] != nil {
-                entries.append(RailEntry(id: action.id, title: action.title, kind: .done, state: .done))
+                // 3초 모드의 활동 글 (링의 이름은 "Done"이다: `ActivityRing.Kind.done`)
+                entries.append(RailEntry(id: action.id, title: action.title, kind: .done, state: .done, activity: AgentSessionRules.doneJustNow))
             }
             return entries
         }
@@ -1437,7 +1814,9 @@ final class EdgeShellModel {
             guard seen.insert(action.id).inserted else { return }
             let mine = AgentSessionRules.sessions(of: [action.id], in: sessions)
             guard let ring = AgentSessionRules.issueRing(v1: v1, sessions: mine) else { return }
-            entries.append(RailEntry(id: action.id, title: action.title, kind: ActivityRing.Kind(ring), state: state, activity: ring.railActivity))
+            entries.append(RailEntry(
+                id: action.id, title: action.title, kind: ActivityRing.Kind(ring), state: state, activity: ring.railActivity ?? (ring == .done ? (untilOpened ? AgentSessionRules.done : AgentSessionRules.doneJustNow) : nil)
+            ))
         }
         // 확인 요청의 이슈도 세션의 링은 가진다 (v1 needs-you만 빠진다)
         for action in work.review { add(action, v1: confirmRequestsRing ? .needsYou : nil, state: TaskStatusMark.State(.review)) }
@@ -1446,6 +1825,10 @@ final class EdgeShellModel {
             add(action, v1: v1, state: TaskStatusMark.State(TaskGroup.open(action)))
         }
         for action in work.doneToday where recentlyDone[action.id] != nil { add(action, v1: .done, state: .done) }
+        if untilOpened {
+            // `add`가 이미 오른 이슈(오늘 끝난 일에도 있는)를 거른다
+            for action in carriedDone where recentlyDone[action.id] != nil { add(action, v1: .done, state: .done) }
+        }
         return entries
     }
 }
@@ -1520,14 +1903,16 @@ extension EdgeShellModel {
         switch control {
         case .allWork: return view == .allWork && currentID == nil
         case .chats: return view == .chats
-        case .onThisMac: return view == .onThisMac
+        case .sessions: return view == .sessions
         case .more: return false
         }
     }
 
-    /// 세션 링이 칠해지나: 호버, 또는 패널이 그 일을 보여 주는 중
+    /// 세션 링이 칠해지나: 호버, 또는 패널이 그 일을 보여 주는 중 (데스크톱 링은 그 세션 보기가 열려 있는 중)
     func railRingLit(_ id: UUID) -> Bool {
-        !menuOpen && (id == hoveredID || (panelOpen && id == railCurrentID))
+        if menuOpen { return false }
+        if id == hoveredID || (panelOpen && id == railCurrentID) { return true }
+        return desktopPanelShown && desktopPanelID.flatMap { UUID(uuidString: $0) } == id
     }
 
     /// bell의 호버 칠 (대화가 열려 있을 때의 칠은 bell 자체의 `selected`다: `railBellSelectionShown`)
@@ -1552,7 +1937,7 @@ extension EdgeShellModel {
 
     /// 지금의 캡슐 레이아웃 (그리기와 포인터 판정이 같은 값)
     var capsuleLayout: EdgeRailCapsuleLayout {
-        EdgeRailCapsuleLayout(mode: railMode, bell: taskforceBell != nil, compactRingCount: notch.count, ringCount: slots.count, controls: controls)
+        EdgeRailCapsuleLayout(mode: railMode, bell: taskforceBell != nil, compactRingCount: notch.count, ringCount: slots.count, controls: controls, sessionsButton: sessionsVisible)
     }
 
     // MARK: 열기 · 단계 · 읽기

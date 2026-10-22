@@ -439,6 +439,62 @@ extension ExternalSessionSuites {
             }
         }
 
+        /// B에서 `claude agents --json`이 계속 실패(nil)해도 3초마다 부르지 않는다: 읽지 못한 것도 어긋남처럼 간격을 벌린다 (PR-D1 보안 검토 P3)
+        @Test func aFailingAgentsListInSourceBBacksOffExactlyLikeRepeatedMismatches() async throws {
+            try await withHome { home in
+                try write(home, pid: 100, id: a, status: "idle")
+                let clock = ClaudeAppClock()
+                let agents = ClaudeAppAgentsStub([item(100, a, .busy)])
+                let poller = poller(home, clock: clock, agents: agents)
+                #expect(await step(poller).source == .agents, "첫 맞춰 보기가 어긋남: B로 간다")
+                agents.set(nil)
+                // 읽지 못한 답이 이어져도 간격은 3 · 3 · 6 · 12 · 15(상한)초: 실행은 0 · 3 · 6 · 12 · 24 · 39 · 54초에
+                let expected: [Int: Int] = [3: 2, 6: 3, 9: 3, 11: 3, 12: 4, 23: 4, 24: 5, 38: 5, 39: 6, 53: 6, 54: 7]
+                var elapsed = 0
+                for second in expected.keys.sorted() {
+                    clock.advance(TimeInterval(second - elapsed))
+                    elapsed = second
+                    let result = await step(poller)
+                    #expect(result.source == .agents, "읽지 못해도 B에 머문다 (\(second)초)")
+                    #expect(agents.calls == expected[second], "\(second)초")
+                }
+                // 다시 읽히고 맞으면 A로 돌아가고 간격은 60초다
+                try write(home, pid: 100, id: a, status: "busy")
+                agents.set([item(100, a, .busy)])
+                clock.advance(15)
+                #expect(await step(poller).source == .registry)
+                let calls = agents.calls
+                clock.advance(59)
+                _ = await step(poller)
+                #expect(agents.calls == calls, "A의 간격은 60초")
+            }
+        }
+
+        /// A에서의 읽지 못함은 B의 간격에 영향이 없다: 60초 간격 그대로이고 어긋남 횟수를 올리지 않는다
+        @Test func aFailingAgentsListInSourceAKeepsTheMinuteIntervalAndStartsNoBackoff() async throws {
+            try await withHome { home in
+                try write(home, pid: 100, id: a, status: "busy")
+                let clock = ClaudeAppClock()
+                let agents = ClaudeAppAgentsStub([item(100, a, .busy)])
+                let poller = poller(home, clock: clock, agents: agents)
+                #expect(await step(poller).source == .registry)
+                agents.set(nil)
+                for _ in 0..<4 {
+                    clock.advance(60)
+                    #expect(await step(poller).source == .registry)
+                }
+                #expect(agents.calls == 5)
+                // 어긋남이 처음 나타나면 B의 첫 간격(3초)부터다: 앞의 실패가 간격을 키워 두지 않았다
+                try write(home, pid: 100, id: a, status: "idle")
+                agents.set([item(100, a, .busy)])
+                clock.advance(60)
+                #expect(await step(poller).source == .agents)
+                clock.advance(3)
+                _ = await step(poller)
+                #expect(agents.calls == 7, "어긋남을 안 뒤의 첫 간격은 3초")
+            }
+        }
+
         // MARK: 맞춰 볼 것이 없으면 띄우지 않는다
 
         @Test func noLiveDesktopSessionMeansNoAgentsCallAndOneAppearingStartsOne() async throws {

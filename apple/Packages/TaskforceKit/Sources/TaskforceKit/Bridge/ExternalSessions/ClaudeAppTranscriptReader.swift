@@ -13,7 +13,7 @@ import Foundation
 ///   (`thinking` · 도구 입력 · 도구 결과 · 첨부 칸은 선언하지 않아 값으로 남지 않는다. 디코딩은 그 줄을 잠깐 메모리에 둔다)
 /// - 건너뛰는 줄: 서브에이전트(`isSidechain`) · 다른 세션 id를 단 줄 · 메타(`isMeta`, peer가 아니면) · `origin`이 있는데 peer가 아닌 줄(훅 · 작업 알림 등) · peer가 아닌 `queued_command` ·
 ///   Claude Code 표시 줄(`<command-name>` 등으로 시작하는 `user` 글 · `isCompactSummary` · `isVisibleInTranscriptOnly`)
-/// - peer 줄의 글은 받는 쪽이 감싼 글(`message.content`, "not typed by your user …")이 아니라 보낸 글 `origin.body`다. 같은 `msg_id`는 한 번만 (`user`와 `queued_command` 두 모양으로 기록돼도)
+/// - peer 줄의 글은 받는 쪽이 감싼 글(`message.content`, "not typed by your user …")이 아니라 보낸 글 `origin.body`다. 같은 (`msg_id`, 검증된 보낸 pid, 플러그인)은 한 번만 (`user`와 `queued_command` 두 모양으로 기록돼도). `msg_id`만 같은 다른 보낸이의 메시지는 가리지 않는다
 ///
 /// 상한: 한 줄 1 MiB(넘으면 그 줄을 통째로 건너뛴다) · 한 번에 읽는 창 2 MiB · 처음 열면 꼬리부터 마지막 200개 · 이전 쪽은 **거슬러 간 거리**가 총량 16 MiB를 넘지 않게 · 글 한 칸 32 KiB.
 /// 도구 줄은 이름과 `description`뿐이다. 입력 · 결과 본문은 펼칠 때(`detail`) 그 줄을 다시 읽어서 16 KiB까지만 준다 (결과는 그 줄 뒤로 총량 16 MiB 안에서 찾는다: 그보다 먼 결과는 못 찾는다).
@@ -261,16 +261,21 @@ public struct ClaudeAppTranscriptReader: Sendable {
         case failed
     }
 
-    /// 이미 보여 준 peer 메시지의 `msg_id` (최근 256개): 같은 메시지가 `user`와 `queued_command` 두 모양으로 기록돼도 한 번만 보인다
+    /// 이미 보여 준 peer 메시지의 열쇠 (최근 256개): 같은 메시지가 `user`와 `queued_command` 두 모양으로 기록돼도 한 번만 보인다.
+    /// 열쇠는 `msg_id` 하나가 아니라 **(msg_id, 검증된 보낸 pid, 플러그인)** 셋이다: 다른 프로세스가 남의 msg_id를 흉내 내어 진짜 메시지를 가리지 못한다 (PR-D1 보안 검토 P3)
     struct PeerSeen {
         static let limit = 256
         var ids: [String] = []
 
-        /// 처음 보는 id(또는 id가 없는 메시지)이면 true
-        mutating func firstTime(_ id: String?) -> Bool {
-            guard let id else { return true }
-            if ids.contains(id) { return false }
-            ids.append(id)
+        static func key(messageID: String, pid: Int32?, plugin: String?) -> String {
+            "\(messageID)\u{1F}\(pid.map(String.init) ?? "")\u{1F}\(plugin ?? "")"
+        }
+
+        /// 처음 보는 열쇠(또는 msg_id가 없는 메시지)이면 true
+        mutating func firstTime(_ key: String?) -> Bool {
+            guard let key else { return true }
+            if ids.contains(key) { return false }
+            ids.append(key)
             if ids.count > Self.limit { ids.removeFirst(ids.count - Self.limit) }
             return true
         }
@@ -499,11 +504,11 @@ public struct ClaudeAppTranscriptReader: Sendable {
         }
         func peer(_ origin: Origin) {
             let messageID = origin.messageID.flatMap { $0.utf8.count <= 64 ? $0 : nil }
-            guard let body = origin.body, let (text, cut) = plain(body), peers.firstTime(messageID) else { return }
-            add(.peer(text, ClaudeAppPeer(
-                plugin: origin.plugin.flatMap { $0.utf8.count <= 64 ? $0 : nil }, verifiedPeerPID: origin.verifiedPeerPid.flatMap { $0 > 0 && $0 <= Int(Int32.max) ? Int32($0) : nil },
-                messageID: messageID
-            )), truncated: cut)
+            let plugin = origin.plugin.flatMap { $0.utf8.count <= 64 ? $0 : nil }
+            let pid = origin.verifiedPeerPid.flatMap { $0 > 0 && $0 <= Int(Int32.max) ? Int32($0) : nil }
+            let key = messageID.map { PeerSeen.key(messageID: $0, pid: pid, plugin: plugin) }
+            guard let body = origin.body, let (text, cut) = plain(body), peers.firstTime(key) else { return }
+            add(.peer(text, ClaudeAppPeer(plugin: plugin, verifiedPeerPID: pid, messageID: messageID)), truncated: cut)
         }
         switch record.type {
         case "user":

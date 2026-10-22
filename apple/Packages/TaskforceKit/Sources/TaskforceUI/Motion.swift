@@ -17,8 +17,10 @@ public enum TFMotion {
     public static let railHoverDelay: Double = 0.12
     public static let railSlide: Double = 0.22
     public static let railLeaveDelay: Double = 0.4
-    /// 링이 나타나고 사라지는 시간 · Done이 머무는 시간
+    /// 링이 나타나고 사라지는 시간
     public static let ringFade: Double = 0.16
+    /// Done이 머무는 시간: 끝남을 시간으로 내리는 옛 모드(노치 레일 · Assistant 창의 좁은 저장소)만 쓴다.
+    /// 캡슐 레일(새 Issues 화면)의 끝난 링은 이 시간과 상관없이 사용자가 열어 볼 때까지 남는다 (OA PR-D2, 계약 23장)
     public static let doneHold: Double = 3
     /// 링 한 바퀴: Running 1.1초 · Stop requested 2.4초 (`ActivityRing.Kind.period`와 같다)
     public static let runningTurn: Double = 1.1

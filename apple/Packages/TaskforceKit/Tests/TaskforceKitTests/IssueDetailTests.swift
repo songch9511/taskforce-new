@@ -200,6 +200,83 @@ struct IssueDetailTests {
         #expect(store.screen(for: Fx.issue(1)) == .blank)
     }
 
+    // MARK: 끝남 표시가 남은 이슈를 id로 읽기 (다시 켠 뒤 링을 되살린다)
+
+    /// 상태와 제목이 다른 행 하나 (RLS `actions` 행 그대로)
+    private static func detail(status: String, title: String) throws -> ActionDetail {
+        let record = try TaskforceJSON.decoder().decode(ActionRecord.self, from: Data("""
+        {"id":"a0000000-0000-4000-8000-000000000001","title":"\(title)","scope_summary":null,"owner":"me","counterpart":null,"due_date":null,"status":"\(status)",
+         "needs_confirmation":false,"confirm_reasons":[],"started_at":null,"last_activity_at":"2026-10-14T01:00:00.000Z","created_at":"2026-10-13T01:00:00.000Z","number":139}
+        """.utf8))
+        return ActionDetail(action: record, evidence: [], sources: [:], events: [])
+    }
+
+    #if os(macOS)
+    @Test func aDoneIssueIsFinishedWithItsTitleAndAnOpenOneIsNot() async throws {
+        let gateway = FakeIssueDetailGateway()
+        let (store, scope) = makeStore(gateway)
+        let lookup = FinishedIssueLookup(gateway: gateway, scope: scope)
+        gateway.serve(try Self.detail(status: "done", title: "Privacy policy beta 1.4"))
+        let finished = await lookup.read(Fx.issue(1))
+        guard case .finished(let summary) = finished else { Issue.record("not finished: \(finished)"); return }
+        #expect(summary.title == "Privacy policy beta 1.4" && summary.status == .done && summary.id == UUID(uuidString: "a0000000-0000-4000-8000-000000000001"))
+        gateway.serve(try Self.detail(status: "open", title: "Reopened"))
+        #expect(await lookup.read(Fx.issue(1)) == .notFinished, "다시 열린 이슈의 끝남 표시는 쓸모없다")
+        #expect(gateway.reads == [Fx.issue(1), Fx.issue(1)], "기존 RLS 읽기(`issueDetail`)를 id로 부른다")
+        #expect(store.screen(for: Fx.issue(1)) == .blank, "상세 화면의 캐시에 넣지 않는다 (제목은 어디에도 저장하지 않는다)")
+    }
+
+    @Test func aCancelledOrDeletedIssueIsGone() async throws {
+        let gateway = FakeIssueDetailGateway()
+        let user = UUID()
+        let scope = AccountScope(currentAccount: { user })
+        let lookup = FinishedIssueLookup(gateway: gateway, scope: scope)
+        gateway.serve(try Self.detail(status: "dropped", title: "Cancelled"))
+        #expect(await lookup.read(Fx.issue(1)) == .gone, "취소(dropped)한 이슈는 끝난 일이 아니다")
+        gateway.serve(nil)
+        #expect(await lookup.read(Fx.issue(1)) == .gone, "서버에 없는 이슈(지워짐 · 남의 것)")
+    }
+
+    @Test func aFailedOrOfflineReadIsUnknownSoTheMarkIsKept() async throws {
+        let gateway = FakeIssueDetailGateway()
+        let user = UUID()
+        let scope = AccountScope(currentAccount: { user })
+        let lookup = FinishedIssueLookup(gateway: gateway, scope: scope)
+        gateway.fail(Failure())
+        #expect(await lookup.read(Fx.issue(1)) == .unknown)
+        gateway.fail(URLError(.notConnectedToInternet))
+        #expect(await lookup.read(Fx.issue(1)) == .unknown)
+    }
+
+    @Test func aSignedOutAccountOrOneThatLeftWhileReadingIsUnknown() async throws {
+        let gateway = FakeIssueDetailGateway()
+        gateway.serve(try Self.detail(status: "done", title: "A title"))
+        let signedOut = FinishedIssueLookup(gateway: gateway, scope: AccountScope())
+        #expect(await signedOut.read(Fx.issue(1)) == .unknown && gateway.reads.isEmpty, "로그인한 계정이 없으면 읽지도 않는다")
+        let user = UUID()
+        let scope = AccountScope(currentAccount: { user })
+        let lookup = FinishedIssueLookup(gateway: gateway, scope: scope)
+        let slow = Latch()
+        gateway.hold(slow)
+        let late = Task { await lookup.read(Fx.issue(1)) }
+        #expect(await slow.waitForArrivals(1, timeout: .seconds(2)))
+        scope.accountLeft()
+        await slow.open()
+        #expect(await late.value == .unknown, "읽는 사이 계정이 떠났으면 그 결과를 쓰지 않는다")
+        // 읽는 사이 계정이 떠났는데 서버가 "없다"고 답해도 (다른 계정에서는 남의 이슈로 보인다) 표시를 버리라고 하지 않는다
+        let scope2 = AccountScope(currentAccount: { user })
+        let lookup2 = FinishedIssueLookup(gateway: gateway, scope: scope2)
+        let slow2 = Latch()
+        gateway.serve(nil)
+        gateway.hold(slow2)
+        let late2 = Task { await lookup2.read(Fx.issue(1)) }
+        #expect(await slow2.waitForArrivals(1, timeout: .seconds(2)))
+        scope2.accountLeft()
+        await slow2.open()
+        #expect(await late2.value == .unknown, "떠난 뒤에 온 '없다'는 쓰지 않는다")
+    }
+    #endif
+
     @Test func theAccountLeavingClearsEveryDetailAndDropsALateRead() async throws {
         let gateway = FakeIssueDetailGateway()
         gateway.serve(try Self.detail())

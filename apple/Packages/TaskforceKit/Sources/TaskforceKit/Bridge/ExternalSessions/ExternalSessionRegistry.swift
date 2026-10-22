@@ -143,6 +143,8 @@ enum ExternalSessionRegistry {
     private static func decode(_ item: ExternalSessionFileSystem.Entry, path: String, fileSystem: ExternalSessionFileSystem, now: Date, localZone: TimeZone) -> Entry? {
         guard item.size > 0, item.size <= Int64(maxFileBytes), let data = fileSystem.read(path, 0, Int(item.size)),
               let file = try? JSONDecoder().decode(File.self, from: data), let pid = file.pid, pid > 0, pid <= Int(Int32.max),
+              // 이름 `<pid>.json`과 안의 pid가 같아야 등록이다: 늘 다시 읽을 pid(`alwaysRead`)는 이름으로 고르므로, 다르면 그 판정을 속인다 (PR-D1 보안 검토 P3)
+              item.name == "\(pid).json",
               let id = file.sessionId, ExternalSessionRules.isCanonicalUUID(id) else { return nil }
         let starts = file.procStart.map { parseProcStart($0, now: now, localZone: localZone) } ?? []
         return Entry(

@@ -36,14 +36,16 @@ public enum AgentSessionRules {
     public static let connectionLost = "Connection lost · progress unknown"
     public static let idle = "Idle"
     public static let doneJustNow = "Done just now"
+    /// 열어 보기 전까지 남는 끝남의 말 (DZ 승인 2026-10-22 RL3, 계약 23장): 링이 몇 시간 남으니 "just now"는 거짓이다. 몇 분 전인지는 줄의 시각이 말한다
+    public static let done = "Done"
     public static let external = "External · Open in Terminal"
-    /// Done 링이 머무는 시간 (디자인 ActivityRing "Done just now")
+    /// Done 링이 머무는 시간 (디자인 ActivityRing "Done just now"). 열기 전까지 남기는 저장소(`AgentSessionStore(done:)`)에서는 쓰지 않는다
     public static let doneHold: TimeInterval = 3
 
     // MARK: 2.5 표
 
-    /// 위에서부터 먼저 맞는 줄. 마지막 task는 `turn_seq` 최대다. `doneNow`: 그 task가 `completed`로 바뀌는 것을 본 지 3초가 안 됐다
-    static func standing(status: AgentSessionStatus, task: AgentTaskRecord?, doneNow: Bool) -> AgentSessionStanding {
+    /// 위에서부터 먼저 맞는 줄. 마지막 task는 `turn_seq` 최대다. `doneNow`: 그 task가 `completed`로 바뀌는 것을 본 지 3초가 안 됐다 (`untilOpened`면: 아직 열어 보지 않았다 — 말은 "Done")
+    static func standing(status: AgentSessionStatus, task: AgentTaskRecord?, doneNow: Bool, untilOpened: Bool = false) -> AgentSessionStanding {
         // 끝난 세션은 상태 말이 없다 (사용자 결정 2026-10-15): 링도 말도 없이 흐리게 그린다 (`AgentSessionItem.isClosed`)
         if status == .closed { return AgentSessionStanding(ring: nil, line: "") }
         if status == .unreachable || task?.state == .unreachable { return AgentSessionStanding(ring: .unreachable, line: connectionLost) }
@@ -55,7 +57,7 @@ public enum AgentSessionRules {
         default: break
         }
         if status == .external { return AgentSessionStanding(ring: .idle, line: external) }
-        if task?.state == .completed, doneNow { return AgentSessionStanding(ring: .done, line: doneJustNow) }
+        if task?.state == .completed, doneNow { return AgentSessionStanding(ring: .done, line: untilOpened ? done : doneJustNow) }
         return AgentSessionStanding(ring: .idle, line: idle)
     }
 
@@ -85,7 +87,8 @@ public enum AgentSessionRules {
 
     /// 읽은 값에서 화면이 쓰는 세션들. 만든 시각 순(오래된 것이 먼저, 같으면 id).
     /// - doneObservedAt: 세션의 마지막 task가 `completed`로 바뀌는 것을 본 때 (저장소가 정한다)
-    public static func items(snapshot: AgentSessionSnapshot, doneObservedAt: [UUID: Date], now: Date) -> [AgentSessionItem] {
+    /// - untilOpened: 표시가 있으면(아직 안 연 끝남) 시간과 상관없이 done이다 (계약 23장). 아니면 `doneHold`(3초) 동안만
+    public static func items(snapshot: AgentSessionSnapshot, doneObservedAt: [UUID: Date], now: Date, untilOpened: Bool = false) -> [AgentSessionItem] {
         let adapters = Dictionary(snapshot.connections.map { ($0.id, $0.adapter) }, uniquingKeysWith: { first, _ in first })
         let bridges = Dictionary(snapshot.connections.compactMap { connection in connection.bridgeID.map { (connection.id, $0) } }, uniquingKeysWith: { first, _ in first })
         let sessions = snapshot.sessions.sorted { ($0.createdAt, $0.id.uuidString) < ($1.createdAt, $1.id.uuidString) }
@@ -94,8 +97,8 @@ public enum AgentSessionRules {
             let agentName = agent.accessibilityName
             let task = lastTask(of: session.id, in: snapshot.tasks)
             let seen = doneObservedAt[session.id]
-            let doneNow = seen.map { now.timeIntervalSince($0) < doneHold && now >= $0 } ?? false
-            let standing = standing(status: session.status, task: task, doneNow: doneNow)
+            let doneNow = seen.map { untilOpened || (now.timeIntervalSince($0) < doneHold && now >= $0) } ?? false
+            let standing = standing(status: session.status, task: task, doneNow: doneNow, untilOpened: untilOpened)
             let runs = snapshot.runs.filter { $0.agentSessionID == session.id && $0.kind == AgentSessionRunRecord.conversationKind }
             var seenIssues = Set<UUID>()
             let issues = runs.map(\.actionID).filter { seenIssues.insert($0).inserted }

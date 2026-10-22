@@ -4,9 +4,10 @@ import Testing
 @testable import TaskforceKit
 
 extension ExternalSessionSuites {
-    /// 레일에 오르는 데스크톱 세션의 순수 판정 (PR-D1 Kit, 계약 21.2 DR-S1b · 22장): busy → running, waiting → needsYou(approval · answer),
-    /// 일하던(busy · waiting) 세션이 쉬게 된 것을 Taskforce가 보면 done(`doneHold` 동안, 그 사이 열어 보면 바로 내림). 쉬는 것은 레일에 없다.
-    /// 기억은 값으로 주고받고, 머무는 시간은 **단조 시간**이다 (벽시계는 done의 시각 표시에만 쓴다). 세션은 (id, pid)로 알아본다
+    /// 레일에 오르는 데스크톱 세션의 순수 판정 (PR-D1 Kit, 계약 21.2 DR-S1b · 22장 · 23장): busy → running, waiting → needsYou(approval · answer),
+    /// 일하던(busy · waiting) 세션이 쉬게 된 것을 Taskforce가 보면 done — **사용자가 열어 볼 때까지** 남는다(타이머 없음, 23장). 열어 보면 내리고, 새 턴이 오면 done이 running으로 바뀐다. 쉬는 것은 레일에 없다.
+    /// 기억은 값으로 주고받고, 일하던 기억의 나이는 **단조 시간**이다 (벽시계는 done의 시각 표시에만 쓴다). 세션은 (id, pid)로 알아본다.
+    /// done 표시(`doneMarks`)는 다시 켠 뒤에도 남도록 밖에 저장했다 되살릴 수 있다 (이 Mac에만, id · pid · 본 시각뿐)
     struct ClaudeAppRailTests {
         typealias F = ExternalSessionFixture
         let a = F.uuid(0xB1)
@@ -33,7 +34,7 @@ extension ExternalSessionSuites {
         private func kinds(_ entries: [ClaudeAppRailEntry]) -> [String: ClaudeAppRailEntry.Kind] { Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0.kind) }) }
 
         @Test func theNumbersAreTheDocumentedOnes() {
-            #expect(ClaudeAppRail.doneHold == 3, "Taskforce 세션의 Done 링과 같은 3초")
+            #expect(ClaudeAppRail.maxRestoredMarks == 64, "다시 켤 때 되살리는 done 표시는 64개까지 (저장소가 커지지 않게)")
             #expect(ClaudeAppRail.activeLimit == 30, "마지막으로 일하는 것을 본 뒤 30초가 지나면 끝난 것을 새 소식으로 치지 않는다")
             #expect(ClaudeAppRail.missingGrace == 2, "잠깐(두 번) 안 보이는 것은 기억을 지키는 틈이다")
         }
@@ -62,18 +63,69 @@ extension ExternalSessionSuites {
 
         // MARK: done
 
-        @Test func busyThenIdleIsDoneForTheHoldAndThenGoneForGood() {
+        @Test func busyThenIdleIsDoneAndStaysUntilTheUserOpensIt() {
             var walk = Walk(wall0: t0)
             #expect(kinds(walk.step([session(a, .busy)], at: 0)) == [a: .running])
             #expect(kinds(walk.step([session(a, .busy)], at: 10)) == [a: .running])
             let done = walk.step([session(a, .idle)], at: 11)
             #expect(kinds(done) == [a: .done])
             #expect(done.first?.since == t0.addingTimeInterval(11), "본 때(벽시계)를 표시한다")
-            #expect(kinds(walk.step([session(a, .idle)], at: 12)) == [a: .done])
-            #expect(kinds(walk.step([session(a, .idle)], at: 13.9)) == [a: .done], "3초가 되기 전")
-            #expect(walk.step([session(a, .idle)], at: 14).isEmpty, "3초가 되면 내린다")
-            for second: TimeInterval in [15, 20, 1000] { #expect(walk.step([session(a, .idle)], at: second).isEmpty, "\(second)") }
-            #expect(walk.memory == ClaudeAppRailMemory(), "내린 것은 기억에서도 지운다")
+            // 타이머가 없다: 3초 · 1분 · 하루가 지나도 열어 보기 전까지 그대로다
+            for second: TimeInterval in [12, 14, 15, 20, 1_000, 86_400, 1_000_000] {
+                let entries = walk.step([session(a, .idle)], at: second)
+                #expect(kinds(entries) == [a: .done], "\(second)")
+                #expect(entries.first?.since == t0.addingTimeInterval(11), "표시 시각은 본 때 그대로 (\(second))")
+            }
+            #expect(walk.step([session(a, .idle)], at: 1_000_001, opened: [a]).isEmpty, "열어 보면 내린다")
+            #expect(walk.memory == ClaudeAppRailMemory(), "열어 본 것은 기억에서도 지운다")
+            #expect(walk.step([session(a, .idle)], at: 1_000_002).isEmpty, "열어 본 뒤에는 다시 오르지 않는다")
+        }
+
+        @Test func theDoneMarksAreExactlyTheUnopenedDonesWithTheirPidAndTime() {
+            var walk = Walk(wall0: t0)
+            _ = walk.step([session(a, .busy, pid: 100), session(b, .busy, pid: 200), session(c, .busy, pid: 300)], at: 0)
+            _ = walk.step([session(a, .idle, pid: 100), session(b, .idle, pid: 200), session(c, .busy, pid: 300)], at: 5)
+            #expect(walk.memory.doneMarks == [a: ClaudeAppDoneMark(pid: 100, at: t0.addingTimeInterval(5)), b: ClaudeAppDoneMark(pid: 200, at: t0.addingTimeInterval(5))], "일하는 중인 c는 표시가 없다")
+            _ = walk.step([session(a, .idle, pid: 100), session(b, .idle, pid: 200), session(c, .busy, pid: 300)], at: 6, opened: [b])
+            #expect(walk.memory.doneMarks == [a: ClaudeAppDoneMark(pid: 100, at: t0.addingTimeInterval(5))], "열어 본 b는 지워진다")
+        }
+
+        @Test func aRelaunchRestoresTheUnopenedDonesOfTheSameLiveProcess() {
+            var before = Walk(wall0: t0)
+            _ = before.step([session(a, .busy, pid: 100), session(b, .busy, pid: 200)], at: 0)
+            _ = before.step([session(a, .idle, pid: 100), session(b, .idle, pid: 200)], at: 4)
+            let saved = before.memory.doneMarks
+            #expect(saved.count == 2)
+            // 앱을 다시 켰다: 기억은 비었고 저장해 둔 표시만 있다. 그 사이 시간이 한참 흘렀다
+            var after = Walk(memory: ClaudeAppRailMemory(restoring: saved), wall0: t0.addingTimeInterval(86_400))
+            let entries = after.step([session(a, .idle, pid: 100), session(b, .idle, pid: 999)], at: 0)
+            #expect(kinds(entries) == [a: .done], "같은 프로세스(pid)의 표시만 산다: b는 다시 시작한 프로세스라 옛 끝남이 아니다")
+            #expect(entries.first?.since == t0.addingTimeInterval(4), "표시 시각은 처음 본 때 그대로")
+            #expect(after.memory.doneMarks == [a: ClaudeAppDoneMark(pid: 100, at: t0.addingTimeInterval(4))], "맞지 않은 표시는 기억에서도 지운다")
+        }
+
+        @Test func aRestoredMarkIsReplacedByANewTurnAndForgottenWhenItsProcessIsGone() {
+            let marks = [a: ClaudeAppDoneMark(pid: 100, at: t0), b: ClaudeAppDoneMark(pid: 200, at: t0)]
+            var walk = Walk(memory: ClaudeAppRailMemory(restoring: marks), wall0: t0.addingTimeInterval(100))
+            #expect(kinds(walk.step([session(a, .busy, pid: 100), session(b, .idle, pid: 200)], at: 0)) == [a: .running, b: .done], "새 턴이 오면 done을 running이 대신한다")
+            #expect(walk.memory.doneMarks == [b: ClaudeAppDoneMark(pid: 200, at: t0)])
+            for second: TimeInterval in [1, 2, 3] { _ = walk.step([session(a, .busy, pid: 100)], at: second) }
+            #expect(walk.memory.doneMarks.isEmpty, "프로세스가 끝나 세 번 안 보이면 표시도 지운다")
+        }
+
+        @Test func restoringAcceptsOnlyCanonicalSessionIDsAndAtMostTheCap() {
+            var marks: [String: ClaudeAppDoneMark] = ["NOT-A-UUID": ClaudeAppDoneMark(pid: 1, at: t0), a.uppercased(): ClaudeAppDoneMark(pid: 2, at: t0), b: ClaudeAppDoneMark(pid: 3, at: t0)]
+            #expect(ClaudeAppRailMemory(restoring: marks).doneMarks == [b: ClaudeAppDoneMark(pid: 3, at: t0)], "소문자 정규 UUID만")
+            marks = [:]
+            for n in 0..<(ClaudeAppRail.maxRestoredMarks + 20) { marks[F.uuid(0x4000 + n)] = ClaudeAppDoneMark(pid: Int32(10 + n), at: t0.addingTimeInterval(Double(n))) }
+            let restored = ClaudeAppRailMemory(restoring: marks).doneMarks
+            #expect(restored.count == ClaudeAppRail.maxRestoredMarks)
+            #expect(restored.values.map(\.at).min() == t0.addingTimeInterval(20), "넘치면 오래된 것부터 버린다")
+        }
+
+        @Test func aDoneMarkHasNoPidOrIDInItsPrintedForm() {
+            let mark = ClaudeAppDoneMark(pid: 4242, at: t0)
+            for value in [String(describing: mark), String(reflecting: mark)] { #expect(!value.contains("4242"), "\(value)") }
         }
 
         @Test func waitingThenIdleIsDoneToo() {
@@ -182,19 +234,31 @@ extension ExternalSessionSuites {
 
         // MARK: 시계
 
-        @Test func aWallClockThatJumpsBackOrForwardNeitherFreezesNorShortensTheHold() {
+        @Test func aWallClockThatJumpsBackOrForwardNeverTakesTheDoneDownOrMovesItsTime() {
             var back = Walk(wall0: t0)
             _ = back.step([session(a, .busy)], at: 0)
             let done = back.step([session(a, .idle)], at: 1)
             #expect(kinds(done) == [a: .done])
-            #expect(kinds(back.step([session(a, .idle)], at: 2, wallShift: -10_000)) == [a: .done], "벽시계가 뒤로 가도 단조 시간으로 1초 지났을 뿐이다")
-            #expect(kinds(back.step([session(a, .idle)], at: 3.9, wallShift: -10_000)) == [a: .done])
-            #expect(back.step([session(a, .idle)], at: 4, wallShift: -10_000).isEmpty, "벽시계가 뒤로 가 있어도 3초(단조)가 지나면 내린다: 얼지 않는다")
+            for second: TimeInterval in [2, 3.9, 4, 100] {
+                let entries = back.step([session(a, .idle)], at: second, wallShift: -10_000)
+                #expect(kinds(entries) == [a: .done], "벽시계가 뒤로 가도 done은 열어 보기 전까지 그대로다 (\(second))")
+                #expect(entries.first?.since == done.first?.since, "표시 시각은 본 때의 벽시계 그대로")
+            }
             var forward = Walk(wall0: t0)
             _ = forward.step([session(a, .busy)], at: 0)
             let shown = forward.step([session(a, .idle)], at: 1)
-            #expect(kinds(forward.step([session(a, .idle)], at: 2, wallShift: 86_400)) == [a: .done], "벽시계가 앞서가도 일찍 내리지 않는다")
-            #expect(forward.step([session(a, .idle)], at: 2, wallShift: 86_400).first?.since == shown.first?.since, "표시 시각은 본 때의 벽시계 그대로")
+            for second: TimeInterval in [2, 100] {
+                let entries = forward.step([session(a, .idle)], at: second, wallShift: 86_400)
+                #expect(kinds(entries) == [a: .done], "벽시계가 앞서가도 done은 그대로다 (\(second))")
+                #expect(entries.first?.since == shown.first?.since)
+            }
+            // 일하던 기억의 나이는 단조 시간이다: 벽시계가 어떻게 가도 30초(단조) 안이면 끝남이고 넘으면 아니다
+            var young = Walk(wall0: t0)
+            _ = young.step([session(a, .busy)], at: 0)
+            #expect(kinds(young.step([session(a, .idle)], at: 29, wallShift: -10_000)) == [a: .done])
+            var old = Walk(wall0: t0)
+            _ = old.step([session(a, .busy)], at: 0)
+            #expect(old.step([session(a, .idle)], at: 31, wallShift: 86_400).isEmpty)
         }
 
         // MARK: 순서 · 순수함 · 값의 모양

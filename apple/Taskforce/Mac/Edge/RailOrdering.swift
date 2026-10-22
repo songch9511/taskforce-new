@@ -4,20 +4,29 @@ import TaskforceUI
 
 /// 레일에 오를 수 있는 일 하나: 지금 무엇을 하는지(`ActivityRing.Kind`)가 있는 일만 (디자인 EdgeRail "live work you can jump to")
 struct RailEntry: Identifiable, Equatable {
+    /// 링이 어디서 왔나 (OA PR-D2, 계약 21.2 DR-S1c): Taskforce의 이슈(세션 링은 이슈 하나가 링 하나) 또는 Claude 데스크톱 앱에 열린 세션.
+    /// 데스크톱 세션의 `id`는 그 Claude 세션 UUID 그대로다 (둘은 같은 링 캡슐에서 같은 순서 · 용량 규칙을 나눠 쓴다)
+    enum Source: Equatable {
+        case issue
+        case claudeApp(sessionID: String)
+    }
+
     let id: UUID
     let title: String
     let kind: ActivityRing.Kind
-    /// 업무 상태 (○ ◉ ✓ · Review)
-    let state: TaskStatusMark.State
+    /// 업무 상태 (○ ◉ ✓ · Review). Claude 데스크톱 세션은 Taskforce 업무가 아니라 없다 (툴팁은 "제목 · 활동")
+    let state: TaskStatusMark.State?
     /// 활동 글. 없으면 링의 말
     let activity: String
+    let source: Source
 
-    init(id: UUID, title: String, kind: ActivityRing.Kind, state: TaskStatusMark.State, activity: String? = nil) {
+    init(id: UUID, title: String, kind: ActivityRing.Kind, state: TaskStatusMark.State?, activity: String? = nil, source: Source = .issue) {
         self.id = id
         self.title = title
         self.kind = kind
         self.state = state
         self.activity = activity ?? kind.accessibilityLabel
+        self.source = source
     }
 
     var accessibilityLabel: String {

@@ -92,7 +92,7 @@ public struct ClaudeAppTranscriptCursor: Equatable, Sendable, CustomStringConver
     var coveredBytes: Int
     /// 너무 긴 줄의 나머지를 개행까지 버리는 중
     var discarding: Bool
-    /// 이미 보여 준 peer 메시지의 msg_id (같은 메시지가 `user`와 `queued_command` 두 모양으로 기록되어도 한 번만). 최근 256개
+    /// 이미 보여 준 peer 메시지의 열쇠 = (msg_id, 검증된 보낸 pid, 플러그인) (같은 메시지가 `user`와 `queued_command` 두 모양으로 기록되어도 한 번만). 최근 256개
     var peerIDs: [String]
 
     init(sessionID: String, path: String, created: Date, earliestOffset: Int64, nextOffset: Int64, coveredBytes: Int, discarding: Bool, peerIDs: [String]) {
