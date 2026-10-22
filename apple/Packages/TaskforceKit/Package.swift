@@ -38,6 +38,8 @@ let package = Package(
         .testTarget(
             name: "TaskforceKitTests",
             dependencies: ["TaskforceKit", "TaskforceAgentWire", "tf-agent-hook", "tf-agent-mcp", "tf-agent-keeper", "FakeClaudeCode"],
+            // claude-app-transcripts(데스크톱 세션 대화 견본 .jsonl)는 시험이 `#filePath`로 직접 읽는다: 번들 자원이 아니다
+            exclude: ["Fixtures/claude-app-transcripts"],
             resources: [.copy("Fixtures/bridge-v1"), .copy("Fixtures/claude-code-2.1.241")]
         ),
         .testTarget(name: "TaskforceAgentWireTests", dependencies: ["TaskforceAgentWire", "tf-agent-hook", "tf-agent-mcp"]),

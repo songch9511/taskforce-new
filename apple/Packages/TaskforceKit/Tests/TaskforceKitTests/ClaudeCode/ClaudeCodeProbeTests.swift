@@ -135,5 +135,79 @@ struct ClaudeCodeProbeTests {
         #expect(await probe.report().signedIn == .no)
         #expect(runner.count("auth status") == 3)
     }
+
+    // MARK: 실제 프로세스 (가짜 claude): 표준 출력을 닫고도 끝나지 않는 자식 (보안 검토 P2)
+
+    /// 임시 폴더의 가짜 `claude`
+    private func fakeClaude(_ body: String) throws -> ClaudeCodeExecutable {
+        let url = box.root.appending(path: "bin/claude")
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("#!/bin/sh\n\(body)\n".utf8).write(to: url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
+        return ClaudeCodeExecutable(path: url.path, realPath: url.path, directory: url.deletingLastPathComponent().path)
+    }
+
+    private final class RunResult: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: ClaudeCommandOutput??
+        func set(_ value: ClaudeCommandOutput?) { lock.withLock { stored = .some(value) } }
+        var value: ClaudeCommandOutput?? { lock.withLock { stored } }
+    }
+
+    /// 막힘이 곧 실패로 드러나게 다른 스레드에서 돌리고 기다림에 상한을 둔다 (막히는 코드가 시험 전체를 멈추지 않는다)
+    private func runBounded(_ executable: ClaudeCodeExecutable, timeout: TimeInterval, within: TimeInterval) -> (finished: Bool, output: ClaudeCommandOutput?, seconds: TimeInterval) {
+        let result = RunResult()
+        let done = DispatchSemaphore(value: 0)
+        let cwd = box.workspace.path
+        let started = Date()
+        DispatchQueue.global().async {
+            result.set(ClaudeCodeProbe.run(executable: executable, arguments: ["x"], environment: ["PATH": "/usr/bin:/bin"], cwd: cwd, timeout: timeout))
+            done.signal()
+        }
+        let finished = done.wait(timeout: .now() + within) == .success
+        return (finished, result.value ?? nil, Date().timeIntervalSince(started))
+    }
+
+    @Test func aChildThatClosesStdoutButNeverExitsIsStoppedAtTheDeadlineAndReaped() throws {
+        let pidFile = box.root.appending(path: "pid.txt").path
+        let executable = try fakeClaude("echo $$ > '\(pidFile)'\nexec 1>&-\nsleep 30")
+        // 새로 쓴 스크립트의 첫 실행은 시스템 검사로 느릴 수 있다: 기한은 그 위에 넉넉히 (자식이 pid를 적고 표준 출력을 닫을 때까지)
+        let run = runBounded(executable, timeout: 2, within: 10)
+        #expect(run.finished, "표준 출력이 닫혔다고 끝나기를 끝없이 기다리지 않는다")
+        #expect(run.output == nil, "기한을 넘기면 답이 아니다")
+        #expect(run.seconds < 6, "자식은 30초 잠들어 있다: 기한(2초) 근처에서 돌아온다")
+        guard run.finished, let pid = (try? String(contentsOfFile: pidFile, encoding: .utf8)).flatMap({ Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }), pid > 1 else {
+            Issue.record("자식의 pid를 읽지 못했다: finished=\(run.finished) file=\((try? String(contentsOfFile: pidFile, encoding: .utf8)) ?? "nil")")
+            return
+        }
+        // 죽이고 거뒀다: 좀비도 남지 않는다 (거둔 자식에게 신호 0은 ESRCH)
+        var gone = false
+        for _ in 0..<100 {
+            if kill(pid, 0) != 0, errno == ESRCH {
+                gone = true
+                break
+            }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        #expect(gone)
+    }
+
+    @Test func theRunnerKeepsExactlyTheFirst64KiBOfALongAnswer() throws {
+        // `claude agents --json`의 읽는 쪽 상한(64 KiB)과 같아야 한다: 읽은 덩어리째 붙여 64 KiB를 넘기지 않는다
+        // 10007바이트씩 열두 번(약 120 KB): 읽은 덩어리째 붙이면 64 KiB 경계를 넘겨 담는다 (덩어리 크기가 64 KiB를 나누어떨어지지 않는다)
+        let executable = try fakeClaude("i=0; while [ $i -lt 12 ]; do head -c 10007 /dev/zero | tr '\\0' 'a'; sleep 0.03; i=$((i+1)); done")
+        let run = runBounded(executable, timeout: 5, within: 10)
+        #expect(run.finished)
+        #expect(run.output?.exitCode == 0)
+        #expect(run.output?.stdout.count == 64 * 1024)
+    }
+
+    @Test func aChildThatClosesStdoutAndExitsRightAwayKeepsItsAnswerWithoutWaitingForTheDeadline() throws {
+        let executable = try fakeClaude("printf '[]'\nexec 1>&-\nexit 0")
+        let run = runBounded(executable, timeout: 5, within: 8)
+        #expect(run.finished)
+        #expect(run.output == ClaudeCommandOutput(exitCode: 0, stdout: Data("[]".utf8)))
+        #expect(run.seconds < 2.5, "곧 끝난 자식은 기한까지 기다리지 않는다")
+    }
 }
 #endif

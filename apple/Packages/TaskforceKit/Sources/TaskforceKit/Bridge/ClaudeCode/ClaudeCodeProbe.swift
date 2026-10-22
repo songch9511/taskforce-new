@@ -133,7 +133,9 @@ public actor ClaudeCodeProbe {
             guard ready > 0 else { continue }
             let count = buffer.withUnsafeMutableBufferPointer { read(process.stdoutFD, $0.baseAddress!, $0.count) }
             if count > 0 {
-                if output.count < 64 * 1024 { output.append(contentsOf: buffer[0..<count]) }
+                // 정확히 앞 64 KiB까지만 담는다 (읽은 덩어리째 붙여 넘기지 않는다): `claude agents --json`의 읽는 쪽 상한과 같다
+                let room = 64 * 1024 - output.count
+                if room > 0 { output.append(contentsOf: buffer[0..<min(count, room)]) }
             } else if count < 0, errno == EINTR || errno == EAGAIN {
                 continue
             } else {
@@ -141,6 +143,8 @@ public actor ClaudeCodeProbe {
             }
         }
         close(process.stdoutFD)
+        // 표준 출력을 닫고도 끝나지 않는 자식(`exec 1>&-`)을 끝없이 기다리지 않는다 (보안 검토 P2): 끝나기를 기한까지만 기다리고, 넘으면 죽여서 거둔다
+        if !timedOut, process.waitForExit(timeout: max(0, deadline.timeIntervalSinceNow)) == nil { timedOut = true }
         if timedOut {
             killpg(process.pid, SIGKILL)
             kill(process.pid, SIGKILL)
