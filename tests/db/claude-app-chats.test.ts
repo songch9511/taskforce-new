@@ -7,7 +7,7 @@ import { asUser, createLocalSupabase } from "./local-supabase";
 let db: PGlite;
 beforeAll(async () => {
   db = await createLocalSupabase();
-}, 60_000);
+}, 300_000);
 afterAll(async () => {
   await db?.close();
 });

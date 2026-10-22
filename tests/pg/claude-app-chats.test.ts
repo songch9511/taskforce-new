@@ -231,24 +231,32 @@ describe("저장과 겹치는 지우기 · bridge 해제 (연결 둘)", () => {
 });
 
 describe("사용자별 한도 · 묘비와 겹치는 요청 (연결 둘)", () => {
-  /** 사용자의 저장 본문을 한도 직전까지 채운다 (SQL): 채팅 하나의 답 글 799 × 65,536바이트. 남는 자리 = 한도 − 합계 */
+  /** 한도가 세는 값: 모든 행의 (본문 바이트 + 행 몫 512)의 합 */
+  const charged = async (owner: string) =>
+    Number((await q("select coalesce(sum(octet_length(body) + 512), 0)::bigint as n from public.claude_app_chat_messages where user_id = $1", [owner]))[0].n);
+  /** 사용자의 저장 본문을 한도 직전까지 채운다 (SQL): 채팅 하나의 답 글 793 × (65,536바이트 + 행 몫 512). 남는 자리 = 한도 − 합계 */
   async function fillNearCap(w: { owner: string; bridge: string }, sessionRef: string) {
     const made = await saveOn(setup, w, sessionRef, [userMsg(1)]);
     const userRow = String((await q("select id from public.claude_app_chat_messages where chat_id = $1", [String(made.chat_id)]))[0].id);
-    await q(
-      `insert into public.claude_app_chat_messages (user_id, chat_id, role, mac_ref, reply_to, body, truncated, said_at)
-       select $1, $2, 'assistant', lpad(to_hex(g), 64, '0'), $3, repeat('a', 65536), false, now() from generate_series(100000, 100798) g`,
-      [w.owner, String(made.chat_id), userRow],
-    );
-    const used = Number((await q("select coalesce(sum(octet_length(body)), 0)::bigint as n from public.claude_app_chat_messages where user_id = $1", [w.owner]))[0].n);
-    return 52_428_800 - used;
+    await q("set statement_timeout = '240s'");
+    try {
+      await q(
+        `insert into public.claude_app_chat_messages (user_id, chat_id, role, mac_ref, reply_to, body, truncated, said_at)
+         select $1, $2, 'assistant', lpad(to_hex(g), 64, '0'), $3, repeat('a', 65536), false, now() from generate_series(100000, 100792) g`,
+        [w.owner, String(made.chat_id), userRow],
+      );
+    } finally {
+      await q("set statement_timeout = '15s'");
+    }
+    return 52_428_800 - (await charged(w.owner));
   }
+  /** 사용자 글 12바이트 + 답 글 40,000바이트: 행 몫을 더해 41,036 */
   const big = (n: number) => [userMsg(10 + n), asstMsg(20 + n, 10 + n, { body: "a".repeat(40_000) })];
 
-  it("남은 자리가 하나뿐일 때 서로 다른 세션 둘이 동시에 올리면: 먼저 잡은 쪽만 저장되고 뒤 쪽은 기다렸다가 quota_exceeded (사용자 단위 잠금으로 한도를 넘지 못한다)", async () => {
+  it("남은 자리가 하나뿐일 때 서로 다른 세션 둘이 동시에 올리면: 먼저 잡은 쪽만 저장되고 뒤 쪽은 기다렸다가 quota_exceeded (사용자 단위 잠금으로 한도를 넘지 못한다)", { timeout: 300_000 }, async () => {
     const w = await world();
     const remaining = await fillNearCap(w, ref(1));
-    expect(remaining).toBeGreaterThan(40_100);
+    expect(remaining).toBeGreaterThan(41_100);
     expect(remaining).toBeLessThan(80_000);
     await a.query("begin");
     await b.query("begin");
@@ -261,17 +269,15 @@ describe("사용자별 한도 · 묘비와 겹치는 요청 (연결 둘)", () =>
     expect(first).toMatchObject({ status: "ok", saved: 2 });
     expect(second).toEqual({ status: "quota_exceeded" });
     expect(await chats(w)).toBe(2);
-    const used = Number((await q("select sum(octet_length(body))::bigint as n from public.claude_app_chat_messages where user_id = $1", [w.owner]))[0].n);
-    expect(used).toBeLessThanOrEqual(52_428_800);
+    expect(await charged(w.owner)).toBeLessThanOrEqual(52_428_800);
   });
 
-  it("자동 commit으로 동시에 던져도 한도를 넘지 못한다 (남은 자리에 하나만 들어간다)", async () => {
+  it("자동 commit으로 동시에 던져도 한도를 넘지 못한다 (남은 자리에 하나만 들어간다)", { timeout: 300_000 }, async () => {
     const w = await world();
     await fillNearCap(w, ref(1));
     const results = await Promise.all([saveOn(a, w, ref(2), big(1)), saveOn(b, w, ref(3), big(2))]);
     expect(results.map((r) => r.status).sort()).toEqual(["ok", "quota_exceeded"]);
-    const used = Number((await q("select sum(octet_length(body))::bigint as n from public.claude_app_chat_messages where user_id = $1", [w.owner]))[0].n);
-    expect(used).toBeLessThanOrEqual(52_428_800);
+    expect(await charged(w.owner)).toBeLessThanOrEqual(52_428_800);
   });
 
   it("지우기가 먼저 잡으면: 같은 묶음의 재시도는 기다렸다가 묘비를 보고 orphan — 대화도 지표도 되살아나지 않는다", async () => {

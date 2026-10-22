@@ -64,7 +64,25 @@ export function claudeAppChatsTests(db: () => ClaudeAppChatsDb) {
   const SIGNATURE = "save_claude_app_chat(uuid,uuid,text,text,jsonb,boolean)";
   const QUOTA_BYTES = 52_428_800;
   const QUOTA_CHATS = 2000;
+  const QUOTA_ROWS = 200_000;
+  /** 행마다 본문 바이트에 더해 세는 몫 (행 · 인덱스 · 도구 이름 · 키 따위): 한 줄짜리 글을 수십만 개 넣어 한도를 우회하지 못하게 한다 */
+  const ROW_OVERHEAD = 512;
   const TOMBSTONE_CAP = 10_000;
+  /** 무거운 시나리오(수만 행 · 수십 MiB를 SQL로 채움)의 시험별 제한: 부하가 큰 CI에서도 기본 5초에 걸리지 않는다 */
+  const HEAVY = { timeout: 300_000 };
+  /**
+   * 실제 Postgres 시험 연결은 statement_timeout 15초(교착 감지용)이라 큰 채우기 SQL이 부하에서 15초를 넘을 수 있다. 그동안만 풀고 원래 값으로 돌려 놓는다
+   * (PGlite는 제한이 없어 '0'이다)
+   */
+  async function withLongStatements<T>(fn: () => Promise<T>): Promise<T> {
+    const previous = String((await one("show statement_timeout")).statement_timeout);
+    await q("set statement_timeout = '240s'");
+    try {
+      return await fn();
+    } finally {
+      await q(`set statement_timeout = '${previous}'`);
+    }
+  }
   /** SQL로 한꺼번에 채운다 (사용자 글 하나가 든 채팅이 있어야 한다): 답 글 n개, 각 bytes바이트 */
   async function fillBytes(owner: string, chatId: string, userRowRef: string, n: number, bytes: number, from = 100_000) {
     const userRow = String((await one("select id from public.claude_app_chat_messages where chat_id = $1 and mac_ref = $2", [chatId, userRowRef])).id);
@@ -74,7 +92,8 @@ export function claudeAppChatsTests(db: () => ClaudeAppChatsDb) {
       [owner, chatId, userRow, bytes, from, n],
     );
   }
-  const storedBytes = async (owner: string) => Number((await one("select coalesce(sum(octet_length(body)), 0)::bigint as n from public.claude_app_chat_messages where user_id = $1", [owner])).n);
+  /** 한도가 세는 값: 사용자의 모든 행의 (본문 바이트 + 행 몫 512)의 합. 구현의 생성 열이 아니라 octet_length로 따로 센다 */
+  const chargedBytes = async (owner: string) => Number((await one(`select coalesce(sum(octet_length(body) + ${ROW_OVERHEAD}), 0)::bigint as n from public.claude_app_chat_messages where user_id = $1`, [owner])).n);
   const world = async () => {
     const owner = await user();
     return { owner, bridge: await bridge(owner) };
@@ -487,47 +506,116 @@ export function claudeAppChatsTests(db: () => ClaudeAppChatsDb) {
 
   // ───────────────────────── 사용자별 한도 (보안 검토 P2-1) ─────────────────────────
 
-  it("사용자별 한도 · 본문: 저장된 본문 합계가 50 MiB(경계 포함)를 넘기는 묶음은 quota_exceeded이고 아무것도 쓰지 않는다. 재시도 · 다른 사용자 · 지운 뒤는 영향 없다", async () => {
-    const w = await world();
-    const other = await world();
-    const made = await save(w.owner, w.bridge, ref(1), null, [userMsg(1)]);
-    const chatId = String(made.chat_id);
-    // 거의 가득: 799 × 65,536바이트 (답 글 한 줄 상한) + 사용자 글
-    await fillBytes(w.owner, chatId, ref(1), 799, 65_536);
-    const filled = await storedBytes(w.owner);
-    const remaining = QUOTA_BYTES - filled;
-    expect(remaining).toBeGreaterThan(1000);
-    expect(remaining).toBeLessThan(65_536);
-    const eventsBefore = (await events(w.owner, "claude_app_message_sent")).length;
-    // 넘기는 묶음 (사용자 글 + 1바이트 초과 답 글): 아무것도 쓰지 않고 지표도 없다
-    expect(await save(w.owner, w.bridge, ref(1), null, [userMsg(2), asstMsg(3, 2, { body: "a".repeat(remaining + 1) })])).toEqual({ status: "quota_exceeded" });
-    expect(await storedBytes(w.owner)).toBe(filled);
-    expect(await messageCount(w.owner)).toBe(800);
-    expect((await events(w.owner, "claude_app_message_sent")).length).toBe(eventsBefore);
-    // 정확히 한도인 묶음은 받는다 (경계 포함)
-    expect(await save(w.owner, w.bridge, ref(1), null, [asstMsg(4, 1, { body: "a".repeat(remaining) })])).toMatchObject({ status: "ok", saved: 1 });
-    expect(await storedBytes(w.owner)).toBe(QUOTA_BYTES);
-    // 한도에 닿은 뒤: 이미 저장된 행의 재시도는 늘리지 않으므로 받는다 (existing), 새 행은 1바이트도 안 된다
-    expect(await save(w.owner, w.bridge, ref(1), null, [asstMsg(4, 1, { body: "a".repeat(remaining) })])).toMatchObject({ status: "ok", saved: 0, existing: 1 });
-    expect(await save(w.owner, w.bridge, ref(1), null, [asstMsg(5, 1, { body: "x" })])).toEqual({ status: "quota_exceeded" });
-    // 합계가 이미 한도를 넘은 사용자(직접 들어간 행 · 나중에 낮춘 한도)도 이미 저장된 행의 재시도는 받는다 — 새 행이 없으면 한도를 묻지 않는다. 새 행은 여전히 거절
-    await fillBytes(w.owner, chatId, ref(1), 1, 1000, 200_000);
-    expect(await storedBytes(w.owner)).toBeGreaterThan(QUOTA_BYTES);
-    expect(await save(w.owner, w.bridge, ref(1), null, [asstMsg(4, 1, { body: "a".repeat(remaining) })])).toMatchObject({ status: "ok", saved: 0, existing: 1 });
-    expect(await save(w.owner, w.bridge, ref(1), null, [asstMsg(5, 1, { body: "x" })])).toEqual({ status: "quota_exceeded" });
-    await q("delete from public.claude_app_chat_messages where chat_id = $1 and mac_ref = lpad(to_hex(200000), 64, '0')", [chatId]);
-    expect(await storedBytes(w.owner)).toBe(QUOTA_BYTES);
-    // 소유 확인이 먼저다: 남의 bridge는 한도 때문이 아니라 not_found (한도 상태를 알리지 않는다)
-    expect(await save(w.owner, other.bridge, ref(1), null, [userMsg(9)])).toEqual({ status: "not_found" });
-    // 다른 사용자는 영향 없다
-    expect(await save(other.owner, other.bridge, ref(1), null, [userMsg(1)])).toMatchObject({ status: "ok", saved: 1 });
-    // 지우면 바로 다시 쓸 수 있다
-    expect(await one("select public.delete_claude_app_chat($1, $2) as result", [w.owner, chatId])).toEqual({ result: { status: "deleted" } });
-    expect(await storedBytes(w.owner)).toBe(0);
-    expect(await save(w.owner, w.bridge, ref(1), null, [userMsg(30), asstMsg(31, 30, { body: "a".repeat(65_536) })])).toMatchObject({ status: "ok", saved: 2 });
+  it("사용자별 한도 · 본문: 저장된 (본문 + 행마다 512바이트) 합계가 50 MiB(경계 포함)를 넘기는 묶음은 quota_exceeded이고 아무것도 쓰지 않는다. 재시도 · 다른 사용자 · 지운 뒤는 영향 없다", HEAVY, async () => {
+    await withLongStatements(async () => {
+      const w = await world();
+      const other = await world();
+      const made = await save(w.owner, w.bridge, ref(1), null, [userMsg(1)]);
+      const chatId = String(made.chat_id);
+      // 거의 가득: 793 × (65,536바이트 = 답 글 한 줄 상한 + 행 몫 512) + 사용자 글
+      await fillBytes(w.owner, chatId, ref(1), 793, 65_536);
+      const filled = await chargedBytes(w.owner);
+      const remaining = QUOTA_BYTES - filled;
+      expect(remaining).toBeGreaterThan(ROW_OVERHEAD + 1000);
+      expect(remaining).toBeLessThan(65_536 + ROW_OVERHEAD);
+      // 새 행 하나가 차지하는 몫 = 본문 + 512이므로, 남은 자리 remaining에 꼭 맞는 본문은 remaining − 512바이트다
+      const fits = remaining - ROW_OVERHEAD;
+      const eventsBefore = (await events(w.owner, "claude_app_message_sent")).length;
+      // 넘기는 묶음 (사용자 글 + 1바이트 초과 답 글): 아무것도 쓰지 않고 지표도 없다
+      expect(await save(w.owner, w.bridge, ref(1), null, [userMsg(2), asstMsg(3, 2, { body: "a".repeat(fits + 1) })])).toEqual({ status: "quota_exceeded" });
+      expect(await chargedBytes(w.owner)).toBe(filled);
+      expect(await messageCount(w.owner)).toBe(794);
+      expect((await events(w.owner, "claude_app_message_sent")).length).toBe(eventsBefore);
+      // 본문 1바이트가 넘치는 한 줄도 거절 (행 몫을 세지 않으면 이만큼 더 들어간다)
+      expect(await save(w.owner, w.bridge, ref(1), null, [asstMsg(4, 1, { body: "a".repeat(fits + 1) })])).toEqual({ status: "quota_exceeded" });
+      // 정확히 한도인 묶음은 받는다 (경계 포함)
+      expect(await save(w.owner, w.bridge, ref(1), null, [asstMsg(4, 1, { body: "a".repeat(fits) })])).toMatchObject({ status: "ok", saved: 1 });
+      expect(await chargedBytes(w.owner)).toBe(QUOTA_BYTES);
+      // 한도에 닿은 뒤: 이미 저장된 행의 재시도는 늘리지 않으므로 받는다 (existing), 새 행은 1바이트도 안 된다
+      expect(await save(w.owner, w.bridge, ref(1), null, [asstMsg(4, 1, { body: "a".repeat(fits) })])).toMatchObject({ status: "ok", saved: 0, existing: 1 });
+      expect(await save(w.owner, w.bridge, ref(1), null, [asstMsg(5, 1, { body: "x" })])).toEqual({ status: "quota_exceeded" });
+      // 합계가 이미 한도를 넘은 사용자(직접 들어간 행 · 나중에 낮춘 한도)도 이미 저장된 행의 재시도는 받는다 — 새 행이 없으면 한도를 묻지 않는다. 새 행은 여전히 거절
+      await fillBytes(w.owner, chatId, ref(1), 1, 1000, 200_000);
+      expect(await chargedBytes(w.owner)).toBeGreaterThan(QUOTA_BYTES);
+      expect(await save(w.owner, w.bridge, ref(1), null, [asstMsg(4, 1, { body: "a".repeat(fits) })])).toMatchObject({ status: "ok", saved: 0, existing: 1 });
+      expect(await save(w.owner, w.bridge, ref(1), null, [asstMsg(5, 1, { body: "x" })])).toEqual({ status: "quota_exceeded" });
+      await q("delete from public.claude_app_chat_messages where chat_id = $1 and mac_ref = lpad(to_hex(200000), 64, '0')", [chatId]);
+      expect(await chargedBytes(w.owner)).toBe(QUOTA_BYTES);
+      // 소유 확인이 먼저다: 남의 bridge는 한도 때문이 아니라 not_found (한도 상태를 알리지 않는다)
+      expect(await save(w.owner, other.bridge, ref(1), null, [userMsg(9)])).toEqual({ status: "not_found" });
+      // 다른 사용자는 영향 없다
+      expect(await save(other.owner, other.bridge, ref(1), null, [userMsg(1)])).toMatchObject({ status: "ok", saved: 1 });
+      // 지우면 바로 다시 쓸 수 있다
+      expect(await one("select public.delete_claude_app_chat($1, $2) as result", [w.owner, chatId])).toEqual({ result: { status: "deleted" } });
+      expect(await chargedBytes(w.owner)).toBe(0);
+      expect(await save(w.owner, w.bridge, ref(1), null, [userMsg(30), asstMsg(31, 30, { body: "a".repeat(65_536) })])).toMatchObject({ status: "ok", saved: 2 });
+    });
   });
 
-  it("사용자별 한도 · 채팅: 채팅이 2,000개이면 새 채팅을 만드는 묶음은 quota_exceeded. 있는 채팅에 붙이기 · 답 글만 온 묶음은 영향 없고, 지우면 다시 만들 수 있다", async () => {
+  it("사용자별 한도 · 행 몫: 본문이 1바이트인 행도 512바이트씩 센다 — 한 줄짜리 글을 십만 개 넣어 한도를 우회하지 못한다 (행 몫을 세지 않으면 이 묶음이 받아들여진다)", HEAVY, async () => {
+    await withLongStatements(async () => {
+      const w = await world();
+      const made = await save(w.owner, w.bridge, ref(1), null, [userMsg(1)]);
+      const chatId = String(made.chat_id);
+      // 1바이트 답 글 102,198개 (각 513바이트) + 사용자 글(524): 한도까지 702바이트가 남는다. 본문만 세면 100 KB도 안 된다
+      await fillBytes(w.owner, chatId, ref(1), 102_198, 1);
+      const filled = await chargedBytes(w.owner);
+      expect(QUOTA_BYTES - filled).toBe(702);
+      const bodyOnly = Number((await one("select sum(octet_length(body))::bigint as n from public.claude_app_chat_messages where user_id = $1", [w.owner])).n);
+      expect(bodyOnly).toBeLessThan(150_000);
+      expect(await messageCount(w.owner)).toBe(102_199);
+      // 1바이트 글 하나(513)는 들어간다. 그다음 하나(513 > 189)는 본문이 1바이트인데도 거절된다
+      expect(await save(w.owner, w.bridge, ref(1), null, [asstMsg(2, 1, { body: "x" })])).toMatchObject({ status: "ok", saved: 1 });
+      expect(QUOTA_BYTES - (await chargedBytes(w.owner))).toBe(189);
+      expect(await save(w.owner, w.bridge, ref(1), null, [asstMsg(3, 1, { body: "y" })])).toEqual({ status: "quota_exceeded" });
+      expect(await messageCount(w.owner)).toBe(102_200);
+      // 지우면 다시 쓸 수 있다
+      expect(await one("select public.delete_claude_app_chat($1, $2) as result", [w.owner, chatId])).toEqual({ result: { status: "deleted" } });
+      expect(await messageCount(w.owner)).toBe(0);
+      expect(await save(w.owner, w.bridge, ref(1), null, [userMsg(40), asstMsg(41, 40, { body: "z" })])).toMatchObject({ status: "ok", saved: 2 });
+    });
+  });
+
+  it("사용자별 한도 · 합계를 싸게 센다: 행마다 본문 바이트를 생성 열 body_bytes에 두고 (user_id) include (body_bytes) 인덱스가 덮어서 index-only scan으로 합친다. 생성 열은 쓸 수 없고 octet_length(body)와 같다", async () => {
+    const w = await world();
+    const made = await save(w.owner, w.bridge, ref(1), null, [userMsg(1), asstMsg(2, 1, { body: "가나다" })]);
+    const generated = await one(
+      "select a.attgenerated as generated, format_type(a.atttypid, a.atttypmod) as type from pg_attribute a where a.attrelid = 'public.claude_app_chat_messages'::regclass and a.attname = 'body_bytes' and not a.attisdropped",
+    );
+    expect(generated).toEqual({ generated: "s", type: "integer" });
+    expect((await rows(String(made.chat_id))).map((r) => r.body)).toEqual(["보낸 글 1", "가나다"]);
+    expect((await q("select body_bytes, octet_length(body) as n from public.claude_app_chat_messages where chat_id = $1 order by seq", [String(made.chat_id)])).map((r) => [Number(r.body_bytes), Number(r.n)])).toEqual([
+      [12, 12],
+      [9, 9],
+    ]);
+    await expect(q("update public.claude_app_chat_messages set body_bytes = 1 where chat_id = $1", [String(made.chat_id)])).rejects.toBeDefined();
+    const index = String((await one("select pg_get_indexdef('public.claude_app_chat_messages_user_idx'::regclass) as def")).def);
+    expect(index).toMatch(/\(user_id\) INCLUDE \(body_bytes\)/);
+    // 합계 SQL이 이 인덱스를 index-only로 읽는다 (작은 표라 계획기가 순차 스캔을 고르지 못하게 끄고, 가시성 맵을 채우려고 vacuum 한 번 하고 본다)
+    await q("vacuum (analyze) public.claude_app_chat_messages");
+    await q("set enable_seqscan = off");
+    try {
+      const plan = (await q("explain (costs off) select coalesce(sum(body_bytes + 512), 0), count(*) from public.claude_app_chat_messages where user_id = $1", [w.owner])).map((r) => String(Object.values(r)[0])).join("\n");
+      expect(plan).toMatch(/Index Only Scan using claude_app_chat_messages_user_idx/);
+    } finally {
+      await q("reset enable_seqscan");
+    }
+  });
+
+  it("사용자별 한도 · 행 수: 사용자당 20만 행 하드 상한과 행 몫 512바이트는 함수 안의 SQL 상수이고, 같은 잠금 아래 같은 합계 질의로 확인한다", async () => {
+    const def = String((await one(`select pg_get_functiondef('public.${SIGNATURE}'::regprocedure) as def`)).def);
+    expect(def).toMatch(new RegExp(`c_max_user_rows constant integer := ${QUOTA_ROWS};`));
+    expect(def).toMatch(new RegExp(`c_row_overhead constant integer := ${ROW_OVERHEAD};`));
+    expect(def).toMatch(/c_max_user_bytes constant bigint := 52428800;/);
+    // 한 질의로 (합계, 행 수)를 구한다 — 두 번 훑지 않는다
+    expect(def).toMatch(/sum\(m\.body_bytes \+ c_row_overhead\)[\s\S]*count\(\*\)[\s\S]*from public\.claude_app_chat_messages m where m\.user_id = p_user_id/);
+    expect(def).toMatch(/v_used > c_max_user_bytes or v_rows > c_max_user_rows/);
+    // 사용자별 잠금은 이 확인보다 앞에서 잡는다
+    expect(def.indexOf("pg_advisory_xact_lock")).toBeGreaterThan(-1);
+    expect(def.indexOf("pg_advisory_xact_lock")).toBeLessThan(def.indexOf("v_used > c_max_user_bytes or v_rows > c_max_user_rows"));
+  });
+
+  it("사용자별 한도 · 채팅: 채팅이 2,000개이면 새 채팅을 만드는 묶음은 quota_exceeded. 있는 채팅에 붙이기 · 답 글만 온 묶음은 영향 없고, 지우면 다시 만들 수 있다", HEAVY, async () => {
     const w = await world();
     const other = await world();
     // 1,999개를 SQL로 채운다 (Mac이 둘 이상이어도 사용자 합계로 센다)
@@ -636,21 +724,23 @@ export function claudeAppChatsTests(db: () => ClaudeAppChatsDb) {
     expect(await tombs(bob.owner)).toBe(1);
   });
 
-  it(`묘비는 사용자별 ${"10,000"}개까지만 둔다 (가장 오래된 것부터 지운다): 재시도는 몇 분 안의 일이라 새 것이면 충분하다`, async () => {
-    const w = await world();
-    await q(
-      `insert into public.claude_app_chat_tombstones (user_id, bridge_id, session_ref, mac_ref, created_at)
-       select $1, $2, lpad(to_hex(9999), 64, '0'), lpad(to_hex(g), 64, '0'), now() - interval '2 days' from generate_series(1, $3::int) g`,
-      [w.owner, w.bridge, TOMBSTONE_CAP],
-    );
-    const made = await save(w.owner, w.bridge, ref(1), null, [userMsg(1), userMsg(2), userMsg(3), asstMsg(4, 1)]);
-    await one("select public.delete_claude_app_chat($1, $2)", [w.owner, String(made.chat_id)]);
-    expect(await count("select 1 from public.claude_app_chat_tombstones where user_id = $1", [w.owner])).toBe(TOMBSTONE_CAP);
-    // 새 묘비 셋(사용자 글 셋)은 남고, 가장 오래된 셋이 밀려났다
-    expect(await count("select 1 from public.claude_app_chat_tombstones where user_id = $1 and session_ref = $2", [w.owner, ref(1)])).toBe(3);
-    expect(await count("select 1 from public.claude_app_chat_tombstones where user_id = $1 and session_ref <> $2", [w.owner, ref(1)])).toBe(TOMBSTONE_CAP - 3);
-    // 방금 지운 대화의 재시도는 여전히 막힌다
-    expect(await save(w.owner, w.bridge, ref(1), null, [userMsg(1), userMsg(2), userMsg(3)])).toEqual({ status: "ok", chat_id: null, saved: 0, existing: 0, orphan: 3 });
+  it(`묘비는 사용자별 ${"10,000"}개까지만 둔다 (가장 오래된 것부터 지운다): 재시도는 몇 분 안의 일이라 새 것이면 충분하다`, HEAVY, async () => {
+    await withLongStatements(async () => {
+      const w = await world();
+      await q(
+        `insert into public.claude_app_chat_tombstones (user_id, bridge_id, session_ref, mac_ref, created_at)
+         select $1, $2, lpad(to_hex(9999), 64, '0'), lpad(to_hex(g), 64, '0'), now() - interval '2 days' from generate_series(1, $3::int) g`,
+        [w.owner, w.bridge, TOMBSTONE_CAP],
+      );
+      const made = await save(w.owner, w.bridge, ref(1), null, [userMsg(1), userMsg(2), userMsg(3), asstMsg(4, 1)]);
+      await one("select public.delete_claude_app_chat($1, $2)", [w.owner, String(made.chat_id)]);
+      expect(await count("select 1 from public.claude_app_chat_tombstones where user_id = $1", [w.owner])).toBe(TOMBSTONE_CAP);
+      // 새 묘비 셋(사용자 글 셋)은 남고, 가장 오래된 셋이 밀려났다
+      expect(await count("select 1 from public.claude_app_chat_tombstones where user_id = $1 and session_ref = $2", [w.owner, ref(1)])).toBe(3);
+      expect(await count("select 1 from public.claude_app_chat_tombstones where user_id = $1 and session_ref <> $2", [w.owner, ref(1)])).toBe(TOMBSTONE_CAP - 3);
+      // 방금 지운 대화의 재시도는 여전히 막힌다
+      expect(await save(w.owner, w.bridge, ref(1), null, [userMsg(1), userMsg(2), userMsg(3)])).toEqual({ status: "ok", chat_id: null, saved: 0, existing: 0, orphan: 3 });
+    });
   });
 
   // ───────────────────────── 보관 · cascade ─────────────────────────

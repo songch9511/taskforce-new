@@ -16,8 +16,10 @@ const MINE = "20261207000000_claude_app_chats.sql";
 const mineSql = readFileSync(path.join(MIGRATIONS, MINE), "utf8");
 const code = mineSql.split("\n").filter((line) => !line.trim().startsWith("--")).join("\n").trim();
 
-// 실제 적용 시험은 빈 PGlite에 마이그레이션을 직접 적용한다 (템플릿 캐시가 없는 환경에서는 initdb + 수십 개 적용이라 기본 5초를 넘을 수 있다)
-describe("적용 순서 가드 (20261207 → 20261206)", { timeout: 90_000 }, () => {
+// 실제 적용 시험은 빈 PGlite에 마이그레이션을 직접 적용한다 (템플릿 캐시가 없는 환경에서는 initdb + 수십 개 적용이라 기본 5초를 넘을 수 있다):
+// 그 시험들은 시험마다 제한을 명시한다 (describe 한 곳에 기대지 않는다). 부하가 큰 CI에서도 걸리지 않게 넉넉히.
+const APPLY = { timeout: 300_000 };
+describe("적용 순서 가드 (20261207 → 20261206)", () => {
   it("맨 앞(begin · lock_timeout 바로 뒤, 어떤 DDL보다 먼저)에서 종류 검사에 claude_app_session_opened가 있는지 보고 없으면 20261206을 먼저 적용하라는 예외를 던진다", () => {
     expect(code.startsWith("begin;\nset local lock_timeout = '5s';")).toBe(true);
     const afterLock = code.slice("begin;\nset local lock_timeout = '5s';".length).trimStart();
@@ -31,7 +33,7 @@ describe("적용 순서 가드 (20261207 → 20261206)", { timeout: 90_000 }, ()
     expect(before).not.toMatch(/\b(create|alter|drop|insert|update|delete)\b/i);
   });
 
-  it("20261206 없이 20261207을 적용하면 거절되고 아무것도 남지 않는다 (실제 적용)", async () => {
+  it("20261206 없이 20261207을 적용하면 거절되고 아무것도 남지 않는다 (실제 적용)", APPLY, async () => {
     const db = await openPglite();
     try {
       for (const script of await supabaseSchemaScripts({ without: [D2_MIGRATION_NAME, MINE] })) await db.exec(script);
@@ -47,7 +49,7 @@ describe("적용 순서 가드 (20261207 → 20261206)", { timeout: 90_000 }, ()
     }
   });
 
-  it("종류 검사에 claude_app_session_opened가 없는 DB(20261204까지)에서도 같다: 20261206만 빠진 것과 구별하지 않고 멈춘다", async () => {
+  it("종류 검사에 claude_app_session_opened가 없는 DB(20261204까지)에서도 같다: 20261206만 빠진 것과 구별하지 않고 멈춘다", APPLY, async () => {
     const db = await openPglite();
     try {
       for (const script of await supabaseSchemaScripts({ without: [D2_MIGRATION_NAME, MINE] })) await db.exec(script);
@@ -59,7 +61,7 @@ describe("적용 순서 가드 (20261207 → 20261206)", { timeout: 90_000 }, ()
     }
   });
 
-  it("20261206을 적용한 뒤에는 통과한다 (정상 순서)", async () => {
+  it("20261206을 적용한 뒤에는 통과한다 (정상 순서)", APPLY, async () => {
     const db = await openPglite();
     try {
       for (const script of await supabaseSchemaScripts({ without: [MINE] })) await db.exec(script);

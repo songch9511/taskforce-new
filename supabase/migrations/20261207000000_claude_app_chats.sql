@@ -18,7 +18,9 @@
 --          같은 묶음을 다시 보내도 대화가 되살아나지 않게 하는 것뿐이다 (글 · 제목 · 도구 이름 없음). 사용자별 10,000개까지만 두고 넘으면 가장 오래된 것부터 지운다.
 --   2) save_claude_app_chat: 한 교환의 행들을 올린다 (멱등). 소유 확인 → 사용자별 직렬화 → 묘비 확인 → 채팅 upsert → 행을 보낸 순서대로 넣는다 → 한도 확인.
 --        - 사용자 글 없이 답 글만 온 묶음(또는 사용자 글이 모두 묘비에 든 묶음)은 채팅을 만들지 않는다: 사용자가 지운 대화를 되살리지 못하게 한다 (모두 orphan, 지표 없음).
---        - 사용자별 한도 (보안 검토 P2-1): 저장 본문 합계 50 MiB, 채팅 2,000개. 넘기면 아무것도 쓰지 않고 quota_exceeded. 이미 저장된 행의 재시도는 한도에 걸리지 않는다.
+--        - 사용자별 한도 (보안 검토 P2-1 · P3): 저장 합계 50 MiB(모든 행의 본문 바이트 + 행마다 512바이트), 행 20만 개, 채팅 2,000개. 넘기면 아무것도 쓰지 않고 quota_exceeded.
+--          이미 저장된 행의 재시도는 한도에 걸리지 않는다. 합계는 생성 열 body_bytes를 덮는 (user_id) include (body_bytes) 인덱스로 index-only scan 한다.
+--          (행 몫 512 때문에 50 MiB에 닿는 행 수는 102,400개 안쪽이라 20만 행 상한은 그 위의 안전판이다.)
 --        - 새로 들어간 사용자 글마다 같은 트랜잭션에서 claude_app_message_sent를 남긴다 (props {result:'received'}뿐, 글 · id 0).
 --        - said_at은 서버 시각 + 1일까지로 자른다. title은 p_keep_title이면 그대로 두고 아니면 p_title로 바꾼다(null이면 지운다); 새 행이 없는 재시도는 제목도 건드리지 않는다.
 --   3) delete_claude_app_chat: 사용자가 채팅을 지운다 (행 cascade) + 묘비 + claude_app_chat_deleted (props 없음). 저장과 같은 사용자별 잠금으로 겹침을 직렬화한다.
@@ -96,6 +98,8 @@ create table public.claude_app_chat_messages (
   mac_ref text not null check (mac_ref ~ '^[0-9a-f]{64}$'),
   reply_to uuid,
   body text not null check (octet_length(body) between 1 and 65536),
+  -- 본문 바이트: 사용자별 한도 합계를 인덱스만 읽어 싸게 구하려는 생성 열이다 (아래 claude_app_chat_messages_user_idx). 쓸 수 없고 octet_length(body)와 늘 같다
+  body_bytes integer generated always as (octet_length(body)) stored,
   truncated boolean not null,
   tool_names public.claude_app_tool_name[] not null default '{}',
   said_at timestamptz not null,
@@ -118,7 +122,8 @@ create table public.claude_app_chat_messages (
   )
 );
 
-create index claude_app_chat_messages_user_idx on public.claude_app_chat_messages (user_id);
+-- 사용자별 한도의 합계 질의(sum(body_bytes + 512), count(*) ... where user_id = ...)를 이 인덱스만으로 읽는다 (index-only scan): 본문(TOAST)을 열지 않고 행당 몇 바이트만 훑는다.
+create index claude_app_chat_messages_user_idx on public.claude_app_chat_messages (user_id) include (body_bytes);
 create index claude_app_chat_messages_chat_idx on public.claude_app_chat_messages (chat_id, seq);
 create index claude_app_chat_messages_reply_idx on public.claude_app_chat_messages (reply_to) where reply_to is not null;
 
@@ -167,7 +172,9 @@ revoke all on public.claude_app_chat_tombstones from anon, authenticated;
 create function public.save_claude_app_chat(p_user_id uuid, p_bridge_id uuid, p_session_ref text, p_title text, p_messages jsonb, p_keep_title boolean default false) returns jsonb
 language plpgsql set search_path = '' as $$
 declare
-  c_max_user_bytes constant bigint := 52428800;  -- 사용자별 저장 본문 합계 50 MiB
+  c_max_user_bytes constant bigint := 52428800;  -- 사용자별 저장 합계 50 MiB = 모든 행의 (본문 바이트 + 행 몫)의 합
+  c_row_overhead constant integer := 512;        -- 행마다 본문에 더해 세는 몫 (행 · 인덱스 · 도구 이름 · 키): 한 줄짜리 글을 수십만 개 넣어 한도를 우회하지 못하게 한다
+  c_max_user_rows constant integer := 200000;    -- 사용자별 행 수 하드 상한
   c_max_user_chats constant integer := 2000;     -- 사용자별 채팅 수
   v_count integer;
   v_chat uuid;
@@ -182,6 +189,7 @@ declare
   v_orphan integer := 0;
   v_new_users integer := 0;
   v_used bigint;
+  v_rows bigint;
 begin
   if p_user_id is null or p_bridge_id is null or p_session_ref is null or p_messages is null or p_keep_title is null
      or p_session_ref !~ '^[0-9a-f]{64}$'
@@ -316,11 +324,11 @@ begin
     end if;
   end loop;
 
-  -- 사용자별 본문 한도 (50 MiB, 경계 포함): 새 행이 들어갔고 합계가 넘으면 이 블록의 쓰기(채팅 만들기 포함)를 모두 되돌리고 quota_exceeded.
-  -- 새 행이 없는 호출(재시도)은 한도를 묻지 않는다.
+  -- 사용자별 저장 한도 (50 MiB, 경계 포함, 행마다 본문 + 512바이트로 센다 · 행 수 20만): 새 행이 들어갔고 합계나 행 수가 넘으면 이 블록의 쓰기(채팅 만들기 포함)를 모두 되돌리고 quota_exceeded.
+  -- 새 행이 없는 호출(재시도)은 한도를 묻지 않는다. 합계와 행 수는 한 질의로, (user_id) include (body_bytes) 인덱스만 읽어 구한다 (사용자별 잠금 아래).
   if v_saved > 0 then
-    select coalesce(sum(octet_length(m.body)), 0) into v_used from public.claude_app_chat_messages m where m.user_id = p_user_id;
-    if v_used > c_max_user_bytes then
+    select coalesce(sum(m.body_bytes + c_row_overhead), 0), count(*) into v_used, v_rows from public.claude_app_chat_messages m where m.user_id = p_user_id;
+    if v_used > c_max_user_bytes or v_rows > c_max_user_rows then
       raise exception 'claude_app_chat_quota' using errcode = 'P0001';
     end if;
   end if;
