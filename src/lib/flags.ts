@@ -23,6 +23,11 @@
  * AGENT_ATTACH_EXISTING_ENABLED: Taskforce 밖에서 시작한 Claude Code 세션을 Taskforce 세션으로 **이어받는** POST /api/v2/agent-sessions/attach만 연다 (끄면 403, 인증 · DB 호출 없음, 저장 0).
  *   이 route는 CONVERSATIONS_V2_ENABLED · 그 adapter 플래그(AGENT_ADAPTER_CLAUDE_CODE_ENABLED) · 베타 명단 · registry의 session.attach_existing(Claude Code만 true)도 함께 통과해야 한다.
  *   이 gate는 새로 이어받는 입구만 닫는다: 이미 이어받은 세션의 대화 · Stop은 다른 gate가 정한다.
+ * CLAUDE_APP_CHATS_ENABLED: Mac이 Claude 데스크톱 세션으로 보낸 글과 그 뒤 답 글(도구 단계 이름 포함)을 **서버에 저장하는** 경로만 연다 (OA PR-D3s, 계약 25 · 26장):
+ *   GET /api/v2/claude-app-chats/status · PUT /api/v2/claude-app-chats · DELETE /api/v2/claude-app-chats/{id} (끄면 404, 인증 · DB 호출 없음, 저장 0 — Mac은 404면 글을 서버로 보내지 않는다).
+ *   이 route들은 CONVERSATIONS_V2_ENABLED · AGENT_ADAPTER_CLAUDE_CODE_ENABLED · 베타 명단도 함께 통과해야 한다. **기본 꺼짐이고 아래 넷이 모두 끝나기 전에는 켜지 않는다**:
+ *   ① 마이그레이션 20261207000000 적용 ② PR-D3s · D3k Opus 보안 검토 ③ 처리방침 문장(25.8 + 26장 보존 문구) 게시 ④ 저장된 대화를 보고 지우는 화면(D3v) 병합.
+ *   보내기 결과 지표 POST /api/v2/external-sessions/claude-app-sent는 이 gate를 보지 않는다 (글 0, 코드만). 저장된 대화는 사용자가 지우거나 계정을 지울 때까지 보관한다 (자동 삭제 없음).
  */
 export const SERVER_FLAGS = [
   "CONVERSATIONS_V2_ENABLED",
@@ -37,6 +42,7 @@ export const SERVER_FLAGS = [
   "RETURN_SUMMARY_ENABLED",
   "EXTERNAL_SESSIONS_REPORT_ENABLED",
   "AGENT_ATTACH_EXISTING_ENABLED",
+  "CLAUDE_APP_CHATS_ENABLED",
 ] as const;
 export type ServerFlag = (typeof SERVER_FLAGS)[number];
 

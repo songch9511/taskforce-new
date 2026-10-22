@@ -59,6 +59,8 @@ describe("초기 마이그레이션", () => {
       "bridge_commands",
       "bridges",
       "claims",
+      "claude_app_chat_messages",
+      "claude_app_chats",
       "connection_requests",
       "connection_secrets",
       "connections",

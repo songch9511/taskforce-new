@@ -565,3 +565,58 @@ Claude 데스크톱 앱에 열린 Claude Code 세션을 이 Mac의 레일에 실
 - 레일: `ClaudeAppRail.evaluate(sessions:memory:now:uptime:opened:) -> Result { entries, memory }` — `uptime`은 `ClaudeAppMonotonic.now()`(단조 시간, 벽시계가 아니다), `now`는 벽시계. `ClaudeAppRailEntry.Kind { running, needsYou(ClaudeAppWait), done }`. **레일 줄의 제목 · 폴더 이름은 `ExternalSessionsStore`의 줄(`ExternalSessionRow`)에서 같은 Claude 세션 id로 찾아 붙인다**(이 값들에는 제목이 없다). 훑기 줄이 아직 없는 세션(기록이 1 KiB 미만 등)은 제목 자리가 비어 있을 수 있다.
 - 대화: `ClaudeAppTranscriptReader(claudeDirectory:).open(sessionID:cwd:) / earlier(_:) / newer(_:) / detail(of:cursor:)`. 시연용 값: `ClaudeAppTurn(id:kind:timestamp:truncated:)` · `ClaudeAppTranscriptPage(turns:cursor:hasEarlier:skippedLines:)` · `ClaudeAppTranscriptCursor(sessionID:)`(아무 파일도 가리키지 않는다) · `ClaudeAppToolDetail(input:result:truncated:)`.
 - 한계: 등록 파일의 형식 · `claude agents --json`의 모양은 Claude Code 버전에 달렸다(맞춰 보기가 형식 변화를 잡아 B로 간다). 같은 uid의 악성 코드는 가짜 등록 파일로 상태를 속일 수 있다(이미 사용자 파일을 다 볼 수 있는 상대다, 계약 DT1): 줄은 살아 있는 pid · 시작 시각 · 하나뿐인 id가 맞아야 오르고 보내기는 PR-D3의 몫이다.
+
+## 21. Claude 데스크톱 대화 저장 서버 (OA PR-D3s, 사용자 결정 2026-10-22)
+
+Mac이 Claude 데스크톱 앱에 열린 세션으로 보낸 글("Received"로 확인된 것)과 그 뒤 세션이 쓴 답 글을 서버에 저장해 사용자의 다른 기기에서 보이게 한다. 계약 `handoffs/oa-external-sessions-contract.md` 25장(25.1 저장 범위 · 25.2 표 · 25.3 API · 25.7 플래그 · 25.10 위협 · 25.11 시험)과 **26장(사용자 결정, 25장을 이긴다)**. 중계 · 보내기 확인 · 올리기(Mac)는 PR-D3k, 화면은 D3m · D3v다. **서버가 시작하는 보내기 길은 없다**(DT3): 이 표들은 bridge 명령 · 대화 · 에이전트 작업과 이어지지 않는다.
+
+### 21-1. 사용자 결정 (26장)과 gate
+
+- **Q-D3a = 보낸 글 + 답 글 + 도구 단계 이름도 저장**. 이름만이다(`Edit` · `Bash` · `mcp__서버__도구`): 도구 입력 · 결과 · 경로 · 명령 · `description`은 서버에 오지 않는다. 한 답 글에 이름 최대 40개, 순서대로. 이름 모양은 Anthropic 도구 이름 규칙(`^[A-Za-z0-9_-]{1,64}$`)이라 `Bash(git status)` · 경로 · 공백이 든 값은 zod와 DB(도메인 `claude_app_tool_name`)가 모두 거절한다.
+- **Q-D3b = 사용자가 직접 지울 때까지 보관**. 자동 삭제가 없다: `purge_*` 함수도, `/api/cron/retention`의 손질도 없다(시험이 둘 다 고정한다). 지우는 길은 `DELETE /api/v2/claude-app-chats/{id}`와 계정 삭제(cascade) 둘뿐이다. bridge **해제(revoke)는 대화를 지우지 않는다**(사용자의 기록; `external_sessions`와 다르다). bridge 삭제는 cascade.
+- 새 플래그 `CLAUDE_APP_CHATS_ENABLED`(정확히 `"true"`, **기본 꺼짐**, `src/lib/flags.ts`). 저장 경로(status · PUT · DELETE)는 **이 플래그 ∧ `CONVERSATIONS_V2_ENABLED` ∧ `AGENT_ADAPTER_CLAUDE_CODE_ENABLED` ∧ 베타 명단**일 때만 열린다(꺼지면 인증 · DB 전에 404). 켜는 조건: ① 마이그레이션 적용 ② PR-D3s · D3k Opus 보안 검토 ③ 처리방침 문장 게시(21-6) ④ 저장된 대화를 보고 지우는 화면(D3v) 병합(26장 Q-D3d: 그때까지 꺼짐).
+- 보내기 결과 지표 `POST …/external-sessions/claude-app-sent`는 **저장 플래그와 무관**하다(앞의 두 플래그 ∧ 명단만). 서버 플래그가 꺼져 있어도 Mac의 S2는 이 Mac 안에서만 돈다.
+
+### 21-2. API (`/api/v2`, 새 경로라 v1 · 기존 v2 호환 영향 0)
+
+| 경로 | 하는 일 | 규칙 |
+|---|---|---|
+| `GET /claude-app-chats/status` | Mac이 **글을 보내기 전에** 저장이 켜졌는지 묻는다 → `{ save: true, max_batch: 20 }` | 꺼짐 · 명단 밖 404. Mac은 404면 글을 서버로 한 바이트도 보내지 않는다 |
+| `PUT /claude-app-chats` | 한 교환의 행들을 올린다(멱등) `{ bridge_id, session_ref, title?, messages: [{ mac_ref, role, reply_to_ref?, body, truncated, said_at, tool_names? }] }` → `{ chat_id, saved, existing, orphan }` | 본문 256 KiB · 행 1–20 · mac_ref 중복 없음 · 속도 `claude_app_chat` 사용자별 10분에 120번(`CLAUDE_APP_CHAT_LIMIT`) · 없는 · 남의 · 해제된 bridge는 404 |
+| `DELETE /claude-app-chats/{id}` | 사용자가 저장된 대화를 지운다 → 204 | 남의 · 없는 · 모양이 틀린 id 404. 지표 `claude_app_chat_deleted` |
+| `POST /external-sessions/claude-app-sent` | 보내기 결과 지표 `{ result: received \| not_sent, reason?: session_closed \| not_received \| bypass \| two_writers \| relay_failed }` → 204 (글 0) | `reason`은 `not_sent`에만. **저장이 켜져 있으면 `received`는 남기지 않는다**(`save_claude_app_chat`이 남기므로 두 번 세지 않는다); `not_sent`는 늘 남긴다 |
+
+- 순서(PUT): gate 404 → 인증 401(Bearer · 쿠키 + CSRF) → 베타 명단 404 → 본문 400(strict: 모르는 칸 · 경로 · 도구 입력 · 대문자 ref · 21행 · 256 KiB 초과 · 짝 없는 서로게이트 · NUL, 오류 글에 요청 값 없음) → 속도 제한 429 + `Retry-After` → SQL → 409 `busy_retry`(잠금 경합; 멱등이라 같은 요청 재시도 가능) · 500. 사용자 id는 인증에서만 온다.
+- 본문 한도: 사용자 글 1–16,000자, 답 글 1–65,536바이트(UTF-8), 제목 1–200자(제어 · 서식 글자 없음, 1차 보고와 같은 규칙), `said_at`은 시간대가 있는 ISO-8601. JSON 이스케이프까지 256 KiB 안에 들어야 하므로 Mac은 제어 글자를 지우고 묶음을 크기로 나눈다.
+- `title`은 **마지막 묶음이 말한 값으로 바뀐다**(없음 · null = 제목 없음; 제목 보고를 끄면 지워진다). `last_message_at`은 새 행이 들어간 묶음에서만 오른다.
+- 로그는 이벤트 이름 · 결과 코드(`claude_app_chat_save {result: ok|not_found|rate_limited}` · `…_delete {result}`) · 실패 시 오류 이름과 `code`뿐이다. 글 · 제목 · ref · id 0. 응답은 개수뿐이다(요청 값을 되돌리지 않는다).
+
+### 21-3. SQL (`20261207000000_claude_app_chats.sql`)
+
+- 표 `claude_app_chats`(`user_id` · `bridge_id` · `session_ref`(Mac HMAC) · `title` · `last_message_at`; `unique (bridge_id, session_ref)`, 복합 FK `(bridge_id, user_id) → bridges` cascade)와 `claude_app_chat_messages`(`seq` identity · `role` user/assistant · `mac_ref` · `reply_to` · `body` · `truncated` · `tool_names` · `said_at`; `unique (chat_id, mac_ref)` = 멱등, 복합 FK `(chat_id, user_id)` cascade, `(reply_to, user_id)` · **`(reply_to, chat_id)`**(답 글은 같은 채팅의 글만 가리킨다) cascade, CHECK `(role='assistant') = (reply_to is not null)` · 사용자 글 16,000자 · 도구 이름은 답 글에만 최대 40). RLS `owner_all`, 앱 역할은 `select`만(익명 0), 순서 열의 시퀀스도 앱에서 회수.
+- `save_claude_app_chat(p_user_id, p_bridge_id, p_session_ref, p_title, p_messages jsonb)`와 `delete_claude_app_chat(p_user_id, p_chat_id)`: **invoker**, `search_path=''`, service role만. 인자 모양을 다시 강제(22023, 아무것도 쓰지 않는다) → bridge 소유 · active 확인(`for share`) → `(bridge, session_ref)` advisory lock(저장과 지우기가 같은 잠금) → 채팅 upsert → 행을 **보낸 순서대로** 넣는다(`on conflict (chat_id, mac_ref) do nothing`).
+  - `existing` = 이미 있던 행(재시도), `orphan` = `reply_to_ref`가 같은 채팅의 **사용자 글**로 풀리지 않은 답 글(다른 채팅 · 답 글 · 없는 ref; 그 행만 거절하고 나머지는 저장). 사용자 글이 그 답 글보다 앞(같은 묶음 또는 먼저 올린 묶음)이어야 풀린다.
+  - **사용자 글 없이 답 글만 온 묶음은 채팅을 만들지 않는다**(`chat_id: null`, 답 글은 모두 orphan): 사용자가 지운 대화를 늦게 온 답 글이 되살리지 못한다. 새 사용자 글(새 보내기)이 오면 새 채팅이 생긴다.
+  - 지표는 같은 트랜잭션: 새로 들어간 **사용자 글마다** `claude_app_message_sent`(props `{result:"received"}`뿐). 지우면 `claude_app_chat_deleted`(props 없음).
+- `metric_events` 종류 검사: **20261206000000(PR-D2, `claude_app_session_opened`까지)의 전체 목록** + 위 둘. `rate_limit_events` 종류 검사 · `take_rate_limit`: 20261204000000 그대로 + `claude_app_chat`(시험이 본문 차이가 종류 한 토큰뿐인지 본다). **이 PR은 PR-D2보다 늦게 병합한다.**
+- 운영 DB 적용은 병합 직전 승인 뒤 `supabase db query --linked -f`(db push 금지).
+
+### 21-4. 지표 (원칙 6)
+
+`claude_app_message_sent`(사용자 활동, dims `result` · `reason`) · `claude_app_chat_deleted`(사용자 활동) 두 type을 등록부(`src/lib/metrics/agents.ts`)와 `/admin/metrics` 카드 표에 더했다. 측정 공백: 저장이 켜진 채 올리기가 10분 넘게 실패해 버려진 교환의 `received`는 세어지지 않는다(저장 행도 없다).
+
+### 21-5. 시험
+
+`tests/db/claude-app-chats.scenarios.ts`(PGlite와 실제 Postgres가 같은 시나리오: RLS · 권한 · 열 규칙 · 복합 FK · 멱등 · orphan · 채팅 안 되살림 · 제목 · bridge 해제 보존 · cascade · 지표 · 자동 삭제 없음 · 보내기 길 0) · `tests/db/claude-app-chats-metrics.test.ts`(종류 목록 = 20261206 + 둘, 속도 제한 종류) · `tests/db/account-deletion.test.ts` · `tests/pg/claude-app-chats.test.ts`(같은 (bridge, session_ref) 동시 PUT · 저장과 지우기 겹침 · bridge 해제 겹침 · `claude_app_chat` 한도 경합) · `src/lib/api/claude-app-chats.test.ts` · `src/app/api/v2/claude-app-chats/**` · `…/external-sessions/claude-app-sent/**`(gate · 명단 · CSRF · 본문 · 로그).
+
+### 21-6. 처리방침 문장 (26장에 맞춘 것, 법률 PR 몫 · 게시 전 플래그 꺼짐)
+
+- ko: "Mac 앱에서 Claude 데스크톱 앱에 열린 세션으로 메시지를 보내면, 그 메시지와 그 뒤 세션이 쓴 답 글, 답을 만드는 동안 쓴 도구의 이름(예: Edit, Bash)을 회사 서버에 저장해 이용자의 다른 기기에서도 보이게 합니다. 도구에 넣은 내용과 실행 결과, 파일 경로와 명령, 데스크톱 앱에서 직접 입력한 대화, 작업 폴더 이름과 경로는 저장하지 않습니다. 세션은 이 Mac에서만 만든 무작위 식별자와 세션 제목으로 구별합니다. 저장한 대화는 이용자가 지우거나 계정을 삭제할 때까지 보관합니다. 메시지 전달은 이 Mac 안에서만 이루어집니다."
+- en: "When you send a message from the Mac app to a session open in the Claude desktop app, we store that message, the session's text replies that follow it, and the names of the tools used while replying (for example, Edit or Bash) on our servers so you can see them on your other devices. We do not store what was passed to a tool or its results, file paths or commands, conversation you type directly in the desktop app, or working folder names and paths. Sessions are identified by a random identifier created on your Mac and the session title. We keep stored conversations until you delete them or delete your account. Delivery to the session happens only on your Mac."
+- 5장 보유 기간 표 한 줄: "Claude 데스크톱 세션과 나눈 메시지(Taskforce로 보낸 것) | 이용자가 지우거나 계정을 지울 때까지".
+
+### 21-7. 계약 본문과 다른 점 · 남은 것
+
+- 26장이 25.2.1의 `purge_claude_app_chats`와 보존 기간(Q-D3b 추천 90일)을 없앴다: 함수 · cron 연결 0. 25.1에 더한 "답 묶음 안 도구 이름 목록"은 답 글 행의 `tool_names`(그 답 글 **앞에서** 쓴 도구 단계, 순서 · 최대 40)로 옮겼다 — 마지막 글 뒤에 도구만 쓴 단계는 글이 없는 행을 만들지 않으므로 Mac이 다음 글 행에 붙이거나 버린다(D3k 몫).
+- 25.2.1 표에 없던 것: `last_message_at not null default now()`, 추가 복합 FK `(reply_to, chat_id)`, 도메인 `claude_app_tool_name`, 응답의 `chat_id: null`(채팅을 만들지 않은 묶음). 보내기 결과 route는 속도 제한이 없다(본문 1 KiB · 베타 명단; 필요하면 `claude_app_sent` 종류를 더한다).
+- 읽는 화면(다른 Mac Sessions · iPhone) · 지우는 UI는 D3v다(DZ 먼저). 앱은 읽기를 Supabase에서 직접(RLS) 하고, 보여 줄 때 정렬은 `said_at`, `seq` 순서다.

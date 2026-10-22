@@ -2165,3 +2165,76 @@ export const reviewDecisionsResponseSchema = z.strictObject({
   decisions: z.array(reviewDecisionGroupSchema).nullable(),
 });
 export type ReviewDecisionsResponse = z.infer<typeof reviewDecisionsResponseSchema>;
+
+// --- PR-D3s ---
+// Claude 데스크톱 세션과 나눈 대화 저장 (OA PR-D3s, 계약 handoffs/oa-external-sessions-contract.md 25 · 26장). 새 경로라 v1 · 기존 v2 호환 영향 0.
+// 서버에 가는 것: Mac이 Claude 데스크톱 세션으로 보낸 글("Received"로 확인된 것) + 그 뒤 세션의 답 글 + 답 글 앞에서 쓴 **도구 단계의 이름만**(순서대로, 최대 40) + 제목 + 불투명 id(HMAC).
+// 도구 입력 · 결과 · 경로 · 명령 · 폴더 이름 · Claude 세션 id는 받지 않는다 (strict). 서버가 시작하는 보내기 길은 없다. 보관: 사용자가 지울 때까지 (자동 삭제 없음, 26장).
+export const CLAUDE_APP_CHAT_MAX_BATCH = 20;
+export const CLAUDE_APP_CHAT_TOOL_NAMES_MAX = 40;
+export const CLAUDE_APP_CHAT_USER_BODY_MAX = 16_000;
+export const CLAUDE_APP_CHAT_ASSISTANT_BODY_MAX_BYTES = 64 * 1024;
+
+// 짝 없는 서로게이트(JSON \ud800 같은)는 jsonb · text에 들어가지 못한다. NUL도 text에 못 담는다
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+const claudeAppChatTextSchema = z
+  .string()
+  .min(1)
+  .refine((value) => !value.includes("\u0000") && !LONE_SURROGATE.test(value), { message: "invalid text" });
+/** Anthropic 도구 이름 규칙과 같은 모양 (영문 · 숫자 · _ · -, 64자 이하). 경로 · 명령(`Bash(git status)`) · 공백이 든 값은 도구 이름이 아니다 */
+export const claudeAppToolNameSchema = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
+const claudeAppChatRowBase = {
+  /** Mac 열쇠 HMAC (사용자 글 = peer msg_id + pid, 답 글 = 기록 줄 uuid + 블록 번호) — 서버는 기록 id를 모른다. (chat, mac_ref)가 멱등 열쇠다 */
+  mac_ref: externalSessionRefSchema,
+  truncated: z.boolean(),
+  /** 기록 줄의 시각 */
+  said_at: z.iso.datetime({ offset: true }),
+};
+export const claudeAppChatMessageSchema = z.discriminatedUnion("role", [
+  z.strictObject({ ...claudeAppChatRowBase, role: z.literal("user"), body: claudeAppChatTextSchema.max(CLAUDE_APP_CHAT_USER_BODY_MAX) }),
+  z.strictObject({
+    ...claudeAppChatRowBase,
+    role: z.literal("assistant"),
+    /** 같은 채팅의 사용자 글 mac_ref. 풀리지 않으면 그 행만 orphan으로 거절된다 */
+    reply_to_ref: externalSessionRefSchema,
+    body: claudeAppChatTextSchema
+      .max(CLAUDE_APP_CHAT_ASSISTANT_BODY_MAX_BYTES)
+      .refine((value) => new TextEncoder().encode(value).byteLength <= CLAUDE_APP_CHAT_ASSISTANT_BODY_MAX_BYTES, { message: "too large" }),
+    /** 이 답 글 앞에서 쓴 도구 단계의 이름만 (순서대로). 입력 · 결과 · 경로 · 명령은 보내지 않는다 */
+    tool_names: z.array(claudeAppToolNameSchema).max(CLAUDE_APP_CHAT_TOOL_NAMES_MAX).optional(),
+  }),
+]);
+export type ClaudeAppChatMessage = z.infer<typeof claudeAppChatMessageSchema>;
+
+/** PUT /api/v2/claude-app-chats — 한 교환의 행들을 올린다 (멱등). 사용자 글은 그 답 글보다 앞(같은 묶음 또는 먼저 올린 묶음)이어야 풀린다. title은 마지막 묶음이 말한 값으로 바뀐다(없음 = null) */
+export const claudeAppChatSaveRequestSchema = z.strictObject({
+  bridge_id: z.uuid(),
+  session_ref: externalSessionRefSchema,
+  title: externalSessionTitleSchema.nullable().optional(),
+  messages: z
+    .array(claudeAppChatMessageSchema)
+    .min(1)
+    .max(CLAUDE_APP_CHAT_MAX_BATCH)
+    .refine((rows) => new Set(rows.map((row) => row.mac_ref)).size === rows.length, { message: "duplicate mac_ref" }),
+});
+export type ClaudeAppChatSaveRequest = z.infer<typeof claudeAppChatSaveRequestSchema>;
+/** chat_id는 사용자 글 없이 답 글만 온 묶음(채팅이 없고 만들지 않음)일 때 null이다. existing = 이미 저장된 행, orphan = 풀리지 않은 답 글 */
+export const claudeAppChatSaveResponseSchema = z.strictObject({
+  chat_id: z.guid().nullable(),
+  saved: z.number().int().min(0),
+  existing: z.number().int().min(0),
+  orphan: z.number().int().min(0),
+});
+export type ClaudeAppChatSaveResponse = z.infer<typeof claudeAppChatSaveResponseSchema>;
+
+/** GET /api/v2/claude-app-chats/status — Mac이 글을 보내기 전에 저장이 켜졌는지 묻는다. 꺼짐 · 명단 밖은 404 (Mac은 404면 글을 서버로 한 바이트도 보내지 않는다) */
+export const claudeAppChatStatusResponseSchema = z.strictObject({ save: z.literal(true), max_batch: z.literal(CLAUDE_APP_CHAT_MAX_BATCH) });
+export type ClaudeAppChatStatusResponse = z.infer<typeof claudeAppChatStatusResponseSchema>;
+
+/** POST /api/v2/external-sessions/claude-app-sent — 보내기 결과 지표 claude_app_message_sent (글 0, 저장 플래그와 무관). 코드만이다 */
+export const CLAUDE_APP_SENT_REASONS = ["session_closed", "not_received", "bypass", "two_writers", "relay_failed"] as const;
+export const claudeAppSentRequestSchema = z.discriminatedUnion("result", [
+  z.strictObject({ result: z.literal("received") }),
+  z.strictObject({ result: z.literal("not_sent"), reason: z.enum(CLAUDE_APP_SENT_REASONS).optional() }),
+]);
+export type ClaudeAppSentRequest = z.infer<typeof claudeAppSentRequestSchema>;
