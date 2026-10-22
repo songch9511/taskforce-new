@@ -1985,8 +1985,17 @@ export type AgentConversationErrorCode = z.infer<typeof agentConversationErrorCo
  */
 export const agentAttachErrorCodeSchema = z.enum(["session_in_use", "forbidden", "workspace_mismatch"]);
 export type AgentAttachErrorCode = z.infer<typeof agentAttachErrorCodeSchema>;
+/**
+ * Claude 데스크톱 대화 저장(PUT /api/v2/claude-app-chats, OA PR-D3s)이 더하는 코드. bridge_not_found = 404 (없는 · 남의 · 해제된 bridge: 저장 gate가 꺼진 404 not_found와 **다른 코드**라
+ * Mac이 둘을 헷갈리지 않는다), quota_exceeded = 413 (사용자별 한도: 저장 본문 합계 50 MiB · 채팅 2,000개). 위 목록(apiErrorV2AgentCodeSchema)은 그대로다
+ * (그 길이를 고정하는 시험이 있다): 이 route의 목록은 따로 `apiErrorV2ClaudeAppChatCodeSchema`(= v2 에이전트 코드 + 이 둘)다
+ */
+export const claudeAppChatErrorCodeSchema = z.enum(["bridge_not_found", "quota_exceeded"]);
+export type ClaudeAppChatErrorCode = z.infer<typeof claudeAppChatErrorCodeSchema>;
 export const apiErrorV2AgentCodeSchema = z.enum([...apiErrorV2CodeSchema.options, ...agentConversationErrorCodeSchema.options, ...agentAttachErrorCodeSchema.options]);
 export type ApiErrorV2AgentCode = z.infer<typeof apiErrorV2AgentCodeSchema>;
+export const apiErrorV2ClaudeAppChatCodeSchema = z.enum([...apiErrorV2AgentCodeSchema.options, ...claudeAppChatErrorCodeSchema.options]);
+export type ApiErrorV2ClaudeAppChatCode = z.infer<typeof apiErrorV2ClaudeAppChatCodeSchema>;
 
 // --- D3c-2 ---
 // SQL measures target length after NFC so overlong targets return deny/path_too_long, not HTTP 400.
@@ -2174,6 +2183,8 @@ export const CLAUDE_APP_CHAT_MAX_BATCH = 20;
 export const CLAUDE_APP_CHAT_TOOL_NAMES_MAX = 40;
 export const CLAUDE_APP_CHAT_USER_BODY_MAX = 16_000;
 export const CLAUDE_APP_CHAT_ASSISTANT_BODY_MAX_BYTES = 64 * 1024;
+/** PUT 본문 상한 (바이트): status가 max_bytes로 알려 준다. 넘으면 400 — Mac이 묶음을 이 크기로 나눈다 */
+export const CLAUDE_APP_CHAT_MAX_BYTES = 256 * 1024;
 
 // 짝 없는 서로게이트(JSON \ud800 같은)는 jsonb · text에 들어가지 못한다. NUL도 text에 못 담는다
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
@@ -2181,8 +2192,14 @@ const claudeAppChatTextSchema = z
   .string()
   .min(1)
   .refine((value) => !value.includes("\u0000") && !LONE_SURROGATE.test(value), { message: "invalid text" });
-/** Anthropic 도구 이름 규칙과 같은 모양 (영문 · 숫자 · _ · -, 64자 이하). 경로 · 명령(`Bash(git status)`) · 공백이 든 값은 도구 이름이 아니다 */
-export const claudeAppToolNameSchema = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
+/** 제목: 1차 보고(externalSessionTitleSchema)와 같은 규칙 + 짝 없는 서로게이트 거절 (그 값은 text 인자에 들어가지 못한다) */
+const claudeAppChatTitleSchema = externalSessionTitleSchema.refine((value) => !LONE_SURROGATE.test(value), { message: "invalid title" });
+/**
+ * 도구 이름의 모양: 영문 · 숫자 · _ · -, 128자 이하. 경로 · 명령(`Bash(git status)`) · 공백이 든 값은 도구 이름이 아니다.
+ * 128인 이유: Claude Code가 기록에 남기는 MCP 이름은 mcp__<서버 이름 또는 uuid>__<도구> 모양이라 Anthropic API의 64자를 넘는다 (uuid 서버는 80자 안팎).
+ * 이 모양에 맞지 않는 이름은 Mac이 **그 이름만 버린다** (묶음을 실패시키지 않는다): 서버는 맞지 않는 이름이 하나라도 있으면 묶음 전체를 400으로 거절하기 때문이다.
+ */
+export const claudeAppToolNameSchema = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
 const claudeAppChatRowBase = {
   /** Mac 열쇠 HMAC (사용자 글 = peer msg_id + pid, 답 글 = 기록 줄 uuid + 블록 번호) — 서버는 기록 id를 모른다. (chat, mac_ref)가 멱등 열쇠다 */
   mac_ref: externalSessionRefSchema,
@@ -2206,11 +2223,14 @@ export const claudeAppChatMessageSchema = z.discriminatedUnion("role", [
 ]);
 export type ClaudeAppChatMessage = z.infer<typeof claudeAppChatMessageSchema>;
 
-/** PUT /api/v2/claude-app-chats — 한 교환의 행들을 올린다 (멱등). 사용자 글은 그 답 글보다 앞(같은 묶음 또는 먼저 올린 묶음)이어야 풀린다. title은 마지막 묶음이 말한 값으로 바뀐다(없음 = null) */
+/**
+ * PUT /api/v2/claude-app-chats — 한 교환의 행들을 올린다 (멱등). 사용자 글은 그 답 글보다 앞(같은 묶음 또는 먼저 올린 묶음)이어야 풀린다.
+ * title: **생략하면 저장된 제목을 그대로 둔다**, 명시한 값이면 바꾼다, 명시한 null이면 지운다 (새 행이 없는 재시도는 어느 쪽이든 제목을 건드리지 않는다).
+ */
 export const claudeAppChatSaveRequestSchema = z.strictObject({
   bridge_id: z.uuid(),
   session_ref: externalSessionRefSchema,
-  title: externalSessionTitleSchema.nullable().optional(),
+  title: claudeAppChatTitleSchema.nullable().optional(),
   messages: z
     .array(claudeAppChatMessageSchema)
     .min(1)
@@ -2227,14 +2247,24 @@ export const claudeAppChatSaveResponseSchema = z.strictObject({
 });
 export type ClaudeAppChatSaveResponse = z.infer<typeof claudeAppChatSaveResponseSchema>;
 
-/** GET /api/v2/claude-app-chats/status — Mac이 글을 보내기 전에 저장이 켜졌는지 묻는다. 꺼짐 · 명단 밖은 404 (Mac은 404면 글을 서버로 한 바이트도 보내지 않는다) */
-export const claudeAppChatStatusResponseSchema = z.strictObject({ save: z.literal(true), max_batch: z.literal(CLAUDE_APP_CHAT_MAX_BATCH) });
+/**
+ * GET /api/v2/claude-app-chats/status — Mac이 글을 보내기 전에 저장이 켜졌는지 묻는다. 꺼짐 · 명단 밖은 404 (Mac은 404면 글을 서버로 한 바이트도 보내지 않는다).
+ * max_batch = 한 번에 올릴 수 있는 행 수, max_bytes = 요청 본문 상한(바이트, JSON 이스케이프 포함)
+ */
+export const claudeAppChatStatusResponseSchema = z.strictObject({
+  save: z.literal(true),
+  max_batch: z.literal(CLAUDE_APP_CHAT_MAX_BATCH),
+  max_bytes: z.literal(CLAUDE_APP_CHAT_MAX_BYTES),
+});
 export type ClaudeAppChatStatusResponse = z.infer<typeof claudeAppChatStatusResponseSchema>;
 
-/** POST /api/v2/external-sessions/claude-app-sent — 보내기 결과 지표 claude_app_message_sent (글 0, 저장 플래그와 무관). 코드만이다 */
+/**
+ * POST /api/v2/external-sessions/claude-app-sent — 보내기 결과 지표 claude_app_message_sent (글 0, 저장 플래그와 무관). 코드만이다.
+ * received의 uploaded: false = Mac이 올리기를 포기했다(10분 재시도 끝에 버림) → 저장이 켜져 있어도 이 지표로 센다 (저장 함수가 못 센 받은 글). 생략 · true는 저장이 켜져 있으면 세지 않는다
+ */
 export const CLAUDE_APP_SENT_REASONS = ["session_closed", "not_received", "bypass", "two_writers", "relay_failed"] as const;
 export const claudeAppSentRequestSchema = z.discriminatedUnion("result", [
-  z.strictObject({ result: z.literal("received") }),
+  z.strictObject({ result: z.literal("received"), uploaded: z.boolean().optional() }),
   z.strictObject({ result: z.literal("not_sent"), reason: z.enum(CLAUDE_APP_SENT_REASONS).optional() }),
 ]);
 export type ClaudeAppSentRequest = z.infer<typeof claudeAppSentRequestSchema>;

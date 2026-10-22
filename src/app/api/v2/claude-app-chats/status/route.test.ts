@@ -47,11 +47,11 @@ describe("GET /api/v2/claude-app-chats/status", () => {
     expect((await call()).status).toBe(401);
   });
 
-  it("모두 켜져 있으면 { save: true, max_batch: 20 } (DB를 부르지 않는다)", async () => {
+  it("모두 켜져 있으면 { save: true, max_batch: 20, max_bytes: 262144 } (DB를 부르지 않는다)", async () => {
     open();
     const response = await call();
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ save: true, max_batch: 20 });
+    expect(await response.json()).toEqual({ save: true, max_batch: 20, max_bytes: 262_144 });
     expect(mocks.admin).not.toHaveBeenCalled();
   });
 });

@@ -71,8 +71,8 @@ describe("metric_events 종류 검사 (20261207000000)", () => {
 });
 
 describe("rate_limit_events 종류 · take_rate_limit (20261207000000)", () => {
-  it("종류 목록 = 20261204 목록 + claude_app_chat + claude_app_sent", () => {
-    expect(kindList(NEW_FILE)).toEqual([...KINDS_20261204, "claude_app_chat", "claude_app_sent"]);
+  it("종류 목록 = 20261204 목록 + claude_app_chat + claude_app_sent + claude_app_chat_day", () => {
+    expect(kindList(NEW_FILE)).toEqual([...KINDS_20261204, "claude_app_chat", "claude_app_sent", "claude_app_chat_day"]);
     expect(kindList(ATTACH_FILE)).toEqual(KINDS_20261204);
   });
 });
@@ -145,5 +145,20 @@ describe("DB: 새 종류가 받아들여진다", () => {
     expect(rows[0].n).toBe(3);
     // 종류 검사가 받는다 (take_rate_limit 밖의 직접 insert도)
     await db.query("insert into public.rate_limit_events (user_id, kind) values ($1, 'claude_app_sent')", [b]);
+  });
+
+  it("take_rate_limit: claude_app_chat_day(저장 PUT의 하루 한도)는 하루(86,400초) 창으로 세고 10분 한도 종류와 따로 센다", async () => {
+    const a = await user();
+    const take = async (owner: string, kind: string, max: number, windowSeconds: number) =>
+      (await db.query<{ at: Date | null }>("select public.take_rate_limit($1, $2, $3, $4) as at", [owner, kind, max, windowSeconds])).rows[0].at;
+    for (let i = 0; i < 3; i++) expect(await take(a, "claude_app_chat_day", 3, 86_400)).toBeNull();
+    const retry = await take(a, "claude_app_chat_day", 3, 86_400);
+    expect(retry).toBeInstanceOf(Date);
+    expect(retry!.getTime() - Date.now()).toBeGreaterThan(23 * 3600_000);
+    // 10분 한도 종류는 영향 없다
+    for (let i = 0; i < 3; i++) expect(await take(a, "claude_app_chat", 3, 600)).toBeNull();
+    // 하루 창 밖(25시간 전)의 시도는 세지 않는다
+    await db.query("update public.rate_limit_events set created_at = now() - interval '25 hours' where user_id = $1 and kind = 'claude_app_chat_day'", [a]);
+    expect(await take(a, "claude_app_chat_day", 3, 86_400)).toBeNull();
   });
 });

@@ -230,8 +230,87 @@ describe("저장과 겹치는 지우기 · bridge 해제 (연결 둘)", () => {
   });
 });
 
-describe("속도 제한 claude_app_chat · claude_app_sent (연결 여럿)", () => {
-  it.each(["claude_app_chat", "claude_app_sent"])("%s: 연결 여덟이 동시에 열 번씩 80번을 불러도 정확히 30번만 통과한다 (사용자 · 종류별 잠금)", async (kind) => {
+describe("사용자별 한도 · 묘비와 겹치는 요청 (연결 둘)", () => {
+  /** 사용자의 저장 본문을 한도 직전까지 채운다 (SQL): 채팅 하나의 답 글 799 × 65,536바이트. 남는 자리 = 한도 − 합계 */
+  async function fillNearCap(w: { owner: string; bridge: string }, sessionRef: string) {
+    const made = await saveOn(setup, w, sessionRef, [userMsg(1)]);
+    const userRow = String((await q("select id from public.claude_app_chat_messages where chat_id = $1", [String(made.chat_id)]))[0].id);
+    await q(
+      `insert into public.claude_app_chat_messages (user_id, chat_id, role, mac_ref, reply_to, body, truncated, said_at)
+       select $1, $2, 'assistant', lpad(to_hex(g), 64, '0'), $3, repeat('a', 65536), false, now() from generate_series(100000, 100798) g`,
+      [w.owner, String(made.chat_id), userRow],
+    );
+    const used = Number((await q("select coalesce(sum(octet_length(body)), 0)::bigint as n from public.claude_app_chat_messages where user_id = $1", [w.owner]))[0].n);
+    return 52_428_800 - used;
+  }
+  const big = (n: number) => [userMsg(10 + n), asstMsg(20 + n, 10 + n, { body: "a".repeat(40_000) })];
+
+  it("남은 자리가 하나뿐일 때 서로 다른 세션 둘이 동시에 올리면: 먼저 잡은 쪽만 저장되고 뒤 쪽은 기다렸다가 quota_exceeded (사용자 단위 잠금으로 한도를 넘지 못한다)", async () => {
+    const w = await world();
+    const remaining = await fillNearCap(w, ref(1));
+    expect(remaining).toBeGreaterThan(40_100);
+    expect(remaining).toBeLessThan(80_000);
+    await a.query("begin");
+    await b.query("begin");
+    const first = await saveOn(a, w, ref(2), big(1));
+    const waiting = saveOn(b, w, ref(3), big(2));
+    await waitForLockWait();
+    await a.query("commit");
+    const second = await waiting;
+    await b.query("commit");
+    expect(first).toMatchObject({ status: "ok", saved: 2 });
+    expect(second).toEqual({ status: "quota_exceeded" });
+    expect(await chats(w)).toBe(2);
+    const used = Number((await q("select sum(octet_length(body))::bigint as n from public.claude_app_chat_messages where user_id = $1", [w.owner]))[0].n);
+    expect(used).toBeLessThanOrEqual(52_428_800);
+  });
+
+  it("자동 commit으로 동시에 던져도 한도를 넘지 못한다 (남은 자리에 하나만 들어간다)", async () => {
+    const w = await world();
+    await fillNearCap(w, ref(1));
+    const results = await Promise.all([saveOn(a, w, ref(2), big(1)), saveOn(b, w, ref(3), big(2))]);
+    expect(results.map((r) => r.status).sort()).toEqual(["ok", "quota_exceeded"]);
+    const used = Number((await q("select sum(octet_length(body))::bigint as n from public.claude_app_chat_messages where user_id = $1", [w.owner]))[0].n);
+    expect(used).toBeLessThanOrEqual(52_428_800);
+  });
+
+  it("지우기가 먼저 잡으면: 같은 묶음의 재시도는 기다렸다가 묘비를 보고 orphan — 대화도 지표도 되살아나지 않는다", async () => {
+    const w = await world();
+    const batch = [userMsg(1), asstMsg(2, 1)];
+    const made = await saveOn(setup, w, ref(1), batch);
+    expect(await sentEvents(w)).toBe(1);
+    await a.query("begin");
+    await a.query("select public.delete_claude_app_chat($1, $2)", [w.owner, String(made.chat_id)]);
+    await b.query("begin");
+    const replay = saveOn(b, w, ref(1), batch);
+    await waitForLockWait();
+    await a.query("commit");
+    expect(await replay).toEqual({ status: "ok", chat_id: null, saved: 0, existing: 0, orphan: 2 });
+    await b.query("commit");
+    expect(await chats(w)).toBe(0);
+    expect(await messages(w)).toBe(0);
+    expect(await sentEvents(w)).toBe(1);
+  });
+
+  it("재시도가 먼저 잡고 있으면: 지우기는 기다렸다가 지우고, 그 뒤 재시도는 묘비에 막힌다 (반쯤 지워진 채팅 0)", async () => {
+    const w = await world();
+    const batch = [userMsg(1), asstMsg(2, 1)];
+    const made = await saveOn(setup, w, ref(1), batch);
+    await a.query("begin");
+    await saveOn(a, w, ref(1), [asstMsg(3, 1)]);
+    await b.query("begin");
+    const deleting = b.query("select public.delete_claude_app_chat($1, $2) as result", [w.owner, String(made.chat_id)]);
+    await waitForLockWait();
+    await a.query("commit");
+    expect((await deleting).rows[0].result).toEqual({ status: "deleted" });
+    await b.query("commit");
+    expect(await chats(w)).toBe(0);
+    expect(await saveOn(setup, w, ref(1), batch)).toEqual({ status: "ok", chat_id: null, saved: 0, existing: 0, orphan: 2 });
+  });
+});
+
+describe("속도 제한 claude_app_chat · claude_app_sent · claude_app_chat_day (연결 여럿)", () => {
+  it.each(["claude_app_chat", "claude_app_sent", "claude_app_chat_day"])("%s: 연결 여덟이 동시에 열 번씩 80번을 불러도 정확히 30번만 통과한다 (사용자 · 종류별 잠금)", async (kind) => {
     const owner = randomUUID();
     await q("insert into auth.users (id, email) values ($1, $2)", [owner, `${owner}@example.com`]);
     const clients = await Promise.all(Array.from({ length: 8 }, () => connect(DB_NAME)));

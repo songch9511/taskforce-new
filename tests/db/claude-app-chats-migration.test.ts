@@ -31,22 +31,24 @@ describe("마이그레이션 경계 (20261207000000_claude_app_chats)", () => {
     expect(code.match(/^commit;$/gm)).toHaveLength(1);
   });
 
-  it("만드는 것: 표 둘 · 도메인 하나 · 함수 둘(+ take_rate_limit 재정의) · 트리거 하나(updated_at)뿐이다", () => {
-    expect([...code.matchAll(/create table ([a-z_.]+)/g)].map((m) => m[1])).toEqual(["public.claude_app_chats", "public.claude_app_chat_messages"]);
+  it("만드는 것: 표 셋(채팅 · 메시지 · 묘비) · 도메인 하나 · 함수 둘(+ take_rate_limit 재정의) · 트리거 하나(updated_at)뿐이다", () => {
+    expect([...code.matchAll(/create table ([a-z_.]+)/g)].map((m) => m[1])).toEqual(["public.claude_app_chats", "public.claude_app_chat_messages", "public.claude_app_chat_tombstones"]);
     expect([...code.matchAll(/create domain ([a-z_.]+)/g)].map((m) => m[1])).toEqual(["public.claude_app_tool_name"]);
     expect([...code.matchAll(/create (?:or replace )?function public\.([a-z_]+)/g)].map((m) => m[1])).toEqual(["save_claude_app_chat", "delete_claude_app_chat", "take_rate_limit"]);
     expect([...code.matchAll(/create function public\.([a-z_]+)/g)].map((m) => m[1])).toEqual(["save_claude_app_chat", "delete_claude_app_chat"]);
     expect([...code.matchAll(/create trigger ([a-z_]+)/g)].map((m) => m[1])).toEqual(["claude_app_chats_set_updated_at"]);
-    // 정책은 owner_all 둘뿐이고 기존 표의 정책(앱 insert 정책 포함)은 건드리지 않는다
+    // 정책은 owner_all 셋뿐이고 기존 표의 정책(앱 insert 정책 포함)은 건드리지 않는다
     expect([...code.matchAll(/create policy "([a-z_]+)" on ([a-z_.]+)/g)].map((m) => [m[1], m[2]])).toEqual([
       ["owner_all", "public.claude_app_chats"],
       ["owner_all", "public.claude_app_chat_messages"],
+      ["owner_all", "public.claude_app_chat_tombstones"],
     ]);
     expect(code).not.toMatch(/owner_insert_client_app_types|drop policy|alter policy/i);
     // 바꾸는 기존 표는 metric_events(종류 검사)와 rate_limit_events(종류 검사)뿐이다
     expect([...code.matchAll(/alter table ([a-z_.]+)/g)].map((m) => m[1])).toEqual([
       "public.claude_app_chats",
       "public.claude_app_chat_messages",
+      "public.claude_app_chat_tombstones",
       "public.metric_events",
       "public.metric_events",
       "public.rate_limit_events",
@@ -54,13 +56,18 @@ describe("마이그레이션 경계 (20261207000000_claude_app_chats)", () => {
     ]);
   });
 
-  it("자동 정리가 없다 (26장 Q-D3b): purge · retention · 만료 · 오래된 행을 지우는 문장이 없다", () => {
-    expect(code).not.toMatch(/purge|retention|expire|interval\s+'/i);
-    expect([...code.matchAll(/delete from ([a-z_.]+)/g)].map((m) => m[1])).toEqual(["public.claude_app_chats"]);
+  it("자동 정리가 없다 (26장 Q-D3b): purge · retention · 만료 · 시간으로 오래된 대화를 지우는 문장이 없다", () => {
+    expect(code).not.toMatch(/purge|retention|expire/i);
+    // 지우는 문장은 둘: 사용자가 지운 채팅(delete_claude_app_chat) / 묘비 개수 상한(가장 오래된 묘비 — 글이 아니라 불투명 ref, 시간이 아니라 개수로)
+    expect([...code.matchAll(/delete from ([a-z_.]+)/g)].map((m) => m[1])).toEqual(["public.claude_app_chats", "public.claude_app_chat_tombstones"]);
+    // 시간 간격은 "1 day" 하나뿐이고 모두 said_at을 서버 시각 + 1일로 자르는 곳이다 (사용자 글 · 답 글 insert 둘). 보관 기간이 아니다
+    const intervals = [...code.matchAll(/interval\s+'([^']*)'/g)].map((m) => m[1]);
+    expect(intervals).toEqual(["1 day", "1 day"]);
+    expect(code.match(/least\([^;]*now\(\) \+ interval '1 day'\)/g)).toHaveLength(2);
   });
 
   it("함수 권한: PUBLIC · anon · authenticated는 거두고 service_role에만 준다. invoker(security definer 아님) + search_path 빈 값", () => {
-    for (const signature of ["save_claude_app_chat\\(uuid, uuid, text, text, jsonb\\)", "delete_claude_app_chat\\(uuid, uuid\\)"]) {
+    for (const signature of ["save_claude_app_chat\\(uuid, uuid, text, text, jsonb, boolean\\)", "delete_claude_app_chat\\(uuid, uuid\\)"]) {
       expect(code).toMatch(new RegExp(`revoke all on function public\\.${signature} from public, anon, authenticated;`));
       expect(code).toMatch(new RegExp(`grant execute on function public\\.${signature} to service_role;`));
     }
@@ -74,16 +81,18 @@ describe("마이그레이션 경계 (20261207000000_claude_app_chats)", () => {
   it("표 권한: 앱 역할은 select만 받는다 (insert · update · delete · truncate를 준 적이 없다)", () => {
     expect(code).toMatch(/revoke all on public\.claude_app_chats from anon, authenticated;\s+grant select on public\.claude_app_chats to authenticated;/);
     expect(code).toMatch(/revoke all on public\.claude_app_chat_messages from anon, authenticated;\s+grant select on public\.claude_app_chat_messages to authenticated;/);
+    // 묘비(불투명 ref)는 앱도 읽지 못한다: 권한을 모두 거두고 주지 않는다 (서버 함수만)
+    expect(code).toMatch(/revoke all on public\.claude_app_chat_tombstones from anon, authenticated;/);
     expect([...code.matchAll(/grant ([a-z, ]+) on (?!function)([a-z_. ]+) to ([a-z_, ]+);/g)].map((m) => [m[1], m[2], m[3]])).toEqual([
       ["select", "public.claude_app_chats", "authenticated"],
       ["select", "public.claude_app_chat_messages", "authenticated"],
     ]);
   });
 
-  it("두 표 모두 user_id + auth.users cascade + 부모와의 (id, user_id) 복합 외래키 + (chat_id, mac_ref) 멱등 열쇠", () => {
+  it("세 표 모두 user_id + auth.users cascade + 부모와의 (id, user_id) 복합 외래키 + (chat_id, mac_ref) 멱등 열쇠", () => {
     expect(code).toMatch(/user_id uuid not null default auth\.uid\(\) references auth\.users \(id\) on delete cascade/g);
-    expect(code.match(/user_id uuid not null default auth\.uid\(\) references auth\.users \(id\) on delete cascade/g)).toHaveLength(2);
-    expect(code).toMatch(/foreign key \(bridge_id, user_id\)\s+references public\.bridges \(id, user_id\) on delete cascade/);
+    expect(code.match(/user_id uuid not null default auth\.uid\(\) references auth\.users \(id\) on delete cascade/g)).toHaveLength(3);
+    expect(code.match(/foreign key \(bridge_id, user_id\)\s+references public\.bridges \(id, user_id\) on delete cascade/g)).toHaveLength(2);
     expect(code).toMatch(/foreign key \(chat_id, user_id\)\s+references public\.claude_app_chats \(id, user_id\) on delete cascade/);
     expect(code).toMatch(/unique \(chat_id, mac_ref\)/);
     expect(code).toMatch(/unique \(bridge_id, session_ref\)/);
@@ -98,22 +107,22 @@ describe("마이그레이션 경계 (20261207000000_claude_app_chats)", () => {
     expect(later).toEqual([]);
   });
 
-  it("take_rate_limit 본문은 20261204의 정의에서 종류 claude_app_chat · claude_app_sent 둘만 더한다", () => {
+  it("take_rate_limit 본문은 20261204의 정의에서 종류 claude_app_chat · claude_app_sent · claude_app_chat_day 셋만 더한다", () => {
     const before = takeRateLimitBody(readFileSync(path.join(MIGRATIONS, PREVIOUS_RATE_LIMIT_MIGRATION), "utf8"));
     const after = takeRateLimitBody(migration);
     expect(after).not.toBe(before);
-    expect(after.replace(",'claude_app_chat','claude_app_sent'", "")).toBe(before);
+    expect(after.replace(",'claude_app_chat','claude_app_sent','claude_app_chat_day'", "")).toBe(before);
     expect(after.match(/'claude_app_chat'/g)).toHaveLength(1);
     expect(after.match(/'claude_app_sent'/g)).toHaveLength(1);
+    expect(after.match(/'claude_app_chat_day'/g)).toHaveLength(1);
   });
 
-  it("이 파일 뒤에 속도 제한 종류 검사 · take_rate_limit을 다시 만드는 마이그레이션이 없다 (있으면 두 새 종류를 이어 가져와야 한다)", () => {
+  it("이 파일 뒤에 속도 제한 종류 검사 · take_rate_limit을 다시 만드는 마이그레이션이 없다 (있으면 세 새 종류를 이어 가져와야 한다)", () => {
     const after = readdirSync(MIGRATIONS).filter((name) => name > FILE && name.endsWith(".sql"));
     for (const name of after) {
       const text = stripComments(readFileSync(path.join(MIGRATIONS, name), "utf8"));
       if (!/rate_limit_events_kind_check|function public\.take_rate_limit\(/i.test(text)) continue;
-      expect(text, name).toContain("claude_app_chat");
-      expect(text, name).toContain("claude_app_sent");
+      for (const kind of ["claude_app_chat'", "claude_app_sent'", "claude_app_chat_day'"]) expect(text, `${name} ${kind}`).toContain(kind);
     }
   });
 

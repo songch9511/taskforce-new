@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  CLAUDE_APP_CHAT_DAILY_LIMIT,
   CLAUDE_APP_CHAT_LIMIT,
   CLAUDE_APP_SENT_LIMIT,
   handleClaudeAppChatStatus,
@@ -14,7 +15,15 @@ import {
   type ClaudeAppChatsDeps,
   type ClaudeAppChatSaveOutcome,
 } from "./claude-app-chats";
-import { claudeAppChatSaveRequestSchema, claudeAppChatSaveResponseSchema, claudeAppChatStatusResponseSchema, claudeAppSentRequestSchema } from "./contract";
+import {
+  apiErrorV2AgentCodeSchema,
+  apiErrorV2ClaudeAppChatCodeSchema,
+  claudeAppChatErrorCodeSchema,
+  claudeAppChatSaveRequestSchema,
+  claudeAppChatSaveResponseSchema,
+  claudeAppChatStatusResponseSchema,
+  claudeAppSentRequestSchema,
+} from "./contract";
 
 vi.mock("server-only", () => ({}));
 
@@ -37,10 +46,11 @@ function deps(over: Partial<ClaudeAppChatsDeps<TestUser>> = {}) {
   const recordSent = vi.fn(async () => {});
   const takeLimit = vi.fn(async (): Promise<Date | null> => null);
   const takeSentLimit = vi.fn(async (): Promise<Date | null> => null);
+  const takeDailyLimit = vi.fn(async (): Promise<Date | null> => null);
   const authenticate = vi.fn(async () => ({ user: { id: USER } }));
   const betaAllowed = vi.fn(() => true);
-  const value: ClaudeAppChatsDeps<TestUser> = { enabled: () => true, sentEnabled: () => true, authenticate, betaAllowed, takeLimit, takeSentLimit, save, remove, recordSent, ...over };
-  return { value, save, remove, recordSent, takeLimit, takeSentLimit, authenticate, betaAllowed };
+  const value: ClaudeAppChatsDeps<TestUser> = { enabled: () => true, sentEnabled: () => true, authenticate, betaAllowed, takeLimit, takeDailyLimit, takeSentLimit, save, remove, recordSent, ...over };
+  return { value, save, remove, recordSent, takeLimit, takeDailyLimit, takeSentLimit, authenticate, betaAllowed };
 }
 
 const put = (body: unknown, headers: Record<string, string> = {}) =>
@@ -85,12 +95,12 @@ describe("GET /api/v2/claude-app-chats/status", () => {
     expect((await handleClaudeAppChatStatus(get(), outside.value)).status).toBe(404);
   });
 
-  it("켜져 있으면 { save: true, max_batch: 20 }뿐이다", async () => {
+  it("켜져 있으면 { save: true, max_batch: 20, max_bytes: 262144 }뿐이다 (max_bytes = 요청 본문 상한 256 KiB: Mac이 묶음을 이 크기로 나눈다)", async () => {
     const d = deps();
     const response = await handleClaudeAppChatStatus(get(), d.value);
     expect(response.status).toBe(200);
     const body = await response.json();
-    expect(body).toEqual({ save: true, max_batch: 20 });
+    expect(body).toEqual({ save: true, max_batch: 20, max_bytes: 262_144 });
     expect(claudeAppChatStatusResponseSchema.parse(body)).toEqual(body);
     expect(d.save).not.toHaveBeenCalled();
     expect(d.takeLimit).not.toHaveBeenCalled();
@@ -158,24 +168,78 @@ describe("PUT /api/v2/claude-app-chats: 저장", () => {
     expect(await response.json()).toEqual({ chat_id: null, saved: 0, existing: 0, orphan: 1 });
   });
 
-  it("없는 · 남의 · 해제된 bridge는 404 (존재를 알리지 않는다)", async () => {
+  it("없는 · 남의 · 해제된 bridge는 404 **bridge_not_found** — 저장 gate가 꺼진 404(not_found)와 코드가 다르다 (Mac이 둘을 헷갈리지 않는다). 존재를 알리지는 않는다", async () => {
     const d = deps({ save: async () => ({ status: "not_found" }) });
     const response = await handleSaveClaudeAppChat(put(payload()), d.value);
     expect(response.status).toBe(404);
-    expect(await response.json()).toMatchObject({ error: { code: "not_found" } });
+    const body = await response.json();
+    expect(body).toMatchObject({ error: { code: "bridge_not_found" } });
+    expect(JSON.stringify(body)).not.toMatch(/b0b0b0b0|11111111/);
+    // gate가 꺼진 404는 not_found 그대로다
+    const off = await handleSaveClaudeAppChat(put(payload()), deps({ enabled: () => false }).value);
+    expect(off.status).toBe(404);
+    expect(await off.json()).toMatchObject({ error: { code: "not_found" } });
+    const status = await handleClaudeAppChatStatus(get(), deps({ betaAllowed: () => false }).value);
+    expect(await status.json()).toMatchObject({ error: { code: "not_found" } });
   });
 
-  it("속도 제한: 한도에 찼으면 429 + Retry-After, 저장 0", async () => {
+  it("사용자별 한도(저장 본문 50 MiB · 채팅 2,000개)를 넘기면 413 quota_exceeded: 아무것도 되돌리지 않는다 (글 · 제목 · ref · id 0)", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const d = deps({ save: async () => ({ status: "quota_exceeded" }) });
+    const response = await handleSaveClaudeAppChat(put(payload()), d.value);
+    expect(response.status).toBe(413);
+    const text = await response.text();
+    expect(JSON.parse(text)).toEqual({ error: { code: "quota_exceeded", message: expect.any(String) } });
+    expect(text).not.toMatch(/보낸 글|답 글|세션 제목|Read|b0b0b0b0|11111111/);
+    expect(JSON.stringify(info.mock.calls)).toContain("quota_exceeded");
+    expect(JSON.stringify(info.mock.calls)).not.toMatch(/보낸 글|답 글|세션 제목/);
+  });
+
+  it("DB가 22023(인자 모양)을 던져도 500이 아니라 400 invalid_request다 (요청 값을 되돌리지 않는다)", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const d = deps({ save: async () => Promise.reject(Object.assign(new Error("save_claude_app_chat: invalid message 보낸 글"), { code: "22023" })) });
+    const response = await handleSaveClaudeAppChat(put(payload()), d.value);
+    expect(response.status).toBe(400);
+    const text = await response.text();
+    expect(JSON.parse(text)).toMatchObject({ error: { code: "invalid_request" } });
+    expect(text).not.toMatch(/보낸 글|invalid message/);
+    expect(JSON.stringify(error.mock.calls)).not.toMatch(/보낸 글|invalid message/);
+  });
+
+  it("속도 제한: 10분 한도에 찼으면 429 + Retry-After, 저장 0 (하루 한도는 건드리지 않는다)", async () => {
     const d = deps({ takeLimit: async () => new Date(Date.now() + 90_000) });
     const response = await handleSaveClaudeAppChat(put(payload()), d.value);
     expect(response.status).toBe(429);
     expect(await response.json()).toMatchObject({ error: { code: "rate_limited" } });
     expect(Number(response.headers.get("retry-after"))).toBeGreaterThanOrEqual(89);
     expect(d.save).not.toHaveBeenCalled();
+    expect(d.takeDailyLimit).not.toHaveBeenCalled();
   });
 
-  it("속도 제한은 사용자별 10분에 120번이다", () => {
+  it("하루 한도(claude_app_chat_day, 사용자별 하루 1,000번)에 찼으면 429 + Retry-After, 저장 0. 10분 한도를 먼저 세고 그 뒤에 하루 한도를 센다", async () => {
+    const d = deps({ takeDailyLimit: async () => new Date(Date.now() + 3 * 3600_000) });
+    const response = await handleSaveClaudeAppChat(put(payload()), d.value);
+    expect(response.status).toBe(429);
+    expect(await response.json()).toMatchObject({ error: { code: "rate_limited" } });
+    expect(Number(response.headers.get("retry-after"))).toBeGreaterThanOrEqual(3 * 3600 - 2);
+    expect(d.save).not.toHaveBeenCalled();
+    expect(d.takeLimit).toHaveBeenCalledTimes(1);
+    const ok = deps();
+    expect((await handleSaveClaudeAppChat(put(payload()), ok.value)).status).toBe(200);
+    expect(ok.takeLimit.mock.invocationCallOrder[0]).toBeLessThan(ok.takeDailyLimit.mock.invocationCallOrder[0]);
+    expect(ok.takeDailyLimit.mock.invocationCallOrder[0]).toBeLessThan(ok.save.mock.invocationCallOrder[0]);
+  });
+
+  it("잘못된 본문(400)은 하루 한도도 쓰지 않는다", async () => {
+    const d = deps();
+    expect((await handleSaveClaudeAppChat(put(payload([])), d.value)).status).toBe(400);
+    expect(d.takeLimit).not.toHaveBeenCalled();
+    expect(d.takeDailyLimit).not.toHaveBeenCalled();
+  });
+
+  it("속도 제한은 사용자별 10분에 120번 · 하루 1,000번이다", () => {
     expect(CLAUDE_APP_CHAT_LIMIT).toEqual({ max: 120, windowMs: 10 * 60_000 });
+    expect(CLAUDE_APP_CHAT_DAILY_LIMIT).toEqual({ max: 1000, windowMs: 24 * 3600_000 });
   });
 
   it("잠금 경합(40001 · 40P01 · 55P03)은 409 busy_retry (500 아님), 그 밖의 오류는 500", async () => {
@@ -202,6 +266,8 @@ describe("PUT /api/v2/claude-app-chats: 본문 검증", () => {
     ["제목이 빈 글자", payload(undefined, { title: "" })],
     ["제목에 제어 글자", payload(undefined, { title: "a\nb" })],
     ["제목에 방향 바꿈 글자", payload(undefined, { title: "a‮b" })],
+    ["제목에 짝 없는 서로게이트(높은 쪽)", payload(undefined, { title: "a\uD800b" })],
+    ["제목에 짝 없는 서로게이트(낮은 쪽)", payload(undefined, { title: "a\uDC00b" })],
     ["messages 없음", { bridge_id: BRIDGE, session_ref: ref(900) }],
     ["messages 빈 배열", payload([])],
     ["21행", payload(Array.from({ length: 21 }, (_, n) => userRow(n + 1)))],
@@ -231,7 +297,7 @@ describe("PUT /api/v2/claude-app-chats: 본문 검증", () => {
     ["도구 이름이 경로", payload([userRow(1), asstRow(2, 1, { tool_names: ["/Users/me/project/a.ts"] })])],
     ["도구 이름이 명령", payload([userRow(1), asstRow(2, 1, { tool_names: ["Bash(git status)"] })])],
     ["도구 이름에 공백", payload([userRow(1), asstRow(2, 1, { tool_names: ["Read file"] })])],
-    ["도구 이름이 65자", payload([userRow(1), asstRow(2, 1, { tool_names: [long(65)] })])],
+    ["도구 이름이 129자", payload([userRow(1), asstRow(2, 1, { tool_names: [long(129)] })])],
     ["도구 이름이 빈 글", payload([userRow(1), asstRow(2, 1, { tool_names: [""] })])],
     ["도구 이름이 객체(입력 포함)", payload([userRow(1), asstRow(2, 1, { tool_names: [{ name: "Bash", input: { command: "ls" } }] })])],
     ["tool_names가 문자열", payload([userRow(1), asstRow(2, 1, { tool_names: "Read" })])],
@@ -257,11 +323,25 @@ describe("PUT /api/v2/claude-app-chats: 본문 검증", () => {
     expect((await handleSaveClaudeAppChat(new Request("https://api.example.dev/api/v2/claude-app-chats", { method: "PUT", headers: { "content-type": "application/json" }, body: ok }), d.value)).status).toBe(200);
   });
 
+  it("실제 Claude Code MCP 도구 이름은 64자를 넘는다 (mcp__<uuid 36자>__<도구>: 83자 등) — 128자까지 받는다", async () => {
+    const d = deps();
+    const mcpLong = "mcp__2efc4ad4-301d-4293-82c1-3118287aa3b4__notion-show-advanced-analysis-next-steps";
+    expect(mcpLong.length).toBeGreaterThan(64);
+    expect((await handleSaveClaudeAppChat(put(payload([userRow(1), asstRow(2, 1, { tool_names: [mcpLong, long(128)] })])), d.value)).status).toBe(200);
+    expect(d.save).toHaveBeenCalledTimes(1);
+  });
+
+  it("said_at의 소수 초는 자릿수 제한 없이 받는다 (SQL이 같은 모양을 받는다)", async () => {
+    const d = deps();
+    const response = await handleSaveClaudeAppChat(put(payload([userRow(1, { said_at: "2026-10-22T09:00:00.123456789012Z" }), userRow(2, { said_at: `2026-10-22T09:00:00.${"1".repeat(30)}+09:00` })])), d.value);
+    expect(response.status).toBe(200);
+  });
+
   it("경계값은 받는다: 20행 · 사용자 글 16,000자 · 답 글 64 KiB · 도구 이름 40개 · 제목 200자 · 줄바꿈 · 탭", async () => {
     const d = deps();
     const rows = [
       userRow(1, { body: long(16_000, "가") }),
-      asstRow(2, 1, { body: long(65_536), tool_names: Array.from({ length: 40 }, (_, i) => `mcp__server_${i}__tool-name`.slice(0, 64)) }),
+      asstRow(2, 1, { body: long(65_536), tool_names: Array.from({ length: 40 }, (_, i) => `mcp__server_${i}__tool-name`.slice(0, 128)) }),
       ...Array.from({ length: 17 }, (_, n) => asstRow(3 + n, 1, { body: "줄1\n줄2\t탭\r\n" })),
       asstRow(20, 1, { body: long(21_845, "가") }),
     ];
@@ -301,6 +381,10 @@ describe("로그에 글이 없다", () => {
     await handleSaveClaudeAppChat(put(payload()), deps({ save: async () => ({ status: "not_found" }) }).value);
     await handleSaveClaudeAppChat(put(payload()), deps({ takeLimit: async () => new Date(Date.now() + 1000) }).value);
     await handleSaveClaudeAppChat(put(payload()), deps({ save: async () => Promise.reject(secret) }).value);
+    await handleSaveClaudeAppChat(put(payload()), deps({ save: async () => ({ status: "quota_exceeded" }) }).value);
+    await handleSaveClaudeAppChat(put(payload()), deps({ takeDailyLimit: async () => new Date(Date.now() + 1000) }).value);
+    await handleSaveClaudeAppChat(put(payload()), deps({ save: async () => Promise.reject(Object.assign(secret, { code: "22023" })) }).value);
+    Object.assign(secret, { code: "XX000" });
     await handleSaveClaudeAppChat(put(payload([userRow(1, { body: "" })])), deps().value);
     await handleDeleteClaudeAppChat(del(), CHAT, deps().value);
     await handleDeleteClaudeAppChat(del(), CHAT, deps({ remove: async () => Promise.reject(secret) }).value);
@@ -448,12 +532,28 @@ describe("POST /api/v2/external-sessions/claude-app-sent", () => {
     expect(on.recordSent).toHaveBeenCalledTimes(1);
   });
 
+  it("received + uploaded:false = Mac이 올리기를 포기했다(10분 재시도 끝에 버림): 저장이 켜져 있어도 지표로 센다 (저장 함수가 못 센 받은 글). uploaded true · 생략은 저장이 켜져 있으면 세지 않는다", async () => {
+    const on = deps({ enabled: () => true });
+    expect((await handleClaudeAppSent(sent({ result: "received", uploaded: false }), on.value)).status).toBe(204);
+    expect(on.recordSent).toHaveBeenCalledExactlyOnceWith({ user: { id: USER } }, { result: "received" });
+    expect(on.takeSentLimit).toHaveBeenCalledTimes(1);
+    on.recordSent.mockClear();
+    for (const body of [{ result: "received", uploaded: true }, { result: "received" }]) expect((await handleClaudeAppSent(sent(body), on.value)).status).toBe(204);
+    expect(on.recordSent).not.toHaveBeenCalled();
+    // 저장이 꺼져 있으면 uploaded 값과 상관없이 센다 (props에는 result만 남는다)
+    const off = deps({ enabled: () => false });
+    for (const body of [{ result: "received", uploaded: false }, { result: "received", uploaded: true }, { result: "received" }]) expect((await handleClaudeAppSent(sent(body), off.value)).status).toBe(204);
+    expect((off.recordSent.mock.calls as unknown[][]).map((call) => call[1])).toEqual([{ result: "received" }, { result: "received" }, { result: "received" }]);
+  });
+
   it.each<[string, unknown]>([
     ["본문 없음", {}],
     ["result 모름", { result: "queued" }],
     ["result sent", { result: "sent" }],
     ["이유 모름", { result: "not_sent", reason: "network" }],
     ["received에 이유", { result: "received", reason: "bypass" }],
+    ["uploaded가 불리언이 아님", { result: "received", uploaded: "no" }],
+    ["not_sent에 uploaded", { result: "not_sent", reason: "bypass", uploaded: false }],
     ["글 칸", { result: "not_sent", reason: "bypass", body: "보낸 글" }],
     ["제목 칸", { result: "received", title: "세션 제목" }],
     ["session_ref 칸", { result: "received", session_ref: ref(1) }],
@@ -492,6 +592,16 @@ describe("계약 스키마", () => {
     expect(claudeAppChatSaveRequestSchema.safeParse(payload([])).success).toBe(false);
     expect(claudeAppChatSaveRequestSchema.safeParse({ ...payload(), extra: 1 }).success).toBe(false);
     expect(claudeAppSentRequestSchema.safeParse({ result: "received" }).success).toBe(true);
+    expect(claudeAppSentRequestSchema.safeParse({ result: "received", uploaded: false }).success).toBe(true);
+  });
+
+  it("오류 코드: bridge_not_found · quota_exceeded는 이 route의 오류 코드 목록(v2 에이전트 코드 + 둘)에 든다 (not_found와 따로: Mac이 gate 꺼짐과 bridge 모름을 구별한다). 옛 v2 에이전트 코드 목록(길이를 고정하는 시험이 있다)은 그대로다", () => {
+    expect([...claudeAppChatErrorCodeSchema.options]).toEqual(["bridge_not_found", "quota_exceeded"]);
+    for (const code of claudeAppChatErrorCodeSchema.options) expect(apiErrorV2ClaudeAppChatCodeSchema.options).toContain(code);
+    for (const code of apiErrorV2AgentCodeSchema.options) expect(apiErrorV2ClaudeAppChatCodeSchema.options).toContain(code);
+    expect(apiErrorV2ClaudeAppChatCodeSchema.options).toHaveLength(apiErrorV2AgentCodeSchema.options.length + claudeAppChatErrorCodeSchema.options.length);
+    for (const code of claudeAppChatErrorCodeSchema.options) expect(apiErrorV2AgentCodeSchema.options).not.toContain(code);
+    expect(apiErrorV2AgentCodeSchema.options).toContain("not_found");
   });
 
   it("응답 모양: chat_id는 uuid이거나 null, 개수는 0 이상 정수", () => {

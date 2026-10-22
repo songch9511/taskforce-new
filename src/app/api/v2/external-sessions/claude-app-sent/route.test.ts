@@ -70,6 +70,15 @@ describe("POST /api/v2/external-sessions/claude-app-sent", () => {
     expect(mocks.insert).toHaveBeenCalledExactlyOnceWith("metric_events", { user_id: USER, type: "claude_app_message_sent", props: { result: "not_sent", reason: "session_closed" } });
   });
 
+  it("received + uploaded:false(올리기를 포기)는 저장이 켜져 있어도 센다: 속도 제한을 세고 props는 { result: received }뿐이다. uploaded:true는 세지 않는다", async () => {
+    base({ CLAUDE_APP_CHATS_ENABLED: "true" });
+    expect((await call({ result: "received", uploaded: true })).status).toBe(204);
+    expect(mocks.insert).not.toHaveBeenCalled();
+    expect((await call({ result: "received", uploaded: false })).status).toBe(204);
+    expect(mocks.rpc).toHaveBeenCalledTimes(1);
+    expect(mocks.insert).toHaveBeenCalledExactlyOnceWith("metric_events", { user_id: USER, type: "claude_app_message_sent", props: { result: "received" } });
+  });
+
   it("속도 제한(claude_app_sent, 사용자별 10분 120번)을 지표 insert 전에 센다. 인증된 사용자 id로만", async () => {
     base();
     expect((await call({ result: "not_sent", reason: "bypass" })).status).toBe(204);

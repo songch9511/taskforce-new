@@ -53,9 +53,9 @@ describe("PUT claude-app-chats: 쿠키 CSRF · 인증", () => {
     expect(mocks.rpc).not.toHaveBeenCalled();
   });
 
-  it("같은 출처의 쿠키 쓰기는 통과한다 (속도 제한 확인 뒤 저장)", async () => {
+  it("같은 출처의 쿠키 쓰기는 통과한다 (속도 제한 둘 — 10분 · 하루 — 확인 뒤 저장)", async () => {
     expect((await PUT(put({ "sec-fetch-site": "same-origin" }))).status).toBe(200);
-    expect(mocks.rpc.mock.calls.map((call) => call[0])).toEqual(["take_rate_limit", "save_claude_app_chat"]);
+    expect(mocks.rpc.mock.calls.map((call) => call[0])).toEqual(["take_rate_limit", "take_rate_limit", "save_claude_app_chat"]);
   });
 
   it("Bearer는 쿠키 CSRF 검사 대상이 아니다", async () => {
