@@ -48,7 +48,9 @@ struct EdgeRailCapsuleMoreTests {
         card.present(model: model(), label: "More", capsule: capsule, over: host) {}
         let window = try #require(card.window)
         let visible = (host.screen ?? NSScreen.main)?.visibleFrame ?? host.frame
-        #expect(window.frame == RailMoreCardGeometry.frame(size: window.frame.size, capsule: capsule, visible: visible))
+        let beside = RailMoreCardGeometry.frame(size: window.frame.size, capsule: capsule, visible: visible)
+        #expect(window.frame == EdgePanelMetrics.centered(beside, centerY: host.frame.midY, visible: visible), "가로는 셋째 캡슐 왼쪽 10pt 그대로, 세로는 레일 중심선에 가운데 (OA PR-D2)")
+        #expect(window.frame.minX == beside.minX && window.frame.size == beside.size)
         #expect(window.frame.width >= RailMoreCard.minWidth)
         let hosting = try #require(window.contentView as? EdgeRailMoreCardHostingView)
         #expect(hosting.accessibilityRole() == .menu && hosting.accessibilityLabel() == "More" && hosting.isAccessibilityElement())

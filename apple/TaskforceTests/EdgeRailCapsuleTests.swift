@@ -17,15 +17,46 @@ struct EdgeRailCapsuleTests {
     // MARK: 치수 (DS 미리보기를 재서 맞춘 값)
 
     @Test func theCapsuleHeightsAreTheMeasuredDesignSystemOnes() {
-        #expect(L.bellHeight == 44 && L.thirdHeight == 146, "셋째 캡슐의 가장 큰 높이: 칸 넷 (Projects · Chats · On this Mac · More)")
-        #expect(layout(.expanded).thirdCapsuleDrawn?.height == 112, "칸이 셋이면(게이트 꺼짐) 지금 그대로 112")
-        #expect(L(mode: .expanded, bell: false, compactRingCount: 0, ringCount: 0, controls: [.allWork, .chats, .onThisMac, .more]).thirdCapsuleDrawn?.height == 146)
-        #expect(L.sessionsHeight(rings: 4, expanded: true) == 182, "링 넷 + `+`")
+        #expect(L.bellHeight == 44 && L.thirdHeight == 112, "셋째 캡슐의 가장 큰 높이: 칸 셋 (Projects · Chats · More — On this Mac 칸은 Sessions 버튼으로 합쳐졌다, OA PR-D2)")
+        #expect(layout(.expanded).thirdCapsuleDrawn?.height == 112, "칸이 셋이면 112")
+        #expect(L(mode: .expanded, bell: false, compactRingCount: 0, ringCount: 0, controls: [.allWork, .more]).thirdCapsuleDrawn?.height == 78, "칸이 둘이면(Chats 없음) 78")
+        #expect(L.sessionsHeight(rings: 4, expanded: true) == 182, "Sessions 버튼이 없는 레일: 링 넷 + `+`")
         #expect(L.sessionsHeight(rings: 2, expanded: true) == 114 && L.sessionsHeight(rings: 0, expanded: true) == 46)
         #expect(L.sessionsHeight(rings: 3, expanded: false) == 116, "접힘 셋")
         #expect(L.sessionsHeight(rings: 0, expanded: false) == 0, "링 0이면 접힌 캡슐이 없다")
-        #expect(Double(L.maxColumnHeight) == 384, "가장 큰 열 384 (44 + 6 + 182 + 6 + 146)")
+        #expect(L.sessionsHeight(rings: 4, expanded: true, sessionsButton: true) == 218, "Sessions 버튼이 있는 레일: Sessions · `+` · 링 넷 = 82 + 34 × 4 (DZ를 잰 값)")
+        #expect(L.sessionsHeight(rings: 0, expanded: true, sessionsButton: true) == 82 && L.sessionsHeight(rings: 2, expanded: true, sessionsButton: true) == 150)
+        #expect(L.sessionsHeight(rings: 3, expanded: false, sessionsButton: true) == 116, "접힘은 그대로: Sessions · `+`는 접힌다")
+        #expect(Double(L.maxColumnHeight) == 386, "가장 큰 열 386 (44 + 6 + 218 + 6 + 112)")
         #expect(L.windowHeight == L.maxColumnHeight + 8 && L.windowWidth == 4 + 44 + 6)
+    }
+
+    /// DZ 미리보기를 헤드리스 Chrome으로 잰 자리 (`oa-rail-sessions-dz`, 캡슐 위에서의 거리): Sessions@6 · `+`@40 · 링@76 · 110 · 144 · 180
+    @Test func theSessionsButtonSitsAboveThePlusAboveTheRingsAtTheMeasuredOffsets() {
+        let l = L(mode: .expanded, bell: false, compactRingCount: 3, ringCount: 4, sessionsButton: true)
+        let capsule = l.sessionsCapsuleDrawn!
+        #expect(capsule.height == 218)
+        #expect(l.sessionsButtonDrawn!.minY - capsule.minY == 6 && l.plusDrawn!.minY - capsule.minY == 40)
+        #expect((0..<4).map { l.ringDrawn($0)!.minY - capsule.minY } == [76, 110, 144, 180])
+        #expect(capsule.maxY - l.ringDrawn(3)!.maxY == 6, "아래 안쪽 6")
+        #expect(l.sessionsButtonDrawn!.size == CGSize(width: 32, height: 32) && l.sessionsButtonDrawn!.midX == capsule.midX)
+        // 접힘에서는 Sessions · `+`가 접히고 링만 남는다 (자리는 앞 구성 그대로)
+        let compact = L(mode: .compact, bell: false, compactRingCount: 3, ringCount: 4, sessionsButton: true)
+        #expect(compact.sessionsButtonDrawn == nil && compact.plusDrawn == nil && compact.shownRings == 3)
+        #expect(compact.ringDrawn(0)!.minY - compact.sessionsCapsuleDrawn!.minY == 6)
+        // 버튼이 없는 레일은 앞 구성 그대로: 링 → `+`
+        let plain = L(mode: .expanded, bell: false, compactRingCount: 3, ringCount: 4)
+        #expect(plain.sessionsButtonDrawn == nil && plain.sessionsCapsuleDrawn!.height == 182)
+    }
+
+    @Test func thePointerHitsTheSessionsButtonAsAControlAndNotThePlusOrARing() {
+        let l = L(mode: .expanded, bell: true, compactRingCount: 3, ringCount: 2, sessionsButton: true)
+        let slots = (1...2).map { RailEntry(id: UUID(uuidString: String(format: "E0000000-0000-4000-8000-%012d", $0))!, title: "T\($0)", kind: .running, state: .inProgress) }
+        func center(_ rect: CGRect?) -> CGPoint { CGPoint(x: rect!.midX, y: rect!.midY) }
+        #expect(l.hit(center(l.sessionsButtonFrame), slots: slots) == L.Hit(control: .sessions))
+        #expect(l.hit(center(l.plusFrame), slots: slots).plus)
+        #expect(l.hit(center(l.ringFrame(0)), slots: slots).item == slots[0].id && l.hit(center(l.ringFrame(1)), slots: slots).item == slots[1].id)
+        #expect(l.hit(center(l.controlFrame(.chats)), slots: slots).control == .chats)
     }
 
     @Test func theColumnIsAlwaysCenteredInTheWindowWhateverIsShown() {
@@ -155,11 +186,13 @@ struct EdgeRailCapsuleTests {
 
     @Test func theExpandedRailFrameIsTheRealColumnForTheAssistantWindow() {
         let frame = L.expandedRailFrame(screenMaxX: 1440, midY: 450, bell: true, rings: 4)
-        #expect(frame.minX == 1440 - 6 - 44 && frame.width == 44 && frame.height == 384 && abs(frame.midY - 450) < 0.001)
+        #expect(frame.minX == 1440 - 6 - 44 && frame.width == 44 && frame.height == 386 && abs(frame.midY - 450) < 0.001, "bell 44 + 6 + (Sessions · + · 링 넷) 218 + 6 + 112")
         let small = L.expandedRailFrame(screenMaxX: 1440, midY: 450, bell: false, rings: 0)
-        #expect(small.height == 46 + 6 + 146 && abs(small.midY - 450) < 0.001, "열이 줄면 가운데에서 줄어든다")
-        let threeControls = L.expandedRailFrame(screenMaxX: 1440, midY: 450, bell: false, rings: 0, controls: [.allWork, .chats, .more])
-        #expect(abs(threeControls.height - (46 + 6 + 112)) < 0.001, "칸이 셋인 레일의 실제 열")
+        #expect(small.height == 82 + 6 + 112 && abs(small.midY - 450) < 0.001, "열이 줄면 가운데에서 줄어든다 (Sessions · + 82)")
+        let twoControls = L.expandedRailFrame(screenMaxX: 1440, midY: 450, bell: false, rings: 0, controls: [.allWork, .more])
+        #expect(abs(twoControls.height - (82 + 6 + 78)) < 0.001, "칸이 둘인 레일의 실제 열")
+        let noButton = L.expandedRailFrame(screenMaxX: 1440, midY: 450, bell: false, rings: 0, sessionsButton: false)
+        #expect(abs(noButton.height - (46 + 6 + 112)) < 0.001, "Sessions 버튼이 없는 레일(앞 구성)")
     }
 }
 

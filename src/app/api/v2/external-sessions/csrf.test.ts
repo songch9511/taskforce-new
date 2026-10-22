@@ -8,6 +8,7 @@ vi.mock("@/lib/supabase/server", () => ({ createClient: mocks.createCookieClient
 vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: mocks.admin }));
 vi.mock("@supabase/supabase-js", async (original) => ({ ...(await original<typeof import("@supabase/supabase-js")>()), createClient: mocks.createSupabaseClient }));
 
+import { POST as claudeAppOpenedPost } from "./claude-app-opened/route";
 import { PUT } from "./route";
 import { POST as shownPost } from "./shown/route";
 
@@ -73,5 +74,20 @@ describe("POST external-sessions/shown: 쿠키 CSRF · 인증", () => {
   it("같은 출처의 쿠키와 Bearer는 통과한다 (204)", async () => {
     expect((await shownPost(post({ "sec-fetch-site": "same-origin" }))).status).toBe(204);
     expect((await shownPost(post({ authorization: "Bearer token-123", "sec-fetch-site": "cross-site" }))).status).toBe(204);
+  });
+});
+
+describe("POST external-sessions/claude-app-opened: 쿠키 CSRF · 인증", () => {
+  const post = (headers: Record<string, string>) =>
+    new Request("https://api.example.test/api/v2/external-sessions/claude-app-opened", { method: "POST", headers: { "content-type": "application/json", ...headers }, body: "{}" });
+
+  it("다른 사이트에서 온 쿠키 쓰기는 로그인하지 않은 것으로 본다 (401, 저장 0)", async () => {
+    for (const headers of CROSS_SITE) expect((await claudeAppOpenedPost(post(headers))).status, JSON.stringify(headers)).toBe(401);
+    expect(mocks.admin).not.toHaveBeenCalled();
+  });
+
+  it("같은 출처의 쿠키와 Bearer는 통과한다 (204)", async () => {
+    expect((await claudeAppOpenedPost(post({ "sec-fetch-site": "same-origin" }))).status).toBe(204);
+    expect((await claudeAppOpenedPost(post({ authorization: "Bearer token-123", "sec-fetch-site": "cross-site" }))).status).toBe(204);
   });
 });

@@ -65,6 +65,8 @@ export const AGENT_EVENTS: readonly AgentEventSpec[] = [
   { type: "external_sessions_shown", sources: [{ kind: "ts", file: "src/lib/api/external-sessions.ts" }], dims: [], activity: true },
   // 외부 세션 이어받기로 세션 행이 새로 생겼을 때(OA 외부 세션 PR2s): 사용자가 Resume here를 확인한 일이라 활동이다. attach_agent_session이 세션 · 대화와 같은 트랜잭션에서 남기고(대화만 다시 만든 호출은 세지 않는다) props는 adapter뿐이다
   { type: "session_attached", sources: [sql("attach_agent_session")], dims: [], activity: true },
+  // 사용자가 Claude 데스크톱 세션 보기(레일 링 · Sessions의 줄)를 연 날 (하루 한 번, OA PR-D2). 앱이 POST /api/v2/external-sessions/claude-app-opened로 알리고 route가 서버 권한으로 남긴다. 종류만 (props 0)이라 dims가 없다
+  { type: "claude_app_session_opened", sources: [{ kind: "ts", file: "src/lib/api/external-sessions.ts" }], dims: [], activity: true },
 ];
 
 // ─── 결제 · 키 이벤트 등록부 (OA 결제 PR-A, 20261129000000) ───

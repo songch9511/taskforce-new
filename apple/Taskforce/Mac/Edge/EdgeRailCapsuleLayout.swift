@@ -4,10 +4,13 @@ import Foundation
 import TaskforceUI
 
 /// 캡슐 레일의 자리 (OA U3, 디자인 EdgeRail · `bundle.css` `.tf-edge` · `.tf-capsule` · `.tf-rest-bar`). 창 좌표, 위가 0.
-/// 레일은 화면 오른쪽 가운데에 검은 캡슐의 열로 떠 있다: ① Taskforce bell ② 살아 있는 세션 링(넷까지)과 New session `+` ③ Projects · Chats · More.
+/// 레일은 화면 오른쪽 가운데에 검은 캡슐의 열로 떠 있다: ① Taskforce bell ② Sessions 버튼 · New session `+` · 살아 있는 세션 링(넷까지) ③ Projects · Chats · More.
 /// 그리기와 포인터 판정이 **같은 값**을 쓴다 (이 구조체의 frame들이 곧 판정이다). 모양은 바뀌지 않고 접힘 ↔ 펼침은 열 전체의 transform(.72배, 오른쪽 가운데 기준)뿐이다.
 /// 숫자는 DS 미리보기를 헤드리스 브라우저로 재서 맞췄다: 캡슐 44 · 칸 32 · 칸 사이 2 · 안쪽 6 · 캡슐 사이 6, 세션 캡슐은 "넘치는 칸" 덩어리에 위 2가 더 있어
-/// 링 n개의 접힌 높이 = 14 + 34n, 펼친 높이 = 46 + 34n (넷 + `+` = 182), 셋째 캡슐 112(칸 셋) · 146(칸 넷, 외부 세션 게이트), bell 캡슐 44. 열은 늘 창의 세로 가운데에서 자란다.
+/// 링 n개의 접힌 높이 = 14 + 34n.
+/// **Sessions 버튼이 있는 레일**(OA PR-D2, DZ 승인 2026-10-22 `oa-rail-sessions-dz` 배치 A: Sessions → + → 링)은 Sessions · `+`가 링 위에 있고 접힌 레일에서는 둘 다 접힌다 (링만 남는다).
+/// 그 레일의 펼친 높이는 DZ 미리보기를 헤드리스 브라우저로 잰 값이다: 82 + 34n (넷 = 218): Sessions@6 · `+`@40 · 링@76 · 110 · 144 · 180 (머리 덩어리 아래 2, 넷째 링 위 2).
+/// Sessions 버튼이 없는 레일(앞 구성)은 펼친 높이 46 + 34n (넷 + `+` = 182) 그대로다. 셋째 캡슐은 112(칸 셋), bell 캡슐 44. 열은 늘 창의 세로 가운데에서 자란다.
 struct EdgeRailCapsuleLayout: Equatable {
     enum Mode: Equatable {
         /// 살아 있는 링 0 · 요청 0 · 펼침 아님: 막대 하나
@@ -37,27 +40,34 @@ struct EdgeRailCapsuleLayout: Equatable {
     /// 링은 넷까지 (펼침), 접힘에서는 셋까지
     static let expandedRings = 4
     static let compactRings = 3
-    /// "넘치는 칸" 덩어리(링 넷째 · `+`)의 위쪽 안쪽 2 (DS `.tf-capsule.is-sessions … padding-top: 2px`)
+    /// "넘치는 칸" 덩어리(링 넷째 · Sessions 버튼이 없는 레일의 `+`)의 위쪽 안쪽 2 (DS `.tf-capsule.is-sessions … padding-top: 2px`)
     static let moreInset: CGFloat = 2
+    /// Sessions 버튼 · `+` 덩어리(머리 덩어리)의 아래 안쪽 2 (DZ `.tf-capsule.is-sessions > .dz-head > div { padding: 0 0 2px }`): 첫 링이 그만큼 더 내려온다
+    static let headInset: CGFloat = 2
 
     /// 창 폭: 그림자 여유 + 캡슐 + 화면 끝까지 6
     static let windowWidth = room + width + inset
-    /// 가장 큰 열 (bell + 링 넷 · `+` + 셋째 캡슐)
+    /// 가장 큰 열 (bell + Sessions · `+` · 링 넷 + 셋째 캡슐)
     static var maxColumnHeight: CGFloat {
-        bellHeight + inset + sessionsHeight(rings: expandedRings, expanded: true) + inset + thirdHeight
+        bellHeight + inset + sessionsHeight(rings: expandedRings, expanded: true, sessionsButton: true) + inset + thirdHeight
     }
 
     static var windowHeight: CGFloat { maxColumnHeight + 2 * room }
     static var windowSize: CGSize { CGSize(width: windowWidth, height: windowHeight) }
 
     static let bellHeight = padding * 2 + item
-    /// 셋째 캡슐의 가장 큰 높이: Projects · Chats · On this Mac · More 넷 (외부 세션 게이트가 꺼져 있으면 셋이라 이보다 낮다 — 창은 늘 가장 큰 열이 들어가는 크기다)
-    static let thirdHeight = padding * 2 + 4 * item + 3 * gap
+    /// 셋째 캡슐의 가장 큰 높이: Projects · Chats · More 셋 (Chats가 꺼져 있으면 둘이라 이보다 낮다 — 창은 늘 가장 큰 열이 들어가는 크기다. On this Mac은 Sessions 버튼으로 합쳐졌다)
+    static let thirdHeight = padding * 2 + 3 * item + 2 * gap
 
-    /// 세션 캡슐의 높이: 접힘은 링 n개(≤ 3), 펼침은 링 n개(≤ 4) + `+`. 링 0의 접힘은 캡슐이 없다 (0)
-    static func sessionsHeight(rings: Int, expanded: Bool) -> CGFloat {
+    /// 세션 캡슐의 높이: 접힘은 링 n개(≤ 3), 펼침은 링 n개(≤ 4) + `+`. 링 0의 접힘은 캡슐이 없다 (0).
+    /// `sessionsButton`: 펼침에서 Sessions 버튼 · `+`가 링 위에 선다 (DZ를 잰 값: 82 + 34n). 접힘은 그대로다 (둘은 접힌다)
+    static func sessionsHeight(rings: Int, expanded: Bool, sessionsButton: Bool = false) -> CGFloat {
         let n = CGFloat(rings)
-        if expanded { return 2 * padding + (n + 1) * item + n * gap + moreInset }
+        if expanded {
+            // 82 + 34n: 안쪽 6 · Sessions · `+`(칸 사이 2) · 머리 덩어리 아래 2 · 링마다 (사이 2 + 32) · 비어 있는 넘치는 칸 덩어리 앞의 사이 2 · 안쪽 6
+            if sessionsButton { return 2 * padding + (n + 2) * item + (n + 1) * gap + headInset + gap }
+            return 2 * padding + (n + 1) * item + n * gap + moreInset
+        }
         return rings == 0 ? 0 : 2 * padding + n * item + (n - 1) * gap + gap + moreInset
     }
 
@@ -72,6 +82,8 @@ struct EdgeRailCapsuleLayout: Equatable {
     let ringCount: Int
     /// 셋째 캡슐의 칸 (Projects · Chats · More)
     var controls: [EdgeShellModel.Control] = EdgeShellModel.Control.defaultControls
+    /// 세션 캡슐 맨 위에 Sessions 버튼이 있다 (OA PR-D2): 펼침에서 Sessions → `+` → 링. 접힘에서는 둘이 접힌다. 없으면 앞 구성 그대로(링 → `+`)
+    var sessionsButton = false
 
     var expanded: Bool { mode == .expanded }
 
@@ -99,7 +111,7 @@ struct EdgeRailCapsuleLayout: Equatable {
 
     private var thirdCapsuleHeight: CGFloat { Self.padding * 2 + CGFloat(thirdControls.count) * Self.item + CGFloat(max(thirdControls.count - 1, 0)) * Self.gap }
 
-    private var sessionsCapsuleHeight: CGFloat { Self.sessionsHeight(rings: shownRings, expanded: expanded) }
+    private var sessionsCapsuleHeight: CGFloat { Self.sessionsHeight(rings: shownRings, expanded: expanded, sessionsButton: sessionsButton) }
 
     /// 열의 높이 (보이는 캡슐들 + 캡슐 사이)
     var columnHeight: CGFloat {
@@ -140,18 +152,30 @@ struct EdgeRailCapsuleLayout: Equatable {
         bellCapsuleDrawn.map { CGRect(x: itemX, y: $0.minY + Self.padding, width: Self.item, height: Self.item) }
     }
 
+    /// 첫 링이 시작하는 곳까지 캡슐 위에서의 거리 (줄이기 전): Sessions 버튼이 있는 펼침은 Sessions · `+` 둘과 머리 덩어리 아래 2만큼 더 내려온다. 접힘은 둘이 접혀 있다
+    private var ringsTop: CGFloat {
+        Self.padding + (expanded && sessionsButton ? 2 * (Self.item + Self.gap) + Self.headInset : 0)
+    }
+
     /// 링 i의 자리 (줄이기 전). 셋까지는 칸 순서대로, 넷째는 "넘치는 칸" 덩어리 안이다
     func ringDrawn(_ index: Int) -> CGRect? {
         guard let capsule = sessionsCapsuleDrawn, index >= 0, index < shownRings else { return nil }
         let step = Self.item + Self.gap
-        let y = index < 3 ? capsule.minY + Self.padding + CGFloat(index) * step : capsule.minY + Self.padding + 3 * step + Self.moreInset
+        let y = capsule.minY + ringsTop + CGFloat(index) * step + (index < 3 ? 0 : Self.moreInset)
         return CGRect(x: itemX, y: y, width: Self.item, height: Self.item)
     }
 
-    /// New session `+` (줄이기 전, 펼침에만): 링 뒤
+    /// Sessions 버튼 (줄이기 전, Sessions 버튼이 있는 레일의 펼침에만): 세션 캡슐 맨 위 칸
+    var sessionsButtonDrawn: CGRect? {
+        guard expanded, sessionsButton, let capsule = sessionsCapsuleDrawn else { return nil }
+        return CGRect(x: itemX, y: capsule.minY + Self.padding, width: Self.item, height: Self.item)
+    }
+
+    /// New session `+` (줄이기 전, 펼침에만): Sessions 버튼이 있으면 그 바로 아래(링 위), 없으면 링 뒤
     var plusDrawn: CGRect? {
         guard expanded, let capsule = sessionsCapsuleDrawn else { return nil }
         let step = Self.item + Self.gap
+        if sessionsButton { return CGRect(x: itemX, y: capsule.minY + Self.padding + step, width: Self.item, height: Self.item) }
         let n = shownRings
         let y = capsule.minY + Self.padding + CGFloat(min(n, 3)) * step + Self.moreInset + (n >= 4 ? step : 0)
         return CGRect(x: itemX, y: y, width: Self.item, height: Self.item)
@@ -186,6 +210,7 @@ struct EdgeRailCapsuleLayout: Equatable {
     var thirdCapsuleFrame: CGRect? { thirdCapsuleDrawn.map(scaled) }
     var bellFrame: CGRect? { bellItemDrawn.map(scaled) }
     var plusFrame: CGRect? { plusDrawn.map(scaled) }
+    var sessionsButtonFrame: CGRect? { sessionsButtonDrawn.map(scaled) }
     var restBarFrame: CGRect? { restBarDrawn.map(scaled) }
 
     func ringFrame(_ index: Int) -> CGRect? { ringDrawn(index).map(scaled) }
@@ -223,6 +248,7 @@ struct EdgeRailCapsuleLayout: Equatable {
     func hit(_ point: CGPoint, slots: [RailEntry]) -> Hit {
         guard hitsRail(point), mode != .rest else { return Hit() }
         if let bell = bellFrame, Self.circleContains(bell, point) { return Hit(bell: true) }
+        if let button = sessionsButtonFrame, Self.circleContains(button, point) { return Hit(control: .sessions) }
         for (index, entry) in slots.enumerated() {
             if let frame = ringFrame(index), Self.circleContains(frame, point) { return Hit(item: entry.id) }
         }
@@ -245,12 +271,12 @@ struct EdgeRailCapsuleLayout: Equatable {
     }
 
     /// 화면 좌표(아래가 0)의 펼친 레일 바깥 모양: Assistant 창이 피하는 자리의 왼쪽 가장자리 · 위 가장자리. 펼친 열이 가운데에서 자랄 때의 가장 큰 모양이다
-    /// 셋째 캡슐은 가장 큰 모양(칸 넷: 외부 세션 게이트)으로 센다 — 창이 레일을 덜 피하는 쪽으로 틀리지 않게 (게이트가 꺼져 칸이 셋이면 34pt 넉넉할 뿐이다)
+    /// 셋째 캡슐은 가장 큰 모양(칸 셋)으로, 세션 캡슐은 Sessions 버튼이 있는 모양으로 센다 — 창이 레일을 덜 피하는 쪽으로 틀리지 않게 (칸 둘 · 버튼 없음이면 조금 넉넉할 뿐이다)
     static func expandedRailFrame(
         screenMaxX: CGFloat, midY: CGFloat, bell: Bool, rings: Int,
-        controls: [EdgeShellModel.Control] = [.allWork, .chats, .onThisMac, .more]
+        controls: [EdgeShellModel.Control] = [.allWork, .chats, .more], sessionsButton: Bool = true
     ) -> CGRect {
-        let layout = EdgeRailCapsuleLayout(mode: .expanded, bell: bell, compactRingCount: 0, ringCount: rings, controls: controls)
+        let layout = EdgeRailCapsuleLayout(mode: .expanded, bell: bell, compactRingCount: 0, ringCount: rings, controls: controls, sessionsButton: sessionsButton)
         let window = windowFrame(screenMaxX: screenMaxX, midY: midY)
         let top = layout.bellCapsuleDrawn?.minY ?? layout.sessionsCapsuleDrawn?.minY ?? 0
         let bottom = layout.thirdCapsuleDrawn?.maxY ?? 0

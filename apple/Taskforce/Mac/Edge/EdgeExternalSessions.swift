@@ -54,82 +54,125 @@ struct LiveClaudeAppOpener: ClaudeAppOpening {
     }
 }
 
-/// 패널 본문: 처음 읽는 동안 "Checking…", 비면 한 줄, Claude Code 없음 · 읽기 실패는 버튼 하나, 그 밖은 폴더별 묶음 (묶음 머리 = Taskforce 프로젝트 폴더면 프로젝트 이름, 아니면 폴더 이름)
-struct ExternalSessionsPanelBody: View {
+/// Sessions 패널 본문 (OA PR-D2, DZ 승인 2026-10-22 `oa-rail-sessions-dz`): 출처별 두 절 — "Taskforce"(이슈의 세션: 도는 것 · 끝난 것 · 쉬는 것 · 닫힌 것)와 "On this Mac"(이 Mac의 Claude 세션).
+/// 링 있는 줄은 늘 보이고, 쉬는 줄 · 끝난 줄만 절마다 셋 뒤로 접는다 (Show all · Show less). 빈 절은 머리째 없고 두 절이 모두 비면 "No sessions".
+/// On this Mac의 읽는 중 · 못 읽음 · Claude Code 없음은 그 절 안의 한 줄이다 (Taskforce 세션은 그대로 보인다). 줄 순서 · 접기 · 문구는 Kit의 `SessionsPanelRules`가 정한다
+struct SessionsPanelBody: View {
     @Bindable var shell: EdgeShellModel
-    @State private var expanded: Set<String> = []
+    @State private var taskforceExpanded = false
+    @State private var macExpanded = false
 
     var body: some View {
-        if let store = shell.externalSessions {
-            content(store)
+        // 시각("2 min ago")이 열려 있는 동안 흐르게 30초마다 다시 그린다
+        TimelineView(.periodic(from: .now, by: 30)) { context in
+            content(now: context.date)
         }
+    }
+
+    /// On this Mac 절이 무엇을 보이나
+    enum MacPlan: Equatable {
+        /// 절이 없다 (목록이 없다 · 보일 줄이 없다 · 최근 세션이 없다)
+        case absent
+        case checking
+        case notInstalled
+        case failed
+        case rows
+    }
+
+    /// 패널이 무엇을 보이나 (순수한 판단: 시험이 단계마다 확인한다)
+    struct Plan: Equatable {
+        /// 두 절이 모두 비어 패널 전체가 "No sessions"
+        var noSessions: Bool
+        var taskforce: Bool
+        var mac: MacPlan
+    }
+
+    /// - phase: On this Mac 목록의 단계 (목록이 없으면 nil) · taskforceRead: Taskforce 세션을 한 번이라도 읽었다. **아직 읽는 중인 절이 있으면 비었다고 하지 않는다** ("No sessions"는 두 절 모두 읽은 뒤에만)
+    static func plan(
+        taskforce: SessionsSection<SessionsTaskforceRow>, mac: SessionsSection<SessionsMacRow>, phase: ExternalSessionsStore.Phase?, taskforceRead: Bool
+    ) -> Plan {
+        let settled = taskforceRead && (phase.map { $0 == .empty || $0 == .ready } ?? true)
+        if settled, SessionsPanelRules.isEmpty(taskforce: taskforce, mac: mac) { return Plan(noSessions: true, taskforce: false, mac: .absent) }
+        let macPlan: MacPlan
+        switch phase {
+        case nil, .empty?: macPlan = .absent
+        case .idle?, .checking?: macPlan = .checking
+        case .notInstalled?: macPlan = .notInstalled
+        case .failed?: macPlan = .failed
+        case .ready?: macPlan = mac.isEmpty ? .absent : .rows
+        }
+        return Plan(noSessions: false, taskforce: !taskforce.isEmpty, mac: macPlan)
     }
 
     @ViewBuilder
-    private func content(_ store: ExternalSessionsStore) -> some View {
-        switch store.phase {
-        case .idle, .checking:
-            Text(ExternalSessionCopy.checking)
-                .font(TFFont.callout)
-                .foregroundStyle(TFColor.textSecondary)
-                .padding(EdgeInsets(top: 10, leading: 10, bottom: 10, trailing: 10))
-                .frame(maxWidth: .infinity, alignment: .leading)
-        case .empty:
-            PanelEmptyState(title: ExternalSessionCopy.empty) {}
+    private func content(now: Date) -> some View {
+        let store = shell.externalSessionsVisible ? shell.externalSessions : nil
+        let taskforce = SessionsPanelRules.taskforce(
+            shell.issues?.sessions.items ?? [], issueNumber: { shell.issues?.numbers.number(for: $0) }, now: now, expanded: taskforceExpanded
+        )
+        let mac = macSection(store, now: now)
+        let plan = Self.plan(taskforce: taskforce, mac: mac, phase: store?.phase, taskforceRead: shell.issues?.sessions.hasRead ?? true)
+        if plan.noSessions {
+            PanelEmptyState(title: SessionsPanelCopy.noSessions) {}
+        } else {
+            VStack(alignment: .leading, spacing: 0) {
+                if plan.taskforce {
+                    SessionsSectionHeader(SessionsPanelCopy.taskforce, togglesFold: taskforce.togglesFold, expanded: taskforce.expanded) { taskforceExpanded.toggle() }
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(taskforce.rows) { row in
+                            SessionsTaskforceRowView(row, current: shell.sessionPanelID == row.id) { shell.openSessionRow(row.id) }
+                        }
+                    }
+                }
+                if let store { onThisMac(store, plan: plan.mac, section: mac) }
+            }
+        }
+    }
+
+    /// On this Mac 절의 줄: 훑은 줄이 있을 때만 (`.ready`)
+    private func macSection(_ store: ExternalSessionsStore?, now: Date) -> SessionsSection<SessionsMacRow> {
+        guard let store, store.phase == .ready else { return SessionsSection(rows: [], hiddenCount: 0, togglesFold: false, expanded: false) }
+        return SessionsPanelRules.onThisMac(
+            store.rows, live: { shell.desktop?.liveStatus(for: $0) }, now: now, expanded: macExpanded,
+            notice: shell.openNoticeSessionID.map { ($0, ExternalSessionCopy.runningInTerminal) }, busy: shell.openingSessionIDs
+        )
+    }
+
+    @ViewBuilder
+    private func onThisMac(_ store: ExternalSessionsStore, plan: MacPlan, section: SessionsSection<SessionsMacRow>) -> some View {
+        switch plan {
+        case .absent:
+            EmptyView()
+        case .checking:
+            SessionsSectionHeader(SessionsPanelCopy.onThisMac, togglesFold: false, expanded: false) {}
+            SessionsSectionNote(ExternalSessionCopy.checking)
         case .notInstalled:
-            PanelEmptyState(title: ExternalSessionCopy.notInstalled) {
+            SessionsSectionHeader(SessionsPanelCopy.onThisMac, togglesFold: false, expanded: false) {}
+            SessionsSectionNote(ExternalSessionCopy.notInstalled) {
                 // Settings › Your agents (Connections 탭)
-                Button(ExternalSessionCopy.getClaudeCode) { shell.onConnect() }.buttonStyle(TFButtonStyle(.primary, size: .md))
+                Button(ExternalSessionCopy.getClaudeCode) { shell.onConnect() }.buttonStyle(TFButtonStyle(.secondary, size: .sm))
             }
         case .failed:
-            PanelEmptyState(title: ExternalSessionCopy.couldNotCheckSessions) {
-                Button(ExternalSessionCopy.tryAgain) { store.retry() }.buttonStyle(TFButtonStyle(.secondary, size: .md))
+            SessionsSectionHeader(SessionsPanelCopy.onThisMac, togglesFold: false, expanded: false) {}
+            SessionsSectionNote(ExternalSessionCopy.couldNotCheckSessions) {
+                Button(ExternalSessionCopy.tryAgain) { store.retry() }.buttonStyle(TFButtonStyle(.secondary, size: .sm))
             }
-        case .ready:
-            // 시각("2 min ago")이 열려 있는 동안 흐르게 30초마다 다시 그린다
-            TimelineView(.periodic(from: .now, by: 30)) { context in
-                list(store.rows, now: context.date)
-            }
-        }
-    }
-
-    private func list(_ rows: [ExternalSessionRow], now: Date) -> some View {
-        let groups = ExternalSessionGrouping.groups(rows, projectName: { shell.externalProjectName(forFolder: $0) })
-        return VStack(alignment: .leading, spacing: 0) {
-            ForEach(groups) { group in
-                let open = expanded.contains(group.id)
-                if let name = group.name {
-                    GroupLabel(name) {
-                        if group.rows.count > ExternalSessionGrouping.visibleLimit {
-                            QuietLink(open ? ExternalSessionCopy.showLess : ExternalSessionCopy.showAll) { toggle(group.id) }
-                        }
-                    }
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(ExternalSessionGrouping.visibleRows(group, expanded: open)) { row in
-                        // 여는 동안(`isBusy`)의 "Opening…" 글자와 비활성은 줄 그림이 `content`에서 스스로 정한다
-                        ExternalSessionLineView(content: shell.externalLine(row, now: now)) { action in
-                            switch action {
-                            case .openInClaude: shell.openInClaude(row)
-                            }
+        case .rows:
+            SessionsSectionHeader(SessionsPanelCopy.onThisMac, togglesFold: section.togglesFold, expanded: section.expanded) { macExpanded.toggle() }
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(section.rows) { mac in
+                    // 여는 동안(`isBusy`)의 "Opening…" 글자와 비활성은 줄 그림이 `content`에서 스스로 정한다
+                    ExternalSessionLineView(
+                        content: mac.line, ring: mac.ring, current: shell.desktopPanelID == mac.id,
+                        onOpen: mac.opensSession ? { shell.openDesktopSession(mac.id, from: .list) } : nil
+                    ) { action in
+                        switch action {
+                        case .openInClaude: shell.openInClaude(mac.row)
                         }
                     }
                 }
             }
         }
-    }
-
-    private func toggle(_ id: String) {
-        if expanded.contains(id) { expanded.remove(id) } else { expanded.insert(id) }
-    }
-}
-
-extension EdgeShellModel {
-    /// 묶음 폴더가 Taskforce 프로젝트의 작업 폴더와 같으면 그 프로젝트 이름 (보관한 프로젝트는 뺀다). 아니면 nil → 폴더 이름
-    func externalProjectName(forFolder path: String) -> String? {
-        guard let id = projectFolders().first(where: { $0.value == path })?.key,
-              let context = contextList.first(where: { $0.id == id && $0.status == .active }) else { return nil }
-        return context.name
     }
 }
 
@@ -283,10 +326,61 @@ enum ExternalSessionsRuntime {
     }
 }
 
+extension EdgeShellModel {
+    /// 실제 앱의 세션 보기 대화 읽기: 이 Mac의 `~/.claude` 기록을 읽기만 한다 (`ClaudeAppTranscriptReader`). 글 · 경로를 로그에 남기지 않는다.
+    /// (경로 글자는 이 파일에 둔다: 셸 모델 파일의 글자에는 제품 이름 금지 검사가 걸려 있다)
+    static let liveConversation: @MainActor (String, String?) -> ClaudeAppConversation = { id, cwd in
+        ClaudeAppConversation(sessionID: id, cwd: cwd, source: ClaudeAppTranscriptReader(claudeDirectory: NSHomeDirectory() + "/.claude", log: BridgeOSLog()))
+    }
+}
+
+/// Claude 데스크톱 세션을 레일에 올리는 이 Mac의 값들 (OA PR-D2): 등록 폴더(`~/.claude/sessions`) 폴러 + `claude agents --json` 맞춰 보기 + 안 연 끝남 표시 + 하루 한 번 지표.
+/// 목록(`ExternalSessionsStore`)과 같은 게이트다: 목록이 없으면(새 Issues 화면 ∧ BridgeFlag ∧ 서비스 · 계정 경계) 데스크톱 링도 세션 보기도 없다. 폴은 컨트롤러가 목록이 보이는 동안만 돈다 (`EdgeShellController.followDesktop`)
+@MainActor
+enum ClaudeAppRuntime {
+    struct Made {
+        let sessions: ClaudeAppSessionsModel
+        let opened: ClaudeAppOpenedMetric
+    }
+
+    /// - home: 시험은 임시 홈을 넘긴다. 실제 앱은 사용자의 홈 (`~/.claude`는 읽기만 한다)
+    static func make(
+        services: AppServices?, scope: AccountScope?, externalSessions: ExternalSessionsStore?, home: String = NSHomeDirectory(), done: any ClaudeAppDoneStore = doneStore()
+    ) -> Made? {
+        guard externalSessions != nil, let services, let scope else { return nil }
+        let log = BridgeOSLog()
+        let agents = ClaudeAgentsLister.live(locator: .standard(home: home), log: log)
+        let poller = ClaudeAppStatusPoller(sessionsDirectory: home + "/.claude/sessions", agents: { await agents.list() }, log: log)
+        let sessions = ClaudeAppSessionsModel(poll: { await poller.poll() }, scope: scope, done: done)
+        let api = services.api
+        let opened = ClaudeAppOpenedMetric(send: { (try? await api.claudeAppSessionOpened()) != nil }, scope: scope, log: log)
+        return Made(sessions: sessions, opened: opened)
+    }
+
+    /// 안 연 끝남 표시의 저장: 시험 호스트 · 견본은 메모리뿐이다 (실사용 앱의 설정을 건드리지 않는다)
+    static func doneStore() -> any ClaudeAppDoneStore {
+        #if DEBUG
+        if SampleData.isEnabled { return InMemoryClaudeAppDoneStore() }
+        #endif
+        return TestHost.isTestHost() ? InMemoryClaudeAppDoneStore() : UserDefaultsClaudeAppDoneStore()
+    }
+
+    /// 레일 링(Taskforce 세션 · 이슈)의 안 연 끝남 표시의 저장: 같은 규칙
+    static func railDoneStore() -> any RailDoneStore {
+        #if DEBUG
+        if SampleData.isEnabled { return InMemoryRailDoneStore() }
+        #endif
+        return TestHost.isTestHost() ? InMemoryRailDoneStore() : UserDefaultsRailDoneStore()
+    }
+}
+
 #if DEBUG
 /// 디자인 비교용 견본 (Debug 전용, Release 바이너리에 없다): `-TF_EDGE_SHELL YES -TFSampleData -TF_S3B YES -TF_U2 YES -TFEdgeSnapshot <폴더> -TFEdgeSnapshotIssues -TFEdgeSnapshotExternalSessions`
-/// (+ `-TFSnapshotDark`). 이 Mac의 실제 Claude 기록 · 프로세스 · 서버를 읽지 않는다: 줄은 모두 만든 값이다 (`mac-edge-external-<이름>.png`).
-/// 남기는 것: rail-dot · rail-open · mixed(DZ-02 맨 위) · many(17줄, Show all/Show less) · blocked(막힌 줄 모두) · long(긴 제목) · empty · not-installed · failed · checking
+/// (+ `-TFSnapshotDark`). 이 Mac의 실제 Claude 기록 · 프로세스 · 서버를 읽지 않는다: 줄 · 살아 있는 데스크톱 세션 · 대화는 모두 만든 값이다 (`mac-edge-sessions-<이름>.png`).
+/// 남기는 것: rail-rest · rail-expanded(Sessions · + · 링) · panel-mixed(두 절) · panel-projects · more-card · centered-rail-low/high/home(레일을 옮겨 본다) ·
+/// centered-short-rail-short-panel/panel/tall-panel(링 하나, 패널 높이 셋) — 모두 레일 전체의 세로 가운데 (`-TFEdgeSnapshotTopPlacement`를 더하면 옛 위 맞춤), 숫자는 로그의 `PLACEMENT` 줄 ·
+/// panel-fold(Show all) · panel-blocked · panel-long · panel-checking · panel-failed · panel-not-installed · panel-empty(No sessions),
+/// claude-running · claude-approval(띠) · claude-done · claude-earlier(Show earlier) · claude-beside-sessions(Sessions 왼쪽) · claude-failed · claude-closed
 @MainActor
 enum ExternalSessionSnapshot {
     nonisolated static var isEnabled: Bool { ProcessInfo.processInfo.arguments.contains("-TFEdgeSnapshotExternalSessions") }
@@ -319,6 +413,10 @@ enum ExternalSessionSnapshot {
                 row(6, "가격 페이지 FAQ 문구 다듬기", group: "life-design-site", status: .available, client: .claudeDesktop, minutes: 60 * 30),
                 row(7, "Banner variants", group: "life-design-site", status: .cannotResume(.worktree), client: .claudeDesktop, minutes: 120),
                 row(8, "Dependency bump", group: "thesvg-marks", status: .couldNotCheck, client: .claudeDesktop, minutes: 60),
+                // Taskforce가 상태를 아는 살아 있는 데스크톱 세션 (`liveSessions`가 같은 번호로 상태를 준다)
+                row(9, "Update the Settings window copy", group: "taskforce", status: .held(.claudeApp), client: .claudeDesktop, minutes: 1),
+                row(10, "Check the launch checklist", group: "taskforce", status: .held(.claudeApp), client: .claudeDesktop, minutes: 6),
+                row(11, "Source marks audit", group: "thesvg-marks", status: .held(.claudeApp), client: .claudeDesktop, minutes: 25),
             ]
         case .many:
             let titles = [
@@ -366,47 +464,260 @@ enum ExternalSessionSnapshot {
         )
     }
 
+    // MARK: 데스크톱 세션 (OA PR-D2)
+
+    /// 살아 있는 데스크톱 세션 한 줄 (`rows`와 같은 번호 → 같은 id)
+    nonisolated private static func live(_ n: Int, _ state: ClaudeAppSessionState, folder: String = "taskforce") -> ClaudeAppSession {
+        ClaudeAppSession(
+            id: String(format: "5e5e5e5e-0000-4000-8000-%012x", n), pid: Int32(40_000 + n), cwd: "/Users/sample/" + folder, procStart: nil, state: state, statusUpdatedAt: now
+        )
+    }
+
+    nonisolated static func sessionID(_ n: Int) -> String { String(format: "5e5e5e5e-0000-4000-8000-%012x", n) }
+
+    /// 폴이 돌려줄 살아 있는 세션: 견본 하네스가 단계마다 바꾼다
+    final class DesktopScript: @unchecked Sendable {
+        static let shared = DesktopScript()
+        private let lock = NSLock()
+        private var _sessions: [ClaudeAppSession] = []
+
+        var sessions: [ClaudeAppSession] {
+            get { lock.withLock { _sessions } }
+            set { lock.withLock { _sessions = newValue } }
+        }
+
+        func poll() -> ClaudeAppStatusPoller.Poll {
+            ClaudeAppStatusPoller.Poll(sessions: sessions, doubled: [], source: .registry, mismatch: false, verified: true, registryUnavailable: false)
+        }
+    }
+
+    /// 견본 데스크톱 모델: 가짜 폴 · 메모리 저장 · 보내지 않는 지표. 실제 `~/.claude`를 읽지 않는다
+    static func sampleDesktop(scope: AccountScope?) -> ClaudeAppRuntime.Made? {
+        guard let scope else { return nil }
+        let script = DesktopScript.shared
+        return ClaudeAppRuntime.Made(
+            sessions: ClaudeAppSessionsModel(poll: { script.poll() }, scope: scope, done: InMemoryClaudeAppDoneStore()),
+            opened: ClaudeAppOpenedMetric(send: { true }, scope: scope)
+        )
+    }
+
+    /// 견본 대화: 실제 기록을 읽지 않는다. 세션 번호마다 정해 둔 대화 (읽기 실패 · 맨 위 Show earlier 포함)
+    struct SampleTranscript: ClaudeAppTranscriptSource {
+        private static func turn(_ n: Int, _ kind: ClaudeAppTurn.Kind) -> ClaudeAppTurn { ClaudeAppTurn(id: "s\(n)", kind: kind) }
+
+        private static let long: [ClaudeAppTurn] = [
+            turn(1, .user("가격 페이지 3일 체험이랑 Lifetime 플랜 문구를 다시 써줘. 한국어 버전은 승인된 용어집이랑 맞춰서 확인해줘.")),
+            turn(2, .assistant("I'll read the current pricing page and the glossary first, then rewrite the trial and Lifetime sections.")),
+            turn(3, .tool(name: "Read", description: nil)), turn(4, .tool(name: "Read", description: nil)), turn(5, .tool(name: "Grep", description: nil)),
+            turn(6, .assistant("The page has two blocks to change.\n\n- Trial card: the headline still says 7 days. The brief says 3 days, so the headline, the button label and the footnote all need the new number.\n- Lifetime card: the price line mixes the launch price and the regular price. I'll keep only the launch price and move the regular price to the footnote.\n\nThe Korean strings live in ko.json. Two of them use 평가판 where the glossary says 체험, so I'll fix those at the same time and leave every other string alone.")),
+            turn(7, .tool(name: "Edit", description: nil)), turn(8, .tool(name: "Edit", description: nil)),
+            turn(9, .user("Lifetime 카드는 가격만 바꾸고 문구 톤은 그대로 둬")),
+            turn(10, .assistant("Understood. I reverted the tone changes on the Lifetime card and kept only the price line.")),
+            turn(11, .tool(name: "Bash", description: "Run the copy lint")),
+            turn(12, .assistant("Copy lint passed. Checking the Korean version against the glossary now.")),
+            turn(13, .tool(name: "Read", description: nil)),
+        ]
+
+        private static let fix: [ClaudeAppTurn] = [
+            turn(1, .user("Fix the launcher losing focus after the Mac wakes from sleep")),
+            turn(2, .assistant("The panel loses first responder when the display wakes. I will re-assert it in the wake handler.")),
+            turn(3, .tool(name: "Read", description: nil)), turn(4, .tool(name: "Grep", description: nil)),
+            turn(5, .assistant("Found it in LauncherWindowController. I am adding the focus restore after the wake notification.")),
+            turn(6, .tool(name: "Edit", description: nil)),
+        ]
+
+        private static let short: [ClaudeAppTurn] = [
+            turn(1, .user("Tidy the Settings window copy")),
+            turn(2, .assistant("Done. I shortened three labels and removed the helper sentence under Connections.")),
+        ]
+
+        func open(sessionID: String, cwd: String?) -> ClaudeAppTranscriptLoad {
+            let turns: [ClaudeAppTurn]
+            var earlier = false
+            switch sessionID {
+            case ExternalSessionSnapshot.sessionID(1): turns = Self.long
+            case ExternalSessionSnapshot.sessionID(9): turns = Self.fix
+            case ExternalSessionSnapshot.sessionID(10): turns = Self.short
+            case ExternalSessionSnapshot.sessionID(11):
+                turns = Self.short
+                earlier = true
+            default: return .unreadable
+            }
+            return .page(ClaudeAppTranscriptPage(turns: turns, cursor: ClaudeAppTranscriptCursor(sessionID: sessionID), hasEarlier: earlier, skippedLines: 0))
+        }
+
+        func earlier(_ cursor: ClaudeAppTranscriptCursor) -> ClaudeAppTranscriptLoad { .unreadable }
+
+        func newer(_ cursor: ClaudeAppTranscriptCursor) -> ClaudeAppTranscriptUpdate { .turns([], cursor: cursor, hasMore: false) }
+    }
+
     static func capture(_ edge: EdgeShellController, file: (String) -> URL, pause: @escaping (Double) async -> Void) async {
         let shell = edge.shell
-        guard let store = shell.externalSessions else {
-            print("ExternalSessionSnapshot: 목록이 꺼진 구성이다 (-TF_EDGE_SHELL YES -TFSampleData -TF_S3B YES -TF_U2 YES 필요) visible=\(shell.externalSessionsVisible)")
+        guard let store = shell.externalSessions, let desktop = shell.desktop else {
+            print("ExternalSessionSnapshot: 목록이 꺼진 구성이다 (-TF_EDGE_SHELL YES -TFSampleData -TF_S3B YES -TF_U2 YES 필요) visible=\(shell.externalSessionsVisible) issues=\(shell.issues != nil) store=\(shell.externalSessions != nil) desktop=\(shell.desktop != nil)")
             return
         }
-        shell.projectFolders = { [IssueSnapshotData.taskforce: "/Users/sample/taskforce"] }
-        func shoot(_ name: String) { EdgeSnapshot.capture(edge, to: file("external-\(name)")) }
-        func show(_ next: Scenario, _ name: String, settle: Double = 0.9) async {
-            scenario = next
-            store.reset()
-            shell.openAllWork()
+        let sample = IssueSampleGateway.shared
+        let script = DesktopScript.shared
+        shell.makeConversation = { id, cwd in ClaudeAppConversation(sessionID: id, cwd: cwd, source: SampleTranscript()) }
+        // 확인 요청(주황) 링이 용량을 다 차지하지 않게 이슈는 확인 요청 없이
+        edge.workOverride = { _ in IssueSnapshotData.snapshot(seeds: IssueSnapshotData.seeds.filter { !$0.review }) }
+        func shoot(_ name: String) { IssueSnapshot.compose(edge, to: file("sessions-\(name)")) }
+        func poll() async {
+            await desktop.pollOnce()
             await pause(0.3)
-            shell.openOnThisMac()
+        }
+        /// 새로 시작한 것처럼 Taskforce 세션(`.basic` → `scenario`)과 이 Mac 목록을 다시 읽는다
+        func world(_ tf: IssueSampleGateway.SessionScenario, _ mac: Scenario) async {
+            scenario = mac
+            shell.openAllWork()
+            // 읽기는 마지막에 시작한 것만 반영된다(다른 읽기와 겹치면 하나가 버려진다): 끝난 세션(done)은 "일하는 중 → 끝남"을 정말 본 뒤에야 서므로 서기까지 되풀이한다
+            for _ in 0..<5 {
+                sample.sessions = tf == .finished ? .basic : tf
+                await shell.issues?.sessions.refresh()
+                await pause(0.2)
+                sample.sessions = tf
+                await shell.issues?.sessions.refresh()
+                await pause(0.2)
+                if tf != .finished || shell.issues?.sessions.items.contains(where: { $0.ring == .done }) == true { break }
+            }
+            store.reset()
+            // "Checking…"의 훑기는 끝나지 않는다 (기다리지 않는다)
+            if mac == .checking { Task { await store.refresh() } } else { await store.refresh() }
+            await pause(0.5)
+        }
+        /// Sessions 패널을 연다
+        func sessions(settle: Double = 0.7) async {
+            shell.openSessions()
+            await pause(settle)
+        }
+        // 레일이 여는 패널은 레일 전체의 세로 가운데에 선다 (사용자 확인): 짧은 레일 · 짧은 · 긴(520 상한) 패널 · 낮거나 높은 레일. 숫자도 로그에 남긴다 (`PLACEMENT …`)
+        let contextSample = IssueSampleContextGateway.shared
+        let railHome = edge.rail.panel.frame
+        func placement(_ name: String) {
+            let screen = EdgeRailPanelController.screen
+            func f(_ value: CGFloat?) -> String { value.map { String(format: "%.1f", $0) } ?? "-" }
+            print("PLACEMENT \(name) railCenter=\(f(edge.rail.centerLineY)) panelMid=\(f(edge.panel.panel.frame.midY)) panelHeight=\(f(edge.panel.panel.frame.height)) screenMid=\(f(screen?.frame.midY)) visibleY=\(f(screen?.visibleFrame.minY))…\(f(screen?.visibleFrame.maxY))")
+        }
+        func projects(_ scenario: IssueSampleContextGateway.Scenario, _ name: String) async {
+            contextSample.scenario = scenario
+            await edge.chat?.contexts?.refresh()
+            shell.dismiss()
+            await pause(0.4)
+            shell.openAllWork()
+            await pause(1.0)
+            placement(name)
+            shoot(name)
+        }
+        func moveRail(_ dy: CGFloat, _ name: String) async {
+            edge.rail.panel.setFrame(railHome.offsetBy(dx: 0, dy: dy), display: true)
+            edge.panel.fitToContent()
+            await pause(0.7)
+            placement(name)
+            shoot(name)
+        }
+        // 살아 있는 데스크톱: 10번은 일하다가 쉬면 done이 된다 (열어 볼 때까지 남는다)
+        script.sessions = [live(1, .busy), live(9, .waiting(.approval)), live(10, .busy), live(11, .idle, folder: "thesvg-marks")]
+        await world(.finished, .mixed)
+        await poll()
+        script.sessions = [live(1, .busy), live(9, .waiting(.approval)), live(10, .idle), live(11, .idle, folder: "thesvg-marks")]
+        await poll()
+        // 레일: 접힘 → 펼침 (Sessions · + · 링)
+        shell.dismiss()
+        await pause(0.4)
+        shoot("rail-rest")
+        shell.pointer(inside: true)
+        await pause(0.7)
+        shoot("rail-expanded")
+        // Sessions 패널
+        await sessions()
+        shoot("panel-mixed")
+        // 레일이 여는 다른 패널 (세로 가운데 · 전/후 비교): Projects · More 카드
+        shell.openAllWork()
+        await pause(0.8)
+        placement("panel-projects")
+        shoot("panel-projects")
+        // 낮은 레일 · 높은 레일 (레일 창을 위아래로 옮겨 본다: 패널은 그 레일의 가운데를 따라간다)
+        await moveRail(-190, "centered-rail-low")
+        await moveRail(190, "centered-rail-high")
+        await moveRail(0, "centered-rail-home")
+        shell.dismiss()
+        shell.pointer(inside: true)
+        await pause(0.7)
+        edge.rail.openMoreCardForSnapshot()
+        await pause(0.6)
+        shoot("more-card")
+        edge.rail.moreCard.dismiss()
+        await pause(0.3)
+        // 줄 접기 (Show all) · 긴 제목 · 막힌 줄
+        await world(.nine, .many)
+        await poll()
+        await sessions()
+        shoot("panel-fold")
+        await world(.finished, .blocked)
+        await sessions()
+        shoot("panel-blocked")
+        await world(.basic, .long)
+        await sessions()
+        shoot("panel-long")
+        // 절 안의 상태 · 빈 패널
+        await world(.basic, .checking)
+        await sessions(settle: 0.4)
+        shoot("panel-checking")
+        await world(.basic, .failed)
+        await sessions()
+        shoot("panel-failed")
+        await world(.basic, .notInstalled)
+        await sessions()
+        shoot("panel-not-installed")
+        script.sessions = []
+        await world(.none, .empty)
+        await poll()
+        await sessions()
+        shoot("panel-empty")
+        // 짧은 레일(링 하나): 짧은 패널 · 보통 패널 · 긴 패널(520 상한) 모두 레일 가운데
+        await projects(.empty, "centered-short-rail-short-panel")
+        await projects(.full, "centered-short-rail-panel")
+        await projects(.many, "centered-short-rail-tall-panel")
+        contextSample.scenario = .full
+        await edge.chat?.contexts?.refresh()
+        // Claude 세션 보기: 링으로 열면 한 패널, Sessions 줄로 열면 Sessions 왼쪽
+        script.sessions = [live(1, .busy), live(9, .waiting(.approval)), live(10, .busy), live(11, .idle, folder: "thesvg-marks")]
+        await world(.finished, .mixed)
+        await poll()
+        script.sessions = [live(1, .busy), live(9, .waiting(.approval)), live(10, .idle), live(11, .idle, folder: "thesvg-marks")]
+        await poll()
+        func view(_ n: Int, _ name: String, from source: EdgeShellModel.DesktopOpenSource = .rail, settle: Double = 1.0) async {
+            shell.dismiss()
+            await pause(0.3)
+            if source == .list { await sessions() }
+            shell.openDesktopSession(sessionID(n), from: source)
             await pause(settle)
             shoot(name)
         }
-        // 레일: 점(새 세션) → 열림(입구가 칠해지고 점이 사라진다)
-        scenario = .mixed
+        await view(1, "claude-running")
+        await view(9, "claude-approval")
+        await view(10, "claude-done")
+        await view(11, "claude-earlier")
+        await view(1, "claude-beside-sessions", from: .list)
+        // 읽지 못한 대화
+        script.sessions = [live(12, .busy)]
+        await poll()
+        await view(12, "claude-failed")
+        // Claude에서 닫음: 보는 세션이 목록에서 사라진다 (세 번 연달아)
+        script.sessions = [live(1, .busy)]
+        await poll()
         shell.dismiss()
-        shell.pointer(inside: true)
+        await pause(0.3)
+        shell.openDesktopSession(sessionID(1), from: .rail)
+        await pause(0.8)
+        script.sessions = []
+        for _ in 0..<5 { await poll() }
         await pause(0.6)
-        await store.refresh()
-        await pause(0.5)
-        shoot("rail-dot")
-        shell.openOnThisMac()
-        await pause(0.9)
-        shoot("rail-open")
-        await show(.mixed, "mixed")
-        await show(.many, "many")
-        scenario = .many
-        await store.refresh()
-        await pause(0.5)
-        // Show all: 묶음 머리 오른쪽 링크를 누른 모양은 화면 상태라 여기서는 처음 모양만 남긴다
-        await show(.blocked, "blocked")
-        await show(.long, "long")
-        await show(.empty, "empty")
-        await show(.notInstalled, "not-installed")
-        await show(.failed, "failed")
-        await show(.checking, "checking", settle: 0.4)
+        shoot("claude-closed")
+        shell.dismiss()
         store.reset()
+        script.sessions = []
     }
 }
 #endif

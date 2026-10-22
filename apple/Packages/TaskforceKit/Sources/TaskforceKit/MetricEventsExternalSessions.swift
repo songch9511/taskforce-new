@@ -30,4 +30,15 @@ extension APIClient {
             // 204 본문 없음: 상태 코드가 2xx라 여기까지 온 것이다 (실패는 위에서 `APIError.server`로 던져진다)
         }
     }
+
+    /// 사용자가 Claude 데스크톱 세션 보기를 열었다 (`claude_app_session_opened`, OA PR-D2): **종류만** — 본문은 빈 객체이고 세션 id · 제목 · 폴더는 보내지 않는다. 서버는 204로 답한다 (같은 날 두 번째도)
+    public func claudeAppSessionOpened() async throws {
+        struct Empty: Decodable {}
+        struct Body: Encodable {}
+        do {
+            let _: Empty = try await send(.post, "external-sessions/claude-app-opened", body: Body(), version: .v2)
+        } catch APIError.decoding {
+            // 204 본문 없음 (위 `externalSessionsShown`과 같다)
+        }
+    }
 }

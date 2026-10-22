@@ -304,6 +304,11 @@ export const externalSessionsShownRequestSchema = z.strictObject({
 });
 export type ExternalSessionsShownRequest = z.infer<typeof externalSessionsShownRequestSchema>;
 
+// POST /api/v2/external-sessions/claude-app-opened — 사용자가 Claude 데스크톱 세션 보기(레일 링 · Sessions의 줄)를 연 날의 지표 claude_app_session_opened (OA PR-D2, 계약 21.6).
+// **종류만이다**: 본문에 칸이 하나도 없다 (세션 id · 제목 · 폴더 0). 앱의 열 권한 없이 route가 서버 권한으로 남기고, 같은 날(UTC) 두 번째는 서버가 조용히 넘긴다 (20261206000000).
+export const claudeAppSessionOpenedRequestSchema = z.strictObject({});
+export type ClaudeAppSessionOpenedRequest = z.infer<typeof claudeAppSessionOpenedRequestSchema>;
+
 // PUT /api/v2/external-sessions — Mac이 Taskforce 밖에서 시작한 Claude Code 세션의 목록을 알린다 (OA 외부 세션 PR1, 계약 16장). 스냅샷 교체: 이번 목록에 없는 그 Mac의 행은 지운다.
 // 서버에 가는 것은 제목 · 상태 · 마지막 활동 시각 · 불투명 id뿐이다. 대화 본문 · 경로 · 폴더 이름 · Claude 세션 id는 보내지 않는다.
 // id = Mac이 세션 UUID에서 Mac에만 있는 열쇠로 만든 HMAC-SHA256의 hex 64자 (서버는 UUID를 알 수 없다).
