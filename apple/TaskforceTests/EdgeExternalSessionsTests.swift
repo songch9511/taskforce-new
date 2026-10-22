@@ -207,7 +207,7 @@ struct EdgeExternalSessionsTests {
         shell.accountChanged(SampleData.userID)
         #expect(shell.label(for: .sessions) == "Sessions" && SessionsPanelCopy.title == "Sessions")
         #expect(shell.railIcon(for: .sessions) == .sessions && TFIcon.sessions.rawValue == "layers")
-        #expect(EdgeShellModel.Control.sessions.tooltipShortcut == "⌘4" && SessionsPanelCopy.shortcut == "⌘4")
+        #expect(EdgeShellModel.Control.sessions.shortcut == "⌘4" && SessionsPanelCopy.shortcut == "⌘4")
         shell.pointer(inside: true)
         time.advance(TFMotion.railHoverDelay + 0.01)
         shell.hover(control: .sessions)

@@ -573,7 +573,7 @@ final class EdgeRailPanelController {
         shell.setMenuOpen(true)
         tooltip.hide()
         let rect = panel.convertToScreen(hosting.convert(NSRect(x: capsule.minX, y: capsule.minY, width: capsule.width, height: capsule.height), to: nil))
-        moreCard.present(model: model, label: shell.label(for: .more), capsule: rect, over: panel, centerY: centerLineY) { [weak self] in self?.moreCardClosed() }
+        moreCard.present(model: model, label: shell.label(for: .more), capsule: rect, over: panel) { [weak self] in self?.moreCardClosed() }
     }
 
     /// 클릭이 ⋯ 칸 위인가 (카드를 닫는 클릭이 ⋯를 다시 누르지 않게)

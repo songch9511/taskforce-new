@@ -14,7 +14,7 @@ final class EdgeRailMoreCardHostingView: NSHostingView<RailMoreCard> {
 }
 
 /// 캡슐 레일의 More 카드 창 (OA U3 16.1, DS EdgeRail "More open"): 게이트 켜짐에서 ⋯가 macOS 기본 메뉴(NSMenu) 대신 여는 DS 카드.
-/// 셋째 캡슐 왼쪽 10pt (`RailMoreCardGeometry`), 세로는 레일 중심선에 가운데 (OA PR-D2: 레일이 여는 패널은 모두 가운데, 보이는 화면 안으로). 창은 열리면 키 창이 되어 호버 · 클릭을 받고(앱이 활성이 아니어도),
+/// 셋째 캡슐 왼쪽 10pt, 아래 끝은 그 캡슐과 같다 (`RailMoreCardGeometry`, DS `beside`). 레일이 여는 다른 패널(Projects · Chats · Sessions)과 달리 레일 중심선에 가운데로 옮기지 않는다 (OA PR-D2, 사용자 결정 2026-10-22). 창은 열리면 키 창이 되어 호버 · 클릭을 받고(앱이 활성이 아니어도),
 /// ↑ ↓ Return Esc는 그 창이 키 창일 때 그 창의 키만 처리한다 (`EdgeContextMenu.key`와 같은 규칙, 줄 이동 · 고름은 `ContextMenuModel`).
 /// 바깥 클릭 · 키를 잃음 · 하나를 고름 · Esc로 닫고, 닫히면 키를 부모 창에 돌려주며 ⋯에게 접근성 포커스를 돌려준다(`onClose`).
 /// 게이트 꺼짐 · Release의 ⋯ 메뉴는 그대로 `NSMenu`다 (`EdgeRailPanelController.showMore`)
@@ -35,8 +35,7 @@ final class EdgeRailMoreCard {
     var window: NSWindow? { panel }
 
     /// - capsule: 셋째 캡슐의 화면 좌표 (아래가 0)
-    /// - centerY: 레일 전체의 세로 가운데 (화면 좌표, `EdgeRailPanelController.centerLineY`). 없으면 레일 창의 가운데
-    func present(model: ContextMenuModel, label: String, capsule: CGRect, over parent: NSWindow, centerY: CGFloat? = nil, onClose: @escaping () -> Void) {
+    func present(model: ContextMenuModel, label: String, capsule: CGRect, over parent: NSWindow, onClose: @escaping () -> Void) {
         dismiss(notify: false)
         self.model = model
         self.onClose = onClose
@@ -57,9 +56,8 @@ final class EdgeRailMoreCard {
         panel.animationBehavior = .none
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         panel.contentView = hosting
-        // 레일이 여는 패널은 레일 중심선(레일 창의 세로 가운데)에 세로 가운데로 선다 (OA PR-D2, 사용자 결정 2026-10-22). 가로 자리(셋째 캡슐 왼쪽 10pt) · 크기는 `RailMoreCardGeometry` 그대로, 세로만 가운데
-        let beside = RailMoreCardGeometry.frame(size: size, capsule: capsule, visible: visible)
-        panel.setFrame(EdgePanelMetrics.centersRailPanels ? EdgePanelMetrics.centered(beside, centerY: centerY ?? parent.frame.midY, visible: visible) : beside, display: true)
+        // ⋯ 옆, 셋째 캡슐 아래 끝에 맞춤 (DS `beside`): 가운데로 옮기지 않는다 (사용자 결정 2026-10-22). 화면 밖으로 넘칠 때만 안으로 민다
+        panel.setFrame(RailMoreCardGeometry.frame(size: size, capsule: capsule, visible: visible), display: true)
         self.panel = panel
         self.parent = parent
         resignObserver = NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: panel, queue: .main) { [weak self] _ in

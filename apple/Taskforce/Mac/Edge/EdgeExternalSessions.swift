@@ -344,8 +344,9 @@ enum ClaudeAppRuntime {
     }
 
     /// - home: 시험은 임시 홈을 넘긴다. 실제 앱은 사용자의 홈 (`~/.claude`는 읽기만 한다)
+    /// - done: 안 연 끝남 표시의 저장소. 기본값이 없다 — 실제 앱은 `AppRuntime`이 만든 영속 저장소를 넘기고(`ChatRuntime.doneStores`), 어디선가 메모리 저장소로 이어지지 않게 부르는 쪽이 늘 정한다
     static func make(
-        services: AppServices?, scope: AccountScope?, externalSessions: ExternalSessionsStore?, home: String = NSHomeDirectory(), done: any ClaudeAppDoneStore = doneStore()
+        services: AppServices?, scope: AccountScope?, externalSessions: ExternalSessionsStore?, home: String = NSHomeDirectory(), done: any ClaudeAppDoneStore
     ) -> Made? {
         guard externalSessions != nil, let services, let scope else { return nil }
         let log = BridgeOSLog()
@@ -357,30 +358,32 @@ enum ClaudeAppRuntime {
         return Made(sessions: sessions, opened: opened)
     }
 
-    /// 안 연 끝남 표시의 저장: 시험 호스트 · 견본은 메모리뿐이다 (실사용 앱의 설정을 건드리지 않는다)
-    static func doneStore() -> any ClaudeAppDoneStore {
-        #if DEBUG
-        if SampleData.isEnabled { return InMemoryClaudeAppDoneStore() }
-        #endif
-        return TestHost.isTestHost() ? InMemoryClaudeAppDoneStore() : UserDefaultsClaudeAppDoneStore()
+}
+
+/// 안 연 끝남 표시의 두 저장소 (계약 23장): 레일 링(Taskforce 세션 · 이슈)과 Claude 데스크톱 링. `ChatRuntime`이 들고 셸 컨트롤러가 그대로 쓴다.
+/// 어느 쪽을 쓸지는 앱 생성 경로(`AppRuntime.doneStores`)가 정한다: 실사용 앱은 이 Mac의 설정(영속), 시험 호스트 · 견본은 메모리뿐이다
+struct RailDoneStores {
+    let rail: any RailDoneStore
+    let claudeApp: any ClaudeAppDoneStore
+
+    static func inMemory() -> RailDoneStores {
+        RailDoneStores(rail: InMemoryRailDoneStore(), claudeApp: InMemoryClaudeAppDoneStore())
     }
 
-    /// 레일 링(Taskforce 세션 · 이슈)의 안 연 끝남 표시의 저장: 같은 규칙
-    static func railDoneStore() -> any RailDoneStore {
-        #if DEBUG
-        if SampleData.isEnabled { return InMemoryRailDoneStore() }
-        #endif
-        return TestHost.isTestHost() ? InMemoryRailDoneStore() : UserDefaultsRailDoneStore()
+    /// 앱을 다시 켠 뒤에도 남는다 (기본은 앱 설정 도메인)
+    static func persistent(defaults: any RailDoneDefaults = UserDefaults.standard) -> RailDoneStores {
+        RailDoneStores(rail: UserDefaultsRailDoneStore(defaults: defaults), claudeApp: UserDefaultsClaudeAppDoneStore(defaults: defaults))
     }
 }
 
 #if DEBUG
 /// 디자인 비교용 견본 (Debug 전용, Release 바이너리에 없다): `-TF_EDGE_SHELL YES -TFSampleData -TF_S3B YES -TF_U2 YES -TFEdgeSnapshot <폴더> -TFEdgeSnapshotIssues -TFEdgeSnapshotExternalSessions`
 /// (+ `-TFSnapshotDark`). 이 Mac의 실제 Claude 기록 · 프로세스 · 서버를 읽지 않는다: 줄 · 살아 있는 데스크톱 세션 · 대화는 모두 만든 값이다 (`mac-edge-sessions-<이름>.png`).
-/// 남기는 것: rail-rest · rail-expanded(Sessions · + · 링) · panel-mixed(두 절) · panel-projects · more-card · centered-rail-low/high/home(레일을 옮겨 본다) ·
+/// 남기는 것: rail-rest · rail-expanded(Sessions · + · 링) · panel-mixed(두 절) · panel-projects · more-card(⋯ 옆, 셋째 캡슐 아래 끝에 맞춤 — 가운데로 옮기지 않는다) · centered-rail-low/high/home(레일을 옮겨 본다) ·
 /// centered-short-rail-short-panel/panel/tall-panel(링 하나, 패널 높이 셋) — 모두 레일 전체의 세로 가운데 (`-TFEdgeSnapshotTopPlacement`를 더하면 옛 위 맞춤), 숫자는 로그의 `PLACEMENT` 줄 ·
 /// panel-fold(Show all) · panel-blocked · panel-long · panel-checking · panel-failed · panel-not-installed · panel-empty(No sessions),
-/// claude-running · claude-approval(띠) · claude-done · claude-earlier(Show earlier) · claude-beside-sessions(Sessions 왼쪽) · claude-failed · claude-closed
+/// claude-running · claude-approval(띠) · claude-done · claude-earlier(Show earlier) · claude-beside-sessions(Sessions 왼쪽, 메인 패널 위 맞춤) · claude-failed · claude-closed —
+/// 링으로 연 Claude 세션 패널(beside-sessions 빼고)은 레일 전체의 세로 가운데이고(`PLACEMENT`), centered-claude-rail-low/high/home은 레일을 옮긴 장면
 @MainActor
 enum ExternalSessionSnapshot {
     nonisolated static var isEnabled: Bool { ProcessInfo.processInfo.arguments.contains("-TFEdgeSnapshotExternalSessions") }
@@ -616,6 +619,19 @@ enum ExternalSessionSnapshot {
             placement(name)
             shoot(name)
         }
+        /// 데스크톱 링으로 연 Claude 세션 패널의 자리 (레일 중심선에 가운데, 사용자 결정 2026-10-22)
+        func claudePlacement(_ name: String) {
+            let screen = EdgeRailPanelController.screen
+            func f(_ value: CGFloat?) -> String { value.map { String(format: "%.1f", $0) } ?? "-" }
+            print("PLACEMENT \(name) railCenter=\(f(edge.rail.centerLineY)) panelMid=\(f(edge.claudePanel?.panel.frame.midY)) panelHeight=\(f(edge.claudePanel?.panel.frame.height)) screenMid=\(f(screen?.frame.midY)) visibleY=\(f(screen?.visibleFrame.minY))…\(f(screen?.visibleFrame.maxY))")
+        }
+        func moveRailForClaude(_ dy: CGFloat, _ name: String) async {
+            edge.rail.panel.setFrame(railHome.offsetBy(dx: 0, dy: dy), display: true)
+            edge.claudePanel?.fit()
+            await pause(0.7)
+            claudePlacement(name)
+            shoot(name)
+        }
         // 살아 있는 데스크톱: 10번은 일하다가 쉬면 done이 된다 (열어 볼 때까지 남는다)
         script.sessions = [live(1, .busy), live(9, .waiting(.approval)), live(10, .busy), live(11, .idle, folder: "thesvg-marks")]
         await world(.finished, .mixed)
@@ -632,7 +648,7 @@ enum ExternalSessionSnapshot {
         // Sessions 패널
         await sessions()
         shoot("panel-mixed")
-        // 레일이 여는 다른 패널 (세로 가운데 · 전/후 비교): Projects · More 카드
+        // 레일이 여는 다른 패널 (세로 가운데 · 전/후 비교): Projects. More 카드는 가운데로 옮기지 않고 ⋯ 옆이다
         shell.openAllWork()
         await pause(0.8)
         placement("panel-projects")
@@ -693,9 +709,14 @@ enum ExternalSessionSnapshot {
             if source == .list { await sessions() }
             shell.openDesktopSession(sessionID(n), from: source)
             await pause(settle)
+            claudePlacement(name)
             shoot(name)
         }
         await view(1, "claude-running")
+        // 낮은 레일 · 높은 레일: 링으로 연 Claude 세션 패널도 그 레일의 가운데를 따라간다
+        await moveRailForClaude(-190, "centered-claude-rail-low")
+        await moveRailForClaude(190, "centered-claude-rail-high")
+        await moveRailForClaude(0, "centered-claude-rail-home")
         await view(9, "claude-approval")
         await view(10, "claude-done")
         await view(11, "claude-earlier")

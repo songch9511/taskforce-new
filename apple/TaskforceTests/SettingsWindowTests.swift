@@ -1,4 +1,5 @@
 import Auth
+import Carbon.HIToolbox
 import Foundation
 import Testing
 @testable import TaskforceKit
@@ -646,11 +647,15 @@ struct SettingsConnectionLineTests {
 
 @MainActor
 struct SettingsWindowReadOnlyValueTests {
-    /// Edge 패널에서 지금 동작하는 키만 (⌘2 All work · ⌘3 Chats · ⌘N New chat). ⌘1 · 1–3은 그 화면이 생길 때
+    /// Edge 패널에서 지금 동작하는 키만 (⌘2 All work · ⌘3 Chats · ⌘4 Sessions · ⌘N New chat). ⌘1 · 1–3은 그 화면이 생길 때
     @Test func panelKeysAreOnlyTheOnesThatWork() {
         let rows = SettingsPanelKeys.rows
-        #expect(rows.map(\.label) == ["All work", "Chats", "New chat"])
-        #expect(rows.map(\.keys) == [["⌘", "2"], ["⌘", "3"], ["⌘", "N"]])
+        #expect(rows.map(\.label) == ["All work", "Chats", "Sessions", "New chat"])
+        #expect(rows.map(\.keys) == [["⌘", "2"], ["⌘", "3"], ["⌘", "4"], ["⌘", "N"]])
+        // 나열하는 키는 실제로 동작하는 키와 같다: 목록의 각 단축키는 `EdgeKeyCommand`가 그 칸으로 해석한다
+        #expect(EdgeKeyCommand.of(keyCode: kVK_ANSI_2, flags: .command) == .allWork && EdgeKeyCommand.of(keyCode: kVK_ANSI_3, flags: .command) == .chats)
+        #expect(EdgeKeyCommand.of(keyCode: kVK_ANSI_4, flags: .command) == .sessions && EdgeKeyCommand.of(keyCode: kVK_ANSI_N, flags: .command) == .newChat)
+        #expect(EdgeShellModel.Control.sessions.shortcut == "⌘4" && EdgeShellModel.Control.more.shortcut == nil)
         #expect(SettingsPanelKeys.keyCaps("⌥Space") == ["⌥", "Space"])
         #expect(SettingsPanelKeys.keyCaps("⇧⌘K") == ["⇧", "⌘", "K"])
     }

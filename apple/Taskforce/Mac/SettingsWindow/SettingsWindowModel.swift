@@ -560,7 +560,7 @@ struct SettingsConnectionLine: Equatable {
 }
 
 /// Shortcuts › In the panel: Edge 패널에서 지금 실제로 동작하는 키만 (`EdgeShellModel.Control.shortcut` · `EdgeShellController.handleKey`).
-/// 디자인의 ⌘1 Review · 1–3 답하기는 그 화면이 생길 때(S4) 더한다. ⌘N New chat은 B3
+/// 디자인의 ⌘1 Review · 1–3 답하기는 그 화면이 생길 때(S4) 더한다. ⌘N New chat은 B3. ⌘4 Sessions는 레일 칸의 단축키라 `Control.allCases`에서 함께 읽힌다 (OA PR-D2)
 enum SettingsPanelKeys {
     static let newChat = (label: "New chat", shortcut: "⌘N")
 

@@ -271,7 +271,8 @@ struct EdgeRailCapsuleLayout: Equatable {
     }
 
     /// 화면 좌표(아래가 0)의 펼친 레일 바깥 모양: Assistant 창이 피하는 자리의 왼쪽 가장자리 · 위 가장자리. 펼친 열이 가운데에서 자랄 때의 가장 큰 모양이다
-    /// 셋째 캡슐은 가장 큰 모양(칸 셋)으로, 세션 캡슐은 Sessions 버튼이 있는 모양으로 센다 — 창이 레일을 덜 피하는 쪽으로 틀리지 않게 (칸 둘 · 버튼 없음이면 조금 넉넉할 뿐이다)
+    /// `controls` · `sessionsButton`을 주면 그 레일의 실제 열이다 (Assistant 창이 피하는 자리: `AssistantWindowManager.Environment.live`가 셸의 값을 넘긴다).
+    /// 안 주면 가장 큰 모양(셋째 캡슐 칸 셋 · Sessions 버튼 있음)이다 — 창이 레일을 덜 피하는 쪽으로 틀리지 않게
     static func expandedRailFrame(
         screenMaxX: CGFloat, midY: CGFloat, bell: Bool, rings: Int,
         controls: [EdgeShellModel.Control] = [.allWork, .chats, .more], sessionsButton: Bool = true

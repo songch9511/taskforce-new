@@ -49,8 +49,11 @@ struct EdgeRailCapsuleMoreTests {
         let window = try #require(card.window)
         let visible = (host.screen ?? NSScreen.main)?.visibleFrame ?? host.frame
         let beside = RailMoreCardGeometry.frame(size: window.frame.size, capsule: capsule, visible: visible)
-        #expect(window.frame == EdgePanelMetrics.centered(beside, centerY: host.frame.midY, visible: visible), "가로는 셋째 캡슐 왼쪽 10pt 그대로, 세로는 레일 중심선에 가운데 (OA PR-D2)")
-        #expect(window.frame.minX == beside.minX && window.frame.size == beside.size)
+        // 사용자 결정(2026-10-22): More 카드는 가운데로 옮기지 않는다. ⋯ 옆(DS `beside`): 셋째 캡슐 왼쪽 10pt, 아래 끝은 그 캡슐과 같다
+        #expect(window.frame == beside, "DS beside 그대로 (레일 중심선에 가운데 맞춤이 아니다)")
+        #expect(window.frame.maxX == capsule.minX - RailMoreCardGeometry.gap, "셋째 캡슐 왼쪽 10pt")
+        #expect(window.frame.minY == min(capsule.minY, visible.maxY - window.frame.height), "아래 끝은 셋째 캡슐과 같다 (화면 위로 넘칠 때만 안으로)")
+        #expect(abs(window.frame.midY - host.frame.midY) > 1, "레일 창의 가운데로 끌려가지 않는다")
         #expect(window.frame.width >= RailMoreCard.minWidth)
         let hosting = try #require(window.contentView as? EdgeRailMoreCardHostingView)
         #expect(hosting.accessibilityRole() == .menu && hosting.accessibilityLabel() == "More" && hosting.isAccessibilityElement())
@@ -145,6 +148,30 @@ struct EdgeRailCapsuleMoreTests {
         rail.toggleMoreCard()
         rail.moreCard.model?.pick(1)
         #expect(opened == ["settings"] && !rail.moreCard.isOpen && rig.shell.moreFocusSerial == focus + 2)
+    }
+
+    /// 사용자 결정(2026-10-22): 레일이 여는 다른 패널은 레일 중심선에 가운데지만 More 카드는 ⋯ 옆(DS `beside`)이다 — 레일을 화면 어디에 두든 카드 아래 끝은 셋째 캡슐 아래 끝이다
+    @Test func theCardStaysBesideTheMoreButtonWhereverTheRailStands() async throws {
+        let rig = try await TaskforceRig.make()
+        let rail = EdgeRailPanelController(shell: rig.shell)
+        rail.moreCard.shows = false
+        rig.shell.pointer(inside: true)
+        rig.time.advance(0.2)
+        #expect(rig.shell.isExpanded)
+        var bottoms: [CGFloat] = []
+        for originY in [CGFloat(120), 380] {
+            rail.panel.setFrame(CGRect(origin: CGPoint(x: 1200, y: originY), size: EdgeRailCapsuleLayout.windowSize), display: false)
+            rail.toggleMoreCard()
+            let local = try #require(rig.shell.capsuleLayout.thirdCapsuleFrame)
+            let capsule = rail.panel.convertToScreen(rail.hosting.convert(NSRect(x: local.minX, y: local.minY, width: local.width, height: local.height), to: nil))
+            let window = try #require(rail.moreCard.window)
+            let visible = (rail.panel.screen ?? NSScreen.main)?.visibleFrame ?? rail.panel.frame
+            #expect(window.frame == RailMoreCardGeometry.frame(size: window.frame.size, capsule: capsule, visible: visible), "레일 창 아래 \(originY)")
+            #expect(window.frame.maxX == capsule.minX - RailMoreCardGeometry.gap)
+            bottoms.append(window.frame.minY)
+            rail.toggleMoreCard()
+        }
+        #expect(abs(bottoms[1] - bottoms[0] - 260) < 0.001, "레일이 260 올라가면 카드도 같은 만큼 따라 올라간다 (가운데 맞춤이면 같은 자리에 머문다)")
     }
 
     // MARK: 칠해진 칸은 하나 (검토 1)

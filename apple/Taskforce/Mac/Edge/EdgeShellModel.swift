@@ -210,8 +210,8 @@ final class EdgeShellModel {
             }
         }
 
-        /// 툴팁의 단축키 (More는 없음). Sessions의 ⌘4도 여기 있다 (DZ 승인: 툴팁 "Sessions ⌘4")
-        var tooltipShortcut: String? {
+        /// 칸의 단축키 (More는 없음): 툴팁(DZ 승인 "Sessions ⌘4")과 Settings › Shortcuts(`SettingsPanelKeys`가 `allCases`에서 읽는다)가 같은 값을 쓴다
+        var shortcut: String? {
             switch self {
             case .allWork: "⌘2"
             case .chats: "⌘3"
@@ -219,10 +219,6 @@ final class EdgeShellModel {
             case .more: nil
             }
         }
-
-        /// Settings › Shortcuts에 나열되는 단축키 (`SettingsPanelKeys`가 `allCases`에서 읽는다). Sessions ⌘4는 아직 나열하지 않는다:
-        /// 그 목록과 시험(`SettingsWindowTests`)은 이 PR의 범위 밖이다 — 후속으로 나열하면 이 줄을 `tooltipShortcut`으로 바꾼다
-        var shortcut: String? { self == .sessions ? nil : tooltipShortcut }
     }
 
     /// 이 셸의 셋째 캡슐 칸 (Chats가 꺼져 있으면 Chats 칸이 없다). Sessions는 첫 캡슐의 버튼이라 여기 없다 (옛 On this Mac 칸은 Sessions로 합쳐 없앴다, OA PR-D2)
@@ -249,16 +245,14 @@ final class EdgeShellModel {
 
     static let newSessionLabel = "New session"
 
-    /// 이 셸이 듣는 키 명령인가: Chats가 꺼져 있으면 ⌘3 · ⌘N은 연결이 없어 지나간다 (먹지 않는다)
+    /// 이 셸이 듣는 키 명령인가: Chats가 꺼져 있으면 ⌘3 · ⌘N은 연결이 없어 지나간다 (먹지 않는다). ⌘4(Sessions)는 Sessions 버튼이 있는 셸만 듣는다
     func listens(to command: EdgeKeyCommand) -> Bool {
         switch command {
         case .chats, .newChat: chatsEnabled
+        case .sessions: sessionsVisible
         case .escape, .review, .allWork: true
         }
     }
-
-    /// ⌘4(Sessions)는 Sessions 버튼이 있는 셸만 듣는다 (`EdgeSessionsKey`)
-    var listensToSessionsKey: Bool { sessionsVisible }
 
     private(set) var slots: [RailEntry] = []
     /// 노치에 120ms 머물러 펼친 레일 (패널이 열려 있으면 `isExpanded`가 따로 참)
@@ -346,7 +340,7 @@ final class EdgeShellModel {
     /// Claude 데스크톱 앱에 열린 세션의 살아 있는 상태 (OA PR-D2, 계약 21 · 23장): 레일의 데스크톱 링 · Sessions 줄의 링 · 세션 보기의 상태 말. **목록(`externalSessions`)과 같은 게이트**다: 없으면 데스크톱 링도 세션 보기도 없다
     let desktop: ClaudeAppSessionsModel?
     /// 아직 안 연 끝남의 저장 (계약 23장): 있고 새 Issues 화면이 켜진 셸은 끝난 링(초록)이 **열어 볼 때까지** 레일에 남는다 (타이머 없음, 이 Mac에 저장 → 다시 켠 뒤에도). 없으면 지금처럼 3초다 (노치 레일 · 시험)
-    @ObservationIgnored private let railDone: (any RailDoneStore)?
+    @ObservationIgnored let railDone: (any RailDoneStore)?
     /// 데스크톱 세션 보기를 연 날의 지표 (하루 한 번, 종류만). 없으면 보내지 않는다
     @ObservationIgnored private let claudeAppOpened: ClaudeAppOpenedMetric?
     /// 데스크톱 세션 하나의 대화 읽기를 만든다 (세션 id, 등록 파일의 작업 폴더): 실제 앱은 `~/.claude`의 기록을 읽는 `ClaudeAppTranscriptReader`, 시험은 가짜
@@ -516,7 +510,7 @@ final class EdgeShellModel {
         if let hoveredID, let entry = slots.first(where: { $0.id == hoveredID }) {
             return (entry.title, "· " + (entry.state.map { "\($0.label) · " } ?? "") + entry.activity)
         }
-        if let hoveredControl, let shortcut = hoveredControl.tooltipShortcut {
+        if let hoveredControl, let shortcut = hoveredControl.shortcut {
             return (label(for: hoveredControl), shortcut)
         }
         return nil

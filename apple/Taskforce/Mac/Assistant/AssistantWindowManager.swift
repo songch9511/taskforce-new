@@ -51,11 +51,12 @@ final class AssistantWindowManager {
                 visibleFrame: { (EdgeRailPanelController.screen ?? NSScreen.main)?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1440, height: 875) },
                 railFrame: {
                     guard let screen = EdgeRailPanelController.screen ?? NSScreen.main else { return CGRect(x: 1396, y: 400, width: 44, height: 320) }
-                    // 캡슐 레일(OA U3-52): 펼친 열의 실제 자리 — 화면 세로 가운데에서 자라고 화면 끝에서 6 안쪽이다. 노치 레일은 지금 그대로
+                    // 캡슐 레일(OA U3-52): 펼친 열의 실제 자리 — 화면 세로 가운데에서 자라고 화면 끝에서 6 안쪽이다. 노치 레일은 지금 그대로.
+                    // 칸과 첫 캡슐은 셸의 실제 값이다 (OA PR-D2): Sessions 버튼이 있으면 첫 캡슐이 82 + 34n, 없으면 46 + 34n이고 Chats가 꺼지면 셋째 캡슐이 칸 둘이다
                     if shell.issueScreensEnabled {
                         return EdgeRailCapsuleLayout.expandedRailFrame(
                             screenMaxX: screen.frame.maxX, midY: screen.frame.midY, bell: shell.taskforceBell != nil,
-                            rings: min(shell.slots.count, EdgeRailCapsuleLayout.expandedRings)
+                            rings: min(shell.slots.count, EdgeRailCapsuleLayout.expandedRings), controls: shell.controls, sessionsButton: shell.sessionsVisible
                         )
                     }
                     let top = EdgeRailPanelController.railTop(on: screen)
@@ -289,9 +290,9 @@ final class AssistantWindowManager {
 
     /// Assistant 창이 키 창일 때 듣는 키
     enum KeyIntent: Equatable {
-        case escape, close, review, allWork, chats, newChat
+        case escape, close, review, allWork, chats, sessions, newChat
 
-        /// Esc · ⌘W · ⌘1 · ⌘2 · ⌘3 · ⌘N. 그 밖의 키는 지나간다
+        /// Esc · ⌘W · ⌘1 · ⌘2 · ⌘3 · ⌘4 · ⌘N. 그 밖의 키는 지나간다
         static func of(keyCode: Int, flags: NSEvent.ModifierFlags) -> KeyIntent? {
             let flags = flags.intersection(.deviceIndependentFlagsMask)
             if keyCode == kVK_ANSI_W { return flags == .command ? .close : nil }
@@ -300,13 +301,14 @@ final class AssistantWindowManager {
             case .review?: return .review
             case .allWork?: return .allWork
             case .chats?: return .chats
+            case .sessions?: return .sessions
             case .newChat?: return .newChat
             case nil: return nil
             }
         }
     }
 
-    /// 키 창이 이 창이면 그 키를 처리한다: Esc(History → 숨김) · ⌘W 닫기 · ⌘1 Review · ⌘2 All work · ⌘3 Chats · ⌘N 새 창. 처리했으면 true
+    /// 키 창이 이 창이면 그 키를 처리한다: Esc(History → 숨김) · ⌘W 닫기 · ⌘1 Review · ⌘2 All work · ⌘3 Chats · ⌘4 Sessions · ⌘N 새 창. 처리했으면 true
     func handleKey(_ event: NSEvent) -> Bool {
         guard let window = event.window, let id = windowID(for: window), let intent = KeyIntent.of(keyCode: Int(event.keyCode), flags: event.modifierFlags) else { return false }
         return perform(intent, in: id)
@@ -353,6 +355,10 @@ final class AssistantWindowManager {
             shell.openAllWork()
         case .chats:
             shell.openChats()
+        case .sessions:
+            // Sessions 버튼이 없는 셸(Release · 게이트 꺼짐 · 로그인 전)의 ⌘4는 Review가 꺼진 ⌘1처럼 지나간다
+            guard shell.listens(to: .sessions) else { return false }
+            shell.openSessions()
         case .newChat:
             shell.newChat()
         }

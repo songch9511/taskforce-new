@@ -85,6 +85,8 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
             #endif
         }
         // 데스크톱 세션(레일 링 · Sessions의 살아 있는 줄 · 세션 보기)은 목록과 같은 게이트다. 끝난 링은 열어 볼 때까지 남는다 (안 연 끝남 표시, 새 Issues 화면)
+        // 저장소는 앱 생성 경로가 런타임에 실어 둔 것이다 (`AppRuntime.doneStores`: 실사용 앱은 영속, 시험 호스트 · 견본은 메모리). 여기서 따로 고르지 않는다
+        let doneStores = chat?.doneStores ?? .inMemory()
         let desktop: ClaudeAppRuntime.Made?
         if let injectedDesktop {
             desktop = injectedDesktop
@@ -92,15 +94,15 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
             #if DEBUG
             desktop = ExternalSessionSnapshot.isEnabled && externalSessions != nil
                 ? ExternalSessionSnapshot.sampleDesktop(scope: chat?.scope)
-                : ClaudeAppRuntime.make(services: launcher.services, scope: chat?.scope, externalSessions: externalSessions)
+                : ClaudeAppRuntime.make(services: launcher.services, scope: chat?.scope, externalSessions: externalSessions, done: doneStores.claudeApp)
             #else
-            desktop = ClaudeAppRuntime.make(services: launcher.services, scope: chat?.scope, externalSessions: externalSessions)
+            desktop = ClaudeAppRuntime.make(services: launcher.services, scope: chat?.scope, externalSessions: externalSessions, done: doneStores.claudeApp)
             #endif
         }
         shell = EdgeShellModel(
             reduceMotion: Self.systemReduceMotion, pinStore: pinStore, contexts: chat?.contexts, review: review, summary: summary, chatsEnabled: chat != nil,
             windowsEnabled: windows, issues: chat?.issues, externalSessions: externalSessions, desktopSessions: desktop?.sessions,
-            railDone: chat?.issues != nil ? ClaudeAppRuntime.railDoneStore() : nil, claudeAppOpened: desktop?.opened
+            railDone: chat?.issues != nil ? doneStores.rail : nil, claudeAppOpened: desktop?.opened
         )
         rail = EdgeRailPanelController(shell: shell)
         panel = EdgePanelController(shell: shell, chat: chat)
@@ -127,6 +129,8 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         // 레일이 여는 패널은 레일 전체의 세로 가운데에 선다 (OA PR-D2): 레일 창의 실제 자리에서 잰다
         panel.railCenterY = { [weak rail] in rail?.centerLineY }
         claudePanel?.panel.delegate = self
+        // 데스크톱 링으로 연 Claude 세션 패널도 레일 전체의 세로 가운데에 선다 (사용자 결정 2026-10-22)
+        claudePanel?.railCenterY = { [weak rail] in rail?.centerLineY }
         // Sessions 왼쪽에 설 때의 기준은 메인 패널이 닿을 자리다 (여는 움직임 중에 밀리지 않게)
         claudePanel?.mainPanelFrame = { [weak panel] in panel.flatMap { $0.isVisible ? $0.targetFrame() : nil } }
         shell.onConnect = { [weak self] in self?.rail.onConnections() }
@@ -589,17 +593,11 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         keyMonitor = nil
     }
 
-    /// 패널의 키: Esc 접기 · ⌘1 가장 새 Review(S4) · ⌘2 All work · ⌘3 Chats · ⌘N New chat, 그리고 Review 페이지가 보일 때 ← → 단계 · 1 · 2 답 (S4, 텍스트 편집 밖에서만).
+    /// 패널의 키: Esc 접기 · ⌘1 가장 새 Review(S4) · ⌘2 All work · ⌘3 Chats · ⌘4 Sessions · ⌘N New chat, 그리고 Review 페이지가 보일 때 ← → 단계 · 1 · 2 답 (S4, 텍스트 편집 밖에서만).
     /// 처리했으면 true
     func handleKey(_ event: NSEvent) -> Bool {
         // 질문 카드가 Esc를 먼저 본다 (열린 Other 칸 · 보류 중인 답): OA D4b-m-1
         if handleQuestionKey(event) { return true }
-        // ⌘4 Sessions: Sessions 버튼이 있는 셸만 (없으면 지나간다)
-        if EdgeSessionsKey.matches(keyCode: Int(event.keyCode), flags: event.modifierFlags) {
-            guard shell.listensToSessionsKey else { return false }
-            shell.openSessions()
-            return true
-        }
         guard let command = EdgeKeyCommand.of(keyCode: Int(event.keyCode), flags: event.modifierFlags) else { return handleReviewKey(event) }
         // Chats가 없는 셸(Release)의 ⌘3 · ⌘N은 연결이 없다: 지나간다
         guard shell.listens(to: command) else { return false }
@@ -616,6 +614,8 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
             shell.openAllWork()
         case .chats:
             shell.openChats()
+        case .sessions:
+            shell.openSessions()
         case .newChat:
             shell.newChat()
         }
@@ -674,18 +674,11 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     }
 }
 
-/// ⌘4 Sessions (OA PR-D2): 이 키는 Edge 패널 · 레일 창만 듣는다. `EdgeKeyCommand`에 넣지 않은 까닭: Assistant 창의 키 해석(`AssistantWindowManager.KeyIntent`)이 그 목록을 빠짐없이 훑는데,
-/// 그 파일은 이 PR의 범위 밖이다. Assistant 창에서 ⌘4는 지나간다 (후속: 그 창도 Sessions를 열게 하려면 `EdgeKeyCommand`로 옮긴다)
-enum EdgeSessionsKey {
-    static func matches(keyCode: Int, flags: NSEvent.ModifierFlags) -> Bool {
-        keyCode == kVK_ANSI_4 && flags.intersection(.deviceIndependentFlagsMask) == .command
-    }
-}
-
-/// 패널이 키를 가졌을 때 듣는 키 (디자인 Focus and keys): Esc · ⌘1(S4) · ⌘2 · ⌘3 · ⌘N. 이 밖의 키는 지나간다 (⌘4 Sessions는 `EdgeSessionsKey`)
+/// 패널이 키를 가졌을 때 듣는 키 (디자인 Focus and keys): Esc · ⌘1(S4) · ⌘2 · ⌘3 · ⌘4 Sessions(OA PR-D2) · ⌘N. 이 밖의 키는 지나간다.
+/// Assistant 창도 같은 목록을 읽는다 (`AssistantWindowManager.KeyIntent`): ⌘4는 어느 창이 키 창이어도 Sessions를 연다 (Sessions 버튼이 있는 셸만)
 /// (Review 페이지의 ← → · 1 · 2는 텍스트 편집 상태를 봐야 해서 `EdgeReviewKeys`가 따로 듣는다)
 enum EdgeKeyCommand: Equatable {
-    case escape, review, allWork, chats, newChat
+    case escape, review, allWork, chats, sessions, newChat
 
     static func of(keyCode: Int, flags: NSEvent.ModifierFlags) -> EdgeKeyCommand? {
         let flags = flags.intersection(.deviceIndependentFlagsMask)
@@ -694,6 +687,7 @@ enum EdgeKeyCommand: Equatable {
         case kVK_ANSI_1 where flags == .command: return .review
         case kVK_ANSI_2 where flags == .command: return .allWork
         case kVK_ANSI_3 where flags == .command: return .chats
+        case kVK_ANSI_4 where flags == .command: return .sessions
         case kVK_ANSI_N where flags == .command: return .newChat
         default: return nil
         }

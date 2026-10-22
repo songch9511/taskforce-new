@@ -5,8 +5,9 @@ import Testing
 @testable import TaskforceKit
 @testable import TaskforceUI
 
-/// OA PR-D2 (사용자 결정 2026-10-22): 레일이 여는 패널(Projects · Chats · Sessions · More …)은 레일의 중심선에 세로 가운데로 선다. 보이는 화면 안으로 들어오고,
-/// 레일과의 가로 간격은 그대로이며, 내용 높이가 바뀌면 위아래로 절반씩 다시 가운데로 간다. 세션 보기 창(레일의 링으로 연 Claude 세션 패널 · 메인 패널 왼쪽의 세션 패널)은 지금 자리 그대로다.
+/// OA PR-D2 (사용자 결정 2026-10-22): 레일이 여는 패널(Projects · Chats · Sessions, 그리고 데스크톱 링으로 연 Claude 세션 패널)은 레일의 중심선에 세로 가운데로 선다. 보이는 화면 안으로 들어오고,
+/// 레일과의 가로 간격은 그대로이며, 내용 높이가 바뀌면 위아래로 절반씩 다시 가운데로 간다. More 카드는 가운데로 옮기지 않고 ⋯ 옆(DS `beside`)이다(`EdgeRailCapsuleMoreTests`).
+/// 메인 패널 왼쪽의 세션 패널 · Claude 세션 패널은 지금 자리 그대로 메인 패널의 위에 맞춘다.
 @MainActor
 struct EdgePanelPlacementTests {
     typealias M = EdgePanelMetrics
@@ -84,14 +85,6 @@ struct EdgePanelPlacementTests {
         }
     }
 
-    @Test func centeringAnAlreadyPlacedWindowKeepsItsXAndSize() {
-        let card = NSRect(x: 1180, y: 300, width: 170, height: 76)
-        let centered = M.centered(card, centerY: centerY, visible: visible)
-        #expect(centered.minX == 1180 && centered.size == card.size && centered.midY == centerY)
-        let low = M.centered(card, centerY: 60, visible: visible)
-        #expect(low.minY == visible.minY, "보이는 화면 안으로")
-    }
-
     // MARK: 창 (메인 패널 · 세션 보기 창 · 세션 패널)
 
     private func screen() throws -> NSScreen { try #require(EdgeRailPanelController.screen, "화면이 있어야 창 자리를 잰다") }
@@ -146,18 +139,44 @@ struct EdgePanelPlacementTests {
         gated.shell.dismiss()
     }
 
-    @Test func theSessionViewWindowsKeepTheirPlacementTheOneBesideTheRailStaysAtTheTopAndTheOneBesideAPanelAlignsToItsTop() async throws {
+    /// 사용자 결정(2026-10-22): 데스크톱 링으로 연 Claude 세션 패널도 다른 레일 패널처럼 레일 중심선에 가운데로 서고 같은 규칙으로 보이는 화면 안으로 들어온다.
+    /// 메인 패널(Sessions) 왼쪽에 서는 세션 패널 · Claude 세션 패널은 지금 자리 그대로 메인 패널의 위에 맞춘다
+    @Test func theClaudePanelOpenedFromARingStandsOnTheRailMidlineAndTheOneBesideAPanelAlignsToItsTop() async throws {
         let screen = try screen()
         let w = await EdgeSessionsTests().rig(rows: [1], live: [EdgeSessionsTests.live(1, .busy)])
         let claude = EdgeClaudeAppPanelController(shell: w.shell)
-        // 레일의 링으로 연 한 패널: 지금 자리 그대로(위가 화면 위에서 120)
         w.shell.openRailEntry(w.shell.slots.first { $0.source == .claudeApp(sessionID: EdgeSessionsTests.id(1)) }!)
         #expect(w.shell.view == .claudeApp)
+        // 레일의 링으로 연 한 패널: 내용 높이(320–520)가 짧아도 길어도 레일 중심선(화면 세로 가운데)에 가운데
+        for (head, body) in [(CGFloat(40), CGFloat(100)), (40, 300), (40, 900)] {
+            claude.presentation.headHeight = head
+            claude.presentation.bodyHeight = body
+            let frame = try #require(claude.targetFrame())
+            let height = min(M.maxHeight, max(M.minHeight, head + body))
+            #expect(frame.height == height)
+            #expect(frame == M.centeredFrame(height: height, centerY: screen.frame.midY, visible: screen.visibleFrame, screenMaxX: screen.frame.maxX, capsule: true))
+            #expect(abs(frame.midY - screen.frame.midY) < 0.001, Comment(rawValue: "내용 \(head + body): 레일 중심선에 가운데"))
+            #expect(frame.maxY != EdgeRailPanelController.railTop(on: screen), "더는 화면 위 120에 붙지 않는다")
+        }
+        // 낮거나 높은 레일, 화면 끝에 붙은 레일: 중심선을 따라가고 메인 패널과 같은 규칙으로 보이는 화면 안으로 들어온다 (보이는 화면보다 높은 패널은 위를 맞춘다)
         claude.presentation.headHeight = 40
+        claude.presentation.bodyHeight = 900
+        for center in [screen.frame.midY - 150, screen.frame.midY + 150, screen.frame.maxY - 10, screen.frame.minY + 10] {
+            claude.railCenterY = { center }
+            let frame = try #require(claude.targetFrame())
+            #expect(abs(frame.minY - M.centeredOriginY(height: frame.height, centerY: center, visible: screen.visibleFrame)) < 0.001, Comment(rawValue: "중심선 \(center)"))
+            #expect(frame.minY >= screen.visibleFrame.minY - 0.001 && frame.maxY <= screen.visibleFrame.maxY + 0.001, "보이는 화면 안")
+            // 같은 높이의 메인 패널과 같은 자리다 (레일이 여는 패널이 어느 것이든 같은 규칙)
+            let main = EdgePanelController(shell: w.shell, chat: nil)
+            main.railCenterY = { center }
+            main.presentation.bodyHeight = frame.height - M.headerHeight
+            let mainFrame = try #require(main.targetFrame())
+            #expect(mainFrame.height == frame.height && abs(mainFrame.minY - frame.minY) < 0.001 && mainFrame.minX == frame.minX, "레일 패널과 같은 가로 · 같은 가운데 · 같은 맞춤")
+        }
+        // 레일 중심선을 모르면(레일 창이 안 떠 있으면) 화면 세로 가운데다
+        claude.railCenterY = { nil }
         claude.presentation.bodyHeight = 100
-        let standalone = try #require(claude.targetFrame())
-        #expect(standalone.maxY == EdgeRailPanelController.railTop(on: screen), "세션 보기 한 패널은 가운데로 가지 않는다")
-        #expect(standalone == M.frame(height: standalone.height, railTop: EdgeRailPanelController.railTop(on: screen), screenMaxX: screen.frame.maxX, capsule: true))
+        #expect(abs(try #require(claude.targetFrame()).midY - screen.frame.midY) < 0.001)
         // 메인 패널 왼쪽의 세션 패널 · Claude 세션 패널: 메인 패널(가운데)의 위에 맞춘다 (메인 패널이 가운데로 가면 따라간다)
         let main = M.centeredFrame(height: 300, centerY: screen.frame.midY, visible: screen.visibleFrame, screenMaxX: screen.frame.maxX, capsule: true)
         let beside = EdgeSessionPanelController.frame(issuePanel: main, height: 400)

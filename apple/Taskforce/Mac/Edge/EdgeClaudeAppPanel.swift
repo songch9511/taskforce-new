@@ -178,7 +178,7 @@ struct ClaudeAppTurnView: View {
 
 /// Claude 세션 패널 창: `EdgeKeyPanel`과 같은 종류(borderless · nonactivating)의 창.
 /// - Sessions 패널이 떠 있으면(`view == .sessions`) 그 왼쪽에 선다 (세션 패널과 같은 자리 규칙, OA U3-45)
-/// - 레일의 링으로 열면(`view == .claudeApp`) 이슈 패널 없이 한 패널만 레일 옆 메인 패널 자리에 선다 (DR-S1d). 이때만 키 창이 된다 (Esc가 닿도록)
+/// - 레일의 링으로 열면(`view == .claudeApp`) 이슈 패널 없이 한 패널만 레일 옆, 다른 레일 패널처럼 레일 중심선에 세로 가운데로 선다 (DR-S1d · 사용자 결정 2026-10-22). 이때만 키 창이 된다 (Esc가 닿도록)
 @MainActor
 final class EdgeClaudeAppPanelController {
     let shell: EdgeShellModel
@@ -221,11 +221,20 @@ final class EdgeClaudeAppPanelController {
         min(EdgePanelMetrics.maxHeight, max(EdgePanelMetrics.minHeight, presentation.contentHeight))
     }
 
-    /// 지금 자리. Sessions 옆이면 메인 패널 왼쪽 (메인 패널 창이 아직 없으면 nil), 레일 옆 한 패널이면 메인 패널 자리
+    /// 레일 전체의 세로 가운데 (`EdgeRailPanelController.centerLineY`): 컨트롤러가 레일에 잇는다. 레일 창이 안 떠 있으면(nil) 화면 `midY`다
+    var railCenterY: () -> CGFloat? = { nil }
+
+    /// 지금 자리. Sessions 옆이면 메인 패널 왼쪽 (메인 패널 창이 아직 없으면 nil), 레일 옆 한 패널이면 다른 레일 패널처럼 레일 중심선에 세로 가운데로
+    /// (OA PR-D2, 사용자 결정 2026-10-22: 보이는 화면 안으로 같은 규칙. `-TFEdgeSnapshotTopPlacement`만 옛 위 맞춤)
     func targetFrame() -> NSRect? {
         if standalone {
             guard let screen = EdgeRailPanelController.screen else { return nil }
-            return EdgePanelMetrics.frame(height: height(), railTop: EdgeRailPanelController.railTop(on: screen), screenMaxX: screen.frame.maxX, capsule: true)
+            guard EdgePanelMetrics.centersRailPanels else {
+                return EdgePanelMetrics.frame(height: height(), railTop: EdgeRailPanelController.railTop(on: screen), screenMaxX: screen.frame.maxX, capsule: true)
+            }
+            return EdgePanelMetrics.centeredFrame(
+                height: height(), centerY: railCenterY() ?? EdgeRailPanelController.railCenterY(on: screen), visible: screen.visibleFrame, screenMaxX: screen.frame.maxX, capsule: true
+            )
         }
         guard let main = mainPanelFrame() else { return nil }
         return EdgeSessionPanelController.frame(issuePanel: main, height: height())

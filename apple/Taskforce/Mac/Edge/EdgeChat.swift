@@ -12,6 +12,8 @@ import TaskforceUI
 @MainActor
 final class ChatRuntime {
     let scope: AccountScope
+    /// 안 연 끝남 표시의 저장소: 셸 컨트롤러가 레일 링 · 데스크톱 링에 그대로 넘긴다 (끝난 링이 앱을 다시 켠 뒤에도 남는다)
+    let doneStores: RailDoneStores
     let memory: MemoryStore
     let chat: ChatStore
     /// Assistant 창의 대상 목록 (OA U1): 대상 메뉴의 행. 이 빌드가 에이전트를 띄울 수 없으면(샌드박스) 모든 에이전트 행이 "Can't run agents in this build"다
@@ -54,6 +56,7 @@ final class ChatRuntime {
     /// - issueScreens: 새 Issues 화면을 켜는가 (기본은 이 실행의 게이트 `EdgeSurfaces.issueScreens`). 켜져 있어도 이 연결이 `IssueScreensGateway`를 따르지 않으면(견본 · 시험용 가짜) 만들지 않는다
     /// - agentQuestions: 에이전트 질문 카드를 켜는가 (기본은 이 실행의 표면 `EdgeSurfaces.current.agentQuestions`). 켜져 있어도 이 연결이 `AgentQuestionGateway`를 따르지 않으면(견본 · 시험용 가짜) 만들지 않는다
     /// - secretSubmitter: 비밀값을 이 Mac에서 내보내는 곳. 없으면 비밀값 답은 "Couldn't send"로 돌아온다 (실제 구현은 D4b-m-2)
+    /// - doneStores: 안 연 끝남 표시의 저장소 (레일 링 · 데스크톱 링, 계약 23장). 실제 앱은 `AppRuntime.makeChatRuntime`이 영속 저장소를 넘긴다 — 기본(메모리)은 시험이 실사용 설정을 건드리지 않게 하는 값이다
     /// - notificationCenter: 로컬 알림을 거는 센터 (시험은 가짜: 실제 알림 센터에 아무것도 보내지 않는다)
     /// - questionSleep: 2초 보류 · 종료 기다림의 시계 (시험은 손으로 돌린다)
     /// - notificationsEnabled: 질문 알림을 보내는가 (기본: bridge가 켜져 있을 때만, `BridgeFlag`)
@@ -61,6 +64,7 @@ final class ChatRuntime {
         gateway: any ChatGateway, contextGateway: (any ContextGateway)? = nil, scope: AccountScope = AccountScope(),
         now: @escaping @Sendable () -> Date = { Date() }, issueScreens: Bool = EdgeSurfaces.issueScreensForThisRun,
         agentQuestions: Bool = EdgeSurfaces.current.agentQuestions, secretSubmitter: (any LocalSecretAnswerSubmitting)? = nil,
+        doneStores: RailDoneStores = .inMemory(),
         notificationCenter: any AgentNotificationCenter = SystemAgentNotificationCenter(),
         questionSleep: @escaping AgentQuestionStore.Sleep = { try? await Task.sleep(for: .seconds($0)) }, notificationsEnabled: @escaping () -> Bool = { BridgeFlag.current }
     ) {
@@ -69,6 +73,7 @@ final class ChatRuntime {
         let gateway = issueScreens ? IssueSnapshotData.gateway(replacing: gateway) : gateway
         #endif
         self.scope = scope
+        self.doneStores = doneStores
         memory = MemoryStore(gateway: gateway, scope: scope)
         // 대상 목록 · 칩을 실은 보내기는 실제 연결(`LiveChatGateway`)만 가진다. 견본 · 시험용 가짜는 Taskforce 대상으로만 보낸다
         let assistant = gateway as? any AssistantGateway

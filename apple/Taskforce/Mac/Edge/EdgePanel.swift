@@ -44,8 +44,8 @@ enum EdgePanelMetrics {
 
     // MARK: 세로 가운데 (OA PR-D2, 사용자 결정 2026-10-22)
 
-    /// 레일이 여는 패널(Projects · Chats · Sessions · More …)은 **레일의 중심선**에 세로 가운데로 선다: 캡슐 레일의 열은 늘 화면 세로 가운데에서 자라므로(`EdgeRailCapsuleLayout.windowFrame`) 그 중심선은 화면 `midY`다.
-    /// 세션 보기 창(레일의 링으로 연 Claude 세션 패널 · 메인 패널 왼쪽의 세션 패널)은 지금 자리 그대로다 (`frame(height:railTop:screenMaxX:capsule:)` · 메인 패널의 위 맞춤).
+    /// 레일이 여는 패널(Projects · Chats · Sessions, 그리고 데스크톱 링으로 연 Claude 세션 패널)은 **레일의 중심선**에 세로 가운데로 선다: 캡슐 레일의 열은 늘 화면 세로 가운데에서 자라므로(`EdgeRailCapsuleLayout.windowFrame`) 그 중심선은 화면 `midY`다.
+    /// More 카드는 가운데로 옮기지 않는다 (⋯ 옆, `RailMoreCardGeometry`). 메인 패널 왼쪽의 세션 패널 · Claude 세션 패널은 메인 패널의 위 맞춤 그대로다.
     /// 아래 모서리 y (화면 좌표, 아래가 0): 중심선 위아래로 높이의 절반씩 두되 **보이는 화면**(메뉴 막대 · Dock 뺀 `visibleFrame`) 안으로 넣는다.
     /// 보이는 화면보다 높은 패널은 위(머리)를 맞춘다: 머리가 잘리지 않고, 넘치는 쪽은 아래다
     static func centeredOriginY(height: CGFloat, centerY: CGFloat, visible: CGRect) -> CGFloat {
@@ -58,11 +58,6 @@ enum EdgePanelMetrics {
     /// 세로 가운데 맞춘 패널 창의 자리: 가로는 지금 그대로(레일 왼쪽 12pt, 폭 380), 세로만 `centeredOriginY`
     static func centeredFrame(height: CGFloat, centerY: CGFloat, visible: CGRect, screenMaxX: CGFloat, capsule: Bool) -> NSRect {
         NSRect(x: rightEdge(screenMaxX: screenMaxX, capsule: capsule) - width, y: centeredOriginY(height: height, centerY: centerY, visible: visible), width: width, height: height)
-    }
-
-    /// 이미 정해진 창 자리(가로 · 폭 · 높이)를 세로 가운데로 옮긴다 (More 카드처럼 크기와 가로 자리는 따로 정해진 창)
-    static func centered(_ frame: NSRect, centerY: CGFloat, visible: CGRect) -> NSRect {
-        NSRect(x: frame.minX, y: centeredOriginY(height: frame.height, centerY: centerY, visible: visible), width: frame.width, height: frame.height)
     }
 
     /// 열려 있는 동안 높이가 바뀌어 다시 가운데로 가는 움직임의 시간 (패널 페이드와 같다, 움직임 줄이기면 바로)

@@ -566,20 +566,65 @@ struct EdgeSessionsTests {
         #expect(await until { !w.controller.panel.presentation.shown && !w.controller.hasMonitors })
     }
 
+    /// 사용자 결정(2026-10-22): 링으로 연 Claude 세션 패널은 실제 레일 창의 중심선에 가운데로 선다 — 컨트롤러가 레일의 중심선을 이 패널에 이어 주고, 레일이 옮겨지면 따라간다
+    @Test func theClaudePanelOpenedFromARingStandsOnTheMidlineOfTheRealRailWindow() async throws {
+        let screen = try #require(EdgeRailPanelController.screen, "화면이 있어야 창 자리를 잰다")
+        let w = try await windows(live: [Self.live(1, .busy)])
+        w.controller.rail.show()
+        defer {
+            w.shell.dismiss()
+            w.controller.followPanel()
+            w.controller.rail.hide()
+        }
+        w.shell.openRailEntry(w.shell.slots.first { $0.source == .claudeApp(sessionID: Self.id(1)) }!)
+        #expect(await until { w.claude.isVisible && w.claude.presentation.shown })
+        func expectedMinY(_ height: CGFloat, _ center: CGFloat) -> CGFloat {
+            EdgePanelMetrics.centeredOriginY(height: height, centerY: center, visible: screen.visibleFrame)
+        }
+        let home = w.controller.rail.panel.frame
+        let center = try #require(w.controller.rail.centerLineY)
+        let target = try #require(w.claude.targetFrame())
+        #expect(abs(target.minY - expectedMinY(target.height, center)) < 0.001, "레일 창의 중심선에 가운데 (화면 위 120에 붙지 않는다)")
+        #expect(await until { abs(w.claude.panel.frame.minY - target.minY) < 1 }, "열린 창도 그 자리에 선다")
+        // 레일을 아래로 옮기면: 중심선이 내려가고 패널의 목표 자리도 따라 내려간다
+        w.controller.rail.panel.setFrame(home.offsetBy(dx: 0, dy: -120), display: true)
+        let lowCenter = try #require(w.controller.rail.centerLineY)
+        let low = try #require(w.claude.targetFrame())
+        #expect(abs(lowCenter - center + 120) < 1)
+        #expect(abs(low.minY - expectedMinY(low.height, lowCenter)) < 0.001 && low.minY < target.minY - 1, "레일을 따라 내려간다")
+        // 레일 창이 안 떠 있으면 화면 가운데다
+        w.controller.rail.hide()
+        let fallback = try #require(w.claude.targetFrame())
+        #expect(abs(fallback.minY - expectedMinY(fallback.height, screen.frame.midY)) < 0.001)
+    }
+
     @Test func commandFourOpensSessionsOnlyInAShellThatHasTheSessionsButton() async throws {
         let w = try await windows(live: [])
         defer {
             w.shell.dismiss()
             w.controller.followPanel()
         }
-        #expect(EdgeSessionsKey.matches(keyCode: kVK_ANSI_4, flags: .command) && !EdgeSessionsKey.matches(keyCode: kVK_ANSI_4, flags: []) && !EdgeSessionsKey.matches(keyCode: kVK_ANSI_4, flags: [.command, .shift]))
+        // ⌘4는 ⌘1–3 · ⌘N처럼 `EdgeKeyCommand`의 하나다 (Assistant 창의 키 해석이 같은 목록을 읽는다)
+        #expect(EdgeKeyCommand.of(keyCode: kVK_ANSI_4, flags: .command) == .sessions)
+        #expect(EdgeKeyCommand.of(keyCode: kVK_ANSI_4, flags: []) == nil && EdgeKeyCommand.of(keyCode: kVK_ANSI_4, flags: [.command, .shift]) == nil)
+        #expect(EdgeKeyCommand.of(keyCode: kVK_ANSI_4, flags: [.command, .option]) == nil && EdgeKeyCommand.of(keyCode: kVK_ANSI_4, flags: [.command, .control]) == nil)
+        #expect(w.shell.listens(to: .sessions), "Sessions 버튼이 있는 셸은 듣는다")
         #expect(w.controller.handleKey(try key(kVK_ANSI_4)))
         #expect(w.shell.panelOpen && w.shell.view == .sessions)
         w.shell.dismiss()
         let account = try AppChatAccount.make()
         let plain = EdgeShellController(launcher: LauncherModel(configurationError: "test"), chat: ChatRuntime(gateway: IssueSampleGateway(), contextGateway: IssueSampleContextGateway(), scope: account.scope, now: { Date() }, issueScreens: false), assistantWindows: false)
+        #expect(!plain.shell.listens(to: .sessions), "Sessions 버튼이 없는 셸은 듣지 않는다")
         #expect(!plain.handleKey(try key(kVK_ANSI_4)) && !plain.shell.panelOpen, "Sessions 버튼이 없는 셸은 ⌘4가 지나간다")
-        #expect(EdgeKeyCommand.of(keyCode: kVK_ANSI_4, flags: .command) == nil, "Assistant 창의 키 해석은 그대로다")
+    }
+
+    /// 로그인 전(계정 없음)에는 Sessions 버튼이 없다: ⌘4는 지나가고 패널이 열리지 않는다
+    @Test func commandFourPassesWhileSignedOutBecauseThereIsNoSessionsButton() throws {
+        let account = try AppChatAccount.make()
+        let runtime = ChatRuntime(gateway: IssueSampleGateway(), contextGateway: IssueSampleContextGateway(), scope: account.scope, now: { Date() }, issueScreens: true)
+        let controller = EdgeShellController(launcher: LauncherModel(configurationError: "test"), chat: runtime, assistantWindows: false)
+        #expect(!controller.shell.sessionsVisible && !controller.shell.listens(to: .sessions))
+        #expect(!controller.handleKey(try key(kVK_ANSI_4)) && !controller.shell.panelOpen)
     }
 
     @Test func theClaudePanelCountsAsAnIssueWindowSoFocusMovingToItDoesNotFoldThePanel() async throws {
