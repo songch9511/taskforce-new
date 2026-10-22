@@ -157,6 +157,8 @@ struct EdgeShellModelTests {
         shell.update(EdgeWorkSnapshot(doneToday: [done], load: .loaded(problem: nil)))
         #expect(shell.slots.map(\.kind) == [.done])
         #expect(shell.slots.first?.id == item.id)
+        // 3초만 두는 옛 모드의 활동 글은 "Done just now"다 (링의 VoiceOver 이름은 "Done": 열 때까지 남는 모드와 같은 링이다)
+        #expect(shell.slots.first?.activity == "Done just now" && ActivityRing.Kind.done.accessibilityLabel == "Done")
         time.advance(2.9)
         #expect(shell.slots.map(\.kind) == [.done])
         time.advance(0.2)

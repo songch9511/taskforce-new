@@ -12,6 +12,7 @@ struct EdgeComponentTests {
         #expect(TFMotion.railSlide == 0.22)
         #expect(TFMotion.railLeaveDelay == 0.4)
         #expect(TFMotion.ringFade == 0.16)
+        // 3초는 끝남을 시간으로 내리는 옛 모드(노치 레일 · Assistant 창의 좁은 저장소)만 쓴다. 캡슐 레일의 끝난 링은 열어 볼 때까지 남는다 (OA PR-D2, 계약 23장)
         #expect(TFMotion.doneHold == 3)
         #expect(TFMotion.disclosureFlip == 0.2)
         #expect(TFMotion.pressScale == 0.98)
@@ -36,7 +37,17 @@ struct EdgeComponentTests {
     @Test func railItemNameIsTitleStateActivity() {
         #expect(RailItem.accessibilityLabel(title: "Pricing page", state: .inProgress, activity: "AI reviewing") == "Pricing page · In Progress · AI reviewing")
         #expect(RailItem.accessibilityLabel(title: "Launch", state: .done, activity: "Done just now") == "Launch · Done · Done just now")
+        #expect(RailItem.accessibilityLabel(title: "Launch", state: .done, activity: "Done") == "Launch · Done · Done", "열어 볼 때까지 남는 끝난 링의 활동은 \"Done\"")
         #expect(RailItem.side == 32)
+    }
+
+    /// 업무 상태가 없는 칸(Claude 데스크톱 세션)은 "제목 · 활동"이다 (Taskforce 업무가 아니라 To Do · In Progress · Done을 붙이지 않는다)
+    @Test func aRailItemWithoutAWorkStateIsNamedByTitleAndActivity() {
+        #expect(RailItem.accessibilityLabel(title: "Pricing draft", state: nil, activity: "Running") == "Pricing draft · Running")
+        #expect(RailItem.accessibilityLabel(title: "Pricing draft", state: nil, activity: "Done") == "Pricing draft · Done")
+        for state in TaskStatusMark.State.allCases {
+            #expect(!RailItem.accessibilityLabel(title: "Pricing draft", state: nil, activity: "Running").contains(state.label), "업무 상태 낱말이 붙지 않는다")
+        }
     }
 
     @Test func panelHeaderStepsSayThePosition() {

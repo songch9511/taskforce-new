@@ -1661,7 +1661,8 @@ final class EdgeShellModel {
                 entries.append(RailEntry(id: action.id, title: action.title, kind: kind, state: TaskStatusMark.State(TaskGroup.open(action)), activity: activity))
             }
             for action in work.doneToday where recentlyDone[action.id] != nil {
-                entries.append(RailEntry(id: action.id, title: action.title, kind: .done, state: .done))
+                // 3초 모드의 활동 글 (링의 이름은 "Done"이다: `ActivityRing.Kind.done`)
+                entries.append(RailEntry(id: action.id, title: action.title, kind: .done, state: .done, activity: AgentSessionRules.doneJustNow))
             }
             return entries
         }
@@ -1672,7 +1673,7 @@ final class EdgeShellModel {
             let mine = AgentSessionRules.sessions(of: [action.id], in: sessions)
             guard let ring = AgentSessionRules.issueRing(v1: v1, sessions: mine) else { return }
             entries.append(RailEntry(
-                id: action.id, title: action.title, kind: ActivityRing.Kind(ring), state: state, activity: ring.railActivity ?? (untilOpened && ring == .done ? AgentSessionRules.done : nil)
+                id: action.id, title: action.title, kind: ActivityRing.Kind(ring), state: state, activity: ring.railActivity ?? (ring == .done ? (untilOpened ? AgentSessionRules.done : AgentSessionRules.doneJustNow) : nil)
             ))
         }
         // 확인 요청의 이슈도 세션의 링은 가진다 (v1 needs-you만 빠진다)

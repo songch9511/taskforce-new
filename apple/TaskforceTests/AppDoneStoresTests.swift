@@ -86,6 +86,31 @@ struct AppDoneStoresTests {
         #expect(controller.shell.railDone === stores.rail)
     }
 
+    /// 데스크톱 링 모델(`ClaudeAppRuntime.make`)은 런타임이 가진 Claude 데스크톱 저장소 위에 선다: 실제 `services`가 있는 컨트롤러가 그 저장소로 모델을 만들고,
+    /// 계정이 떠나면 모델이 **그 저장소**를 비운다 (메모리 저장소를 따로 만들어 쓰면 런타임의 저장소는 그대로 남아 이 시험이 실패한다)
+    @Test func theControllerBuildsTheDesktopModelOnTheRuntimesClaudeAppStore() throws {
+        let account = try AppChatAccount.make()
+        let stores = RailDoneStores.inMemory()
+        let marks = ["8a5f0000-0000-4000-8000-000000000001": ClaudeAppDoneMark(pid: 4242, at: Date(timeIntervalSince1970: 1_800_000_000))]
+        stores.claudeApp.save(marks)
+        let runtime = ChatRuntime(
+            gateway: IssueSampleGateway(), contextGateway: IssueSampleContextGateway(), scope: account.scope, now: { Date() }, issueScreens: true, doneStores: stores
+        )
+        let services = S3bGateTests.services().services
+        let launcher = LauncherModel(session: account.session, services: services, account: AccountStore(services: services, session: account.session))
+        let external = ExternalSessionsStore(
+            scope: account.scope, scan: { ExternalSessionScan(rows: []) }, seen: InMemoryExternalSessionSeenStore(Date(timeIntervalSinceNow: -10_000)), pollInterval: 3600
+        )
+        let controller = EdgeShellController(launcher: launcher, chat: runtime, assistantWindows: false, injectedExternalSessions: external)
+        #expect(controller.shell.desktop != nil, "services · 계정 경계 · 목록이 있으면 `ClaudeAppRuntime.make`가 데스크톱 모델을 만든다 (주입한 가짜가 아니다)")
+        #expect(stores.claudeApp.load() == marks, "만들기만 해서는 저장소를 건드리지 않는다")
+        // (Swift는 마지막 사용 뒤에 컨트롤러를 먼저 놓을 수 있다: 모델이 살아 있는 동안 계정을 떠나게 한다)
+        withExtendedLifetime(controller) {
+            account.scope.accountLeft()
+            #expect(stores.claudeApp.load().isEmpty, "계정이 떠나면 모델이 자기 저장소(런타임의 것)를 비운다")
+        }
+    }
+
     /// 새 Issues 화면이 꺼진 구성은 레일 끝남 저장소를 쓰지 않는다 (옛 3초 모드)
     @Test func aShellWithoutIssueScreensHasNoRailDoneStore() throws {
         let account = try AppChatAccount.make()

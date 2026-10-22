@@ -35,7 +35,8 @@ public struct ActivityRing: View {
     public enum Kind: String, CaseIterable, Sendable {
         case running, stopping, unreachable, needsYou, waiting, done, idle
 
-        /// VoiceOver 이름 (레일 항목은 "제목 · 상태 · 활동"으로 감싼다)
+        /// VoiceOver 이름 (레일 항목은 "제목 · 상태 · 활동"으로 감싼다).
+        /// 끝난 링은 사용자가 열어 볼 때까지 레일에 남아 몇 시간이 될 수 있으므로 "Done"이다 ("just now"는 거짓이 된다, OA PR-D2 계약 23장)
         public var accessibilityLabel: String {
             switch self {
             case .running: "Running"
@@ -43,7 +44,7 @@ public struct ActivityRing: View {
             case .unreachable: "Connection lost"
             case .needsYou: "Needs your answer"
             case .waiting: "Waiting"
-            case .done: "Done just now"
+            case .done: "Done"
             case .idle: "Idle"
             }
         }
