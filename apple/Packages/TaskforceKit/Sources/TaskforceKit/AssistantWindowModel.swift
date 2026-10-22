@@ -245,9 +245,11 @@ public final class AssistantWindowModel: Identifiable {
         guard !pick.isSame(as: wanted) else { return }
         let current = conversationID
         if chat.isLocalChat(current), !chat.hasMessages(current) {
+            let before = pick
             chat.setLocalTarget(wanted, for: current)
-            // 이 빈 대화가 고른 폴더는 옛 대상의 것이다 (다른 Mac의 에이전트로 바꾸면 이 Mac의 폴더가 그 대화에 남으면 안 된다)
-            forgetFolder(current)
+            // 이 빈 대화가 고른 폴더는 옛 대상의 Mac의 것이다: **연결이 다른 Mac으로 바뀔 때만** 지운다 (다른 Mac의 에이전트로 바꾸면 이 Mac의 폴더가 그 대화에 남으면 안 된다).
+            // 같은 Mac의 다른 에이전트로 바꾸면 그대로다. Taskforce 대상 · Mac을 모르는 연결은 같다고 짐작하지 않는다
+            if !targets.isOnSameMac(before, wanted) { forgetFolder(current) }
             return
         }
         let text = chat.draft(for: current)

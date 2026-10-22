@@ -46,7 +46,10 @@ struct AssistantFolderChatTests {
     /// - existing: 서버에 이미 있는 대화들
     /// - startOnExisting: 처음 보이는 대화가 `existing`의 첫 대화인가 (아니면 서버에 없는 빈 새 대화)
     /// - late: 창이 열린 **뒤에** 서버 목록에 나타난 대화들 (처음 보이는 빈 대화가 그것을 다시 쓰지 않게)
-    func rig(agent: Bool = true, existing: [ChatConversation] = [], startOnExisting: Bool = false, late: [ChatConversation] = []) async -> Rig {
+    /// - targetRows: 대상 목록을 이 행들로 (기본: Taskforce + Codex 하나)
+    func rig(
+        agent: Bool = true, existing: [ChatConversation] = [], startOnExisting: Bool = false, late: [ChatConversation] = [], targetRows: [AssistantTarget]? = nil
+    ) async -> Rig {
         gateway.conversationsHandler = { existing }
         let clock = Clock()
         let chat = ChatStore(gateway: gateway, scope: scope, now: { clock.tick() })
@@ -54,7 +57,7 @@ struct AssistantFolderChatTests {
         await chat.refresh()
         let connection = codex
         assistant.targetsHandler = {
-            [.taskforce, .agent(.init(adapter: "agent:codex", displayName: "Codex", connectionID: connection, state: .ready, access: .write))]
+            targetRows ?? [.taskforce, .agent(.init(adapter: "agent:codex", displayName: "Codex", connectionID: connection, state: .ready, access: .write))]
         }
         let targets = AssistantTargetsStore(gateway: assistant, scope: scope, canRunAgents: { true })
         await targets.refresh()
@@ -205,6 +208,51 @@ struct AssistantFolderChatTests {
         let r = await rig()
         r.model.chooseTarget(try #require(r.targets.options.last))
         #expect(r.host.forgotten.isEmpty)
+    }
+
+    // 폴더는 Mac의 것이다 (코드 검토 재검토 3): 같은 Mac의 다른 에이전트로 바꾸면 그대로, 연결이 다른 Mac으로 바뀌어야 지운다
+
+    private let thisMac = UUID(uuidString: "b1d6e000-0000-4000-8000-000000000001")!
+    private let otherMac = UUID(uuidString: "b1d6e000-0000-4000-8000-000000000002")!
+    private let claudeConnection = UUID(uuidString: "a3333333-3333-4333-8333-333333333335")!
+    private let remoteConnection = UUID(uuidString: "a3333333-3333-4333-8333-333333333336")!
+
+    /// Codex · Claude Code가 이 Mac의 연결(같은 bridge), Codex가 다른 Mac에도 하나
+    private func macRows(thisMacKnown: Bool = true) -> [AssistantTarget] {
+        let here: UUID? = thisMacKnown ? thisMac : nil
+        return [
+            .taskforce,
+            .agent(.init(adapter: "agent:codex", displayName: "Codex", connectionID: codex, state: .ready, access: .write, bridgeID: here)),
+            .agent(.init(adapter: "agent:claude-code", displayName: "Claude Code", connectionID: claudeConnection, state: .ready, access: .write, bridgeID: here)),
+            .agent(.init(adapter: "agent:codex", displayName: "Codex", connectionID: remoteConnection, state: .ready, access: .write, bridgeID: otherMac, deviceName: "Studio")),
+        ]
+    }
+
+    private func option(_ r: Rig, _ name: String, connection: UUID? = nil) throws -> AssistantTargetOption {
+        try #require(r.targets.options.first { $0.name == name && (connection == nil || $0.connectionID == connection) })
+    }
+
+    @Test func switchingToAnotherAgentOnTheSameMacKeepsTheChosenFolder() async throws {
+        let r = await rig(targetRows: macRows())
+        r.model.chooseTarget(try option(r, "Claude Code"))
+        #expect(r.model.pick.connectionID == claudeConnection, "대상은 바뀌었다")
+        #expect(r.host.forgotten.isEmpty, "같은 Mac의 다른 에이전트: 그 Mac에서 고른 폴더는 그대로")
+    }
+
+    @Test func switchingToAnAgentOnAnotherMacForgetsTheChosenFolder() async throws {
+        let r = await rig(targetRows: macRows())
+        r.model.chooseTarget(try option(r, "Codex", connection: remoteConnection))
+        #expect(r.host.forgotten == [r.original], "연결이 다른 Mac으로 바뀌었다 → 이 Mac의 폴더를 지운다")
+    }
+
+    @Test func switchingToTaskforceOrWhenTheMacIsNotKnownForgetsTheFolder() async throws {
+        let r = await rig(targetRows: macRows())
+        r.model.chooseTarget(try #require(r.targets.options.first { !$0.isAgent }))
+        #expect(r.host.forgotten == [r.original], "Taskforce 대상에는 Mac이 없다")
+        // 서버가 Mac(`bridge_id`)을 주지 않은 연결끼리: 같은 Mac이라고 짐작하지 않는다
+        let unknown = await rig(targetRows: macRows(thisMacKnown: false))
+        unknown.model.chooseTarget(try option(unknown, "Claude Code"))
+        #expect(unknown.host.forgotten == [unknown.original], "모르면 지운다 (다른 Mac의 폴더가 남는 것이 더 나쁘다)")
     }
 
     @Test func aChatHandedOutForTheNewTargetIsCleanedOfAnyOldFolder() async throws {

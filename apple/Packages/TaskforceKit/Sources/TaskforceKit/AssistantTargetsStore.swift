@@ -67,6 +67,19 @@ public final class AssistantTargetsStore {
         return nil
     }
 
+    /// 두 대상이 **같은 Mac**의 연결인가 (사용자 결정 2026-10-22 재검토: 폴더는 Mac의 것이라 같은 Mac의 다른 에이전트로 바꿔도 고른 폴더는 그대로다).
+    /// 둘 다 연결을 알고 서버가 준 `bridge_id`가 같을 때만 true — Taskforce 대상 · 연결 없음 · 대상 목록에 없음 · `bridge_id`를 모름은 모두 false다 (모르는 것을 같다고 하지 않는다)
+    public func isOnSameMac(_ first: AssistantTargetPick, _ second: AssistantTargetPick) -> Bool {
+        guard let a = first.connectionID, let b = second.connectionID, let mac = bridgeID(forConnection: a) else { return false }
+        return bridgeID(forConnection: b) == mac
+    }
+
+    /// 연결 id를 돌리는 Mac의 bridge id (대상 목록에 없거나 서버가 모르면 nil)
+    func bridgeID(forConnection connectionID: UUID) -> UUID? {
+        for case .agent(let agent) in targets where agent.connectionID == connectionID { return agent.bridgeID }
+        return nil
+    }
+
     /// 연결 id의 마크. 목록에 없는 연결(꺼진 adapter · 지운 연결)은 점선 사각형이다
     public func mark(forConnection connectionID: UUID) -> AgentMarkKind {
         adapter(forConnection: connectionID).map(AgentMarkKind.of(adapter:)) ?? .placeholder

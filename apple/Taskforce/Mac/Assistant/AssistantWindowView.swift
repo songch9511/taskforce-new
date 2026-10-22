@@ -39,16 +39,10 @@ struct AssistantWindowView: View {
     let presentation: AssistantWindowPresentation
     let reduceMotion: Bool
     var actions = AssistantWindowActions()
-    /// 폴더 줄을 다시 읽으라는 신호: 이 Mac의 폴더 등록부는 관찰되지 않아(bridge가 다른 스레드에서 세션 핀을 쓴다) 다른 변화가 와야만 다시 그려진다 — 아래 `.task`가 짧게 다시 읽고 올린다
-    @State private var folderRecheck = 0
-
     private var chat: ChatStore { runtime.chat }
 
-    /// 머리의 작업 폴더 (없으면 nil): `folderRecheck`를 읽어 두어 다시 읽기 신호가 이 값을 다시 그리게 한다
-    private var folderLine: AgentWorkspaceFolderLine? {
-        _ = folderRecheck
-        return runtime.folderLine(for: model)
-    }
+    /// 머리의 작업 폴더 (없으면 nil). 런타임의 다시 읽기 신호(`folderRecheck`)를 따라 다시 그려진다: 이 Mac의 폴더 등록부는 관찰되지 않는다 (bridge가 다른 스레드에서 세션 핀을 쓴다)
+    private var folderLine: AgentWorkspaceFolderLine? { runtime.folderLine(for: model) }
 
     /// 대화가 바뀌었는지 보는 서명: 새 글 · 상태가 바뀌면 맨 아래로 내린다
     private struct Signature: Equatable {
@@ -99,15 +93,15 @@ struct AssistantWindowView: View {
         .accessibilityLabel("Assistant")
         // 열린 에이전트 대화의 세션을 좁게 읽는다 (D4a-13b): 대화가 바뀌거나 첫 전달로 세션이 생기면 다시 읽는다. 열린 task가 있으면 저장소가 5초마다 이어 읽는다
         .task(id: runtime.chat.agentSessionID(for: model.conversationID)) { await model.agent?.sessions.refresh() }
-        // 세션이 막 생겼다: 이 Mac의 bridge가 세션 핀을 꽂을 때까지(보통 1–2초) 폴더 줄을 다시 읽는다 — 세션이 있으면 그 핀만 폴더로 보이므로 핀이 꽂히기 전에는 줄이 없고,
-        // 다른 Mac의 세션은 핀이 영영 없다 (10초 뒤 멈춘다). 등록부는 메모리 표라 읽기는 싸다
+        // 세션이 막 생겼다: 이 Mac의 bridge가 세션 핀을 꽂을 때까지(보통 1–2초) 폴더 줄을 짧게 다시 읽는다 — 이 Mac의 세션으로 알려지기 전에는 핀만 폴더로 보이므로 그동안 줄이 없다.
+        // 다른 Mac의 세션은 핀이 영영 없다 (끝나면 멈춘다). 핀이 이보다 늦게 꽂혀도 세션 저장소의 정기 읽기가 같은 신호를 올린다 (`ChatRuntime.folderRecheck`). 등록부는 메모리 표라 읽기는 싸다
         .task(id: model.sessionID) {
             guard model.sessionID != nil, runtime.folderLine(for: model) == nil else { return }
-            for _ in 0..<20 {
-                try? await Task.sleep(for: .milliseconds(500))
+            for _ in 0..<runtime.folderPollRounds {
+                try? await Task.sleep(for: runtime.folderPollInterval)
                 if Task.isCancelled { return }
                 if runtime.folderLine(for: model) != nil {
-                    folderRecheck += 1
+                    runtime.folderRecheck.tick += 1
                     return
                 }
             }
@@ -169,6 +163,8 @@ struct AssistantWindowView: View {
             .menuIndicator(.hidden)
             .buttonStyle(.plain)
             .help(folder.tooltip)
+            // 포인터가 컨트롤에 닿으면(메뉴가 열리기 전) 폴더가 있는지 새로 본다: Show in Finder의 켜짐이 그린 뒤에 바뀐 폴더를 따라간다
+            .onHover { inside in if inside { runtime.refreshFolderExistence() } }
             .accessibilityLabel(AgentWorkspaceCopy.folderControl)
             .accessibilityValue(folder.name)
             Spacer(minLength: 0)
