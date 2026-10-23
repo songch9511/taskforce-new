@@ -422,13 +422,16 @@ public struct ClaudeEventMapper: Sendable {
 
     private mutating func backgroundActions(_ event: ClaudeTaskStreamEvent, now: Date) -> [ClaudeMapperAction] {
         switch event {
-        case .started(let id, let tool, let type, let description, let backgrounded):
-            if backgrounded == false {
+        case .started(let id, let tool, let type, let description, let backgrounded, let parent, let depth):
+            // 앞에서 도는 명령은 백그라운드 일이 아니라 무시한다. **앞에서 도는 에이전트(`local_agent`)는 판에 올린다** (트리의 중첩 자식): 스냅샷이 멈추지 않도록 `foreground`를 단다
+            if backgrounded == false, type != "local_agent" {
                 if foregroundTasks.count < Self.maxForegroundTasks { foregroundTasks.insert(id) }
                 return []
             }
             let kind = Self.kind(taskType: type, tool: tool, names: toolUseNames)
-            return [.backgroundTask(.started(taskID: id, toolUseID: tool, kind: kind, name: vettedName(description, tool: tool, kind: kind), at: now))]
+            return [.backgroundTask(.started(
+                taskID: id, toolUseID: tool, kind: kind, name: vettedName(description, tool: tool, kind: kind), at: now, parentID: parent, depth: depth, foreground: backgrounded == false
+            ))]
         case .progress:
             return []
         case .updated(let id, let status, let endMillis):

@@ -106,7 +106,7 @@ struct ClaudeBackgroundTaskStreamTests {
     }
 
     @Test func theParserCapsADescriptionAndKeepsNoSummaryText() {
-        guard case .task(.started(_, _, _, let description?, _))? = ClaudeStreamParser.parse(started(description: String(repeating: "d", count: 5000))) else {
+        guard case .task(.started(_, _, _, let description?, _, _, _))? = ClaudeStreamParser.parse(started(description: String(repeating: "d", count: 5000))) else {
             Issue.record("시작 줄이 아니다")
             return
         }
@@ -159,7 +159,7 @@ struct ClaudeBackgroundTaskStreamTests {
 
     @Test func anUnknownTaskTypeIsOtherAndNeedsTheSameConfirmationAsACommand() {
         let actions = feed([assistantTool(id: "toolu_m", name: "Monitor", input: ["description": "Watch the logs"]), started("mon1", tool: "toolu_m", type: "monitor", description: "Watch the logs")])
-        #expect(background(actions).first.map { if case .started(_, _, let kind, let name, _) = $0 { "\(kind)/\(name ?? "-")" } else { "?" } } == "other/Watch the logs")
+        #expect(background(actions).first.map { if case .started(_, _, let kind, let name, _, _, _, _) = $0 { "\(kind)/\(name ?? "-")" } else { "?" } } == "other/Watch the logs")
     }
 
     @Test func aForegroundCommandAndItsLaterLinesAreIgnored() {
@@ -298,7 +298,7 @@ struct ClaudeBackgroundTaskStreamTests {
     }
 
     private func name(of event: BackgroundTaskEvent) -> String? {
-        if case .started(_, _, _, let name, _) = event { name } else { nil }
+        if case .started(_, _, _, let name, _, _, _, _) = event { name } else { nil }
     }
 }
 #endif

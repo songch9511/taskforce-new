@@ -47,11 +47,12 @@ public enum BackgroundTaskStatus: Equatable, Sendable {
 
 /// 일의 사건. 기록(시작 · 끝 줄)과 스트림(`task_*` 줄)이 같은 값으로 목록을 채운다. 같은 사건이 되풀이돼도 결과는 같다
 public enum BackgroundTaskEvent: Equatable, Sendable {
-    /// 시작. `name`은 모델이 쓴 description만 (모르면 nil: 기록은 도구 줄의 description을 `toolUseID`로 나중에 찾는다)
-    case started(taskID: String, toolUseID: String?, kind: BackgroundTaskKind, name: String?, at: Date?)
+    /// 시작. `name`은 모델이 쓴 description만 (모르면 nil: 기록은 도구 줄의 description을 `toolUseID`로 나중에 찾는다).
+    /// `parentID`는 provider가 준 부모 일 id만 (nil = 세션 바로 아래 또는 모름), `depth`는 provider의 `spawn_depth`(0–16), `foreground`는 앞에서 도는 일(스냅샷이 멈추지 않는다)
+    case started(taskID: String, toolUseID: String?, kind: BackgroundTaskKind, name: String?, at: Date?, parentID: String? = nil, depth: Int? = nil, foreground: Bool = false)
     /// 끝 (`done` · `failed` · `stopped`). 종류를 모르면 nil
     case finished(taskID: String, kind: BackgroundTaskKind?, status: BackgroundTaskStatus, exitCode: Int?, at: Date?)
-    /// 지금 도는 일의 목록 (`background_tasks_changed`): 도는 줄 알았는데 없으면 끝내지 못한 일이다
+    /// 지금 도는 **백그라운드** 일의 목록 (`background_tasks_changed`): 도는 줄 알았는데 없으면 끝내지 못한 일이다 (앞에서 도는 일은 제외)
     case snapshot(runningTaskIDs: [String])
 }
 
@@ -64,9 +65,16 @@ public struct BackgroundTask: Identifiable, Equatable, Sendable, CustomStringCon
     public var startedAt: Date?
     public var endedAt: Date?
     public var toolUseID: String?
+    /// provider가 준 부모 일 id (하위 에이전트 트리). nil = 세션 바로 아래이거나 모름: 이름 · 시각 · 폴더로 짐작해 채우지 않는다
+    public var parentID: String?
+    /// provider의 `spawn_depth` (0–16). 모르면 nil
+    public var depth: Int?
+    /// 앞에서 돈 일이다: `background_tasks_changed`는 백그라운드 일만 싣기 때문에 스냅샷에 없다고 멈추지 않는다. 끝 알림 · `task_updated` · 프로세스 거두기로만 끝난다
+    public var foreground: Bool
 
     public init(
-        id: String, kind: BackgroundTaskKind, name: String?, status: BackgroundTaskStatus = .running, exitCode: Int? = nil, startedAt: Date? = nil, endedAt: Date? = nil, toolUseID: String? = nil
+        id: String, kind: BackgroundTaskKind, name: String?, status: BackgroundTaskStatus = .running, exitCode: Int? = nil, startedAt: Date? = nil, endedAt: Date? = nil, toolUseID: String? = nil,
+        parentID: String? = nil, depth: Int? = nil, foreground: Bool = false
     ) {
         self.id = id
         self.kind = kind
@@ -76,7 +84,13 @@ public struct BackgroundTask: Identifiable, Equatable, Sendable, CustomStringCon
         self.startedAt = startedAt
         self.endedAt = endedAt
         self.toolUseID = toolUseID
+        self.parentID = parentID
+        self.depth = depth
+        self.foreground = foreground
     }
+
+    /// 끝을 확인하지 못했다: 멈춘 것으로 보이는데 끝 시각이 없다 (기록에 에이전트의 메타만 있고 끝 알림이 없다). 도는 일이 아니라 기존 낱말 Stopped로 보인다
+    public var endUnconfirmed: Bool { status == .stopped && endedAt == nil }
 
     /// 줄의 제목: 모델이 쓴 이름, 없으면 도구 이름
     public var title: String {
@@ -125,15 +139,17 @@ public struct BackgroundTaskList: Equatable, Sendable, CustomStringConvertible, 
     /// - now: 끝 시각을 모르는 끝(시각 없는 끝 · 스냅샷에서 사라짐)의 끝 시각: 그 사건을 받은 때 끝난 것이다 (끝 시각이 없으면 "막 끝난 일은 열어 보기 전까지 남는다" 규칙이 거짓이 된다). 시험은 값을 준다
     public mutating func apply(_ event: BackgroundTaskEvent, now: Date = Date()) {
         switch event {
-        case .started(let id, let toolUseID, let kind, let name, let at):
+        case .started(let id, let toolUseID, let kind, let name, let at, let parentID, let depth, let foreground):
             if let index = index(of: id) {
-                // 끝 줄을 먼저 읽고 시작 줄을 나중에 읽었다 (앞 쪽 읽기): 상태는 그대로, 아는 것만 채운다
+                // 끝 줄을 먼저 읽고 시작 줄을 나중에 읽었다 (앞 쪽 읽기) · 스냅샷이 시작 줄보다 먼저 왔다: 상태는 그대로, 아는 것만 채운다 (부모 · 깊이도 비어 있을 때만: 아는 부모를 바꾸지 않는다)
                 if kind != .other || tasks[index].kind == .other { tasks[index].kind = kind }
                 if tasks[index].startedAt == nil { tasks[index].startedAt = at }
                 if tasks[index].name == nil { tasks[index].name = Self.cleaned(name) }
                 if tasks[index].toolUseID == nil { tasks[index].toolUseID = toolUseID }
+                if tasks[index].parentID == nil { tasks[index].parentID = parentID }
+                if tasks[index].depth == nil { tasks[index].depth = depth }
             } else {
-                tasks.append(BackgroundTask(id: id, kind: kind, name: Self.cleaned(name), startedAt: at, toolUseID: toolUseID))
+                tasks.append(BackgroundTask(id: id, kind: kind, name: Self.cleaned(name), startedAt: at, toolUseID: toolUseID, parentID: parentID, depth: depth, foreground: foreground))
                 bound()
             }
         case .finished(let id, let kind, let status, let exitCode, let at):
@@ -161,8 +177,9 @@ public struct BackgroundTaskList: Equatable, Sendable, CustomStringConvertible, 
                 bound()
             }
         case .snapshot(let running):
+            // `background_tasks_changed`는 **백그라운드 일만** 싣는다: 앞에서 돈 일(`foreground`)은 스냅샷에 없어도 멈추지 않는다 (끝 알림 · `task_updated` · 프로세스 거두기로만 끝난다)
             let alive = Set(running)
-            for index in tasks.indices where tasks[index].status == .running && !alive.contains(tasks[index].id) {
+            for index in tasks.indices where tasks[index].status == .running && !tasks[index].foreground && !alive.contains(tasks[index].id) {
                 tasks[index].status = .stopped
                 tasks[index].endedAt = now
             }
@@ -195,8 +212,37 @@ public struct BackgroundTaskList: Equatable, Sendable, CustomStringConvertible, 
     public func merged(with other: BackgroundTaskList) -> BackgroundTaskList {
         var copy = self
         for task in other.tasks {
-            copy.apply(.started(taskID: task.id, toolUseID: task.toolUseID, kind: task.kind, name: task.name, at: task.startedAt))
-            if task.status != .running { copy.apply(.finished(taskID: task.id, kind: task.kind, status: task.status, exitCode: task.exitCode, at: task.endedAt)) }
+            let isNew = copy.index(of: task.id) == nil
+            copy.apply(.started(taskID: task.id, toolUseID: task.toolUseID, kind: task.kind, name: task.name, at: task.startedAt, parentID: task.parentID, depth: task.depth, foreground: task.foreground))
+            if task.endUnconfirmed {
+                // 끝을 확인하지 못한 일은 도는 일을 멈추지 못한다 (판이 이긴다). 이쪽에만 있는 일은 끝 시각 없이 그대로 더한다
+                if isNew, let index = copy.index(of: task.id) { copy.tasks[index].status = .stopped }
+            } else if task.status != .running {
+                copy.apply(.finished(taskID: task.id, kind: task.kind, status: task.status, exitCode: task.exitCode, at: task.endedAt))
+            }
+        }
+        return copy
+    }
+
+    /// 기록의 하위 에이전트 메타(`subagents/agent-<id>.meta.json`)를 겹친다: 이미 아는 일은 상태 · 시각을 그대로 두고 **비어 있는 부모 · 깊이 · 이름 · 종류만** 채운다 (아는 부모를 바꾸지 않는다).
+    /// 본 기록에 없는 에이전트(전경 · 깊이 2 이상)는 끝 알림을 볼 수 없어 **끝을 확인하지 못한 일**로 더한다: 도는 일이 아니라 기존 낱말 Stopped, 끝 시각 없음.
+    /// 이미 256개면 더하지 않는다 (메타 때문에 아는 일을 밀어내지 않는다). 같은 값을 되풀이해 겹쳐도 같다. 원본은 그대로
+    public func adding(subagents metas: [SubagentMeta]) -> BackgroundTaskList {
+        var copy = self
+        var fresh: [SubagentMeta] = []
+        for meta in metas {
+            if let index = copy.index(of: meta.id) {
+                if copy.tasks[index].parentID == nil { copy.tasks[index].parentID = meta.parentID }
+                if copy.tasks[index].depth == nil { copy.tasks[index].depth = meta.depth }
+                if copy.tasks[index].name == nil { copy.tasks[index].name = Self.cleaned(meta.name) }
+                if copy.tasks[index].kind == .other { copy.tasks[index].kind = .agent }
+            } else if copy.tasks.count + fresh.count < Self.maxTasks, !fresh.contains(where: { $0.id == meta.id }) {
+                fresh.append(meta)
+            }
+        }
+        // 메타는 가장 새 것부터 온다. 시각이 없는 형제는 나중에 더한 것이 먼저 서므로, 새것이 먼저 서게 거꾸로 더한다
+        for meta in fresh.reversed() {
+            copy.tasks.append(BackgroundTask(id: meta.id, kind: .agent, name: Self.cleaned(meta.name), status: .stopped, parentID: meta.parentID, depth: meta.depth))
         }
         return copy
     }

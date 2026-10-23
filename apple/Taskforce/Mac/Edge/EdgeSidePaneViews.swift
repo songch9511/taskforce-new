@@ -137,59 +137,9 @@ struct SidePaneHeader<Leading: View>: View {
     }
 }
 
-/// 둘째 줄 "종류 · 상태 · 시간" (E9): 실패한 일의 "Failed" 한 단어만 굵다 (600 `text/primary`, 빨강 없음). 나머지는 부르는 쪽의 글꼴 · 색
+/// 둘째 줄 "종류 · 상태 · 시간" (E9): 실패한 일의 "Failed" 한 단어만 굵다 (600 `text/primary`, 빨강 없음). 나머지는 부르는 쪽의 글꼴 · 색. 트리 줄과 같은 글이라 구현은 한 곳(`SubagentTreeRowView`)에 있다
 enum SidePaneMeta {
-    static func text(_ task: TaskforceKit.BackgroundTask, now: Date) -> Text {
-        let parts = task.meta(now: now).components(separatedBy: " · ")
-        var result = Text(verbatim: "")
-        for (index, part) in parts.enumerated() {
-            if index > 0 { result = result + Text(verbatim: " · ") }
-            if task.status == .failed, part == BackgroundTaskStatus.failed.word {
-                result = result + Text(verbatim: part).font(TFFont.footnoteEmphasis).foregroundStyle(TFColor.textPrimary)
-            } else {
-                result = result + Text(verbatim: part)
-            }
-        }
-        return result
-    }
-}
-
-/// 일 한 줄 (E9): 패딩 10 8 · 모서리 8 · 제목 15/20 · 둘째 줄 "종류 · 상태 · 시간" 13/18 (숫자 고정폭). 호버 `bg/selected` + 둘째 줄 `text/secondary-selected`
-struct SidePaneTaskRow: View {
-    let task: TaskforceKit.BackgroundTask
-    let now: Date
-    let onOpen: () -> Void
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: onOpen) {
-            VStack(alignment: .leading, spacing: 0) {
-                Text(task.title)
-                    .font(TFFont.callout)
-                    .tracking(-0.24)
-                    .foregroundStyle(TFColor.textPrimary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                SidePaneMeta.text(task, now: now)
-                    .font(TFFont.footnote)
-                    .tracking(-0.08)
-                    .monospacedDigit()
-                    .foregroundStyle(hovering ? TFColor.textSecondarySelected : TFColor.textSecondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
-            .padding(EdgeInsets(top: 10, leading: TFSpace.sm, bottom: 10, trailing: TFSpace.sm))
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(hovering ? TFColor.bgSelected : Color.clear, in: RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .animation(TFMotion.ease(TFMotion.hoverFade), value: hovering)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(task.accessibleName(now: now))
-        .accessibilityAddTraits(.isButton)
-    }
+    static func text(_ task: TaskforceKit.BackgroundTask, now: Date) -> Text { SubagentTreeLook.metaText(task, now: now) }
 }
 
 /// 1초 시계는 도는 일이 있을 때만 필요하다 (끝난 줄의 글은 `now`에 기대지 않는다: `BackgroundTask.meta`). 도는 일이 없으면 목록을 1초마다 다시 그리지 않는다
@@ -216,6 +166,7 @@ struct SidePaneClockView<Content: View>: View {
 /// 펼친 옆줄: 목록 또는 (일을 눌렀으면) 출력 꼬리. 머리는 고정이고 줄은 안에서 스크롤한다
 struct SidePaneBody: View {
     @Bindable var model: SessionSidePaneModel
+    var reduceMotion = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -236,15 +187,17 @@ struct SidePaneBody: View {
 
     private var list: some View {
         let tasks = model.effective
+        let rows = model.treeRows
         return VStack(spacing: 0) {
             SidePaneHeader(title: SessionViewCopy.backgroundTasks, status: tasks.stripStatus, leading: { EmptyView() }, trailing: {
                 AnyView(TFIconButton(.disclosureClosed, label: SessionViewCopy.hideBackgroundTasks, size: 14) { model.collapse() }.padding(.vertical, -2))
             })
             ScrollView {
                 SidePaneClockView(ticking: SidePaneClock.ticks(tasks)) { now in
+                    // 즉시 쌓기 `VStack`이다 (21-7: 게으른 쌓기로 바꾸지 않는다). 줄 id는 일 id라 갱신 중에도 같은 줄은 같은 줄이다: 선택 · 스크롤이 튀지 않는다
                     VStack(spacing: TFSpace.xxs) {
-                        ForEach(tasks.ordered) { task in
-                            SidePaneTaskRow(task: task, now: now) { model.select(task.id) }
+                        ForEach(rows) { row in
+                            SubagentTreeRowView(row: row, now: now, reduceMotion: reduceMotion, onOpen: { model.select(row.task.id) }, onToggle: { model.toggleBranch(row.task.id, level: row.level) })
                         }
                     }
                     .padding(EdgeInsets(top: 0, leading: TFSpace.sm, bottom: TFSpace.md, trailing: TFSpace.sm))

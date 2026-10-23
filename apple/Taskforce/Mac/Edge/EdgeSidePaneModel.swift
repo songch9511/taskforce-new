@@ -42,8 +42,15 @@ enum SidePaneLayout {
 @MainActor
 @Observable
 final class SessionSidePaneModel {
-    /// 일 목록 (쓰는 쪽이 먹인다)
-    var tasks = BackgroundTaskList() { didSet { windowMayHaveChanged() } }
+    /// 일 목록 (쓰는 쪽이 먹인다). 하위 에이전트면 부모 · 깊이가 붙어 있고 옆줄은 이것을 트리로 그린다
+    var tasks = BackgroundTaskList() {
+        didSet {
+            if treeExpansion.count > 0 { treeExpansion.prune(keeping: Set(tasks.tasks.map(\.id))) }
+            windowMayHaveChanged()
+        }
+    }
+    /// 트리의 접힘 · 펼침 선택 (기본은 2단계까지 펴 둔다): 갱신이 와도 사용자가 고른 것은 그대로이고, 세션을 바꾸면 비운다
+    private(set) var treeExpansion = SubagentTreeExpansion()
     /// 패널 왼쪽 끝에서 화면 왼쪽 끝까지의 여유 (컨트롤러가 창 자리에서 잰다). 모르면 넉넉하다고 본다
     var room: CGFloat = .greatestFiniteMagnitude { didSet { windowMayHaveChanged() } }
 
@@ -98,6 +105,7 @@ final class SessionSidePaneModel {
             dropTail()
             selectedID = nil
             closedAt = nil
+            treeExpansion = SubagentTreeExpansion()
             tasks = BackgroundTaskList()
         }
     }
@@ -122,6 +130,14 @@ final class SessionSidePaneModel {
 
     /// 패널 창이 왼쪽으로 넓어지는 폭 (컨트롤러가 관찰한다)
     var windowExtra: CGFloat { plan.outside }
+
+    /// 보이는 트리 줄 (접힌 분기의 자손은 나오지 않는다)
+    var treeRows: [SubagentTreeRow] { SubagentTree.rows(for: effective, expansion: treeExpansion) }
+
+    /// 줄의 꺾쇠를 눌렀다: 그 분기를 접거나 편다 (열려 있는 꼬리 보기 · 선택은 건드리지 않는다)
+    func toggleBranch(_ id: String, level: Int) {
+        treeExpansion.toggle(id: id, level: level)
+    }
 
     /// 열린 일 (꼬리 보기). 목록에서 사라졌으면 nil
     var selected: BackgroundTask? { selectedID.flatMap { id in effective.tasks.first { $0.id == id } } }
