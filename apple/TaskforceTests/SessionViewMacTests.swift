@@ -138,11 +138,44 @@ struct SessionViewMacTests {
         #expect(SessionMarkdownRender.marker(bullet, ordered: true, position: 3) == "3.")
     }
 
-    @Test func aLongCodeBlockFoldsOnlyWhenTheBodyIsTallerThanTenLines() {
-        #expect(!SessionCodeBlockView.isLong(naturalHeight: 0))
-        #expect(!SessionCodeBlockView.isLong(naturalHeight: SessionCodeBlockView.collapsedHeight))
-        #expect(SessionCodeBlockView.isLong(naturalHeight: SessionCodeBlockView.collapsedHeight + 2))
+    /// 접을지는 그리기 전에 글만 보고 정한다 (그린 뒤의 높이로 정하면 줄 높이가 두 번 바뀌어 게으른 쌓기가 끝없이 다시 배치했다: `SessionPanelHangTests`)
+    @Test func aLongCodeBlockFoldsOnlyWhenItsTextHasMoreRowsThanTheFoldHolds() {
+        func lines(_ count: Int) -> String { (0..<count).map { "line \($0)" }.joined(separator: "\n") }
+        let rows = SessionCodeBlockView.maxRows
+        #expect(!SessionCodeBlockView.isLong(text: ""))
+        #expect(!SessionCodeBlockView.isLong(text: "one line"))
+        #expect(!SessionCodeBlockView.isLong(text: lines(rows)), "접는 기준 줄 수까지는 접지 않는다")
+        #expect(SessionCodeBlockView.isLong(text: lines(rows + 1)), "한 줄이 넘으면 접는다")
+        #expect(SessionCodeBlockView.isLong(text: lines(500)))
         #expect(SessionCodeBlockView.collapsedHeight == 180 && SessionCodeBlockView.fadeHeight == 36)
+    }
+
+    @Test func aLongLineThatWrapsCountsAsTheRowsItTakes() {
+        let width = SessionCodeBlockView.charsPerRow
+        let rows = SessionCodeBlockView.maxRows
+        #expect(!SessionCodeBlockView.isLong(text: String(repeating: "x", count: width * rows)), "한 줄이 꽉 차게 줄바꿈해도 접는 기준 줄 수까지는 접지 않는다")
+        #expect(SessionCodeBlockView.isLong(text: String(repeating: "x", count: width * rows + 1)), "줄바꿈으로 기준을 넘으면 접는다 (긴 한 줄짜리 출력도 접힌다)")
+        #expect(SessionCodeBlockView.isLong(text: String(repeating: "한", count: width * rows + 1)), "글자 수는 바이트가 아니라 글자로 센다")
+        #expect(!SessionCodeBlockView.isLong(text: String(repeating: "가", count: width)), "한국어 한 줄은 한 줄이다")
+    }
+
+    @Test func foldingDependsOnNothingButTheText() {
+        let text = (0..<40).map { "  \"key\($0)\": \($0)," }.joined(separator: "\n")
+        for _ in 0..<5 { #expect(SessionCodeBlockView.isLong(text: text)) }
+    }
+
+    /// 접힌 블록은 보이는 열 줄 남짓만 그린다 (즉시 쌓기에서 수백 줄을 한꺼번에 배치하는 비용을 줄인다). 보이는 쪽은 그대로이고 복사는 전체다
+    @Test func aFoldedBlockLaysOutOnlyTheRowsThatCanBeSeen() {
+        let all = (0..<300).map { "  \"key\($0)\": \($0)," }.joined(separator: "\n")
+        let shown = SessionCodeBlockView.visibleText(all)
+        let rows = shown.split(separator: "\n", omittingEmptySubsequences: false)
+        #expect(rows.count == SessionCodeBlockView.maxRows + 2, "열한 줄만 그린다: \(rows.count)")
+        #expect(all.hasPrefix(shown), "보이는 줄은 앞에서부터 그대로다")
+        #expect(SessionCodeBlockView.visibleText("a\nb") == "a\nb", "짧은 글은 그대로다")
+        let wide = String(repeating: "x", count: 5_000)
+        #expect(SessionCodeBlockView.visibleText(wide).count == SessionCodeBlockView.charsPerRow * (SessionCodeBlockView.maxRows + 2), "한 줄이 아주 길면 보이지 않는 뒷부분을 자른다")
+        let manyWide = (0..<30).map { _ in String(repeating: "y", count: 400) }.joined(separator: "\n")
+        #expect(SessionCodeBlockView.visibleText(manyWide).split(separator: "\n").count <= 2, "줄바꿈으로 여러 줄을 차지하면 그만큼 적은 줄만 그린다")
     }
 
     // MARK: 단계 상태 (E3 · E4)
