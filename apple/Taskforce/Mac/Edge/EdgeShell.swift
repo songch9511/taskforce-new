@@ -27,6 +27,8 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     let sessionPanel: EdgeSessionPanelController?
     /// Claude 데스크톱 세션 보기 창 (OA PR-D2, 읽기 전용): Sessions 왼쪽 또는 레일 옆 한 패널. 목록(`BridgeFlag` · 새 Issues 화면)이 없으면 nil
     let claudePanel: EdgeClaudeAppPanelController?
+    /// 저장된 대화 읽기 패널 창 (OA D3v-m, 읽기 전용): Sessions 왼쪽. 저장소(`BridgeFlag` · 새 Issues 화면)가 없으면 nil
+    let savedChatPanel: EdgeSavedChatPanelController?
     /// 범용 메뉴 창 (OA U2): 이슈 패널의 메뉴 창을 "밖"으로 치지 않으려고 컨트롤러가 알아본다 (`ownsIssueWindow`)
     let menu = EdgeContextMenu()
     /// 지금의 키 창 (키를 잃을 때 새 키 창이 Assistant 창인지 본다. 시험은 이 값을 바꾼다)
@@ -63,7 +65,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     init(
         launcher: LauncherModel, chat: ChatRuntime? = nil, review: ReviewDesk? = nil, summary: ReturnSummaryStore? = nil,
         assistantWindows: Bool = EdgeSurfaces.assistantWindowsForThisRun, positionStore: AssistantWindowPositionStore? = nil,
-        injectedExternalSessions: ExternalSessionsStore? = nil, injectedDesktop: ClaudeAppRuntime.Made? = nil
+        injectedExternalSessions: ExternalSessionsStore? = nil, injectedDesktop: ClaudeAppRuntime.Made? = nil, injectedSavedChats: SavedChatsStore? = nil
     ) {
         self.launcher = launcher
         self.chat = chat
@@ -99,10 +101,12 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
             desktop = ClaudeAppRuntime.make(services: launcher.services, scope: chat?.scope, externalSessions: externalSessions, done: doneStores.claudeApp)
             #endif
         }
+        // 저장된 대화 (OA D3v-m): 목록과 같은 게이트 (새 Issues 화면 ∧ BridgeFlag ∧ 서비스 · 계정 경계). 읽기 전용이라 중계 게이트와 상관없다
+        let savedChats = injectedSavedChats ?? SavedChatsRuntime.make(services: launcher.services, scope: chat?.scope, issueScreens: chat?.issues != nil)
         shell = EdgeShellModel(
             reduceMotion: Self.systemReduceMotion, pinStore: pinStore, contexts: chat?.contexts, review: review, summary: summary, chatsEnabled: chat != nil,
             windowsEnabled: windows, issues: chat?.issues, externalSessions: externalSessions, desktopSessions: desktop?.sessions,
-            railDone: chat?.issues != nil ? doneStores.rail : nil, claudeAppOpened: desktop?.opened, desktopChat: desktop?.chat
+            railDone: chat?.issues != nil ? doneStores.rail : nil, claudeAppOpened: desktop?.opened, desktopChat: desktop?.chat, savedChats: savedChats
         )
         // 세션 보기가 이 Mac에 두는 것(열어 본 시각 저장본 · 일 목록 판)은 계정과 함께 간다 (보안 P3-1): 로그인이 바뀔 때 셸이, 계정이 기기를 떠날 때(로그아웃 · 세션 만료 · 계정 삭제) 계정 경계가 비운다
         let backgroundSessions = BackgroundTaskAccount(openStore: doneStores.backgroundOpen, board: chat?.backgroundBoard ?? .shared)
@@ -114,6 +118,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         rail = EdgeRailPanelController(shell: shell)
         panel = EdgePanelController(shell: shell, chat: chat)
         claudePanel = shell.desktop != nil ? EdgeClaudeAppPanelController(shell: shell, backgroundOpen: doneStores.backgroundOpen) : nil
+        savedChatPanel = shell.savedChats != nil ? EdgeSavedChatPanelController(shell: shell) : nil
         // 새 Issues 화면이 켜진 구성만 세션 패널 창이 있다 (꺼지면 창도 읽기도 없다)
         if let chat, chat.issues != nil {
             sessionPanel = EdgeSessionPanelController(shell: shell, runtime: chat)
@@ -142,6 +147,10 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         claudePanel?.railCenterY = { [weak rail] in rail?.centerLineY }
         // Sessions 왼쪽에 설 때의 기준은 메인 패널이 닿을 자리다 (여는 움직임 중에 밀리지 않게)
         claudePanel?.mainPanelFrame = { [weak panel] in panel.flatMap { $0.isVisible ? $0.targetFrame() : nil } }
+        // 저장된 대화 읽기 패널도 Sessions가 닿을 자리의 왼쪽에 선다 (OA D3v-m). Settings › Account의 Saved chats도 같은 저장소를 읽는다
+        savedChatPanel?.panel.delegate = self
+        savedChatPanel?.mainPanelFrame = { [weak panel] in panel.flatMap { $0.isVisible ? $0.targetFrame() : nil } }
+        SettingsWindowModel.shared.savedChats = shell.savedChats
         shell.onConnect = { [weak self] in self?.rail.onConnections() }
         if let assistant {
             shell.onChats = { [weak assistant] in assistant?.showChats() }
@@ -214,6 +223,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         followPanel()
         followSessionPanel()
         followClaudePanel()
+        followSavedChatPanel()
         followDesktop()
         followIssues()
         followTaskforce()
@@ -448,6 +458,30 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         }
     }
 
+    /// 저장된 대화 읽기 패널 창 (OA D3v-m): Sessions가 열려 있고 열어 둔 대화가 있을 때만 보인다. 높이 · Sessions 자리가 바뀌면 위를 맞춘 채 맞춘다
+    func followSavedChatPanel() {
+        guard let savedChatPanel else { return }
+        let wanted = withObservationTracking {
+            _ = savedChatPanel.presentation.contentHeight
+            _ = panel.presentation.bodyHeight
+            _ = panel.presentation.footerHeight
+            _ = panel.presentation.shown
+            _ = shell.view
+            return shell.savedChatPanelShown
+        } onChange: { [weak self] in
+            Task { @MainActor in self?.followSavedChatPanel() }
+        }
+        if wanted {
+            if savedChatPanel.presentation.shown, savedChatPanel.isVisible {
+                savedChatPanel.fit()
+            } else {
+                savedChatPanel.show()
+            }
+        } else if savedChatPanel.presentation.shown {
+            savedChatPanel.hide()
+        }
+    }
+
     /// 데스크톱 세션 (OA PR-D2): 목록이 보이는 동안만 등록 폴더를 1초마다 읽는다 (보이지 않으면 멈춘다). 세션 상태나 이 Mac 목록(제목)이 바뀌면 레일의 링을 다시 정한다
     func followDesktop() {
         guard let desktop = shell.desktop else { return }
@@ -588,7 +622,8 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             let handled = MainActor.assumeIsolated { () -> Bool in
                 // 키 창은 마지막으로 누른 패널 하나다: 이슈 패널 · 세션 패널 · Claude 세션 패널이 키일 때만 (그 밖의 창으로 온 키는 지나간다)
-                guard let self, event.window === self.panel.panel || event.window === self.sessionPanel?.panel || event.window === self.claudePanel?.panel else { return false }
+                guard let self, event.window === self.panel.panel || event.window === self.sessionPanel?.panel || event.window === self.claudePanel?.panel
+                    || event.window === self.savedChatPanel?.panel else { return false }
                 return self.handleKey(event)
             }
             return handled ? nil : event
@@ -668,7 +703,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     func windowDidResignKey(_ notification: Notification) {
         // ⌘Tab 등으로 키를 잃으면 접는다 (More 메뉴를 연 동안은 빼고)
         guard shell.panelOpen, !shell.menuOpen else { return }
-        guard assistant != nil || sessionPanel != nil || claudePanel != nil else {
+        guard assistant != nil || sessionPanel != nil || claudePanel != nil || savedChatPanel != nil else {
             externalInteraction()
             return
         }
@@ -685,10 +720,10 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         assistant?.owns(window) ?? false
     }
 
-    /// 이슈 패널 · 세션 패널 · Claude 세션 패널 · 그 메뉴 창 (OA U2-47): 서로를 눌러도 다른 쪽이 접히지 않는다. 바깥 클릭은 함께 접는다
+    /// 이슈 패널 · 세션 패널 · Claude 세션 패널 · 저장된 대화 패널 · 그 메뉴 창 (OA U2-47): 서로를 눌러도 다른 쪽이 접히지 않는다. 바깥 클릭은 함께 접는다
     private func ownsIssueWindow(_ window: NSWindow?) -> Bool {
         guard let window else { return false }
-        return window === panel.panel || window === sessionPanel?.panel || window === claudePanel?.panel || window === menu.window
+        return window === panel.panel || window === sessionPanel?.panel || window === claudePanel?.panel || window === savedChatPanel?.panel || window === menu.window
     }
 }
 

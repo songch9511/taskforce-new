@@ -283,12 +283,14 @@ final class EdgeShellModel {
             if !panelOpen { loadedPanelConversation = nil }
             externalSessionsPanelChanged()
             desktopPanelChanged()
+            savedChatPanelChanged()
         }
     }
     private(set) var view: View = .allWork {
         didSet {
             externalSessionsPanelChanged()
             desktopPanelChanged()
+            savedChatPanelChanged()
         }
     }
     /// 레일에서 연 일 (패널 목록에서 그 행을 표시)
@@ -383,6 +385,18 @@ final class EdgeShellModel {
     let desktopChat: ClaudeAppChatService?
     /// 지금 입력창을 보이고 있는 세션 (패널이 보이는 동안만): 바뀌면 이전 세션의 입력창을 접는다
     @ObservationIgnored private var visibleChatID: String?
+
+    /// 저장된 Claude 데스크톱 대화 (OA D3v-m, 계약 27장): Sessions의 셋째 절 · Settings › Account의 모두 지우기가 읽는 저장소. **목록(`externalSessions`)과 같은 게이트다**
+    /// (새 Issues 화면 ∧ `BridgeFlag` ∧ 로그인) — 읽기 전용 보기는 중계 게이트(`ClaudeAppRelayGate`)와 상관없다. 없으면 절도 보기도 없다
+    let savedChats: SavedChatsStore?
+    /// 지금 보이는 저장된 대화 (Sessions 왼쪽 패널, 한 번에 하나): Sessions 줄을 눌러 연다. Taskforce 세션 패널 · 데스크톱 세션 보기와 왼쪽 자리를 나눈다 (하나가 열리면 다른 것은 닫힌다)
+    private(set) var savedChatPanelID: UUID? {
+        didSet { savedChatPanelChanged() }
+    }
+    /// 그 대화를 읽는 보기 (패널이 열려 있는 동안 있다)
+    private(set) var savedChatDetail: SavedChatDetailModel?
+    /// Saved chats 절의 Show all을 눌렀다 (처음 셋 → 읽어 둔 20개). Sessions를 열 때마다 접힌 채로 시작한다 (견본이 직접 바꾼다)
+    var savedChatsExpanded = false
 
     /// 이 실행의 Taskforce 게이트 (`EdgeSurfaces.taskforceConversation`: Debug에서 다섯 인자가 모두 있을 때만, Release 빌드는 늘 false). 셸이 만들어지는 자리에서 한 번 정한다 (OA U3 검토 1)
     let taskforceGate: Bool
@@ -482,12 +496,13 @@ final class EdgeShellModel {
         contexts: WorkContextStore? = nil, review: ReviewDesk? = nil, summary: ReturnSummaryStore? = nil, chatsEnabled: Bool = true,
         windowsEnabled: Bool = false, issues: IssueRuntime? = nil, taskforceGate: Bool = EdgeSurfaces.taskforceConversationForThisRun,
         externalSessions: ExternalSessionsStore? = nil, desktopSessions: ClaudeAppSessionsModel? = nil, railDone: (any RailDoneStore)? = nil,
-        claudeAppOpened: ClaudeAppOpenedMetric? = nil, desktopChat: ClaudeAppChatService? = nil
+        claudeAppOpened: ClaudeAppOpenedMetric? = nil, desktopChat: ClaudeAppChatService? = nil, savedChats: SavedChatsStore? = nil
     ) {
         self.issues = issues
         self.externalSessions = issues == nil ? nil : externalSessions
         self.desktop = issues == nil || externalSessions == nil ? nil : desktopSessions
         self.desktopChat = issues == nil || externalSessions == nil || desktopSessions == nil ? nil : desktopChat
+        self.savedChats = issues == nil || externalSessions == nil ? nil : savedChats
         self.railDone = issues == nil ? nil : railDone
         if let finished = issues?.finished { lookupFinishedIssue = { await finished.read($0) } }
         self.claudeAppOpened = issues == nil || externalSessions == nil ? nil : claudeAppOpened
@@ -514,6 +529,10 @@ final class EdgeShellModel {
             let timer = schedule(delay, work)
             return { timer.cancel() }
         }
+        // 저장된 대화 목록의 줄이 달라지면 열어 둔 대화가 빠졌는지 본다 (OA D3v-m 재검토 P1)
+        self.savedChats?.onListChanged = { [weak self] in self?.savedChatListChanged() }
+        // 세션 보기의 상태(닫힘 · 기록 못 읽음 · 열림)는 모델이 입력창에 알린다 (패널이 화면에 있든 없든)
+        if self.desktopChat != nil { watchDesktopChatView() }
     }
 
     // MARK: 레일 모양
@@ -729,6 +748,8 @@ final class EdgeShellModel {
         if view != self.view {
             if view == .sessions || self.view == .sessions { sessionPanelID = nil }
             if view != .sessions, view != .claudeApp { desktopPanelID = nil }
+            // 저장된 대화 읽기 패널은 Sessions 안에서만 산다 (OA D3v-m)
+            if view != .sessions { savedChatPanelID = nil }
         }
         self.view = view
         panelOpen = true
@@ -933,7 +954,18 @@ final class EdgeShellModel {
     /// 목록이 보이는 동안만 훑는다 (패널 열림 ∧ Sessions 화면): 열면 10초마다 다시 보고, 닫히거나 다른 화면으로 가면 멈춘다
     @ObservationIgnored private var externalSessionsShowing = false
 
+    /// 저장된 대화(Saved chats)를 읽는 중이어야 하나: Sessions 패널이 열려 있다. 열 때마다 처음 쪽부터 다시 읽는다 (OA D3v-m)
+    @ObservationIgnored private var savedChatsShowing = false
+
     private func externalSessionsPanelChanged() {
+        let showingSaved = panelOpen && view == .sessions && savedChatsVisible
+        if showingSaved != savedChatsShowing {
+            savedChatsShowing = showingSaved
+            if showingSaved {
+                savedChatsExpanded = false
+                savedChats?.panelOpened()
+            }
+        }
         let showing = panelOpen && view == .sessions && externalSessionsVisible
         guard showing != externalSessionsShowing else { return }
         externalSessionsShowing = showing
@@ -947,6 +979,7 @@ final class EdgeShellModel {
     func openSessionRow(_ id: UUID) {
         guard issues != nil, panelOpen, view == .sessions else { return }
         desktopPanelID = nil
+        savedChatPanelID = nil
         sessionPanelID = sessionPanelID == id ? nil : id
         if sessionPanelID != nil {
             issues?.sessions.markOpened(id)
@@ -966,6 +999,7 @@ final class EdgeShellModel {
     func openDesktopSession(_ id: String, from source: DesktopOpenSource) {
         guard desktop != nil, sessionsVisible else { return }
         sessionPanelID = nil
+        savedChatPanelID = nil
         if panelOpen, view == .sessions {
             if source == .list, desktopPanelID == id {
                 desktopPanelID = nil
@@ -996,6 +1030,82 @@ final class EdgeShellModel {
 
     /// 데스크톱 세션 보기가 실제로 보인다: 패널이 열려 있고 열어 둔 세션이 있고 화면이 Sessions(왼쪽 패널) 또는 `.claudeApp`(레일 옆 한 패널)이다
     var desktopPanelShown: Bool { panelOpen && desktopPanelID != nil && (view == .sessions || view == .claudeApp) }
+
+    // MARK: 저장된 대화 (OA D3v-m, 계약 27장)
+
+    /// Sessions의 Saved chats 절 · 읽기 패널이 있나: 저장소가 만들어졌고(새 Issues 화면 ∧ `BridgeFlag`) 로그인했다. 중계 게이트와 상관없다 (읽기 전용 보기)
+    var savedChatsVisible: Bool { savedChats != nil && account != nil }
+
+    /// 저장된 대화 읽기 패널이 실제로 보인다: Sessions가 열려 있고 열어 둔 대화가 있다 (Sessions 왼쪽)
+    var savedChatPanelShown: Bool { panelOpen && savedChatPanelID != nil && view == .sessions }
+
+    /// Sessions의 Saved chats 줄을 눌렀다: 읽기 전용 패널이 Sessions 왼쪽에 선다 (같은 줄을 다시 누르면 닫는다). 왼쪽 패널은 하나라서 Taskforce 세션 패널 · 데스크톱 세션 보기는 닫힌다.
+    /// - confirmDelete: 오른쪽 클릭 메뉴의 Delete — **바로 지우지 않고** 그 대화를 열어 확인 카드를 그 자리에 띄운다 (이미 열려 있으면 닫지 않고 카드만)
+    func openSavedChat(_ id: UUID, confirmDelete: Bool = false) {
+        guard let savedChats, sessionsVisible, panelOpen, view == .sessions, savedChats.rows.contains(where: { $0.id == id }) else { return }
+        sessionPanelID = nil
+        desktopPanelID = nil
+        if savedChatPanelID == id {
+            if confirmDelete { savedChatDetail?.requestDelete() } else { savedChatPanelID = nil }
+            return
+        }
+        savedChatPanelID = id
+        if confirmDelete { savedChatDetail?.requestDelete() }
+    }
+
+    /// 읽기 패널을 닫는다 (Esc · 같은 줄 다시 누름 · 지운 뒤 · 다른 화면 · 다른 계정)
+    func closeSavedChat() {
+        savedChatPanelID = nil
+    }
+
+    /// 열어 둔 대화가 바뀌었거나 패널이 보이게 · 숨게 됐다: 보기를 그 대화 것으로 맞추고(처음 쪽을 읽는다), 숨으면 열려 있던 지우기 카드를 닫는다
+    /// (다시 열 때 바로 지울 수 있는 카드가 남지 않는다). 닫으면 도는 읽기의 늦은 답을 막는다.
+    /// **접었다가 다시 보일 때마다 같은 대화의 보기도 다시 읽는다**(`reload`): 접혀 있는 동안 지웠거나 다른 기기에서 지운 대화가 메모리의 옛 글로 되살아나지 않게 (재검토 P1)
+    private func savedChatPanelChanged() {
+        let shown = savedChatPanelShown
+        let reappeared = shown && !savedChatPanelWasShown
+        savedChatPanelWasShown = shown
+        if let id = savedChatPanelID {
+            if savedChatDetail?.chat.id != id {
+                savedChatDetail?.stop()
+                savedChatDetail = nil
+                if let row = savedChats?.rows.first(where: { $0.id == id }) {
+                    let detail = savedChats?.makeDetail(
+                        chat: row, onGone: { [weak self] in self?.savedChatGone(id) }, onDeleted: { [weak self] in self?.savedChatDeleted(id) }
+                    )
+                    savedChatDetail = detail
+                    if let detail { Task { await detail.load() } }
+                }
+            } else if reappeared {
+                savedChatDetail?.reload()
+            }
+        } else if let detail = savedChatDetail {
+            detail.stop()
+            savedChatDetail = nil
+        }
+        if !shown { savedChatDetail?.cancelDelete() }
+    }
+
+    /// 저장된 대화 패널이 직전에 보였나 (접혔다 다시 보이는 때를 알아챈다)
+    @ObservationIgnored private var savedChatPanelWasShown = false
+
+    /// 저장된 대화 목록의 줄이 달라졌다 (저장소가 알린다: 읽기가 쓰였다 · 지웠다 · 모두 지웠다 · 계정이 떠났다): 열어 둔 대화가 목록에서 빠졌으면 닫는다 — 접혀 있는 동안에도.
+    /// 더 읽을 쪽이 남아 있으면(가득 찬 쪽) 다시 읽은 첫 쪽에 없다고 지워진 것이 아니다: 닫지 않고, 보기 스스로 다시 읽어(`reload`) 비어 있으면 그때 닫힌다
+    private func savedChatListChanged() {
+        guard let id = savedChatPanelID, let savedChats, !savedChats.hasMore, !savedChats.rows.contains(where: { $0.id == id }) else { return }
+        savedChatPanelID = nil
+    }
+
+    /// 다른 기기에서 이미 지운 대화였다: 패널을 닫고 목록을 다시 읽는다 (줄이 빠진다)
+    private func savedChatGone(_ id: UUID) {
+        if savedChatPanelID == id { savedChatPanelID = nil }
+        Task { await savedChats?.refresh() }
+    }
+
+    /// 지웠다: 줄은 저장소가 이미 뺐다. 패널을 닫는다 (알림 · 문구 없음)
+    private func savedChatDeleted(_ id: UUID) {
+        if savedChatPanelID == id { savedChatPanelID = nil }
+    }
 
     /// 그 세션의 줄 (이 Mac 목록): 제목 · 폴더를 거기서 읽는다. 아직 훑지 않았으면 nil
     func desktopRow(_ id: String) -> ExternalSessionRow? {
@@ -1033,6 +1143,35 @@ final class EdgeShellModel {
         if let previous = visibleChatID, previous != shown { desktopChat?.chat(for: previous).setVisible(false) }
         if let shown { desktopChat?.chat(for: shown).setVisible(true) }
         visibleChatID = shown
+        pushDesktopChatView()
+    }
+
+    // MARK: 세션 보기의 상태를 입력창에 알린다 (모델이 직접: 화면에 패널이 없어도)
+
+    /// 입력창에 알릴 보기 상태: Claude에서 닫혔으면 `.closed`, 기록을 못 읽었으면 `.unreadable`, 아니면 `.open`. 세션 패널(`ClaudeAppSessionPanelView`)도 같은 규칙을 쓴다
+    static func chatViewState(closed: Bool, phase: ClaudeAppConversation.Phase) -> ClaudeAppSendContext.View {
+        closed ? .closed : (phase == .failed ? .unreadable : .open)
+    }
+
+    /// 지금 열어 둔 데스크톱 세션과 그 보기 상태 (읽기만 한다: 관찰이 이 값들의 변화를 본다)
+    private func desktopChatViewTarget() -> (id: String, state: ClaudeAppSendContext.View)? {
+        guard desktopChat != nil, let id = desktopPanelID, let conversation = desktopConversation, conversation.sessionID == id else { return nil }
+        return (id, Self.chatViewState(closed: desktop?.viewingClosed == true, phase: conversation.phase))
+    }
+
+    /// 열어 둔 세션의 입력창에 보기 상태를 알린다. 이전에는 패널의 SwiftUI `.onChange`만 알려서, 화면 밖 호스트(시험)에서는 알림이 늦거나 오지 않아 입력창이 상태를 몰랐다
+    private func pushDesktopChatView() {
+        guard let target = desktopChatViewTarget() else { return }
+        desktopChat?.chat(for: target.id).setView(target.state)
+    }
+
+    /// 보기 상태가 바뀔 때마다(대화 읽기가 실패로 끝났다 · Claude에서 닫혔다 · 다른 세션을 열었다) 다시 알린다: 읽은 값이 바뀌면 한 번 더 걸고 알린다
+    private func watchDesktopChatView() {
+        let target = withObservationTracking { desktopChatViewTarget() } onChange: { [weak self] in
+            Task { @MainActor [weak self] in self?.watchDesktopChatView() }
+        }
+        guard let target else { return }
+        desktopChat?.chat(for: target.id).setView(target.state)
     }
 
     /// 데스크톱 세션의 상태나 이 Mac 목록(제목)이 바뀌었다 (컨트롤러가 관찰해서 부른다): 레일의 링을 다시 정한다.
@@ -1477,6 +1616,15 @@ final class EdgeShellModel {
             dismiss()
             return
         }
+        // 저장된 대화 읽기 패널 (OA D3v-m): Esc는 열린 지우기 카드를 먼저 닫고(지우는 중에는 아무것도 하지 않는다), 그다음 읽기 패널만 닫는다
+        if panelOpen, view == .sessions, let detail = savedChatDetail, savedChatPanelID != nil {
+            switch detail.deleteState {
+            case .confirming, .failed: detail.cancelDelete()
+            case .deleting: break
+            case .none: savedChatPanelID = nil
+            }
+            return
+        }
         if panelOpen, view == .sessions, desktopPanelID != nil || sessionPanelID != nil {
             if desktopPanelID != nil {
                 if onEscapeDesktopPane() { return }
@@ -1620,6 +1768,7 @@ final class EdgeShellModel {
         nav.reset()
         sessionPanelID = nil
         desktopPanelID = nil
+        savedChatPanelID = nil
         pins = account.map { pinStore.load(account: $0) } ?? WorkPins()
         // Sessions · 데스크톱 세션 보기는 로그인한 사용자에게만 있다: 열려 있던 화면은 All work로 돌아간다
         if view == .sessions || view == .claudeApp { view = .allWork }
