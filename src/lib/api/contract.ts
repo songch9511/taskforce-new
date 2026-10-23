@@ -309,6 +309,14 @@ export type ExternalSessionsShownRequest = z.infer<typeof externalSessionsShownR
 export const claudeAppSessionOpenedRequestSchema = z.strictObject({});
 export type ClaudeAppSessionOpenedRequest = z.infer<typeof claudeAppSessionOpenedRequestSchema>;
 
+// POST /api/v2/agent-tree/* — 하위 에이전트 트리 지표 네 종류 (T3s, 20261209000000). 앱이 알리면 route가 서버 권한으로 metric_events에 남긴다 (앱의 열 권한 없이, claude_app_session_opened와 같은 모양). 응답은 204.
+// 열기 둘 (project-sessions-opened · subagent-opened): 본문에 칸이 하나도 없다. 서버가 사용자별 UTC 날짜마다 한 번만 센다.
+// T2 둘 (turn-used · question-redirected): 칸은 턴 id 하나뿐이다 (개수 · 이름 · 글 0). 서버가 그 id가 이 사용자의 Claude Code 턴인지 확인하고(아니면 404), 턴마다 한 번만 센다.
+export const projectSessionsOpenedRequestSchema = z.strictObject({});
+export const subagentRowOpenedRequestSchema = z.strictObject({});
+export const subagentTurnUsedRequestSchema = z.strictObject({ agent_task_id: z.uuid() });
+export const subagentQuestionRedirectedRequestSchema = z.strictObject({ agent_task_id: z.uuid() });
+
 // PUT /api/v2/external-sessions — Mac이 Taskforce 밖에서 시작한 Claude Code 세션의 목록을 알린다 (OA 외부 세션 PR1, 계약 16장). 스냅샷 교체: 이번 목록에 없는 그 Mac의 행은 지운다.
 // 서버에 가는 것은 제목 · 상태 · 마지막 활동 시각 · 불투명 id뿐이다. 대화 본문 · 경로 · 폴더 이름 · Claude 세션 id는 보내지 않는다.
 // id = Mac이 세션 UUID에서 Mac에만 있는 열쇠로 만든 HMAC-SHA256의 hex 64자 (서버는 UUID를 알 수 없다).

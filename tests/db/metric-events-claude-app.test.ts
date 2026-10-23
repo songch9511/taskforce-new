@@ -118,15 +118,17 @@ describe("마이그레이션 경계 (20261206000000_claude_app_session_metrics)"
     expect(typeList(NEW_MIGRATION)).toEqual([...previous, "claude_app_session_opened"]);
   });
 
-  it("이 파일 다음에 종류 검사를 다시 만드는 파일은 PR-D3s의 20261207 하나뿐이고(그 파일이 이 파일의 목록을 모두 이어 가져온다), 이 파일은 앞 목록의 type을 하나도 잃지 않는다", () => {
+  it("이 파일 다음에 종류 검사를 다시 만드는 파일은 PR-D3s의 20261207과 에이전트 트리 T3s의 20261209 둘뿐이고(각 파일이 앞 파일의 목록을 모두 이어 가져온다), 이 파일은 앞 목록의 type을 하나도 잃지 않는다", () => {
     const files = readdirSync(MIGRATIONS)
       .filter((name) => name.endsWith(".sql"))
       .sort();
     const touching = files.filter((name) => /metric_events_type_check/.test(readFileSync(path.join(MIGRATIONS, name), "utf8").split("\n").filter((l) => !l.trim().startsWith("--")).join("\n")));
-    expect(touching.slice(touching.indexOf(NEW_MIGRATION))).toEqual([NEW_MIGRATION, "20261207000000_claude_app_chats.sql"]);
-    // 20261207의 목록이 이 파일의 목록 전체를 담는지는 tests/db/claude-app-chats-metrics.test.ts가 고정한다 (여기서는 같은 사실을 한 번 더 본다)
-    const later = new Set(typeList("20261207000000_claude_app_chats.sql"));
-    for (const type of typeList(NEW_MIGRATION)) expect(later.has(type), type).toBe(true);
+    expect(touching.slice(touching.indexOf(NEW_MIGRATION))).toEqual([NEW_MIGRATION, "20261207000000_claude_app_chats.sql", "20261209000000_agent_tree_metrics.sql"]);
+    // 20261207 · 20261209의 목록이 이 파일의 목록 전체를 담는지는 tests/db/claude-app-chats-metrics.test.ts · agent-tree-metrics.test.ts가 고정한다 (여기서는 같은 사실을 한 번 더 본다)
+    for (const later of ["20261207000000_claude_app_chats.sql", "20261209000000_agent_tree_metrics.sql"]) {
+      const list = new Set(typeList(later));
+      for (const type of typeList(NEW_MIGRATION)) expect(list.has(type), `${later} ${type}`).toBe(true);
+    }
     const newest = new Set(typeList(NEW_MIGRATION));
     for (const type of typeList(PREVIOUS_MIGRATION)) expect(newest.has(type), type).toBe(true);
   });

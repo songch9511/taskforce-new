@@ -107,16 +107,16 @@ describe("R1 가드 자체: 최신 CHECK 해석", () => {
 });
 
 describe("R1 최신 CHECK ↔ 등록부", () => {
-  it("마지막 metric_events_type_check는 OA 전 7개 ∪ 에이전트 등록부 22개 ∪ 결제 · 키 등록부 20개와 정확히 같다", () => {
+  it("마지막 metric_events_type_check는 OA 전 7개 ∪ 에이전트 등록부 26개 ∪ 결제 · 키 등록부 20개와 정확히 같다", () => {
     const registry = AGENT_EVENTS.map((spec) => spec.type);
     const billing = BILLING_EVENTS.map((spec) => spec.type);
     expect(new Set(registry).size).toBe(registry.length);
     expect(new Set(billing).size).toBe(billing.length);
-    expect(registry).toHaveLength(22);
+    expect(registry).toHaveLength(26);
     expect(billing).toHaveLength(20);
     expect(PRE_OA_TYPES).toHaveLength(7);
     // 세 묶음은 겹치지 않는다: 한 type의 집이 둘이면 카드 · 리텐션 규칙이 갈린다
-    expect(new Set([...PRE_OA_TYPES, ...registry, ...billing]).size).toBe(7 + 22 + 20);
+    expect(new Set([...PRE_OA_TYPES, ...registry, ...billing]).size).toBe(7 + 26 + 20);
     const check = latestTypeCheck();
     expect(new Set(check).size).toBe(check.length);
     expect([...check].sort()).toEqual([...PRE_OA_TYPES, ...registry, ...billing].sort());
@@ -139,9 +139,9 @@ describe("R2 등록부의 원천 함수 · 파일", () => {
     expect(text).toMatch(new RegExp(`type:\\s*["']${type}["']`));
   });
 
-  it("SQL 원천 20곳과 TS 원천 4곳(합 24곳)이 등록부에 있다. 남기는 곳 없는 type은 assistant_opened 하나", () => {
+  it("SQL 원천 20곳과 TS 원천 8곳(합 28곳)이 등록부에 있다. 남기는 곳 없는 type은 assistant_opened 하나", () => {
     expect(sqlSources).toHaveLength(20);
-    expect(tsSources).toHaveLength(4);
+    expect(tsSources).toHaveLength(8);
     expect(AGENT_EVENTS.filter((spec) => spec.sources.length === 0).map((spec) => spec.type)).toEqual(["assistant_opened"]);
   });
 });
@@ -189,6 +189,35 @@ describe("R5 자유 글 답은 지표 행이 없다 (Q4 A)", () => {
     expect(definition!.body).toMatch(/public\.answer_agent_question\s*\(/);
     expect(definition!.body).not.toMatch(/answer_agent_question_recorded/);
     expect(definition!.body).not.toMatch(/metric_events/);
+  });
+});
+
+describe("R7 에이전트 트리 지표 넷 (T3s, 20261209000000)", () => {
+  const FILE = "src/lib/api/agent-tree-metrics.ts";
+  // 열기 둘은 사용자가 한 일(활동), T2 둘은 모델이 정한 일이라 활동이 아니다 (compute.ts SERVER_EVENTS와 같아야 한다)
+  const expected = [
+    { type: "project_sessions_opened", activity: true },
+    { type: "subagent_row_opened", activity: true },
+    { type: "subagent_turn_used", activity: false },
+    { type: "subagent_question_redirected", activity: false },
+  ];
+
+  it.each(expected)("$type: 원천은 agent-tree-metrics.ts 하나, dims 없음, activity=$activity", ({ type, activity }) => {
+    const spec = AGENT_EVENTS.find((e) => e.type === type);
+    expect(spec).toBeDefined();
+    expect(spec!.sources).toEqual([{ kind: "ts", file: FILE }]);
+    expect(spec!.dims).toEqual([]);
+    expect(spec!.activity).toBe(activity);
+    expect(spec!.gap).toBeUndefined();
+  });
+
+  it("네 type 모두 최신 종류 검사에 있고, 20261209000000_agent_tree_metrics.sql의 목록에도 있다", () => {
+    const check = latestTypeCheck();
+    const own = parseLatestTypeCheck(new Map([["20261209000000_agent_tree_metrics.sql", migrations.get("20261209000000_agent_tree_metrics.sql")!]]));
+    for (const { type } of expected) {
+      expect(check, type).toContain(type);
+      expect(own, type).toContain(type);
+    }
   });
 });
 

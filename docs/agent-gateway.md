@@ -865,3 +865,35 @@ Mac이 Claude 데스크톱 앱에 열린 세션으로 보낸 글("Received"로 �
 - **데스크톱 TTY에서 친 말의 기록 모양은 확인하지 못했다**: `-p` stream-json 일회용 세션의 실측(23-8)만 있다. 데스크톱 앱이 같은 `attachment` 모양을 쓰는지, 다른 모양(예: `origin` 없는 평범한 `user` 줄)이면 어떻게 남는지는 사용자 L 확인이 본다. 평범한 `user` 줄이면 이미 사용자 줄로 교환을 끝낸다(수집기).
 - **pid 집합의 변경은 메인 밖에서 일어난다**(재검토 P3-R4): `ClaudeAppRelayPIDs.set`은 중계 actor에서 불리고 관찰 알림도 그 스레드에서 나간다. 화면은 알림을 받으면 메인에서 다시 읽으므로 안전하다. 메인으로 옮겨 쓰면 레일 폴러 · 훑기 · writer 확인이 동기로 읽는 `current`가 한 박자 늦어 자기 제외가 새므로 옮기지 않았다.
 - **한 줄이 파이프 용량보다 클 수 있다**: 23-2의 `stop()` 한계가 그 방어다. `claude`가 읽지 않으면 그 명령은 20초 뒤 시간 초과로 끝나고(중계를 끝낸다 → `stop()`은 한계 안에 돌아온다) 그 보내기는 Not sent("Not received", `relay_failed`)가 된다. 한 줄이 파이프보다 큰지를 시험으로 고정하지는 않았다 — 크기는 글의 글자 종류에 달려 있어 상한(16,000자)이 파이프 아래라고 말할 수 없다.
+
+## 24. 하위 에이전트 트리 지표 네 종류 (T3s, 서버, 마이그레이션 `20261209000000`)
+
+계획 `docs/design/taskforce-0.2.0-agent-tree-implementation-plan-2026-10-23.md` T3s 절. **서버만이다**: 앱 화면(T3m)과 Mac의 호출(T1 · T2)은 이 route를 부르는 쪽이고 이 PR에 없다. 모양은 `claude_app_session_opened`(20-4, `20261206000000`)와 같다: 앱이 v2 route로 알리면 route가 **서버 권한으로** `metric_events`에 남기고, 앱은 이 종류를 직접 넣지 못한다(앱 insert 정책 · 열 권한은 그대로).
+
+### 24-1. 지표 넷 · route
+
+| 종류 | 세는 단위 | 본문 → props | route (`POST /api/v2/agent-tree/…`) | 활동(`activity`) |
+|---|---|---|---|---|
+| `project_sessions_opened` | 사용자 · UTC 날짜 하루 한 번 | `{}` → `{}` | `project-sessions-opened` | 예 |
+| `subagent_row_opened` | 사용자 · UTC 날짜 하루 한 번 | `{}` → `{}` | `subagent-opened` | 예 |
+| `subagent_turn_used` | 턴(`agent_task_id`) 한 번 | `{ agent_task_id }` → `{ agent_task_id }` | `turn-used` | 아니오 |
+| `subagent_question_redirected` | 턴(`agent_task_id`) 한 번 | 〃 | `question-redirected` | 아니오 |
+
+- 본문은 모두 **엄격한 객체**다(`contract.ts`의 `projectSessionsOpenedRequestSchema` · `subagentRowOpenedRequestSchema` = `z.strictObject({})`, `subagentTurnUsedRequestSchema` · `subagentQuestionRedirectedRequestSchema` = `z.strictObject({ agent_task_id: z.uuid() })`). 칸이 하나라도 더 있으면 400이고, 본문은 1 KiB까지만 읽는다. 응답은 늘 **204**(같은 날 · 같은 턴 두 번째도). 같은 단위의 두 번째는 부분 unique 인덱스의 위반(23505)을 route가 조용히 넘긴다.
+- 문(네 route 모두, `claude-app-opened`와 같은 순서): `CONVERSATIONS_V2_ENABLED` ∧ `AGENT_ADAPTER_CLAUDE_CODE_ENABLED`가 꺼져 있으면 인증 · DB 전에 404 → 인증 401(Bearer · 쿠키, 쿠키 쓰기는 CSRF) → 베타 명단 밖 404 → 본문 400. 새 플래그는 없다.
+- **T2 둘은 턴을 확인한다**: 서버 권한으로 그 id가 **이 사용자의 `agent_tasks` 행**이고, 그 행의 세션(`agent_sessions`)의 연결(`agent_connections`)이 `adapter = 'agent:claude-code'`인지 같은 요청 안에서 본다(세 조회 모두 `user_id` 일치; `agent_tasks`에는 adapter 칸이 없다). 아니면(없음 · 남의 것 · Codex · 연결이 사라진 세션) **같은 404 `not_found`**다: 어느 쪽인지 알리지 않고, 남의 턴 id로 세지 못한다. 사용자 글(질문 · 메시지)은 읽지 않는다. 턴 id는 **소문자로 바꿔** 확인하고 남긴다(uuid는 대소문자를 가리지 않아 대문자 변형으로 같은 턴을 두 번 세지 못하게).
+- 로그는 이벤트 이름(`<type>_failed`) · 오류 이름 · `code`뿐이다. 턴 id · 사용자 id · 오류 문구 0.
+- 구현은 `src/lib/api/agent-tree-metrics.ts` 한 파일(`handleAgentTreeDayMetric` · `handleAgentTreeTurnMetric` · `realAgentTreeMetricsDeps`), route 파일 넷은 얇게(`src/app/api/v2/agent-tree/{project-sessions-opened,subagent-opened,turn-used,question-redirected}/route.ts`). 등록부 `src/lib/metrics/agents.ts`(원천은 그 파일, `dims` 없음)와 `/admin/metrics` 이름표에 넷을 더했다.
+
+### 24-2. SQL (`20261209000000_agent_tree_metrics.sql`, 한 트랜잭션 · `lock_timeout` 5s, 새 표 · 함수 · 정책 · 열 0)
+
+- **적용 순서 가드**: 맨 앞에서 `metric_events_type_check`에 `claude_app_session_opened`(20261206) · `claude_app_message_sent` · `claude_app_chat_deleted`(20261207)가 있는지 본다. 없으면(= **20261207이 아직 적용되지 않았으면**) 20261207을 먼저 적용하라는 예외로 멈추고 아무것도 만들지 않는다. 이 파일이 종류 검사를 "20261207의 목록 + 새 넷"으로 다시 만들기 때문에, 순서가 바뀌면 20261207이 나중에 검사를 다시 만들면서 이 넷이 조용히 빠지고 route가 23514로 실패한다.
+- `metric_events_type_check`: 바로 앞 목록(`20261207000000_claude_app_chats.sql`, `claude_app_chat_deleted`까지)의 전체 + 위 넷. **앞으로 이 검사를 다시 만드는 마이그레이션은 이 넷을 이어 가져와야 한다**(`tests/metrics/agent-event-registry.test.ts`가 최신 목록을 등록부와 대조한다).
+- 부분 unique 인덱스 넷: 열기 둘 `(user_id, (("at" at time zone 'UTC')::date)) where type = …`(`metric_events_project_sessions_opened_day_idx` · `metric_events_subagent_row_opened_day_idx`), T2 둘 `(user_id, (props->>'agent_task_id')) where type = …`(`metric_events_subagent_turn_used_task_idx` · `metric_events_subagent_question_redirected_task_idx`). 같은 날 · 같은 턴의 다른 종류는 서로 막지 않는다.
+- T2 둘 전용 `metric_events_subagent_turn_props`: props가 키 `agent_task_id` 하나뿐이고 값이 **소문자** uuid 글자(정규식)여야 한다. 소문자만 받는 까닭은 위 인덱스가 글자 그대로 비교하기 때문이다. CHECK는 NULL이면 통과하므로 키가 없을 때 `jsonb_typeof`가 NULL이 되는 길을 `coalesce`로 막았다(`{}`를 거절하는 시험이 고정한다). 기존 `metric_events_props_shape`(객체인지만)는 건드리지 않는다.
+- **다른 레인과의 순서(2026-10-23)**: `20261208000000`(`oa-chat-view-server`, "저장된 대화 모두 지우기")이 같은 종류 검사를 다시 만들어 새 종류를 더할 수 있다. 이 파일을 쓸 때는 그 파일이 main에도 origin의 어느 브랜치에도 없었으므로 이 파일의 목록은 **main 최신(20261207)에 이 넷만 더한 것**이다. 그 레인이 새 종류를 더하면 이 파일의 목록에 그 종류를 이어야 한다(시험 `tests/db/agent-tree-metrics.test.ts`의 "20261207과 20261209 사이" 시험이 어긋남을 잡는다). 적용 · 병합은 20261208이 먼저, 이 파일이 그 뒤다.
+- 운영 DB 적용은 병합 직전 승인 뒤 CLI의 linked query 파일 실행으로 한 번(db push 금지). 적용 뒤 종류 검사 · 인덱스 넷 · props 검사 존재를 SELECT로 확인한다.
+
+### 24-3. 시험
+
+`src/lib/api/agent-tree-metrics.test.ts`(handler: 문 순서 · 엄격한 본문 · 대문자 → 소문자 · 404 한 문구 · 로그에 값 0) · `src/app/api/v2/agent-tree/routes.test.ts`(네 route 전체: 플래그 · 명단 · 서버 권한 insert · 같은 날/턴 23505 → 204 · 남의 턴 · Codex 턴 · 연결 없는 턴 · 없는 턴 · 확인 조회가 모두 `user_id`를 거는지) · `csrf.test.ts`(쿠키 CSRF) · `tests/db/agent-tree-metrics.test.ts`(PGlite: 종류 검사 · 앱 역할이 직접 못 넣음 · 하루 한 번(UTC) · 턴 한 번 · props 검사 거절 열여섯 가지 · 인덱스 모양 · 마이그레이션 경계 · 적용 순서 가드 실제 적용) · `tests/metrics/agent-event-registry.test.ts`(R1 최신 CHECK ↔ 등록부, R2 원천 파일, R7 넷) · `tests/pg/agent-tree-metrics.test.ts`(실제 Postgres: 같은 턴 · 같은 날 동시 요청 둘이 한 행만 남김).

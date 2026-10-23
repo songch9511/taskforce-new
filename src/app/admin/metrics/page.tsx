@@ -61,6 +61,10 @@ const AGENT_TYPE_LABELS: Record<string, string> = {
   claude_app_session_opened: "Claude 데스크톱 세션 보기 열기 (하루 한 번)",
   claude_app_message_sent: "Claude 데스크톱 세션으로 글 보냄 (받음 · 못 보냄)",
   claude_app_chat_deleted: "저장된 Claude 데스크톱 대화 지움",
+  project_sessions_opened: "프로젝트 Sessions 묶음 펼쳐 보임 (하루 한 번)",
+  subagent_row_opened: "하위 에이전트 줄 눌러 꼬리 보기 열기 (하루 한 번)",
+  subagent_turn_used: "Claude 턴이 하위 에이전트 사용 (턴마다 한 번)",
+  subagent_question_redirected: "하위 에이전트 질문이 부모에게 돌아감 (턴마다 한 번)",
 };
 const AGENT_DIM_LABELS: Record<string, string> = {
   kind: "종류",
