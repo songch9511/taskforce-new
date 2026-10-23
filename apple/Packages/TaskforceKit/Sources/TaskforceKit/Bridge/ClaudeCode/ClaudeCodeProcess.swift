@@ -118,6 +118,8 @@ public actor ClaudeCodeProcess: AgentProcess {
     nonisolated let services = Mutex<AgentRuntimeServices?>(nil)
     /// Edit/Write가 바꾸면 안 되는 앱 데이터 폴더 (`sessionsRoot`는 늘 포함, 10장 5)
     nonisolated let protectedRoots: [URL]
+    /// 세션이 돌린 백그라운드 일 (`task_*` 줄, 로컬 전용: 서버 · 디스크 · 로그 0). Taskforce 세션 패널이 이 Mac 안에서 읽는다
+    nonisolated let backgroundTasks: BackgroundTaskBoard
 
     private var spawns: [String: Spawn] = [:]
     private var sessionSpawn: [String: String] = [:]
@@ -160,6 +162,7 @@ public actor ClaudeCodeProcess: AgentProcess {
         guard forgetWhenSettled.contains(sessionID), settling[sessionID] == nil, registeredSpawns(sessionID).isEmpty else { return false }
         forgetWhenSettled.remove(sessionID)
         sessionRedactors[sessionID] = nil
+        backgroundTasks.clear(session: sessionID)
         return true
     }
 
@@ -209,8 +212,9 @@ public actor ClaudeCodeProcess: AgentProcess {
         sessionsRoot: URL, hookServer: HookSocketServer?, helpers: ClaudeCodeHelpers, locator: ClaudeCodeLocator,
         environment: [String: String] = ProcessInfo.processInfo.environment, managedSettingsPath: String = ClaudeCodeProbe.managedSettingsPath,
         fileSystem: GateFileSystem = .live, timing: ClaudeCodeTiming = .standard, log: any BridgeLogSink = NoBridgeLog(), runner: ClaudeCommandRunner? = nil,
-        testHooks: ClaudeCodeTestHooks = ClaudeCodeTestHooks(), protectedRoots: [URL] = []
+        testHooks: ClaudeCodeTestHooks = ClaudeCodeTestHooks(), protectedRoots: [URL] = [], backgroundTasks: BackgroundTaskBoard = .shared
     ) {
+        self.backgroundTasks = backgroundTasks
         self.sessionsRoot = sessionsRoot
         self.protectedRoots = [sessionsRoot] + protectedRoots
         self.hookServer = hookServer
@@ -1212,6 +1216,14 @@ public actor ClaudeCodeProcess: AgentProcess {
                     "mode": .code(spawn.modeName), "ms_to_init": .millis(Int(Date().timeIntervalSince(spawn.startedAt) * 1000)), "plugins": .count(info.hasPlugins ? 1 : 0),
                     "skills": .count(info.hasSkills ? 1 : 0), "messaging_socket": .count(info.hasMessagingSocket ? 1 : 0),
                 ])
+            case .backgroundTask(let event):
+                // 로컬 전용: 이 Mac의 판에만 쓴다 (서버 · 로그에 보내지 않는다)
+                backgroundTasks.apply(event, session: spawn.agentSessionID)
+                // 이 spawn이 시작하거나 끝낸 일의 id: 거둘 때 이 일들만 멈춘다 (앞 spawn · 다른 원천의 일은 건드리지 않는다)
+                switch event {
+                case .started(let id, _, _, _, _), .finished(let id, _, _, _, _): spawn.backgroundTaskIDs.insert(id)
+                case .snapshot: break
+                }
             case .resultSeen:
                 // result 뒤에는 스스로 끝나야 한다: 끝나지 않으면 SIGINT
                 let wait = timing.exitAfterResult
@@ -1305,6 +1317,9 @@ public actor ClaudeCodeProcess: AgentProcess {
             lineage.forget()
             if let lockFile = sessionLockFile(spawn.agentSessionID) { ClaudeSessionLock.release(lockFile, spawnID: spawn.id) }
         }
+        // 끝을 증명했다: 이 spawn이 돌리던 백그라운드 일도 함께 끝났다 (구성원까지 끝나야 끝이다). 끝 알림이 오지 않은 일은 영영 Running으로 남으므로
+        // **이 spawn이 시작한** 아직 도는 일만 지금 멈춘 것으로 한다 (끝 알림이 이미 온 일 · 다른 spawn이나 원천의 일은 그대로다). 이 Mac의 판에만 쓴다
+        backgroundTasks.stopRunning(ids: spawn.backgroundTaskIDs, session: spawn.agentSessionID)
         let actions = spawn.mapper.finish()
         ClaudeCodeLaunch.removeConfig(spawn.files)
         hookServer?.unregister(nonce: spawn.nonce)
@@ -1428,6 +1443,8 @@ public actor ClaudeCodeProcess: AgentProcess {
         var stopped = false
         /// 답 resume: 새 정체의 원장 commit 결과 (nil = 아직). true일 때만 답 훅에 답한다 (9장 8)
         var identityRecorded: Bool?
+        /// 이 spawn이 시작하거나 끝낸 백그라운드 일의 id (거둘 때 멈출 일의 범위)
+        var backgroundTaskIDs = Set<String>()
         var unexpectedDeferred: String?
         var resultTimer: Task<Void, Never>?
 

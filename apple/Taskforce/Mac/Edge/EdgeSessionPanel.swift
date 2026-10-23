@@ -12,8 +12,80 @@ final class EdgeSessionPanelPresentation {
     var bodyHeight: CGFloat = 0
     var footerHeight: CGFloat = 0
     var shown = false
+    /// 패널 왼쪽 바깥에 붙는 옆줄 (세션이 돌리는 백그라운드 일, 세션 보기 V1). 창을 왼쪽으로 넓히는 폭도 이것이 정한다
+    let pane: SessionSidePaneModel
+    /// 단계 묶음 · 줄의 보이는 상태
+    let steps = SessionStepsState()
+    /// 이 세션이 **이 Mac에서** 돌았을 때만 있다: 이 Mac의 Claude Code 기록을 읽어 도구 단계와 일 목록을 준다 (서버 저장은 후속: 다른 Mac · iPhone에서는 단계가 없다)
+    private(set) var local: ClaudeAppConversation?
+    /// 그 기록을 가리키는 값 (Claude 세션 id · 세션 cwd): 일의 출력 꼬리도 이것으로 읽는다
+    var localTarget: AgentLocalTranscriptTarget?
+    /// 위로 올려 읽는 중이 아니다 (맨 아래를 따라간다)
+    var scrollPinned = true
+    /// 본문이 다시 계산돼도 대화 · 단계가 그대로면 타임라인을 다시 만들지 않는다
+    @ObservationIgnored let timeline = SessionTimelineMemo<SessionPanelTimelineInput, SessionPanelTimeline>()
+
+    init(backgroundOpen: any BackgroundTaskOpenStore = InMemoryBackgroundTaskOpenStore()) {
+        pane = SessionSidePaneModel(store: backgroundOpen)
+    }
 
     var contentHeight: CGFloat { headHeight + bodyHeight + footerHeight }
+
+    /// 지금 보는 세션 (같으면 아무 일도 없다)
+    private(set) var sessionKey: String?
+
+    /// 다른 세션을 연다: 옆줄이 그 세션의 것으로 바뀌고, 이 Mac 기록 연결을 끊고, 위로 올려 읽던 자리 · 열어 둔 줄 · 읽은 본문을 비운다 (줄 id는 세션 안에서만 겹치지 않는다)
+    func beginSession(_ key: String) {
+        guard key != sessionKey else { return }
+        sessionKey = key
+        scrollPinned = true
+        steps.reset()
+        timeline.reset()
+        pane.attach(session: key)
+        attachLocal(nil)
+        localTarget = nil
+    }
+
+    /// 이 Mac의 기록 읽기를 붙인다 (다른 세션으로 바뀌면 앞 것은 멈춘다)
+    func attachLocal(_ conversation: ClaudeAppConversation?) {
+        local?.stop()
+        local = conversation
+        if shown { conversation?.start() }
+    }
+
+    /// 찾은 이 Mac의 기록 위치를 받는다: **지금 보는 세션(`key`)의 것일 때만**. 세션이 바뀐 뒤에 늦게 온 앞 세션의 결과는 버린다 (다른 세션의 기록이 이 패널에 보이지 않게)
+    func adoptLocal(_ target: AgentLocalTranscriptTarget?, forSession key: String, make: (String, String?) -> ClaudeAppConversation) {
+        guard sessionKey == key else { return }
+        localTarget = target
+        attachLocal(target.map { make($0.providerSessionID, $0.cwd) })
+    }
+
+    /// 패널이 보이는 동안만 기록의 꼬리를 읽는다
+    func followLocal() {
+        if shown { local?.start() } else { local?.stop() }
+    }
+}
+
+/// Taskforce 패널 타임라인의 입력 (같으면 같은 타임라인): 서버 대화의 글 · 이 Mac 기록의 단계 · 진행 상태
+struct SessionPanelTimelineInput: Equatable {
+    var turns: [ChatTurn]
+    var steps: [ClaudeAppTurn]
+    var state: SessionRunState
+}
+
+/// Taskforce 패널의 타임라인: 줄 · 단계 · 글 찾기표 (서버 글 · 이 Mac 기록의 단계)
+struct SessionPanelTimeline {
+    let data: SessionTimelineData
+    let entries: [SessionEntry]
+    let turns: [String: ChatTurn]
+    let steps: [String: ClaudeAppTurn]
+
+    init(_ input: SessionPanelTimelineInput) {
+        data = SessionTimelineSource.chat(input.turns, steps: input.steps)
+        entries = SessionTimeline.build(data.items, state: input.state)
+        turns = Dictionary(input.turns.map { ($0.id.uuidString, $0) }, uniquingKeysWith: { first, _ in first })
+        steps = Dictionary(input.steps.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    }
 }
 
 /// 세션 패널 (OA U2, DS PanelHeader 세션 변형 · SessionPage): 이슈 패널 왼쪽의 두 번째 패널. 머리(에이전트 마크 · "{이름} — #번호" · 알약 자리) · 상태 줄 · 본문(U1 `Message` 그대로) · Composer.
@@ -30,22 +102,18 @@ struct SessionPanelView: View {
 
     var body: some View {
         let scale = TFMotion.panelTransform(shown: presentation.shown, reduceMotion: shell.reduceMotion).scale
-        Group {
-            if let session = shell.openSessionItem {
-                content(session)
-            } else {
-                Color.clear
+        // 옆줄(백그라운드 일)이 있으면 패널의 왼쪽 바깥에 붙는다: 같은 창 · 같은 위 · 같은 높이 (`SessionPanelFrame`)
+        SessionPanelFrame(pane: presentation.pane, reduceMotion: shell.reduceMotion) { width in
+            Group {
+                if let session = shell.openSessionItem {
+                    content(session)
+                } else {
+                    Color.clear
+                }
             }
+            .frame(width: width)
+            .frame(maxHeight: .infinity, alignment: .top)
         }
-        .frame(width: EdgePanelMetrics.width)
-        .frame(maxHeight: .infinity, alignment: .top)
-        .background {
-            ZStack {
-                RoundedRectangle(cornerRadius: EdgePanelMetrics.radius, style: .continuous).fill(.ultraThinMaterial)
-                RoundedRectangle(cornerRadius: EdgePanelMetrics.radius, style: .continuous).fill(TFColor.bgPanel)
-            }
-        }
-        .clipShape(RoundedRectangle(cornerRadius: EdgePanelMetrics.radius, style: .continuous))
         .scaleEffect(scale, anchor: .topTrailing)
         .animation(TFMotion.move(TFMotion.panelMove, reduceMotion: shell.reduceMotion), value: presentation.shown)
         .accessibilityElement(children: .contain)
@@ -62,19 +130,72 @@ struct SessionPanelView: View {
                 ScrollViewReader { proxy in
                     ScrollView {
                         bodyContent(session)
-                            .padding(EdgeInsets(top: TFSpace.xs, leading: TFSpace.md, bottom: TFSpace.sm, trailing: TFSpace.md))
+                            .padding(EdgeInsets(top: TFSpace.xs, leading: TFSpace.lg, bottom: TFSpace.sm, trailing: TFSpace.lg))
                             .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { presentation.bodyHeight = $0 }
                             .frame(maxWidth: .infinity, minHeight: viewport.size.height, alignment: .top)
                     }
                     .defaultScrollAnchor(.bottom)
                     .scrollIndicators(.automatic)
-                    .onChange(of: signature(session)) { proxy.scrollTo(AssistantBodyAnchor.bottom, anchor: .bottom) }
+                    // 붙어 있던 동안만 새 글을 따라 내려간다: 위로 올려 읽는 중이면 끌어내리지 않는다 (시계 틱은 스크롤을 건드리지 않는다). 새 글로 내용이 늘어난 것은 사용자가 올린 것이 아니다
+                    .onScrollGeometryChange(for: SessionScrollSnapshot.self) { geometry in
+                        SessionScrollSnapshot(visibleMaxY: geometry.visibleRect.maxY, contentHeight: geometry.contentSize.height, visibleHeight: geometry.visibleRect.height)
+                    } action: { old, new in
+                        presentation.scrollPinned = SessionScrollPin.next(pinned: presentation.scrollPinned, old: old, new: new)
+                    }
+                    .onChange(of: signature(session)) {
+                        if SessionScrollPin.shouldFollowNewContent(pinned: presentation.scrollPinned) { proxy.scrollTo(AssistantBodyAnchor.bottom, anchor: .bottom) }
+                    }
                 }
             }
             footer(session)
                 .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { presentation.footerHeight = $0 }
         }
         .task(id: session.id) { await prepare(session) }
+        // 이 Mac의 기록(단계 · 일)과 어댑터의 일 목록을 옆줄에 먹인다
+        .task(id: session.id) { await followLocal(session) }
+        .onChange(of: presentation.shown) { presentation.followLocal() }
+        .onChange(of: session.isClosed) { _, closed in presentation.pane.setClosed(closed) }
+    }
+
+    // MARK: 이 Mac의 기록 · 옆줄
+
+    /// 이 세션이 이 Mac에서 돌아 어댑터가 Claude 세션을 묶었으면 그 기록을 읽는다 (돌았던 세션이 아니면 단계 · 일 목록 없이 말 · 시간 · 복사만). 첫 턴 전이면 묶일 때까지 몇 번 다시 본다.
+    /// 어댑터의 `task_*` 줄로 만든 일 목록(`BackgroundTaskBoard`)은 기록의 일 목록과 합쳐 옆줄에 보낸다 (둘 다 이 Mac 안에서만)
+    private func followLocal(_ session: AgentSessionItem) async {
+        let key = session.id.uuidString.lowercased()
+        let presentation = presentation
+        let shell = shell
+        let runtime = runtime
+        presentation.beginSession(key)
+        presentation.pane.setClosed(session.isClosed)
+        // 꼬리 읽기는 이 Mac의 기록이 묶은 Claude 세션 id · 세션 cwd로만 (아직 모르면 못 읽음)
+        presentation.pane.makeTail = { [shell, weak presentation] task in
+            guard let target = presentation?.localTarget else { return BackgroundTaskTailModel(taskID: task.id, read: { _ in .unreadable }) }
+            return shell.makeBackgroundTail(target.providerSessionID, target.cwd, task)
+        }
+        let sessionID = session.id
+        let follower = SessionLocalFollower(
+            find: { await runtime.localTranscriptTarget(sessionID) }, isShown: { presentation.shown },
+            taskKey: { shell.openSessionItem?.lastTaskState.map { "\($0)" } },
+            onChange: { target in presentation.adoptLocal(target, forSession: key, make: shell.makeConversation) }
+        )
+        let clock = ContinuousClock()
+        let started = clock.now
+        var lastBoardVersion = -1
+        var lastLocal: BackgroundTaskList?
+        while !Task.isCancelled {
+            let elapsed = clock.now - started
+            await follower.tick(now: Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18)
+            let board = runtime.backgroundBoard
+            let local = presentation.local?.backgroundTasks
+            if presentation.shown, board.version != lastBoardVersion || local != lastLocal {
+                lastBoardVersion = board.version
+                lastLocal = local
+                let merged = board.tasks(session: key).merged(with: local ?? BackgroundTaskList())
+                if merged != presentation.pane.tasks { presentation.pane.tasks = merged }
+            }
+            try? await Task.sleep(for: .seconds(1))
+        }
     }
 
     /// 머리 제목: "{세션 이름} — #{현재 이슈 번호}" (번호를 못 읽었거나 이슈가 정해지지 않으면 이름만, 지어내지 않는다)
@@ -160,12 +281,41 @@ struct SessionPanelView: View {
     private struct BodySignature: Equatable {
         var count = 0
         var last: ChatTurn?
+        /// 이 Mac의 기록에서 읽은 가장 새 단계 (새 단계가 붙어도 따라 내려간다)
+        var lastStep: String?
     }
 
     private func signature(_ session: AgentSessionItem) -> BodySignature {
-        guard let id = session.conversationID else { return BodySignature() }
+        let lastStep = presentation.local?.turns.last?.id
+        guard let id = session.conversationID else { return BodySignature(lastStep: lastStep) }
         let turns = chat.turns(for: id)
-        return BodySignature(count: turns.count, last: turns.last)
+        return BodySignature(count: turns.count, last: turns.last, lastStep: lastStep)
+    }
+
+    /// 대화의 줄들: 서버 대화의 글에 이 Mac 기록의 도구 단계를 시각 순으로 끼우고, `SessionTimeline`이 묶기 · 일한 시간 · 답 밑 줄(복사) · 시계를 정한다.
+    /// 이 세션이 이 Mac에서 돌지 않았으면 단계 없이 말 · 시간 · 복사만이다 (서버 저장은 후속)
+    @ViewBuilder
+    private func entries(_ session: AgentSessionItem, conversationID: UUID) -> some View {
+        let input = SessionPanelTimelineInput(
+            turns: chat.turns(for: conversationID), steps: presentation.local?.turns ?? [],
+            state: SessionTimelineSource.runState(task: session.lastTaskState, closed: session.isClosed)
+        )
+        let timeline = presentation.timeline.value(for: input) { SessionPanelTimeline(input) }
+        let byID = timeline.turns
+        let local = presentation.local
+        let localTurns = timeline.steps
+        SessionEntriesView(
+            entries: timeline.entries, steps: timeline.data.steps, state: presentation.steps,
+            loadDetail: { stepID in
+                guard let local, let turn = localTurns[stepID] else { return nil }
+                return await local.detail(of: turn)
+            },
+            item: { id in
+                if let turn = byID[id] {
+                    AssistantTurnView(turn: turn, runtime: runtime, actions: agentActions(session, conversationID: conversationID), onRetry: { cmid in Task { await chat.retry(cmid, in: conversationID) } })
+                }
+            }
+        )
     }
 
     @ViewBuilder
@@ -199,9 +349,7 @@ struct SessionPanelView: View {
                             Button(ChatCopy.allowAIButton) { Self.openConnections(shell) }.buttonStyle(TFButtonStyle(.secondary))
                         }
                     }
-                    ForEach(chat.turns(for: conversationID)) { turn in
-                        AssistantTurnView(turn: turn, runtime: runtime, actions: agentActions(session, conversationID: conversationID), onRetry: { cmid in Task { await chat.retry(cmid, in: conversationID) } })
-                    }
+                    entries(session, conversationID: conversationID)
                     Color.clear.frame(height: 1).id(AssistantBodyAnchor.bottom)
                 }
             }
@@ -328,14 +476,17 @@ struct SessionPanelView: View {
 final class EdgeSessionPanelController {
     let shell: EdgeShellModel
     let panel: EdgeKeyPanel
-    let presentation = EdgeSessionPanelPresentation()
+    let presentation: EdgeSessionPanelPresentation
     private let hosting: NSHostingView<SessionPanelView>
     private var generation = 0
+    /// 창을 옆줄만큼 왼쪽으로 넓힌 폭의 마지막 값: 바뀌면 움직이지 않고 바로 맞춘다
+    private var appliedExtra: CGFloat = 0
     /// 이슈 패널 창의 자리. 세션 패널은 그 왼쪽에 놓인다
     var issuePanelFrame: () -> NSRect? = { nil }
 
     init(shell: EdgeShellModel, runtime: ChatRuntime) {
         self.shell = shell
+        presentation = EdgeSessionPanelPresentation(backgroundOpen: runtime.doneStores.backgroundOpen)
         panel = EdgeKeyPanel(
             contentRect: NSRect(x: 0, y: 0, width: EdgePanelMetrics.width, height: EdgePanelMetrics.minHeight),
             styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView], backing: .buffered, defer: false
@@ -356,6 +507,8 @@ final class EdgeSessionPanelController {
         panel.contentView = hosting
         panel.setAccessibilityLabel("Session")
         wire(runtime)
+        // 옆줄이 바뀌면 창 틀을 그 자리에서 맞춘다 (관찰의 한 박자를 기다리지 않는다: 내용이 낡은 창에 잘리지 않게)
+        presentation.pane.onWindowChange = { [weak self] in self?.fit() }
     }
 
     /// 알약 동작 · Esc · 확인 카드 맞추기를 실제 연결에 잇는다 (OA D4a-3): 이 연결이 세션 route를 모르면(견본 · 시험용 가짜) 알약은 그려지지 않는다
@@ -364,9 +517,11 @@ final class EdgeSessionPanelController {
             shell.onSessionPill = { pill, session in Task { await flow.press(pill, session: session) } }
             shell.onSessionItemsChanged = { [weak flow] items in flow?.reconcile(sessions: items) }
         }
-        // Esc: 열린 확인 카드 → 후보 메뉴 → (세션 패널 · 이슈 상세 …)
+        // Esc: 열린 옆줄(꼬리 → 목록 → 접힘) → 열린 확인 카드 → 후보 메뉴 → (세션 패널 · 이슈 상세 …)
+        let presentation = presentation
         shell.onEscapeSessionOverlay = { [weak runtime] in
             guard let runtime else { return false }
+            if presentation.pane.escape() { return true }
             if let flow = runtime.pillFlow, flow.resumeCard != nil, !(flow.resumeCard?.busy ?? false) {
                 flow.cancelResume()
                 return true
@@ -386,10 +541,15 @@ final class EdgeSessionPanelController {
         min(EdgePanelMetrics.maxHeight, max(EdgePanelMetrics.minHeight, presentation.contentHeight))
     }
 
-    /// 지금 자리: 이슈 패널 왼쪽 40pt, 위 맞춤
+    /// 지금 자리: 이슈 패널 왼쪽 40pt, 위 맞춤. 옆줄(띠 36 · 펼침 256)이 있으면 창을 그만큼 왼쪽으로 넓힌다 (오른쪽 · 위 · 높이는 패널과 같다).
+    /// 화면 왼쪽 여유가 모자라면 옆줄이 패널 틀 안으로 들어간다 (`SidePaneLayout.plan`)
     func targetFrame() -> NSRect? {
         guard let issue = issuePanelFrame() else { return nil }
-        return Self.frame(issuePanel: issue, height: height())
+        let base = Self.frame(issuePanel: issue, height: height())
+        let visibleMinX = EdgeRailPanelController.screen?.visibleFrame.minX ?? base.minX - 10_000
+        let room = base.minX - visibleMinX
+        if presentation.pane.room != room { presentation.pane.room = room }
+        return SidePaneLayout.windowFrame(panel: base, outside: presentation.pane.windowExtra)
     }
 
     /// 순수한 자리 규칙: 이슈 패널의 왼쪽 가장자리에서 40 떨어진다 (지금 보이는 간격 그대로, OA U3-45)
@@ -403,6 +563,7 @@ final class EdgeSessionPanelController {
     func show() -> Bool {
         hosting.layoutSubtreeIfNeeded()
         guard let target = targetFrame() else { return false }
+        appliedExtra = presentation.pane.windowExtra
         generation += 1
         if !panel.isVisible {
             panel.alphaValue = 0
@@ -439,7 +600,15 @@ final class EdgeSessionPanelController {
     /// 내용 높이 · 이슈 패널 자리가 바뀌면 위를 맞춘 채로 맞춘다. 이슈 패널이 세로 가운데로 다시 갈 때 같은 움직임으로 따라간다 (세션 패널 자신은 가운데로 서지 않는다: 이슈 패널의 위에 맞춘다)
     func fit() {
         guard panel.isVisible, presentation.shown, let target = targetFrame(), target != panel.frame else { return }
-        EdgePanelMotion.move(panel, to: target, reduceMotion: shell.reduceMotion)
+        let extra = presentation.pane.windowExtra
+        if extra != appliedExtra {
+            // 옆줄이 나타나거나 사라지거나 접힘 ↔ 펼침: 창 틀은 움직이지 않고 바로 맞춘다 (안의 두 겹이 크로스페이드한다)
+            appliedExtra = extra
+            panel.setFrame(target, display: true)
+            panel.invalidateShadow()
+        } else {
+            EdgePanelMotion.move(panel, to: target, reduceMotion: shell.reduceMotion)
+        }
     }
 }
 #endif

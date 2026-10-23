@@ -12,8 +12,9 @@ public enum ClaudeStreamEvent: Equatable, Sendable {
     case toolResults([ClaudeToolResultInfo])
     case result(ClaudeResultInfo)
     case rateLimit(status: String?)
-    /// `system/task_started` · `system/task_notification`
-    case task
+    /// `system/task_started` · `task_notification` · `task_progress` · `task_updated` · `background_tasks_changed` (백그라운드 일의 줄, 세션 보기 V1).
+    /// 모양이 틀린 `task_started` · `task_notification`은 `nil`이다 (전처럼 진행 신호로만 센다)
+    case task(ClaudeTaskStreamEvent?)
     /// 그 밖 (`command_lifecycle` · `attachment` · `thinking_tokens` · `api_retry` · 모르는 type): 개수만 센다
     case other(String)
 
@@ -61,6 +62,8 @@ public struct ClaudeAssistantInfo: Equatable, Sendable {
     /// 줄 맨 위의 `error` (예: `authentication_failed`)
     public var error: String?
     public var blocks: [ClaudeContentBlock]
+    /// 도구 호출 id → 모델이 쓴 `input.description` (백그라운드 일의 이름을 확인하는 데만 쓴다: 명령 글은 담지 않는다)
+    public var toolDescriptions: [String: String] = [:]
 
     /// 진짜 모델 응답인가 (`<synthetic>`도 오류도 아님)
     public var isGenuine: Bool { model != nil && model != "<synthetic>" && error == nil }
@@ -80,6 +83,27 @@ public struct ClaudeResultInfo: Equatable, Sendable {
     public var deferredToolUseID: String?
 
     public var isDeferred: Bool { stopReason == "tool_deferred" || terminalReason == "tool_deferred" }
+}
+
+/// 백그라운드 일의 줄에서 꺼낸 칸 (아이디 · 종류 · 모델이 쓴 설명 · 상태 · 끝낸 코드 · 시각). 요약 글 · 출력 파일 경로는 담지 않는다
+public enum ClaudeTaskStreamEvent: Equatable, Sendable {
+    case started(taskID: String, toolUseID: String?, taskType: String?, description: String?, isBackgrounded: Bool?)
+    case progress(taskID: String)
+    case updated(taskID: String, status: String?, endMillis: Int64?)
+    case notification(taskID: String, toolUseID: String?, status: String?, exitCode: Int?, kind: BackgroundTaskKind?)
+    case changed([ClaudeChangedTask])
+}
+
+public struct ClaudeChangedTask: Equatable, Sendable {
+    public var taskID: String
+    public var taskType: String?
+    public var description: String?
+
+    public init(taskID: String, taskType: String?, description: String?) {
+        self.taskID = taskID
+        self.taskType = taskType
+        self.description = description
+    }
 }
 
 public enum ClaudeStreamParser {
@@ -114,8 +138,33 @@ public enum ClaudeStreamParser {
             let stdout = event == "SessionStart" ? (fields["stdout"]?.stringValue ?? "") : ""
             let exit = fields["exit_code"]?.int64Value.map { Int($0) }
             return .hookResponse(name: fields["hook_name"]?.stringValue ?? "", event: event, exitCode: exit, markerSeen: Self.hasMarker(stdout))
-        case ("system", "task_started"), ("system", "task_notification"):
-            return .task
+        case ("system", "task_started"):
+            guard let id = Self.taskID(fields) else { return .task(nil) }
+            return .task(.started(
+                taskID: id, toolUseID: Self.toolUseID(fields), taskType: Self.capped(fields["task_type"]?.stringValue, 40), description: Self.capped(fields["description"]?.stringValue, Self.maxDescription),
+                isBackgrounded: fields["is_backgrounded"]?.boolValue
+            ))
+        case ("system", "task_notification"):
+            guard let id = Self.taskID(fields) else { return .task(nil) }
+            // 요약 글(따옴표 안에 모델의 설명이나 명령이 들어 있을 수 있다)은 끝낸 코드와 종류를 읽고 버린다
+            let summary = fields["summary"]?.stringValue ?? ""
+            return .task(.notification(
+                taskID: id, toolUseID: Self.toolUseID(fields), status: Self.capped(fields["status"]?.stringValue, 40), exitCode: BackgroundTaskText.exitCode(inSummary: summary),
+                kind: BackgroundTaskText.kind(inSummary: summary)
+            ))
+        case ("system", "task_progress"):
+            guard let id = Self.taskID(fields) else { return .other("system/task_progress") }
+            return .task(.progress(taskID: id))
+        case ("system", "task_updated"):
+            guard let id = Self.taskID(fields) else { return .other("system/task_updated") }
+            let patch = fields["patch"]
+            return .task(.updated(taskID: id, status: Self.capped(patch?["status"]?.stringValue, 40), endMillis: patch?["end_time"]?.int64Value))
+        case ("system", "background_tasks_changed"):
+            let changed: [ClaudeChangedTask] = (fields["tasks"]?.arrayValue ?? []).prefix(Self.maxChangedTasks).compactMap { item in
+                guard let id = item["task_id"]?.stringValue, BackgroundTaskText.isValidTaskID(id) else { return nil }
+                return ClaudeChangedTask(taskID: id, taskType: Self.capped(item["task_type"]?.stringValue, 40), description: Self.capped(item["description"]?.stringValue, Self.maxDescription))
+            }
+            return .task(.changed(changed))
         case ("assistant", _):
             let message = fields["message"]
             let blocks: [ClaudeContentBlock] = (message?["content"]?.arrayValue ?? []).map { block in
@@ -127,7 +176,14 @@ public enum ClaudeStreamParser {
                 default: return .other
                 }
             }
-            return .assistant(ClaudeAssistantInfo(messageID: message?["id"]?.stringValue, model: message?["model"]?.stringValue, error: fields["error"]?.stringValue, blocks: blocks))
+            // 도구 호출마다 모델이 쓴 `input.description`만 (백그라운드 일의 이름을 확인하는 데 쓴다: 명령 글은 담지 않는다)
+            var descriptions: [String: String] = [:]
+            for block in message?["content"]?.arrayValue ?? [] where block["type"]?.stringValue == "tool_use" {
+                if let id = block["id"]?.stringValue, BackgroundTaskText.isValidToolUseID(id), let text = Self.capped(block["input"]?["description"]?.stringValue, Self.maxDescription), !text.isEmpty { descriptions[id] = text }
+            }
+            return .assistant(ClaudeAssistantInfo(
+                messageID: message?["id"]?.stringValue, model: message?["model"]?.stringValue, error: fields["error"]?.stringValue, blocks: blocks, toolDescriptions: descriptions
+            ))
         case ("user", _):
             let results: [ClaudeToolResultInfo] = (fields["message"]?["content"]?.arrayValue ?? []).compactMap { block in
                 guard block["type"]?.stringValue == "tool_result", let id = block["tool_use_id"]?.stringValue else { return nil }
@@ -145,6 +201,27 @@ public enum ClaudeStreamParser {
         default:
             return .other(subtype.map { "\(type)/\($0)" } ?? type)
         }
+    }
+
+    /// 설명의 글자 수 상한 (이름 한 줄이면 충분하다: 값이 커지지 않게)
+    static let maxDescription = 400
+    /// `background_tasks_changed` 한 줄에서 읽는 일의 수
+    static let maxChangedTasks = 64
+
+    /// `task_id`: 영숫자 · `_` · `-` 64자 이하 (출력 파일 이름이 이 아이디로 만들어진다). 아니면 nil
+    private static func taskID(_ fields: [String: WireJSON]) -> String? {
+        guard let id = fields["task_id"]?.stringValue, BackgroundTaskText.isValidTaskID(id) else { return nil }
+        return id
+    }
+
+    private static func toolUseID(_ fields: [String: WireJSON]) -> String? {
+        guard let id = fields["tool_use_id"]?.stringValue, BackgroundTaskText.isValidToolUseID(id) else { return nil }
+        return id
+    }
+
+    private static func capped(_ text: String?, _ limit: Int) -> String? {
+        guard let text else { return nil }
+        return text.count > limit ? String(text.prefix(limit)) : text
     }
 
     /// SessionStart 훅 출력에 표식이 있나 (`additionalContext == "tf-hook-ready"`)

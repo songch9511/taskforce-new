@@ -47,22 +47,28 @@ public struct ClaudeAppTurn: Identifiable, Equatable, Sendable, CustomStringConv
     public var timestamp: Date?
     /// 글이 상한에서 잘렸다
     public var truncated: Bool
+    /// 도구 줄의 대상: **파일 이름 하나뿐**이다 (`file_path` · `notebook_path`의 마지막 성분. 경로 · 명령 · 검색어는 읽지 않는다). 없으면 nil
+    public var target: String?
+    /// 도구 결과가 오류였다 (`tool_result.is_error`, 불리언 하나. 오류 글은 읽지 않는다). 결과가 나중에 오면 대화 상태가 이 줄을 고친다
+    public var failed: Bool
     var lineOffset: Int64
     var toolUseID: String?
 
     /// 읽는 쪽이 만든다 (줄 위치 · 도구 id를 담는다)
-    init(id: String, kind: Kind, timestamp: Date?, truncated: Bool, lineOffset: Int64, toolUseID: String?) {
+    init(id: String, kind: Kind, timestamp: Date?, truncated: Bool, lineOffset: Int64, toolUseID: String?, target: String? = nil, failed: Bool = false) {
         self.id = id
         self.kind = kind
         self.timestamp = timestamp
         self.truncated = truncated
         self.lineOffset = lineOffset
         self.toolUseID = toolUseID
+        self.target = target
+        self.failed = failed
     }
 
     /// 견본 · 미리보기용 (실제 기록 위치가 없다: 이 값으로 `detail`을 부르면 nil이다)
-    public init(id: String, kind: Kind, timestamp: Date? = nil, truncated: Bool = false) {
-        self.init(id: id, kind: kind, timestamp: timestamp, truncated: truncated, lineOffset: -1, toolUseID: nil)
+    public init(id: String, kind: Kind, timestamp: Date? = nil, truncated: Bool = false, target: String? = nil, failed: Bool = false) {
+        self.init(id: id, kind: kind, timestamp: timestamp, truncated: truncated, lineOffset: -1, toolUseID: nil, target: target, failed: failed)
     }
 
     public var description: String {
@@ -75,6 +81,24 @@ public struct ClaudeAppTurn: Identifiable, Equatable, Sendable, CustomStringConv
         return "ClaudeAppTurn(\(name))"
     }
 
+    public var debugDescription: String { description }
+}
+
+/// 한 번 읽은 창에서 나온, 대화 줄이 아닌 사실 둘 (세션 보기 V1, DZ oa-session-view-dz v2): 오류로 끝난 도구 결과의 도구 id · 백그라운드 일의 시작과 끝.
+/// **선언한 칸만** 꺼낸다: 불리언 `is_error` · 아이디 · 상태 · 끝낸 코드 · 시각. 오류 글 · 명령 · 출력 · 요약 · 프롬프트는 읽지 않는다. 읽은 그 번의 것이다 (읽을 때마다 새로 채워진다)
+public struct ClaudeAppTranscriptSignals: Equatable, Sendable, CustomStringConvertible, CustomDebugStringConvertible {
+    public var failedToolIDs: [String]
+    public var background: [BackgroundTaskEvent]
+
+    public init(failedToolIDs: [String] = [], background: [BackgroundTaskEvent] = []) {
+        self.failedToolIDs = failedToolIDs
+        self.background = background
+    }
+
+    public var isEmpty: Bool { failedToolIDs.isEmpty && background.isEmpty }
+
+    /// 아이디를 찍지 않는다
+    public var description: String { "ClaudeAppTranscriptSignals()" }
     public var debugDescription: String { description }
 }
 
@@ -94,8 +118,13 @@ public struct ClaudeAppTranscriptCursor: Equatable, Sendable, CustomStringConver
     var discarding: Bool
     /// 이미 보여 준 peer 메시지의 열쇠 = (msg_id, 검증된 보낸 pid, 플러그인) (같은 메시지가 `user`와 `queued_command` 두 모양으로 기록되어도 한 번만). 최근 256개
     var peerIDs: [String]
+    /// **이 읽기가** 찾은 신호 (실패한 도구 · 백그라운드 일의 사건). 읽을 때마다 새로 채워지고, 읽을 것이 없었던 번은 비어 있다: 대화 상태가 읽자마자 가져간다
+    public internal(set) var signals: ClaudeAppTranscriptSignals
 
-    init(sessionID: String, path: String, created: Date, earliestOffset: Int64, nextOffset: Int64, coveredBytes: Int, discarding: Bool, peerIDs: [String]) {
+    init(
+        sessionID: String, path: String, created: Date, earliestOffset: Int64, nextOffset: Int64, coveredBytes: Int, discarding: Bool, peerIDs: [String],
+        signals: ClaudeAppTranscriptSignals = ClaudeAppTranscriptSignals()
+    ) {
         self.sessionID = sessionID
         self.path = path
         self.created = created
@@ -104,6 +133,7 @@ public struct ClaudeAppTranscriptCursor: Equatable, Sendable, CustomStringConver
         self.coveredBytes = coveredBytes
         self.discarding = discarding
         self.peerIDs = peerIDs
+        self.signals = signals
     }
 
     /// 견본 · 미리보기용: 아무 파일도 가리키지 않는다 (읽기는 못 읽음으로 끝난다)

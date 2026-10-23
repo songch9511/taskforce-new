@@ -7,6 +7,12 @@ public protocol ClaudeAppTranscriptSource: Sendable {
     func open(sessionID: String, cwd: String?) -> ClaudeAppTranscriptLoad
     func earlier(_ cursor: ClaudeAppTranscriptCursor) -> ClaudeAppTranscriptLoad
     func newer(_ cursor: ClaudeAppTranscriptCursor) -> ClaudeAppTranscriptUpdate
+    /// 펼친 도구 줄의 입력 · 결과 (읽지 못하는 면은 nil)
+    func detail(of turn: ClaudeAppTurn, cursor: ClaudeAppTranscriptCursor) -> ClaudeAppToolDetail?
+}
+
+extension ClaudeAppTranscriptSource {
+    public func detail(of turn: ClaudeAppTurn, cursor: ClaudeAppTranscriptCursor) -> ClaudeAppToolDetail? { nil }
 }
 
 extension ClaudeAppTranscriptReader: ClaudeAppTranscriptSource {}
@@ -37,6 +43,8 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
     /// 메모리에 두는 줄의 상한 (보안 P3-4): 라이브 꼬리가 길게 이어져도 줄 수가 이를 넘지 않는다 (넘치면 오래된 줄부터 버리고 Show earlier로 다시 읽을 수 있게 한다).
     /// "Show earlier"로 사용자가 앞을 넓힌 것은 읽기 총량 상한(16 MiB)이 막고, 다음 라이브 줄에서 같은 상한으로 다시 맞춘다
     public static let maxTurns = 1000
+    /// 실패한 도구 id를 기억하는 수 (읽은 줄이 아직 오지 않은 앞 쪽의 도구에도 나중에 붙이려고). 넘으면 오래된 것부터 버린다
+    public static let maxRememberedFailures = 2048
 
     public private(set) var phase: Phase = .loading
     /// 오래된 것이 먼저
@@ -45,6 +53,8 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
     public private(set) var hasEarlier = false
     /// 앞쪽을 읽는 중이다 (단추가 한 번에 하나만 돈다)
     public private(set) var loadingEarlier = false
+    /// 이 세션이 돌리는 백그라운드 일 (기록의 시작 · 끝 줄에서)
+    public private(set) var backgroundTasks = BackgroundTaskList()
     /// 보는 쪽이 맨 아래에 붙어 있다 (패널의 스크롤 위치가 알린다). 위로 거슬러 읽는 중이면 false: 그동안은 라이브 줄이 붙어도 위쪽 줄을 버리지 않는다 (읽던 글이 사라지거나 밀리지 않게).
     /// 맨 아래로 돌아오면 그때 상한에 맞춘다. 상한의 두 배를 넘으면 붙어 있지 않아도 버린다 (메모리 상한)
     public var pinnedToBottom = true {
@@ -63,6 +73,13 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
     /// 다시 열 때마다 오른다: 그 전에 시작한 읽기의 늦은 결과를 버린다
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var shownIDs = Set<String>()
+    /// 오류로 끝난 도구 호출의 id (오래된 것이 먼저): 아직 읽지 않은 앞 쪽의 도구 줄에도 나중에 붙이려고 기억한다. 상한 `maxRememberedFailures`
+    @ObservationIgnored private var failedIDs: [String] = []
+    @ObservationIgnored private var failedSet = Set<String>()
+    /// 도구 호출 id → 모델이 쓴 description (백그라운드 일의 이름을 찾는다): 줄이 상한에서 버려져도 남는다. 상한 `maxRememberedDescriptions`
+    @ObservationIgnored private var toolDescriptions: [String: String] = [:]
+    @ObservationIgnored private var toolDescriptionOrder: [String] = []
+    static let maxRememberedDescriptions = 4096
 
     /// 읽기 한 번 뒤에 무엇을 하나
     private enum Step: Sendable {
@@ -123,6 +140,7 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
         loadingEarlier = false
         cursor = nil
         shownIDs = []
+        forgetSignals()
         start()
     }
 
@@ -154,6 +172,7 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
             case .page(let page):
                 cursor = page.cursor
                 replace(with: page.turns)
+                settle(fresh: page.turns, signals: page.cursor.signals)
                 hasEarlier = page.hasEarlier
                 phase = .ready
                 return .next
@@ -175,11 +194,12 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
             case .turns(let more, let next, let hasMore):
                 cursor = next
                 append(more)
+                settle(fresh: more, signals: next.signals)
                 // 꼬리를 읽었다: 앞서 못 읽어 `failed`였어도 다시 읽히는 대화다
                 phase = .ready
                 return hasMore ? .again : .next
             case .reset:
-                // 파일이 줄었거나 바뀌었다: 꼬리부터 다시 연다
+                // 파일이 줄었거나 바뀌었다: 꼬리부터 다시 연다 (옛 파일의 실패 · 일 목록은 버린다)
                 let load = await Self.openAsync(source, sessionID, cwd)
                 guard started == generation else { return .stop }
                 guard case .page(let page) = load else {
@@ -188,6 +208,8 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
                 }
                 cursor = page.cursor
                 replace(with: page.turns)
+                forgetSignals()
+                settle(fresh: page.turns, signals: page.cursor.signals)
                 hasEarlier = page.hasEarlier
                 phase = .ready
                 return .next
@@ -224,6 +246,7 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
                 cursor = page.cursor
                 hasEarlier = page.hasEarlier
                 prepend(page.turns)
+                settle(fresh: page.turns, signals: page.cursor.signals)
                 // 건너뛴 줄뿐이라 빈 쪽이다: 끝이 아니면 한 번 누른 안에서 더 앞으로 간다 (한도까지)
                 guard page.turns.isEmpty, page.hasEarlier else { return }
                 empties += 1
@@ -268,6 +291,57 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
         let fresh = older.filter { shownIDs.insert($0.id).inserted }
         guard !fresh.isEmpty else { return }
         turns = fresh + turns
+    }
+
+    // MARK: 신호 (실패한 도구 · 백그라운드 일)
+
+    /// 다시 읽는다 (Try again · 파일이 바뀌었다): 옛 읽기의 실패 · 도구 설명 · 일 목록을 버린다
+    private func forgetSignals() {
+        failedIDs = []
+        failedSet = []
+        toolDescriptions = [:]
+        toolDescriptionOrder = []
+        backgroundTasks = BackgroundTaskList()
+    }
+
+    /// 읽은 한 번(`fresh`: 새로 들어온 줄 · `signals`)을 반영한다: 도구 설명을 배우고, 실패 id를 기억하고, 일 사건을 먹이고, 이름을 찾고, 실패를 도구 줄에 붙인다
+    private func settle(fresh: [ClaudeAppTurn], signals: ClaudeAppTranscriptSignals) {
+        for turn in fresh {
+            guard case .tool(_, let description?) = turn.kind, !description.isEmpty, let id = turn.toolUseID, toolDescriptions[id] == nil else { continue }
+            toolDescriptions[id] = description
+            toolDescriptionOrder.append(id)
+        }
+        if toolDescriptionOrder.count > Self.maxRememberedDescriptions {
+            let excess = toolDescriptionOrder.count - Self.maxRememberedDescriptions
+            for id in toolDescriptionOrder.prefix(excess) { toolDescriptions[id] = nil }
+            toolDescriptionOrder.removeFirst(excess)
+        }
+        for id in signals.failedToolIDs where failedSet.insert(id).inserted { failedIDs.append(id) }
+        if failedIDs.count > Self.maxRememberedFailures {
+            let excess = failedIDs.count - Self.maxRememberedFailures
+            for id in failedIDs.prefix(excess) { failedSet.remove(id) }
+            failedIDs.removeFirst(excess)
+        }
+        var list = backgroundTasks
+        for event in signals.background { list.apply(event) }
+        list.resolveNames { toolDescriptions[$0] }
+        if list != backgroundTasks { backgroundTasks = list }
+        if !failedSet.isEmpty {
+            let indices = turns.indices.filter { index in
+                guard case .tool = turns[index].kind, !turns[index].failed, let id = turns[index].toolUseID else { return false }
+                return failedSet.contains(id)
+            }
+            for index in indices { turns[index].failed = true }
+        }
+    }
+
+    public var rememberedFailureCount: Int { failedIDs.count }
+
+    /// 펼친 도구 줄의 본문 (입력 · 결과): 읽기는 메인 밖에서 한다. 도구 줄이 아니거나 아직 읽기 전이면 nil (읽지 못하는 면은 늘 nil)
+    public func detail(of turn: ClaudeAppTurn) async -> ClaudeAppToolDetail? {
+        guard case .tool = turn.kind, let current = cursor else { return nil }
+        let source = source
+        return await Task.detached(priority: .userInitiated) { source.detail(of: turn, cursor: current) }.value
     }
 
     /// 글 · id를 찍지 않는다
