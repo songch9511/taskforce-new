@@ -151,12 +151,39 @@ struct SessionViewMacTests {
     }
 
     @Test func aLongLineThatWrapsCountsAsTheRowsItTakes() {
-        let width = SessionCodeBlockView.charsPerRow
+        let columns = SessionCodeBlockView.panelColumns
         let rows = SessionCodeBlockView.maxRows
-        #expect(!SessionCodeBlockView.isLong(text: String(repeating: "x", count: width * rows)), "한 줄이 꽉 차게 줄바꿈해도 접는 기준 줄 수까지는 접지 않는다")
-        #expect(SessionCodeBlockView.isLong(text: String(repeating: "x", count: width * rows + 1)), "줄바꿈으로 기준을 넘으면 접는다 (긴 한 줄짜리 출력도 접힌다)")
-        #expect(SessionCodeBlockView.isLong(text: String(repeating: "한", count: width * rows + 1)), "글자 수는 바이트가 아니라 글자로 센다")
-        #expect(!SessionCodeBlockView.isLong(text: String(repeating: "가", count: width)), "한국어 한 줄은 한 줄이다")
+        #expect(!SessionCodeBlockView.isLong(text: String(repeating: "x", count: columns * rows)), "한 줄이 꽉 차게 줄바꿈해도 접는 기준 줄 수까지는 접지 않는다")
+        #expect(SessionCodeBlockView.isLong(text: String(repeating: "x", count: columns * rows + 1)), "줄바꿈으로 기준을 넘으면 접는다 (긴 한 줄짜리 출력도 접힌다)")
+    }
+
+    /// 동아시아 넓은 글자(한글 · 한자 · 가나 · 전각 · 이모지)는 mono 한 글자의 두 칸이다: 한국어 코드 · 출력의 줄바꿈을 영어처럼 세면 접어야 할 것을 못 접는다
+    @Test func eastAsianWideCharactersTakeTwoColumnsAndTheRowsFollow() {
+        #expect(SessionCodeBlockView.displayColumns(of: "abc") == 3)
+        #expect(SessionCodeBlockView.displayColumns(of: "한글") == 4)
+        #expect(SessionCodeBlockView.displayColumns(of: "a한b글") == 6, "섞인 줄은 글자마다 센다")
+        #expect(SessionCodeBlockView.displayColumns(of: "漢字かなカナＡ") == 14, "한자 · 가나 · 전각")
+        #expect(SessionCodeBlockView.displayColumns(of: "😀") == 2, "이모지")
+        #expect(SessionCodeBlockView.displayColumns(of: "") == 0)
+        let columns = SessionCodeBlockView.panelColumns
+        let korean = String(repeating: "가", count: 48)
+        #expect(SessionCodeBlockView.rows(of: korean, columns: columns) == 2, "한국어 48자는 380 폭에서 두 줄이다")
+        #expect(SessionCodeBlockView.rows(of: String(repeating: "x", count: 48), columns: columns) == 1, "영어 48자는 한 줄이다")
+        #expect(!SessionCodeBlockView.isLong(text: Array(repeating: korean, count: 4).joined(separator: "\n"), columns: columns), "4 × 2줄 = 8줄은 접지 않는다")
+        #expect(SessionCodeBlockView.isLong(text: Array(repeating: korean, count: 5).joined(separator: "\n"), columns: columns), "5 × 2줄 = 10줄은 접는다 (영어로 세면 5줄이라 못 접는다)")
+    }
+
+    /// 한 줄에 들어가는 칸 수는 그 코드 면의 폭에서 나온다: 패널(380)은 48, 옆줄(256 안의 224)은 훨씬 적다. 맥락(`sessionCodeBlockWidth`)으로 건넨다
+    @Test func theColumnsFollowTheWidthOfTheCodeFaceItIsDrawnIn() {
+        #expect(SessionCodeBlockView.columns(forBlockWidth: SessionCodeBlockView.panelBlockWidth) == SessionCodeBlockView.panelColumns)
+        let side = SessionCodeBlockView.columns(forBlockWidth: 224)
+        #expect(side < SessionCodeBlockView.panelColumns && side >= 20, "옆줄의 칸 수: \(side)")
+        #expect(SessionCodeBlockView.columns(forBlockWidth: 600) > SessionCodeBlockView.panelColumns)
+        #expect(SessionCodeBlockView.columns(forBlockWidth: 0) >= 8, "아주 좁아도 바닥이 있다")
+        let line = String(repeating: "x", count: 40)
+        let text = Array(repeating: line, count: 5).joined(separator: "\n")
+        #expect(!SessionCodeBlockView.isLong(text: text, columns: SessionCodeBlockView.panelColumns), "패널에서는 5줄")
+        #expect(SessionCodeBlockView.isLong(text: text, columns: side), "옆줄에서는 한 줄이 두 줄로 줄바꿈해 10줄이라 접는다")
     }
 
     @Test func foldingDependsOnNothingButTheText() {
@@ -172,10 +199,14 @@ struct SessionViewMacTests {
         #expect(rows.count == SessionCodeBlockView.maxRows + 2, "열한 줄만 그린다: \(rows.count)")
         #expect(all.hasPrefix(shown), "보이는 줄은 앞에서부터 그대로다")
         #expect(SessionCodeBlockView.visibleText("a\nb") == "a\nb", "짧은 글은 그대로다")
+        let columns = SessionCodeBlockView.panelColumns
         let wide = String(repeating: "x", count: 5_000)
-        #expect(SessionCodeBlockView.visibleText(wide).count == SessionCodeBlockView.charsPerRow * (SessionCodeBlockView.maxRows + 2), "한 줄이 아주 길면 보이지 않는 뒷부분을 자른다")
+        #expect(SessionCodeBlockView.visibleText(wide, columns: columns).count == columns * (SessionCodeBlockView.maxRows + 2), "한 줄이 아주 길면 보이지 않는 뒷부분을 자른다")
         let manyWide = (0..<30).map { _ in String(repeating: "y", count: 400) }.joined(separator: "\n")
-        #expect(SessionCodeBlockView.visibleText(manyWide).split(separator: "\n").count <= 2, "줄바꿈으로 여러 줄을 차지하면 그만큼 적은 줄만 그린다")
+        #expect(SessionCodeBlockView.visibleText(manyWide, columns: columns).split(separator: "\n").count <= 2, "줄바꿈으로 여러 줄을 차지하면 그만큼 적은 줄만 그린다")
+        let korean = String(repeating: "가", count: 5_000)
+        let keptKorean = SessionCodeBlockView.visibleText(korean, columns: columns)
+        #expect(SessionCodeBlockView.displayColumns(of: Substring(keptKorean)) <= columns * (SessionCodeBlockView.maxRows + 2) && keptKorean.count >= 200, "넓은 글자는 두 칸으로 세어 자른다: \(keptKorean.count)자")
     }
 
     // MARK: 단계 상태 (E3 · E4)

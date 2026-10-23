@@ -43,47 +43,53 @@ final class SessionStepsState {
 
     /// 창이 바뀐 횟수 (읽어 두면 폈을 때 본문이 다시 그려진다)
     private(set) var windowRevision = 0
-    /// 읽어 둔 줄을 모두 폈다 (그 뒤로는 창이 없다: 앞 쪽 기록을 읽어 앞에 붙은 줄도 그대로 보인다)
-    private(set) var showsAllEntries = false
-    /// 지금 그리는 첫 줄의 id. **새 줄이 붙어도 이 자리를 지킨다**: 가장 새 150줄을 매번 새로 정하면 위의 줄이 하나씩 사라져 위로 거슬러 읽는 글이 밀린다 (대화 상태가 위쪽 줄을 안 버리는 것과 같은 까닭).
-    /// 이 줄이 대화에서 사라지면(대화가 오래된 줄을 버렸다) 다시 가장 새 150줄로 정한다
+    /// 지금 그리는 첫 줄의 id. **위로 올려 읽는 동안은 새 줄이 붙어도 이 자리를 지킨다**: 가장 새 150줄을 매번 새로 정하면 위의 줄이 하나씩 사라져 읽는 글이 밀린다 (대화 상태가 위쪽 줄을 안 버리는 것과 같은 까닭).
+    /// 이 줄이 대화에서 사라지면(대화가 오래된 줄을 버렸다) 다시 가장 새 150줄로 정한다. 읽어 둔 줄을 처음까지 폈어도 이 자리는 **처음 줄**로 남는다:
+    /// 앞 쪽 기록을 읽어 앞에 붙은 줄은 이 자리 위(창 밖)에 서서 "Show earlier"로 150줄씩 펴진다 (몇천 줄을 한꺼번에 그리지 않는다)
     @ObservationIgnored private var windowCutID: String?
     /// 폈을 때 스크롤을 붙잡을 줄: 펴기 전의 첫 줄 (패널이 `onChange`에서 한 번 가져간다)
     @ObservationIgnored private var pendingScrollAnchor: String?
+    /// 지난번 계산 때 맨 아래에 붙어 있었나 (위로 올려 읽다가 다시 붙는 순간을 알아보려고)
+    @ObservationIgnored private var wasPinned = true
 
-    /// 그릴 첫 줄의 자리 (0이면 전부). 본문을 계산하는 동안 불러도 된다 (관찰하지 않는 기억만 바꾼다)
-    func windowStart(in entries: [SessionEntry]) -> Int {
+    /// 그릴 첫 줄의 자리 (0이면 전부). 본문을 계산하는 동안 불러도 된다 (관찰하지 않는 기억만 바꾼다).
+    /// - pinned: 읽는 사람이 맨 아래에 붙어 있다. 붙어 있는 동안은 창이 한도 안에 머문다: (1) 위로 올려 읽다가 **다시 붙으면** 창을 처음(가장 새 150줄)으로 돌리고,
+    ///   (2) 붙은 채 대화가 길어져 그리는 줄이 한도의 두 배를 넘으면 다시 가장 새 150줄로 정한다 (reset 직후 일부만 읽혀 첫 줄에 붙들린 경우도 이것이 푼다).
+    ///   위로 올려 읽는 중(붙지 않음)에는 첫 줄 자리를 지킨다
+    func windowStart(in entries: [SessionEntry], pinned: Bool = true) -> Int {
         _ = windowRevision
-        if showsAllEntries { return 0 }
-        if let id = windowCutID, let at = entries.firstIndex(where: { $0.id == id }) { return at }
+        defer { wasPinned = pinned }
+        if pinned {
+            if !wasPinned {
+                windowCutID = nil
+            } else if let at = cutIndex(in: entries), entries.count - at > 2 * SessionTimeline.renderWindow {
+                windowCutID = nil
+            }
+        }
+        if let at = cutIndex(in: entries) { return at }
         let start = SessionTimeline.windowStart(entries, limit: SessionTimeline.renderWindow)
-        // 처음부터 창에 다 드는 대화도 첫 줄에 붙들어 둔다: 길어져도 앞이 잘리지 않는다
+        // 처음부터 창에 다 드는 대화도 첫 줄에 붙들어 둔다: 위로 올려 읽는 동안 길어져도 앞이 잘리지 않는다
         windowCutID = entries.indices.contains(start) ? entries[start].id : nil
         return start
     }
 
-    /// "Show earlier": 창을 150줄 앞으로 넓힌다 (덩어리 첫 줄로 맞춘다). 처음까지 닿으면 전부 편다. 펴기 전의 첫 줄을 스크롤이 붙잡도록 적어 둔다
-    func revealEarlier(in entries: [SessionEntry]) {
-        let current = windowStart(in: entries)
-        guard current > 0, entries.indices.contains(current) else {
-            revealAll()
-            return
-        }
-        pendingScrollAnchor = entries[current].id
-        let start = SessionTimeline.unitStart(entries, atOrBefore: current - SessionTimeline.renderWindow)
-        if start > 0 {
-            windowCutID = entries[start].id
-        } else {
-            showsAllEntries = true
-            windowCutID = nil
-        }
-        windowRevision += 1
+    /// 지금 그리고 있는 첫 줄의 자리를 **바꾸지 않고** 본다 (시험이 살아 있는 화면의 창을 흔들지 않고 읽는다)
+    func peekWindowStart(in entries: [SessionEntry]) -> Int {
+        cutIndex(in: entries) ?? SessionTimeline.windowStart(entries, limit: SessionTimeline.renderWindow)
     }
 
-    /// 읽어 둔 줄을 모두 편다 (앞 쪽 기록을 읽기 직전에도: 읽어서 앞에 붙은 줄이 창 밖에 숨지 않게)
-    func revealAll() {
-        showsAllEntries = true
-        windowCutID = nil
+    private func cutIndex(in entries: [SessionEntry]) -> Int? {
+        guard let id = windowCutID else { return nil }
+        return entries.firstIndex(where: { $0.id == id })
+    }
+
+    /// "Show earlier": 창을 150줄 앞으로 넓힌다 (덩어리 첫 줄로 맞춘다. 처음에 닿으면 거기까지). 펴기 전의 첫 줄을 스크롤이 붙잡도록 적어 둔다. 창 밖의 줄이 없으면 아무 일도 없다
+    func revealEarlier(in entries: [SessionEntry]) {
+        let current = peekWindowStart(in: entries)
+        guard current > 0, entries.indices.contains(current) else { return }
+        pendingScrollAnchor = entries[current].id
+        let start = SessionTimeline.unitStart(entries, atOrBefore: current - SessionTimeline.renderWindow)
+        windowCutID = entries[start].id
         windowRevision += 1
     }
 
@@ -140,9 +146,9 @@ final class SessionStepsState {
         detailOrder = []
         announcedClocks = []
         hoveredFooter = nil
-        showsAllEntries = false
         windowCutID = nil
         pendingScrollAnchor = nil
+        wasPinned = true
         windowRevision = 0
     }
 

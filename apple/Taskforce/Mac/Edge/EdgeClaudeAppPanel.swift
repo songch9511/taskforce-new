@@ -190,6 +190,7 @@ struct ClaudeAppSessionPanelView: View {
                 SessionEntriesView(
                     entries: timeline.entries, steps: timeline.data.steps, state: presentation.steps,
                     earlierPage: SessionEarlierPage(available: conversation.hasEarlier, loading: conversation.loadingEarlier, load: { conversation.showEarlier() }),
+                    pinnedToBottom: conversation.pinnedToBottom,
                     loadDetail: { stepID in
                         guard let turn = turns[stepID] else { return nil }
                         return await conversation.detail(of: turn)
