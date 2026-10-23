@@ -121,6 +121,8 @@ struct ClaudeAppSessionPanelView: View {
                     }
                     .defaultScrollAnchor(.bottom)
                     .scrollIndicators(.automatic)
+                    // "Show earlier"로 창을 넓힌 뒤 펴기 전의 첫 줄을 위에 붙잡는다 (`SessionEntriesView`)
+                    .environment(\.sessionScrollToEntry, SessionScrollTo { id in proxy.scrollTo(id, anchor: .top) })
                     // 맨 아래에 붙어 있는지 대화 상태에 알린다: 위로 거슬러 읽는 중에는 라이브 줄이 붙어도 위쪽 줄을 버리지 않는다 (`ClaudeAppConversation.pinnedToBottom`).
                     // 새 글로 내용이 늘어난 것은 사용자가 올린 것이 아니다 (`SessionScrollPin`): 붙어 있던 동안만 새 글을 따라 내려가고, 위로 올려 읽는 중이면 끌어내리지 않는다
                     .onScrollGeometryChange(for: SessionScrollSnapshot.self) { geometry in
@@ -184,17 +186,10 @@ struct ClaudeAppSessionPanelView: View {
             let timeline = presentation.timeline.value(for: input) { ClaudeTimeline(input) }
             let turns = timeline.turns
             VStack(alignment: .leading, spacing: 0) {
-                if conversation.hasEarlier {
-                    HStack {
-                        Spacer(minLength: 0)
-                        QuietLink(ClaudeAppCopy.showEarlier) { conversation.showEarlier() }
-                            .disabled(conversation.loadingEarlier)
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.bottom, TFSpace.md)
-                }
+                // "Show earlier"는 본문이 맨 위에 하나만 세운다: 먼저 이미 읽어 둔 줄 중 창(가장 새 150줄) 밖의 것을 펴고, 다 폈으면 이 대화의 앞 쪽 기록을 읽는다
                 SessionEntriesView(
                     entries: timeline.entries, steps: timeline.data.steps, state: presentation.steps,
+                    earlierPage: SessionEarlierPage(available: conversation.hasEarlier, loading: conversation.loadingEarlier, load: { conversation.showEarlier() }),
                     loadDetail: { stepID in
                         guard let turn = turns[stepID] else { return nil }
                         return await conversation.detail(of: turn)

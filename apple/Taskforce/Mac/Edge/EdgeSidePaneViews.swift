@@ -300,6 +300,7 @@ struct SidePaneTail: View {
                 }
                 .defaultScrollAnchor(.bottom)
                 .scrollIndicators(.automatic)
+                .environment(\.sessionScrollToEntry, SessionScrollTo { id in proxy.scrollTo(id, anchor: .top) })
                 .onScrollGeometryChange(for: SessionScrollSnapshot.self) { geometry in
                     SessionScrollSnapshot(visibleMaxY: geometry.visibleRect.maxY, contentHeight: geometry.contentSize.height, visibleHeight: geometry.visibleRect.height)
                 } action: { old, new in
@@ -308,6 +309,8 @@ struct SidePaneTail: View {
                 .onChange(of: tail.state) {
                     if SessionScrollPin.shouldFollowNewContent(pinned: pinned) { proxy.scrollTo(Anchor.bottom, anchor: .bottom) }
                 }
+                // 다른 일의 꼬리를 열면 열어 둔 묶음 · 편 창(가장 새 150줄 → Show earlier)을 비운다: 줄 id는 일 안에서만 겹치지 않는다
+                .onChange(of: task.id) { steps.reset() }
             }
         }
     }
@@ -328,8 +331,7 @@ struct SidePaneTail: View {
             if earlier { earlierLink }
             SessionCodeBlockView(label: SessionViewCopy.output, text: text, collapses: false)
         case .agent(let turns, let earlier):
-            if earlier { earlierLink }
-            agent(turns)
+            agent(turns, earlier: earlier)
         }
     }
 
@@ -351,13 +353,14 @@ struct SidePaneTail: View {
     }
 
     @ViewBuilder
-    private func agent(_ turns: [ClaudeAppTurn]) -> some View {
+    private func agent(_ turns: [ClaudeAppTurn], earlier: Bool) -> some View {
         let data = SessionTimelineSource.claude(turns)
         let running = task.status == .running
         // 도는 일은 마지막 묶음이 열려 있다. 끝난 일에는 답 밑 줄이 없다 (그 말은 에이전트의 것이고 이 옆줄은 읽기만 한다)
         let entries = SessionTimeline.build(data.items, state: running ? .running : .finished).filter { if case .footer = $0 { false } else { true } }
         let byID = Dictionary(turns.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        SessionEntriesView(entries: entries, steps: data.steps, state: steps, item: { id in
+        // Show earlier는 본문이 하나만 세운다: 창 밖에 읽어 둔 줄을 먼저 펴고, 다 폈으면 꼬리의 창을 넓힌다 (`tail.showEarlier()`)
+        SessionEntriesView(entries: entries, steps: data.steps, state: steps, earlierPage: SessionEarlierPage(available: earlier, load: { tail.showEarlier() }), item: { id in
             if let turn = byID[id], case .assistant(let text) = turn.kind { SessionMarkdownView(source: turn.truncated ? text + "…" : text) }
         })
         .padding(.horizontal, TFSpace.sm)

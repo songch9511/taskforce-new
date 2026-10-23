@@ -136,6 +136,8 @@ struct SessionPanelView: View {
                     }
                     .defaultScrollAnchor(.bottom)
                     .scrollIndicators(.automatic)
+                    // "Show earlier"로 창을 넓힌 뒤 펴기 전의 첫 줄을 위에 붙잡는다 (`SessionEntriesView`)
+                    .environment(\.sessionScrollToEntry, SessionScrollTo { id in proxy.scrollTo(id, anchor: .top) })
                     // 붙어 있던 동안만 새 글을 따라 내려간다: 위로 올려 읽는 중이면 끌어내리지 않는다 (시계 틱은 스크롤을 건드리지 않는다). 새 글로 내용이 늘어난 것은 사용자가 올린 것이 아니다
                     .onScrollGeometryChange(for: SessionScrollSnapshot.self) { geometry in
                         SessionScrollSnapshot(visibleMaxY: geometry.visibleRect.maxY, contentHeight: geometry.contentSize.height, visibleHeight: geometry.visibleRect.height)
