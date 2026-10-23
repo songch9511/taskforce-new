@@ -52,7 +52,7 @@ extension ExternalSessionSuites {
             return nil
         }
 
-        private func list(_ reader: BackgroundTaskTail, session: String? = nil, cwd: String?? = nil, since: Date? = nil) -> SubagentListing {
+        private func list(_ reader: BackgroundTaskTail, session: String? = nil, cwd: String?? = nil, since: SubagentCursor? = nil) -> SubagentListing {
             reader.subagents(sessionID: session ?? self.session, cwd: cwd ?? self.cwd, since: since)
         }
 
@@ -67,6 +67,7 @@ extension ExternalSessionSuites {
                 #expect(Set(found.map(\.id)) == ["a1111111111111111", "a2222222222222222", "a3333333333333333"])
                 let nested = found.first { $0.id == "a3333333333333333" }
                 #expect(nested?.parentID == "a1111111111111111" && nested?.depth == 2 && nested?.name == Self.descriptionSentinel && nested?.requestShape == "requested.unset")
+                #expect(nested?.toolUseID == "toolu_fixture", "다섯째 칸: 깊이 1 에이전트의 상태를 본 기록의 도구 결과와 짝지을 때 쓴다")
                 #expect(found.first { $0.id == "a1111111111111111" }?.parentID == nil)
             }
         }
@@ -130,7 +131,7 @@ extension ExternalSessionSuites {
                 let recorder = RecordingFileSystem()
                 _ = list(tail(home, fileSystem: recorder.fileSystem))
                 let subagentCalls = recorder.listCalls.filter { $0.path == sub }
-                #expect(subagentCalls.count == 1 && subagentCalls.allSatisfy { $0.limit <= SubagentMeta.maxScanned + 1 })
+                #expect(subagentCalls.count == 1 && subagentCalls.allSatisfy { $0.limit == SubagentMeta.maxScanned + 1 }, "넘쳤는지 알려고 하나 더 센다")
                 #expect(recorder.reads.count <= SubagentMeta.maxMetas)
             }
         }
@@ -299,30 +300,113 @@ extension ExternalSessionSuites {
             try withHome { home in
                 try writeMeta(home, "a1111111111111111")
                 let first = list(tail(home))
-                guard case .metas(_, let stamp) = first else {
+                guard case .metas(_, let cursor) = first else {
                     Issue.record("처음 훑기가 읽지 못했다")
                     return
                 }
                 let recorder = RecordingFileSystem()
-                #expect(list(tail(home, fileSystem: recorder.fileSystem), since: stamp) == .unchanged)
+                #expect(list(tail(home, fileSystem: recorder.fileSystem), since: cursor) == .unchanged)
                 #expect(recorder.reads.isEmpty && recorder.listed.isEmpty, "폴더가 그대로면 이름도 훑지 않는다")
                 #expect(recorder.statted.isEmpty == false, "길 확인은 늘 한다")
                 // 새 파일이 생기면 폴더의 바뀐 시각이 달라져 다시 훑는다
                 try writeMeta(home, "a2222222222222222")
-                try home.setModified("\(home.projects)/\(directory)/\(session)/subagents", stamp.addingTimeInterval(5))
-                #expect(metas(list(tail(home), since: stamp))?.count == 2)
+                try home.setModified("\(home.projects)/\(directory)/\(session)/subagents", cursor.stamp.addingTimeInterval(5))
+                #expect(metas(list(tail(home), since: cursor))?.count == 2)
             }
         }
 
         @Test func aFolderThatBecameUntrustedIsRefusedEvenWhenItsStampIsUnchanged() throws {
             try withHome { home in
                 try writeMeta(home, "a1111111111111111")
-                guard case .metas(_, let stamp) = list(tail(home)) else {
+                guard case .metas(_, let cursor) = list(tail(home)) else {
                     Issue.record("처음 훑기가 읽지 못했다")
                     return
                 }
                 try FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: "\(home.projects)/\(directory)/\(session)/subagents")
-                #expect(list(tail(home), since: stamp) == .unreadable)
+                #expect(list(tail(home), since: cursor) == .unreadable)
+            }
+        }
+
+        // MARK: 찾은 프로젝트 폴더를 기억한다 · 넘침
+
+        @Test func theProjectFolderFoundOnTheFirstScanIsRememberedSoTheProjectsAreNotListedAgain() throws {
+            try withHome { home in
+                try writeMeta(home, "a1111111111111111")
+                // 작업 폴더를 모르는 세션: 첫 훑기는 프로젝트 폴더들의 이름을 훑어 찾는다
+                let first = RecordingFileSystem()
+                guard case .metas(_, let cursor) = list(tail(home, fileSystem: first.fileSystem), cwd: .some(nil)) else {
+                    Issue.record("처음 훑기가 읽지 못했다")
+                    return
+                }
+                #expect(first.listed.contains(home.projects), "처음에는 projects를 나열한다")
+                #expect(cursor.project == directory)
+                // 새 파일이 생겨 다시 훑을 때: projects를 다시 나열하지 않고 그 프로젝트 아래의 길만 다시 본다
+                try writeMeta(home, "a2222222222222222")
+                try home.setModified("\(home.projects)/\(directory)/\(session)/subagents", cursor.stamp.addingTimeInterval(5))
+                let second = RecordingFileSystem()
+                #expect(metas(list(tail(home, fileSystem: second.fileSystem), cwd: .some(nil), since: cursor))?.count == 2)
+                #expect(!second.listed.contains(home.projects), "찾은 프로젝트 폴더를 기억한다: \(second.listed.count)번 나열")
+                // 폴더가 그대로인 틱도 projects를 나열하지 않는다
+                guard case .metas(_, let next) = list(tail(home), cwd: .some(nil), since: cursor) else { return }
+                let third = RecordingFileSystem()
+                #expect(list(tail(home, fileSystem: third.fileSystem), cwd: .some(nil), since: next) == .unchanged)
+                #expect(!third.listed.contains(home.projects) && third.reads.isEmpty)
+            }
+        }
+
+        @Test func aRememberedProjectStillGoesThroughTheWholeFolderChainEveryTime() throws {
+            try withHome { home in
+                try writeMeta(home, "a1111111111111111")
+                guard case .metas(_, let cursor) = list(tail(home), cwd: .some(nil)) else {
+                    Issue.record("처음 훑기가 읽지 못했다")
+                    return
+                }
+                let project = "\(home.projects)/\(directory)"
+                // 기억한 프로젝트 폴더가 기호 링크로 바뀌었다
+                let outside = home.root + "/outside"
+                try FileManager.default.createDirectory(atPath: outside + "/\(session)/subagents", withIntermediateDirectories: true)
+                try Data(metaJSON().utf8).write(to: URL(fileURLWithPath: outside + "/\(session)/subagents/agent-a9999999999999999.meta.json"))
+                try FileManager.default.moveItem(atPath: project, toPath: home.root + "/moved")
+                try home.link(project, to: outside)
+                let recorder = RecordingFileSystem()
+                #expect(list(tail(home, fileSystem: recorder.fileSystem), cwd: .some(nil), since: cursor) == .unreadable)
+                #expect(recorder.reads.isEmpty)
+            }
+        }
+
+        @Test func aRememberedProjectThatNoLongerHoldsTheSessionFallsBackToFindingItAgain() throws {
+            try withHome { home in
+                try writeMeta(home, "a1111111111111111")
+                guard case .metas(_, let real) = list(tail(home), cwd: .some(nil)) else {
+                    Issue.record("처음 훑기가 읽지 못했다")
+                    return
+                }
+                // 엉뚱한 프로젝트 이름을 기억하고 있어도 (그 아래에 세션이 없다) 이름 훑기로 다시 찾는다
+                let stale = SubagentCursor(project: "-Nowhere-at-all", stamp: real.stamp.addingTimeInterval(-60))
+                #expect(metas(list(tail(home), cwd: .some(nil), since: stale))?.count == 1)
+                // 이름 규칙 밖의 기억은 믿지 않는다 (경로가 끼어들 길이 없다)
+                let hostile = SubagentCursor(project: "../../etc", stamp: real.stamp.addingTimeInterval(-60))
+                #expect(metas(list(tail(home), cwd: .some(nil), since: hostile))?.count == 1)
+            }
+        }
+
+        @Test func moreEntriesThanTheScanLimitAreRecordedAsAnOverflowAndExactlyTheLimitIsNot() throws {
+            try withHome { home in
+                let sub = try subagentsDirectory(home)
+                try writeMeta(home, "a1111111111111111")
+                for index in 0..<(SubagentMeta.maxScanned - 1) { FileManager.default.createFile(atPath: sub + "/agent-a\(index).jsonl", contents: Data()) }
+                guard case .metas(_, let exact) = list(tail(home)) else {
+                    Issue.record("읽지 못했다")
+                    return
+                }
+                #expect(!exact.overflowed, "정확히 한도만큼이면 넘친 것이 아니다")
+                FileManager.default.createFile(atPath: sub + "/agent-aextra1.jsonl", contents: Data())
+                FileManager.default.createFile(atPath: sub + "/agent-aextra2.jsonl", contents: Data())
+                guard case .metas(_, let over) = list(tail(home)) else {
+                    Issue.record("읽지 못했다")
+                    return
+                }
+                #expect(over.overflowed, "한도를 넘으면 그 사실이 자리에 남는다")
             }
         }
 

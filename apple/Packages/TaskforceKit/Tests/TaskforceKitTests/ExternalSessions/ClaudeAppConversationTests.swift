@@ -18,7 +18,7 @@ final class ClaudeAppTranscriptScript: ClaudeAppTranscriptSource, @unchecked Sen
     private var _earlierCursors: [ClaudeAppTranscriptCursor] = []
     private var subagentListings: [SubagentListing] = []
     private var _subagentCalls = 0
-    private var _subagentSinces: [Date?] = []
+    private var _subagentSinces: [SubagentCursor?] = []
 
     /// "Show earlier"가 받은 커서들 (상한에서 앞 줄을 버렸을 때 그 자리를 가리키는지 본다)
     var earlierCursors: [ClaudeAppTranscriptCursor] { lock.withLock { _earlierCursors } }
@@ -32,7 +32,7 @@ final class ClaudeAppTranscriptScript: ClaudeAppTranscriptSource, @unchecked Sen
     func queueSubagents(_ listing: SubagentListing...) { lock.withLock { subagentListings += listing } }
     var subagentCalls: Int { lock.withLock { _subagentCalls } }
     /// 훑을 때마다 받은 "마지막으로 본 폴더의 바뀐 시각"
-    var subagentSinces: [Date?] { lock.withLock { _subagentSinces } }
+    var subagentSinces: [SubagentCursor?] { lock.withLock { _subagentSinces } }
 
     func queueOpen(_ load: ClaudeAppTranscriptLoad...) { lock.withLock { opens += load } }
     func queueEarlier(_ load: ClaudeAppTranscriptLoad...) { lock.withLock { earliers += load } }
@@ -63,7 +63,7 @@ final class ClaudeAppTranscriptScript: ClaudeAppTranscriptSource, @unchecked Sen
         }
     }
 
-    func subagents(sessionID: String, cwd: String?, since: Date?) -> SubagentListing {
+    func subagents(sessionID: String, cwd: String?, since: SubagentCursor?) -> SubagentListing {
         lock.withLock {
             _subagentCalls += 1
             _subagentSinces.append(since)

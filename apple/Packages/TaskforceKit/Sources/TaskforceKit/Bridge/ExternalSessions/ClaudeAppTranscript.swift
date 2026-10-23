@@ -91,18 +91,34 @@ public struct ClaudeAppTurn: Identifiable, Equatable, Sendable, CustomStringConv
     public var debugDescription: String { description }
 }
 
-/// 한 번 읽은 창에서 나온, 대화 줄이 아닌 사실 둘 (세션 보기 V1, DZ oa-session-view-dz v2): 오류로 끝난 도구 결과의 도구 id · 백그라운드 일의 시작과 끝.
+/// 도구 결과 한 줄에서 읽은 끝 사실 하나 (하위 에이전트의 상태를 도구 호출 id로 짝지을 때 쓴다): 오류로 끝난 결과(`is_error`)이거나, 에이전트가 끝나 돌려준 결과(`toolUseResult.agentId`가 있고 비동기 시작이 아닌 것).
+/// 도구 호출 id · 실패 여부 · 그 줄의 시각뿐이다 (결과 글 · 프롬프트는 읽지 않는다)
+public struct ClaudeAppToolOutcome: Equatable, Sendable {
+    public var toolUseID: String
+    public var failed: Bool
+    public var at: Date?
+
+    public init(toolUseID: String, failed: Bool, at: Date?) {
+        self.toolUseID = toolUseID
+        self.failed = failed
+        self.at = at
+    }
+}
+
+/// 한 번 읽은 창에서 나온, 대화 줄이 아닌 사실 셋 (세션 보기 V1, DZ oa-session-view-dz v2): 오류로 끝난 도구 결과의 도구 id · 백그라운드 일의 시작과 끝 · 도구 결과의 끝 사실(에이전트 짝짓기).
 /// **선언한 칸만** 꺼낸다: 불리언 `is_error` · 아이디 · 상태 · 끝낸 코드 · 시각. 오류 글 · 명령 · 출력 · 요약 · 프롬프트는 읽지 않는다. 읽은 그 번의 것이다 (읽을 때마다 새로 채워진다)
 public struct ClaudeAppTranscriptSignals: Equatable, Sendable, CustomStringConvertible, CustomDebugStringConvertible {
     public var failedToolIDs: [String]
     public var background: [BackgroundTaskEvent]
+    public var toolOutcomes: [ClaudeAppToolOutcome]
 
-    public init(failedToolIDs: [String] = [], background: [BackgroundTaskEvent] = []) {
+    public init(failedToolIDs: [String] = [], background: [BackgroundTaskEvent] = [], toolOutcomes: [ClaudeAppToolOutcome] = []) {
         self.failedToolIDs = failedToolIDs
         self.background = background
+        self.toolOutcomes = toolOutcomes
     }
 
-    public var isEmpty: Bool { failedToolIDs.isEmpty && background.isEmpty }
+    public var isEmpty: Bool { failedToolIDs.isEmpty && background.isEmpty && toolOutcomes.isEmpty }
 
     /// 아이디를 찍지 않는다
     public var description: String { "ClaudeAppTranscriptSignals()" }

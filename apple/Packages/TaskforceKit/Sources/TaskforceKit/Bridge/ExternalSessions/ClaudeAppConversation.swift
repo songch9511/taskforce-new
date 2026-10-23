@@ -10,12 +10,12 @@ public protocol ClaudeAppTranscriptSource: Sendable {
     /// 펼친 도구 줄의 입력 · 결과 (읽지 못하는 면은 nil)
     func detail(of turn: ClaudeAppTurn, cursor: ClaudeAppTranscriptCursor) -> ClaudeAppToolDetail?
     /// 세션 폴더의 하위 에이전트 메타 훑기 (부모 · 깊이 · 이름). `since`는 앞서 본 폴더의 바뀐 시각: 그대로면 `.unchanged`. 읽지 못하는 면은 폴더 없음
-    func subagents(sessionID: String, cwd: String?, since: Date?) -> SubagentListing
+    func subagents(sessionID: String, cwd: String?, since: SubagentCursor?) -> SubagentListing
 }
 
 extension ClaudeAppTranscriptSource {
     public func detail(of turn: ClaudeAppTurn, cursor: ClaudeAppTranscriptCursor) -> ClaudeAppToolDetail? { nil }
-    public func subagents(sessionID: String, cwd: String?, since: Date?) -> SubagentListing { .missing }
+    public func subagents(sessionID: String, cwd: String?, since: SubagentCursor?) -> SubagentListing { .missing }
 }
 
 extension ClaudeAppTranscriptReader: ClaudeAppTranscriptSource {}
@@ -85,9 +85,13 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
     static let maxRememberedDescriptions = 4096
     /// 기록의 시작 · 끝 줄만으로 만든 일 목록: 상태는 이것이 정한다. 화면에 내는 `backgroundTasks`는 여기에 메타를 겹친 것이다
     @ObservationIgnored private var signalTasks = BackgroundTaskList()
-    /// 마지막으로 읽은 `subagents/` 메타 (폴더가 그대로면 다시 읽지 않는다) · 그때 본 폴더의 바뀐 시각
+    /// 마지막으로 읽은 `subagents/` 메타 (폴더가 그대로면 다시 읽지 않는다) · 그때의 자리(프로젝트 폴더 · 폴더의 바뀐 시각)
     @ObservationIgnored private var subagentMetas: [SubagentMeta] = []
-    @ObservationIgnored private var subagentStamp: Date?
+    @ObservationIgnored private var subagentCursor: SubagentCursor?
+    /// 본 기록에서 본 에이전트 도구 호출과 그 결과 (도구 호출 id → 짝): 깊이 1 전경 에이전트의 상태를 메타의 `toolUseId`와 짝지어 정한다. 오래된 것부터 버린다 (상한 `maxRememberedAgentCalls`)
+    @ObservationIgnored private var agentCalls: [String: AgentCallRecord] = [:]
+    @ObservationIgnored private var agentCallOrder: [String] = []
+    static let maxRememberedAgentCalls = 2048
     /// 하위 에이전트 폴더가 없는 채로 지나간 꼬리 읽기 수: 없는 폴더를 매초 찾아다니지 않는다 (새 줄이 오면 바로, 아니면 `missingScanEvery`번에 한 번)
     @ObservationIgnored private var quietTicks = 0
     static let missingScanEvery = 5
@@ -321,14 +325,16 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
         toolDescriptionOrder = []
         signalTasks = BackgroundTaskList()
         subagentMetas = []
-        subagentStamp = nil
+        subagentCursor = nil
+        agentCalls = [:]
+        agentCallOrder = []
         quietTicks = 0
         backgroundTasks = BackgroundTaskList()
     }
 
     /// 이번 꼬리 읽기에서 하위 에이전트 폴더를 훑을까: 폴더가 있었으면 늘(속에서 에이전트가 자란다), 없었으면 새 줄이 왔을 때 또는 몇 번에 한 번
     private func shouldScanSubagents(sawActivity: Bool) -> Bool {
-        if subagentStamp != nil || sawActivity {
+        if subagentCursor != nil || sawActivity {
             quietTicks = 0
             return true
         }
@@ -341,26 +347,38 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
         let source = source
         let session = sessionID
         let folder = cwd
-        let since = subagentStamp
+        let since = subagentCursor
         let listing = await Task.detached(priority: .userInitiated) { source.subagents(sessionID: session, cwd: folder, since: since) }.value
         guard started == generation else { return }
         switch listing {
-        case .metas(let found, let stamp):
+        case .metas(let found, let cursor):
             subagentMetas = found
-            subagentStamp = stamp
+            subagentCursor = cursor
         case .unchanged:
             return
         case .missing, .unreadable:
             subagentMetas = []
-            subagentStamp = nil
+            subagentCursor = nil
         }
         publishTasks()
     }
 
     /// 화면에 내는 목록 = 기록의 시작 · 끝 줄로 만든 목록 + 메타 (달라졌을 때만 바꾼다)
     private func publishTasks() {
-        let combined = signalTasks.adding(subagents: subagentMetas)
+        let combined = signalTasks.adding(subagents: subagentMetas, calls: agentCalls)
         if combined != backgroundTasks { backgroundTasks = combined }
+    }
+
+    /// 에이전트 호출(`Agent` · 예전 이름 `Task`의 도구 줄) 또는 그 결과를 장부에 적는다 (같은 id는 한 칸으로 합친다)
+    private func noteAgentCall(_ id: String, _ update: (inout AgentCallRecord) -> Void) {
+        if agentCalls[id] == nil {
+            agentCallOrder.append(id)
+            if agentCallOrder.count > Self.maxRememberedAgentCalls {
+                let dropped = agentCallOrder.removeFirst()
+                agentCalls[dropped] = nil
+            }
+        }
+        update(&agentCalls[id, default: AgentCallRecord()])
     }
 
     /// 읽은 한 번(`fresh`: 새로 들어온 줄 · `signals`)을 반영한다: 도구 설명을 배우고, 실패 id를 기억하고, 일 사건을 먹이고, 이름을 찾고, 실패를 도구 줄에 붙인다
@@ -374,6 +392,16 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
             let excess = toolDescriptionOrder.count - Self.maxRememberedDescriptions
             for id in toolDescriptionOrder.prefix(excess) { toolDescriptions[id] = nil }
             toolDescriptionOrder.removeFirst(excess)
+        }
+        for turn in fresh {
+            guard case .tool(let name, _) = turn.kind, name == "Agent" || name == "Task", let id = turn.toolUseID, BackgroundTaskText.isValidToolUseID(id) else { continue }
+            noteAgentCall(id) { record in
+                record.called = true
+                if record.startedAt == nil { record.startedAt = turn.timestamp }
+            }
+        }
+        for outcome in signals.toolOutcomes {
+            noteAgentCall(outcome.toolUseID) { $0.outcome = AgentCallRecord.Outcome(failed: outcome.failed, at: outcome.at) }
         }
         for id in signals.failedToolIDs where failedSet.insert(id).inserted { failedIDs.append(id) }
         if failedIDs.count > Self.maxRememberedFailures {

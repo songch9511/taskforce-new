@@ -109,6 +109,20 @@ struct SubagentTreePaneTests {
         #expect(pane.selected == nil && pane.tail == nil)
     }
 
+    @Test func rowsWithoutAStatusNeverChangeTheStripStatusOrBringTheStripBack() {
+        var tasks = BackgroundTaskList()
+        tasks.apply(.started(taskID: "p", toolUseID: nil, kind: .agent, name: "Parent", at: at(1), parentID: nil, depth: 1, foreground: false), now: at(1))
+        tasks.apply(.finished(taskID: "p", kind: .agent, status: .done, exitCode: nil, at: at(10)), now: at(10))
+        let pane = model(tasks.adding(subagents: [SubagentMeta(id: "c1", parentID: "p", depth: 2, name: "Nested", requestShape: nil, toolUseID: nil)]))
+        #expect(pane.treeRows.map(\.task.id) == ["p", "c1"] && pane.treeRows[1].task.statusUnknown)
+        #expect(pane.effective.stripStatus == .done, "상태 없는 줄이 띠 상태를 Stopped로 바꾸지 않는다")
+        pane.expand()
+        pane.collapse()
+        #expect(!pane.visible, "열어 본 뒤 도는 일도 막 끝난 일도 없다")
+        pane.tasks = pane.tasks.adding(subagents: [SubagentMeta(id: "c2", parentID: "p", depth: 2, name: "Nested too", requestShape: nil, toolUseID: nil)])
+        #expect(pane.treeRows.count == 3 && !pane.visible, "상태 없는 줄이 늘어도 띠가 다시 생기지 않는다")
+    }
+
     // MARK: 진짜 창에서: 50개 자식 · 갱신 중 스크롤 · 접근성
 
     private func host<V: View>(_ view: V, width: CGFloat = 256, height: CGFloat = 420) -> (NSWindow, NSHostingView<V>) {

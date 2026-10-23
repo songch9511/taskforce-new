@@ -57,6 +57,15 @@ enum SessionViewLine {
         ])
     }
 
+    /// 전경 에이전트가 끝나 돌려준 결과 줄: `toolUseResult.agentId` + `status`(비동기 시작이 아니라서 `isAsync`가 없다). 프롬프트 · 결과 글은 가짜 sentinel이다
+    static func agentFinished(id: String, toolID: String, agentID: String, timestamp: String = "2026-10-22T01:00:40.000Z") -> String {
+        F.json([
+            "type": "user", "sessionId": id, "uuid": UUID().uuidString.lowercased(), "timestamp": timestamp, "isSidechain": false,
+            "message": ["role": "user", "content": [["type": "tool_result", "tool_use_id": toolID, "content": [["type": "text", "text": stdoutSentinel]]]]],
+            "toolUseResult": ["status": "completed", "agentId": agentID, "agentType": "general-purpose", "prompt": promptSentinel, "content": [["type": "text", "text": stdoutSentinel]], "totalDurationMs": 35_000, "totalTokens": 10],
+        ])
+    }
+
     /// 끝 알림의 글 (BG-2): `<task-notification>` 안의 태그들. 요약의 따옴표 안 글은 가짜 sentinel이다
     static func notificationText(taskID: String, toolID: String = "toolu_x", status: String, summary: String) -> String {
         "<task-notification>\n<task-id>\(taskID)</task-id>\n<tool-use-id>\(toolID)</tool-use-id>\n<output-file>/private/tmp/claude-501/\(outputPathSentinel)/tasks/\(taskID).output</output-file>\n<status>\(status)</status>\n<summary>\(summary)</summary>\n</task-notification>"

@@ -66,6 +66,27 @@ struct SubagentTreeRowTests {
         #expect(SubagentTreeLook.accessibilityName(failed, now: t0.addingTimeInterval(30)) == "Agent, Check the tests, Failed")
     }
 
+    @Test func theRowAloneCarriesTheNameTheValueAndTheFoldingActionSoVoiceOverReadsTheNameOnce() throws {
+        #expect(!SubagentTreeLook.chevronIsSpoken, "꺾쇠를 따로 읽어 주면 줄 이름이 두 번 읽힌다")
+        let shown = rows()
+        // 자식이 있는 줄만 접고 펴는 동작 이름이 있다: 기존 승인 문구 "Show all" · "Show less" (새 문구 없음)
+        #expect(SubagentTreeLook.toggleActionName(shown[0]) == SessionViewCopy.showLess && SubagentTreeLook.toggleActionName(shown[0]) == "Show less", "펴져 있으면 접는 동작")
+        #expect(SubagentTreeLook.toggleActionName(shown[1]) == SessionViewCopy.showAll && SubagentTreeLook.toggleActionName(shown[1]) == "Show all", "접혀 있으면 펴는 동작")
+        let all = rows(SubagentTreeExpansion(visibleLevels: 100))
+        let leaf = try #require(all.first { $0.task.id == "c3" })
+        #expect(SubagentTreeLook.toggleActionName(leaf) == nil)
+    }
+
+    @Test func aRowWithoutAStatusSpeaksKindAndNameOnlyAndItsSecondLineHasNoStatusWord() throws {
+        var tasks = list()
+        tasks = tasks.adding(subagents: [SubagentMeta(id: "u9", parentID: "a1", depth: 2, name: "Unknown status", requestShape: nil, toolUseID: nil)])
+        let shown = SubagentTree.rows(for: tasks, expansion: SubagentTreeExpansion(visibleLevels: 100))
+        let row = try #require(shown.first { $0.task.id == "u9" })
+        #expect(row.level == 1 && row.task.statusUnknown)
+        #expect(SubagentTreeLook.accessibilityName(row, now: t0.addingTimeInterval(30)) == "Agent, Unknown status")
+        #expect(row.task.meta(now: t0.addingTimeInterval(30)) == "Agent")
+    }
+
     @Test func theLayoutNumbersAreTheDesignedOnes() {
         #expect(SubagentTreeLook.indentStep == 12 && SubagentTreeLook.maxIndentLevels == 4 && SubagentTreeLook.chevronWidth == 20)
     }

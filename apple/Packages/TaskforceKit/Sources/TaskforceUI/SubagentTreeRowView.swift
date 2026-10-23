@@ -25,6 +25,15 @@ public enum SubagentTreeLook {
         return row.isExpanded ? SessionViewCopy.expanded : SessionViewCopy.collapsed
     }
 
+    /// 꺾쇠를 따로 읽어 주나. 아니다: VoiceOver가 줄 이름을 두 번 읽지 않도록 줄 하나가 이름 · 값("Collapsed" · "Expanded") · 접고 펴는 동작을 모두 갖고, 꺾쇠는 마우스 · 키보드용 단추일 뿐이다
+    public static let chevronIsSpoken = false
+
+    /// 접고 펴는 동작의 이름 (VoiceOver 동작 목록): 기존 승인 문구 "Show all"(접혀 있으면 편다) · "Show less"(펴져 있으면 접는다)를 쓴다. 자식이 없으면 nil
+    public static func toggleActionName(_ row: SubagentTreeRow) -> String? {
+        guard row.hasChildren else { return nil }
+        return row.isExpanded ? SessionViewCopy.showLess : SessionViewCopy.showAll
+    }
+
     /// 둘째 줄 "종류 · 상태 · 시간": 실패한 일의 "Failed" 한 단어만 굵다 (600 `text/primary`, 빨강 없음). 나머지는 부르는 쪽의 글꼴 · 색
     public static func metaText(_ task: TaskforceKit.BackgroundTask, now: Date) -> Text {
         let parts = task.meta(now: now).components(separatedBy: " · ")
@@ -44,7 +53,8 @@ public enum SubagentTreeLook {
 /// 하위 에이전트 트리의 줄 하나 (에이전트 트리 T1): 세션 패널 옆줄이 첫 사용처이고 프로젝트 화면(T3m)이 그대로 다시 쓴다. 펼침 상태는 Kit `SubagentTreeExpansion`이 갖고, 이 줄은 값만 그린다.
 /// - 모양: 옆줄의 일 줄(제목 15/20 · 둘째 줄 "종류 · 상태 · 시간" 13/18)에 단계마다 들여쓰기(12pt, 넷째 단계에서 멈춘다)와 자식이 있는 줄의 꺾쇠 칸을 더했다. 이름은 모델이 쓴 description뿐이다
 /// - 줄을 누르면 `onOpen`(기존 꼬리 보기). 꺾쇠는 `onToggle`(접고 편다)이고 줄과 따로 눌린다. 접힌 분기의 끝에는 그 아래의 "Running n · Failed n"만 (숫자와 기존 낱말뿐: 새 문구 없음)
-/// - 접근성: 줄은 이름만("{종류}, {이름}, {상태}" + 접힌 분기면 끝 글), 꺾쇠는 같은 이름에 접힘/펼침을 **값**("Collapsed" · "Expanded")으로 말한다 (21-5 접근성 표). 실패한 줄의 "Failed"는 굵다 (빨강 없음)
+/// - 접근성: **줄 하나**가 이름("{종류}, {이름}, {상태}" + 접힌 분기면 끝 글; 상태를 모르는 줄은 상태가 없다) · 값 "Collapsed" · "Expanded"(자식이 있을 때, 21-5 접근성 표) · 접고 펴는 동작("Show all" · "Show less")을 모두 갖는다.
+///   꺾쇠는 VoiceOver에서 숨긴다 (이름이 두 번 읽히지 않게). 실패한 줄의 "Failed"는 굵다 (빨강 없음)
 /// - 움직임은 `TFMotion`(꺾쇠 200ms)이고 동작 줄이기에서는 움직이지 않는다
 public struct SubagentTreeRowView: View {
     let row: SubagentTreeRow
@@ -99,7 +109,11 @@ public struct SubagentTreeRowView: View {
             .buttonStyle(.plain)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(SubagentTreeLook.accessibilityName(row, now: now))
+            .accessibilityValue(SubagentTreeLook.accessibilityValue(row) ?? "")
             .accessibilityAddTraits(.isButton)
+            .accessibilityActions {
+                if let name = SubagentTreeLook.toggleActionName(row) { Button(name, action: onToggle) }
+            }
             if row.hasChildren {
                 Button(action: onToggle) {
                     TFIcon.disclosureClosed.image(size: 12)
@@ -111,10 +125,7 @@ public struct SubagentTreeRowView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(SubagentTreeLook.accessibilityName(row, now: now))
-                .accessibilityValue(SubagentTreeLook.accessibilityValue(row) ?? "")
-                .accessibilityAddTraits(.isButton)
+                .accessibilityHidden(!SubagentTreeLook.chevronIsSpoken)
             }
         }
         .background(hovering ? TFColor.bgSelected : Color.clear, in: RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous))

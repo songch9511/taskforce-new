@@ -147,22 +147,28 @@ public struct BackgroundTaskTail: Sendable, CustomStringConvertible, CustomDebug
     /// 세션 폴더의 `subagents/`에서 하위 에이전트 메타(`agent-<id>.meta.json`)를 읽는다 (에이전트 트리 T1).
     /// 길은 (세션 id · 기록 폴더)로 만들고 폴더 사슬 검사는 에이전트 꼬리를 읽을 때와 **같은 함수**다 (`subagentsFolder` → `directory`). 이름은 `agent-<id>.meta.json`(id는 일 id 규칙)만, 이 uid의 일반 파일 4 KiB 이하만,
     /// 가장 새 것부터 256개까지 읽는다 (넘는 이름은 무시). 파일은 `ExternalSessionFileSystem.read`(`O_NOFOLLOW` · fd 소유자 · `F_GETPATH`)로 열고 선언한 칸만 해석한다 (`SubagentMeta.parse`): 깨진 파일은 그 파일만 버린다.
-    /// - since: 앞서 본 `subagents/` 폴더의 바뀐 시각. 길을 믿을 수 있고 폴더가 그대로면 이름도 훑지 않고 `.unchanged` (폴더 안의 새 파일은 폴더의 바뀐 시각을 바꾼다)
-    public func subagents(sessionID: String, cwd: String?, since stamp: Date? = nil) -> SubagentListing {
+    /// - since: 앞서 훑은 자리. 거기 적힌 **프로젝트 폴더를 기억해** `~/.claude/projects`를 다시 나열하지 않고(없어졌으면 다시 찾는다) 그 아래 길을 모두 다시 확인하며, 길을 믿을 수 있고 `subagents/` 폴더의 바뀐 시각이 그대로면 이름도 훑지 않고 `.unchanged` (폴더 안의 새 파일은 폴더의 바뀐 시각을 바꾼다).
+    ///   폴더 항목이 `SubagentMeta.maxScanned`개를 넘으면 앞의 그만큼만 보고 자리에 `overflowed`를 남긴다 (읽는 순서는 정해져 있지 않아 가장 새 에이전트가 빠졌을 수 있다)
+    public func subagents(sessionID: String, cwd: String?, since cursor: SubagentCursor? = nil) -> SubagentListing {
         guard ExternalSessionRules.isCanonicalUUID(sessionID) else { return .unreadable }
         let folder: String
         let modified: Date
-        switch subagentsFolder(sessionID: sessionID, cwd: cwd) {
+        let project: String
+        switch subagentsFolder(sessionID: sessionID, cwd: cwd, remembered: cursor?.project) {
         case .failed(.missing): return .missing
         case .failed: return .unreadable
-        case .folder(let path, let entry):
+        case .folder(let path, let entry, let name):
             folder = path
             modified = entry.modified
+            project = name
         }
-        if let stamp, stamp == modified { return .unchanged }
+        if let cursor, cursor.stamp == modified { return .unchanged }
         let entries: [ExternalSessionFileSystem.Entry]
-        switch fileSystem.list(folder, SubagentMeta.maxScanned) {
-        case .entries(let found): entries = found
+        let overflowed: Bool
+        switch fileSystem.list(folder, SubagentMeta.maxScanned + 1) {
+        case .entries(let found):
+            overflowed = found.count > SubagentMeta.maxScanned
+            entries = Array(found.prefix(SubagentMeta.maxScanned))
         case .missing: return .missing
         case .failed: return .unreadable
         }
@@ -175,7 +181,7 @@ public struct BackgroundTaskTail: Sendable, CustomStringConvertible, CustomDebug
             guard let data = fileSystem.read(folder + "/agent-" + candidate.id + ".meta.json", 0, Int(candidate.entry.size)) else { return nil }
             return SubagentMeta.parse(data, id: candidate.id)
         }
-        return .metas(metas, stamp: modified)
+        return .metas(metas, cursor: SubagentCursor(project: project, stamp: modified, overflowed: overflowed))
     }
 
     /// 명령 출력의 창 크기 (0 이하는 기본, 상한 `maxTailBytes`)
@@ -202,6 +208,16 @@ public struct BackgroundTaskTail: Sendable, CustomStringConvertible, CustomDebug
         case found(String)
         case missing
         case unreadable
+    }
+
+    /// 앞서 찾은 프로젝트 디렉터리가 아직 그 세션을 갖고 있나: 갖고 있으면 `.found`, 그 폴더가 믿을 수 없게 됐으면 `.unreadable`, 이름이 규칙 밖이거나 폴더 · 세션이 없어졌으면 nil (다시 찾는다)
+    private func stillHolds(_ name: String, in base: String, sessionID: String) -> Located? {
+        guard ExternalSessionReadAllowList.isProjectDirectory(name) else { return nil }
+        switch directory(base + "/" + name) {
+        case .ok: return fileSystem.lstat(base + "/" + name + "/" + sessionID) != nil ? .found(name) : nil
+        case .bad: return .unreadable
+        case .missing: return nil
+        }
     }
 
     private func locate(in base: String, sessionID: String, cwd: String?) -> Located {
@@ -289,11 +305,12 @@ public struct BackgroundTaskTail: Sendable, CustomStringConvertible, CustomDebug
 
     /// 세션 폴더의 `subagents/` 폴더까지의 길을 확인한 결과 (에이전트 꼬리와 메타 훑기가 같이 쓴다)
     private enum FolderFound {
-        case folder(path: String, entry: ExternalSessionFileSystem.Entry)
+        case folder(path: String, entry: ExternalSessionFileSystem.Entry, project: String)
         case failed(Result)
     }
 
-    private func subagentsFolder(sessionID: String, cwd: String?) -> FolderFound {
+    /// - remembered: 앞서 찾은 프로젝트 디렉터리 이름. 아직 그 세션을 갖고 있으면 `projects`를 나열하지 않고 그 아래 길만 확인한다 (이름 규칙 밖이거나 세션이 없어졌으면 처음처럼 찾는다)
+    private func subagentsFolder(sessionID: String, cwd: String?, remembered: String? = nil) -> FolderFound {
         let fs = fileSystem
         guard let rootEntry = fs.lstat(claudeDirectory), rootEntry.kind == .directory || rootEntry.kind == .symlink, let root = fs.realpath(claudeDirectory),
               let realRoot = fs.lstat(root), realRoot.kind == .directory, realRoot.owner == fs.userID, !realRoot.othersCanWrite else { return .failed(.missing) }
@@ -304,7 +321,7 @@ public struct BackgroundTaskTail: Sendable, CustomStringConvertible, CustomDebug
         case .ok: break
         }
         let project: String
-        switch locate(in: projects, sessionID: sessionID, cwd: cwd) {
+        switch remembered.flatMap({ stillHolds($0, in: projects, sessionID: sessionID) }) ?? locate(in: projects, sessionID: sessionID, cwd: cwd) {
         case .found(let name): project = name
         case .missing: return .failed(.missing)
         case .unreadable: return .failed(.unreadable)
@@ -318,14 +335,14 @@ public struct BackgroundTaskTail: Sendable, CustomStringConvertible, CustomDebug
             }
         }
         guard let entry = fs.lstat(sessionFolder + "/subagents") else { return .failed(.missing) }
-        return .folder(path: sessionFolder + "/subagents", entry: entry)
+        return .folder(path: sessionFolder + "/subagents", entry: entry, project: project)
     }
 
     private func agentFile(sessionID: String, cwd: String?, agentID: String) -> Found {
         let folder: String
         switch subagentsFolder(sessionID: sessionID, cwd: cwd) {
         case .failed(let result): return .failed(result)
-        case .folder(let path, _): folder = path
+        case .folder(let path, _, _): folder = path
         }
         let path = folder + "/agent-" + agentID + ".jsonl"
         let (check, entry) = regularFile(path)
