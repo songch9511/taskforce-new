@@ -308,6 +308,7 @@ struct SessionPanelView: View {
         let localTurns = timeline.steps
         SessionEntriesView(
             entries: timeline.entries, steps: timeline.data.steps, state: presentation.steps,
+            pinnedToBottom: presentation.scrollPinned,
             loadDetail: { stepID in
                 guard let local, let turn = localTurns[stepID] else { return nil }
                 return await local.detail(of: turn)
