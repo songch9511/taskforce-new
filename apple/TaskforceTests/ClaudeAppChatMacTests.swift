@@ -315,8 +315,10 @@ struct ClaudeAppChatMacTests {
 
     @Test func onlyAMessageFromARelayThisRunLaunchedIsReceivedViaTaskforceEverythingElseIsFromAnotherSession() throws {
         let h = try harness()
-        h.relay.pids.set([4001])
-        func line(_ peer: ClaudeAppPeer) -> String? { h.service.peerLine(for: ClaudeAppTurn(id: "t", kind: .peer("x", peer)), in: Sessions.id(1))?.text }
+        let launched = Date().addingTimeInterval(-600)
+        h.relay.pids.set([4001], at: launched)
+        // 글의 시각은 중계가 떠 있던 때여야 우리 것이다 (OA PR-D3 재검토: pid는 운영체제가 다시 쓴다)
+        func line(_ peer: ClaudeAppPeer, at time: Date? = launched.addingTimeInterval(60)) -> String? { h.service.peerLine(for: ClaudeAppTurn(id: "t", kind: .peer("x", peer), timestamp: time), in: Sessions.id(1))?.text }
         let ours = ClaudeAppPeer(plugin: "tf-relay", verifiedPeerPID: 4001, messageID: "m1")
         #expect(line(ours) == "Received · via Taskforce")
         for foreign in [
@@ -326,8 +328,11 @@ struct ClaudeAppChatMacTests {
         ] {
             #expect(line(foreign) == "From another session", "이름만 같은 것 · 이 실행이 띄운 적 없는 pid · 증거 없는 것은 우리 사용자의 글이 아니다")
         }
-        h.relay.pids.set([])
-        #expect(line(ours) == "Received · via Taskforce", "중계가 2분 유휴로 끝나도 이 실행이 띄운 중계의 글은 우리 것이다 (OA PR-D3 검토 P2-4)")
+        #expect(line(ours, at: launched.addingTimeInterval(-60)) == "From another session", "중계를 띄우기 전의 글은 같은 pid를 쓰던 다른 프로세스의 것일 수 있다")
+        #expect(line(ours, at: nil) == "From another session", "시각이 없으면 우리 것이 아니다")
+        h.relay.pids.set([], at: launched.addingTimeInterval(300))
+        #expect(line(ours) == "Received · via Taskforce", "중계가 2분 유휴로 끝나도 그동안 쓴 글은 우리 것이다 (OA PR-D3 검토 P2-4)")
+        #expect(line(ours, at: launched.addingTimeInterval(500)) == "From another session", "끝난 뒤의 글은 같은 pid라도 우리 것이 아니다")
         #expect(h.service.peerLine(for: ClaudeAppTurn(id: "a", kind: .assistant("hi")), in: Sessions.id(1)) == nil)
     }
 

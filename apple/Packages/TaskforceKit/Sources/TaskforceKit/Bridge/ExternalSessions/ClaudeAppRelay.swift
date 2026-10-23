@@ -24,12 +24,26 @@ public protocol ClaudeAppRelayLauncher: Sendable {
 }
 
 /// 중계 프로세스의 pid (레일 · "On this Mac" 목록 · 다른 writer 확인이 Taskforce 자신의 프로세스로 빼는 값, 계약 25.4.1 "자기 제외"). 동기로 읽는다
-/// 읽는 쪽이 화면이면 pid가 바뀔 때 다시 그려지도록 관찰할 수 있다 (`Observable`: 읽을 때 `access`, 바꿀 때 `withMutation`)
+/// 읽는 쪽이 화면이면 pid가 바뀔 때 다시 그려지도록 관찰할 수 있다 (`Observable`: 읽을 때 `access`, 바꿀 때 `withMutation`).
+/// 바꾸는 곳은 중계 actor다(메인이 아니다): 관찰 알림은 그 스레드에서 나가고 화면은 알림을 받으면 메인에서 다시 읽는다. 메인으로 옮겨 쓰지 않는다 — 레일 폴러 · 훑기 · 다른 writer 확인이 동기로 읽는 `current`가
+/// 메인이 한 박자 늦게 쓰는 만큼 낡은 값을 읽게 된다 (OA PR-D3 재검토 P3-R4: 한계로 둔다)
 public final class ClaudeAppRelayPIDs: @unchecked Sendable, Observable {
     private let lock = NSLock()
     private let registrar = ObservationRegistrar()
     private var value: Set<Int32> = []
-    private var ever: Set<Int32> = []
+    /// pid마다 **띄운 때 ~ 끝난 때** (끝나지 않았으면 `to`가 nil). 같은 pid가 여러 번 있을 수 있다 (운영체제가 pid를 다시 쓴다)
+    private var windows: [Window] = []
+
+    private struct Window {
+        let pid: Int32
+        let from: Date
+        var to: Date?
+    }
+
+    /// 기억하는 시기의 상한: 넘으면 오래된 것부터 잊는다 (잊은 시기의 글은 "From another session"이다: 닫힌 쪽)
+    private static let maxWindows = 256
+    /// 끝난 시각 뒤로도 같은 중계의 글로 받아 주는 시간 (초): 받는 쪽 기록에 적히는 시각이 우리가 끝낸 시각과 조금 어긋날 수 있다
+    static let endGrace: TimeInterval = 2
 
     public init() {}
 
@@ -42,19 +56,36 @@ public final class ClaudeAppRelayPIDs: @unchecked Sendable, Observable {
         return lock.withLock { value }
     }
 
-    /// 이 앱 실행이 띄운 모든 중계의 pid (끝난 것 포함): 앞서 띄운 중계가 보낸 기록의 줄도 우리 것으로 알아본다 (OA PR-D3 검토 P2-4).
-    /// 이 실행 안에서만 믿는다 — 다음 실행에는 없다 (앞 실행의 중계 · 다른 프로세스는 우리 사용자의 글이라는 증거가 없다)
+    /// 이 앱 실행이 띄운 모든 중계의 pid (끝난 것 포함). 글을 알아볼 때는 `ran(_:at:)`을 쓴다 — pid만으로는 부족하다
     public var launched: Set<Int32> {
         registrar.access(self, keyPath: \.launched)
-        return lock.withLock { ever }
+        return lock.withLock { Set(windows.map(\.pid)) }
     }
 
-    func set(_ pids: Set<Int32>) {
+    /// `pid`가 `time`에 **우리 중계로 떠 있었나**: 앞서 띄운 중계가 보낸 기록의 줄도 우리 것으로 알아본다 (OA PR-D3 검토 P2-4).
+    /// pid는 운영체제가 다시 쓴다: 중계가 끝난 뒤 같은 pid를 받은 다른 프로세스가 `tf-relay`를 흉내 내 보낸 글을 우리 것으로 보면 안 되므로 **띄운 때 ~ 끝난 때(+ `endGrace`)** 안의 글만 우리 것이다.
+    /// 글의 시각이 없으면 우리 것이 아니다. 이 실행 안에서만 믿는다 — 다음 실행에는 없다 (앞 실행의 중계 · 다른 프로세스는 우리 사용자의 글이라는 증거가 없다)
+    public func ran(_ pid: Int32, at time: Date?) -> Bool {
+        registrar.access(self, keyPath: \.launched)
+        guard let time else { return false }
+        return lock.withLock {
+            windows.contains { window in
+                guard window.pid == pid, time >= window.from else { return false }
+                guard let end = window.to else { return true }
+                return time <= end.addingTimeInterval(Self.endGrace)
+            }
+        }
+    }
+
+    /// 지금 떠 있는 중계의 pid를 바꾼다: 빠진 pid는 이 시각에 끝난 것이고, 새 pid는 이 시각에 뜬 것이다
+    func set(_ pids: Set<Int32>, at time: Date = Date()) {
         registrar.withMutation(of: self, keyPath: \.current) {
             registrar.withMutation(of: self, keyPath: \.launched) {
                 lock.withLock {
+                    for index in windows.indices where windows[index].to == nil && !pids.contains(windows[index].pid) { windows[index].to = time }
+                    for pid in pids.subtracting(value) { windows.append(Window(pid: pid, from: time, to: nil)) }
+                    if windows.count > Self.maxWindows { windows.removeFirst(windows.count - Self.maxWindows) }
                     value = pids
-                    ever.formUnion(pids)
                 }
             }
         }
@@ -138,6 +169,7 @@ public actor ClaudeAppRelay {
     private let makeNonce: @Sendable () -> String
     private let sleep: Sleep
     private let log: any BridgeLogSink
+    private let now: @Sendable () -> Date
 
     private var process: (any ClaudeAppRelayProcess)?
     private var phase = Phase.stopped
@@ -158,9 +190,11 @@ public actor ClaudeAppRelay {
 
     public init(
         configuration: Configuration, launcher: any ClaudeAppRelayLauncher, fileSystem: ExternalSessionFileSystem = .live, makeNonce: @escaping @Sendable () -> String = ClaudeAppRelay.randomNonce,
-        sleep: @escaping Sleep = { try? await Task.sleep(for: .seconds($0)) }, log: any BridgeLogSink = NoBridgeLog(), pids: ClaudeAppRelayPIDs = ClaudeAppRelayPIDs()
+        sleep: @escaping Sleep = { try? await Task.sleep(for: .seconds($0)) }, log: any BridgeLogSink = NoBridgeLog(), pids: ClaudeAppRelayPIDs = ClaudeAppRelayPIDs(),
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.pids = pids
+        self.now = now
         self.configuration = configuration
         self.launcher = launcher
         self.fileSystem = fileSystem
@@ -302,7 +336,7 @@ public actor ClaudeAppRelay {
         let started = generation
         process = launched
         phase = .ready
-        pids.set([launched.pid])
+        pids.set([launched.pid], at: now())
         reader = Task { [weak self] in
             for await line in launched.lines { await self?.consume(line, generation: started) }
             await self?.ended(generation: started)
@@ -401,7 +435,7 @@ public actor ClaudeAppRelay {
         let dead = process
         process = nil
         phase = .stopped
-        pids.set([])
+        pids.set([], at: now())
         cancelIdle()
         // 스스로 끝난 프로세스도 거둔다 (지킴이 · 보고 fd를 남기지 않는다)
         await dead?.stop()
@@ -412,7 +446,7 @@ public actor ClaudeAppRelay {
         process = nil
         phase = .stopped
         generation += 1
-        pids.set([])
+        pids.set([], at: now())
         cancelIdle()
         reader?.cancel()
         reader = nil

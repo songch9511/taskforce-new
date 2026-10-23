@@ -110,6 +110,35 @@ extension ExternalSessionSuites {
             }
         }
 
+        /// OA PR-D3 재검토 P3-a: 데스크톱에서 친 슬래시 명령(`<command-name>` · `<local-command-…>`로 시작하는 `user` 글)과 메타(`isMeta`) 줄도 사용자가 우리 교환에 끼어든 자리다 → 글 없는 경계.
+        /// 도구 결과만 있는 `user` 줄은 턴 안의 평범한 줄이다 (경계가 아니다)
+        @Test func aDesktopSlashCommandItsOutputAndAMetaLineEachBecomeATextlessBoundaryWhileAToolResultLineDoesNot() throws {
+            try withHome { home in
+                let command = "<command-name>/compact</command-name><command-message>SENTINEL-COMMAND</command-message>"
+                let output = "<local-command-stdout>SENTINEL-COMMAND-OUTPUT</local-command-stdout>"
+                let meta = "SENTINEL-META-LINE"
+                let lines = [
+                    peerUser(msg: "m1", body: "from relay"),
+                    L.assistant(id: id, text: "answer one"),
+                    F.json(["type": "user", "sessionId": id, "uuid": UUID().uuidString.lowercased(), "message": ["role": "user", "content": command]]),
+                    L.assistant(id: id, text: "answer two"),
+                    F.json(["type": "user", "sessionId": id, "uuid": UUID().uuidString.lowercased(), "message": ["role": "user", "content": output]]),
+                    L.assistant(id: id, text: "answer three"),
+                    F.json(["type": "user", "sessionId": id, "uuid": UUID().uuidString.lowercased(), "isMeta": true, "message": ["role": "user", "content": meta]]),
+                    L.assistant(id: id, text: "answer four"),
+                    F.json(["type": "user", "sessionId": id, "uuid": UUID().uuidString.lowercased(), "message": ["role": "user", "content": [["type": "tool_result", "tool_use_id": "toolu_1", "content": "ok"]]]]),
+                    L.assistant(id: id, text: "answer five"),
+                ]
+                try home.transcript(directory: directory, id: id, lines: lines)
+                guard let page = page(reader(home).open(sessionID: id, cwd: cwd)) else { return }
+                #expect(kinds(page.turns) == ["peer", "assistant", "boundary", "assistant", "boundary", "assistant", "boundary", "assistant", "assistant"])
+                var dump = ""
+                Swift.dump(page, to: &dump)
+                let all = dump + String(reflecting: page.turns) + String(describing: page.cursor)
+                for sentinel in ["SENTINEL-COMMAND", "SENTINEL-COMMAND-OUTPUT", meta] { #expect(!all.contains(sentinel), Comment(rawValue: "경계 줄에는 글이 없다: \(sentinel)")) }
+            }
+        }
+
         @MainActor
         @Test func aBoundaryNeverReachesTheConversationTheWindowShows() async throws {
             let turns = [
@@ -167,8 +196,8 @@ extension ExternalSessionSuites {
                     .user("Please list the files"), .assistant("I will look."), .tool(name: "Bash", description: "List files"), .assistant("Here are the files."),
                     .peer("Please also run the tests", relay), .assistant("Running the tests."),
                     .peer("And summarize", ClaudeAppPeer(plugin: "tf-relay", verifiedPeerPID: 4321, messageID: "00000000-0000-4000-8000-0000000000b2")),
-                    .tool(name: "Read", description: nil), .boundary, .assistant("All done."),
-                ], "peer가 아닌 `queued_command`는 글 없는 경계로만 남는다 (OA PR-D3 검토 P2-1)")
+                    .tool(name: "Read", description: nil), .boundary, .boundary, .assistant("All done."),
+                ], "peer가 아닌 `queued_command`와 peer가 아닌 메타 줄(`isMeta`)은 글 없는 경계로만 남는다 (OA PR-D3 검토 P2-1 · 재검토 P3-a)")
                 #expect(!page.hasEarlier)
                 #expect(page.skippedLines == 0)
                 #expect(Set(page.turns.map(\.id)).count == page.turns.count, "줄 위치로 만든 id는 겹치지 않는다")
@@ -549,7 +578,7 @@ extension ExternalSessionSuites {
                 for startCwd in [nil, "/Users/tester/proj"] as [String?] {
                     let recording = RecordingFileSystem()
                     guard let page = page(reader(home, fileSystem: recording.fileSystem).open(sessionID: id, cwd: startCwd)) else { return }
-                    #expect(page.turns.count == 10, "\(startCwd ?? "nil"): 대화 줄 9 + 글 없는 경계 1")
+                    #expect(page.turns.count == 11, "\(startCwd ?? "nil"): 대화 줄 9 + 글 없는 경계 2 (`queued_command` · 메타 줄)")
                     #expect(Set(recording.reads.map(\.path)) == [path])
                     #expect(Set(recording.listed).isSubset(of: [home.projects]), "나열은 projects 한 곳")
                 }

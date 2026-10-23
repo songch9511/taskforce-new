@@ -11,10 +11,10 @@ import Foundation
 ///   그 밖 모든 종류 — `attachment`의 다른 종류(`session_context`의 계정 이메일 · `credential_org` · `prompt_snapshot`), `api-request*`(시스템 프롬프트), 시스템 · 계정 줄 — 은 **대화로 만들지 않는다**:
 ///   `"user"` · `"assistant"` · `"queued_command"` 글자가 하나도 없는 줄은 디코딩조차 하지 않고, 글자가 있는 줄은(계정 · 첨부 줄에 우연히 있을 수도 있다) 디코딩하되 **선언한 칸만** 꺼낸다
 ///   (`thinking` · 도구 입력 · 도구 결과 · 첨부 칸은 선언하지 않아 값으로 남지 않는다. 디코딩은 그 줄을 잠깐 메모리에 둔다)
-/// - 건너뛰는 줄: 서브에이전트(`isSidechain`) · 다른 세션 id를 단 줄 · 메타(`isMeta`, peer가 아니면) ·
-///   Claude Code 표시 줄(`<command-name>` 등으로 시작하는 `user` 글 · `isCompactSummary` · `isVisibleInTranscriptOnly`)
-/// - **글 없는 경계(`ClaudeAppTurn.Kind.boundary`)로만 남기는 줄**: `origin`이 있는데 peer가 아닌 `user` 줄(훅 · 작업 알림 등) · peer가 아닌 `queued_command`(턴 도중 데스크톱에서 친 말 · 끼어든 작업 알림).
-///   글은 읽지 않는다. 이 줄 뒤의 답은 우리가 보낸 말에 대한 답이 아니므로 교환을 끝내는 표시일 뿐이다 (OA PR-D3 검토 P2-1, DT11)
+/// - 건너뛰는 줄: 서브에이전트(`isSidechain`) · 다른 세션 id를 단 줄 · `isCompactSummary` · `isVisibleInTranscriptOnly`
+/// - **글 없는 경계(`ClaudeAppTurn.Kind.boundary`)로만 남기는 줄**: `origin`이 있는데 peer가 아닌 `user` 줄(훅 · 작업 알림 등) · peer가 아닌 `queued_command`(턴 도중 데스크톱에서 친 말 · 끼어든 작업 알림) ·
+///   Claude Code 표시 줄(`<command-name>` 등으로 시작하는 `user` 글: 데스크톱에서 친 슬래시 명령과 그 출력) · 메타(`isMeta`, peer가 아니면).
+///   글은 읽지 않는다. 이 줄 뒤의 답은 우리가 보낸 말에 대한 답이 아니므로 교환을 끝내는 표시일 뿐이다 (OA PR-D3 검토 P2-1 · 재검토 P3-a, DT11)
 /// - peer 줄의 글은 받는 쪽이 감싼 글(`message.content`, "not typed by your user …")이 아니라 보낸 글 `origin.body`다. 같은 (`msg_id`, 검증된 보낸 pid, 플러그인)은 한 번만 (`user`와 `queued_command` 두 모양으로 기록돼도). `msg_id`만 같은 다른 보낸이의 메시지는 가리지 않는다
 ///
 /// 상한: 한 줄 1 MiB(넘으면 그 줄을 통째로 건너뛴다) · 한 번에 읽는 창 2 MiB · 처음 열면 꼬리부터 마지막 200개 · 이전 쪽은 **거슬러 간 거리**가 총량 16 MiB를 넘지 않게 · 글 한 칸 32 KiB.
@@ -582,7 +582,12 @@ public struct ClaudeAppTranscriptReader: Sendable {
             )
         }
         func user(_ raw: String) {
-            guard let (kept, cut) = plain(raw), !Self.markupPrefixes.contains(where: kept.hasPrefix) else { return }
+            guard let (kept, cut) = plain(raw) else { return }
+            // 슬래시 명령 · 로컬 명령 출력: 데스크톱에서 친 것이지만 대화 글이 아니다 → 글은 버리고 경계만 남긴다 (OA PR-D3 재검토 P3-a)
+            if Self.markupPrefixes.contains(where: kept.hasPrefix) {
+                add(.boundary)
+                return
+            }
             add(.user(kept), truncated: cut)
         }
         func peer(_ origin: Origin) {
@@ -604,7 +609,10 @@ public struct ClaudeAppTranscriptReader: Sendable {
                    let event = BackgroundTaskText.notification(text, at: time) { signals.background.append(event) }
                 // 글이 없는 경계: 이 줄 뒤의 답은 훅 · 작업 알림에 대한 것이지 우리가 보낸 말에 대한 것이 아니다 (OA PR-D3 검토 P2-1, DT11)
                 add(.boundary)
-            } else if record.isMeta != true, let content = record.message?.content {
+            } else if record.isMeta == true {
+                // 메타 줄(Claude Code가 넣은 안내 · 펼친 명령 등): peer가 아니다. 글은 읽지 않는다. 사용자가 끼어든 자리일 수 있어 경계만 남긴다 (OA PR-D3 재검토 P3-a)
+                add(.boundary)
+            } else if let content = record.message?.content {
                 switch content {
                 case .text(let text):
                     user(text)

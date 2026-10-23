@@ -169,14 +169,14 @@ final class ChatRig {
         let mod = try ClaudeAppModFixture.copy()
         self.mod = mod
         let relaySleeper = relaySleeper
+        let clock = clock
         let relay = ClaudeAppRelay(
             configuration: ClaudeAppRelay.Configuration(modDirectory: mod, workDirectory: "/private/tmp/tf-relay-work"), launcher: launcher, makeNonce: { "0123456789abcdef0123456789abcdef" },
-            sleep: { await relaySleeper.sleep($0) }
+            sleep: { await relaySleeper.sleep($0) }, now: { clock.now }
         )
         self.relay = relay
         if !saving { status.queue(.failure(.server(status: 404, code: .notFound, message: ""))) }
         let saverSleeper = saverSleeper
-        let clock = clock
         let saver = ClaudeAppChatSaver(status: status.status, put: put.put, now: { clock.now }, sleep: { await saverSleeper.sleep($0) }, log: log)
         self.saver = saver
         let world = world
@@ -749,6 +749,33 @@ extension ExternalSessionSuites {
             await rig.cleanup()
         }
 
+        /// OA PR-D3 재검토 security P3-c: 쓰기 직전 확인(`recheck`) 자체가 계정 세대를 본다. 로그아웃이 중계를 끝내기 전이라도(세대가 먼저 오른다) 확인이 거짓이어야 글이 나가지 않는다.
+        /// (중계가 이미 끝났는지는 따로 본다: 이 시험은 확인 클로저 하나만 부른다)
+        @Test func theRecheckBeforeTheWriteFailsOnceTheAccountEpochChangedAndDoesNotEvenReadTheTarget() async throws {
+            let rig = try await ChatRig()
+            let original = rig.world.facts
+            let check = rig.service.recheck(sessionID: sid, original: original, epoch: 0)
+            #expect(await check(), "아무것도 달라지지 않았으면 통과한다 (이 확인이 없으면 아래 '거짓'은 뜻이 없다)")
+            let reads = rig.world.factsCalls
+            await rig.service.accountLeft()
+            #expect(await check() == false, "계정이 떠났다: 글을 쓰지 않는다")
+            #expect(rig.world.factsCalls == reads, "떠난 계정을 위해 대상을 다시 읽지도 않는다")
+            await rig.cleanup()
+        }
+
+        @Test func theRecheckAlsoFailsWhenTheAccountLeavesWhileTheTargetIsBeingRead() async throws {
+            let rig = try await ChatRig()
+            let check = rig.service.recheck(sessionID: sid, original: rig.world.facts, epoch: 0)
+            let reads = rig.world.factsCalls
+            rig.world.holdFacts()
+            let running = Task { await check() }
+            #expect(await relayEventually { rig.world.factsCalls == reads + 1 }, "대상을 읽는 중이다")
+            await rig.service.accountLeft()
+            rig.world.releaseFacts()
+            #expect(await running.value == false, "읽는 동안 계정이 떠났다: 읽은 값이 같아도 쓰지 않는다")
+            await rig.cleanup()
+        }
+
         @Test func afterTheQuitShutdownTheRelayIsNeverStartedAgain() async throws {
             let rig = try await ChatRig()
             let chat = rig.service.chat(for: sid)
@@ -774,13 +801,14 @@ extension ExternalSessionSuites {
             rig.transcript.append(rig.relayLine("ask"))
             await rig.service.tick()
             let ours = rig.relayLine("ask")
+            // 이 보내기로 확인된 줄이 아닌 앞선 줄(다른 id)도 pid로 알아본다: 중계(4001)가 떠 있던 동안 쓴 글이다
+            let earlier = rig.relayLine("an earlier message", id: "L77", messageID: "m77", pid: 4001)
+            rig.clock.advance(30)
             await rig.relay.shutdown()
             #expect(rig.service.relayPIDs.current.isEmpty)
             let received = MessageDeliveryLine(strong: nil, text: "Received · via Taskforce")
             let foreign = MessageDeliveryLine(strong: nil, text: "From another session")
             #expect(rig.service.peerLine(for: ours, in: sid) == received, "중계가 멈춘 뒤에도 이 실행이 띄운 중계가 보낸 글이다")
-            // 이 보내기로 확인된 줄이 아닌 앞선 줄(다른 id)도 pid만으로 알아본다: 이 실행이 띄운 중계(4001)의 글이다
-            let earlier = rig.relayLine("an earlier message", id: "L77", messageID: "m77", pid: 4001)
             #expect(rig.service.peerLine(for: earlier, in: sid) == received, "pid로 알아본다: 지금 떠 있는 중계가 아니어도 이 실행이 띄운 pid다")
             // 다른 중계(pid 4002)가 떠도 앞 중계의 글은 그대로
             await send(rig.service.chat(for: ChatRigIDs.other), "second")
@@ -801,6 +829,76 @@ extension ExternalSessionSuites {
             pids.set([])
             pids.set([4002])
             #expect(pids.current == [4002] && pids.launched == [4001, 4002], "이 실행이 띄운 모든 중계 pid를 기억한다")
+        }
+
+        // MARK: pid가 우리 것이던 때 (OA PR-D3 재검토 security P3-new-1 · code P3-R3)
+
+        /// pid는 운영체제가 다시 쓴다: 우리 중계가 끝난 뒤 같은 pid를 받은 다른 프로세스가 `tf-relay`를 흉내 내 보낸 글을 우리 것으로 보면 안 된다.
+        /// 그래서 pid마다 **띄운 때 ~ 끝난 때**를 기억하고, 글의 시각이 그 안에 있을 때만 우리 것이다. 시각이 없으면 우리 것이 아니다
+        @Test func aPIDCountsAsOurRelayOnlyForTheTimeItRanAndALineWithoutATimeNeverCounts() {
+            let pids = ClaudeAppRelayPIDs()
+            let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+            func at(_ seconds: TimeInterval) -> Date { t0.addingTimeInterval(seconds) }
+            pids.set([4001], at: t0)
+            #expect(pids.ran(4001, at: at(30)), "떠 있는 동안")
+            #expect(pids.ran(4001, at: at(10_000)), "아직 떠 있다: 끝이 열려 있다")
+            #expect(!pids.ran(4001, at: at(-1)), "띄우기 전의 글은 우리 중계의 글이 아니다 (앞 실행 · 다른 프로세스)")
+            #expect(!pids.ran(4001, at: nil), "시각이 없으면 우리 것이 아니다")
+            #expect(!pids.ran(9999, at: at(30)), "띄운 적 없는 pid")
+            pids.set([], at: at(100))
+            #expect(pids.ran(4001, at: at(100)) && pids.ran(4001, at: at(101)), "끝난 순간 · 직후 1초는 같은 중계의 글이다 (기록에 적히는 시각의 어긋남)")
+            #expect(!pids.ran(4001, at: at(110)), "끝난 뒤의 글은 같은 pid라도 우리 것이 아니다")
+            pids.set([4001], at: at(500))
+            #expect(!pids.ran(4001, at: at(300)), "두 번 떠 있던 사이는 아니다")
+            #expect(pids.ran(4001, at: at(501)) && pids.ran(4001, at: at(50)), "각 시기는 따로 센다")
+            pids.set([4001, 4002], at: at(600))
+            #expect(pids.ran(4001, at: at(550)) && !pids.ran(4002, at: at(550)) && pids.ran(4002, at: at(601)), "이미 떠 있는 pid의 시기는 그대로, 새 pid만 새로 센다")
+        }
+
+        @Test func theRelayRecordsWhenEachOfItsProcessesRanFromItsOwnClock() async throws {
+            let clock = ClaudeAppClock()
+            let launcher = FakeRelayLauncher()
+            let sleeper = ClaudeAppManualSleeper()
+            let mod = try ClaudeAppModFixture.copy()
+            defer { ClaudeAppModFixture.cleanup(mod) }
+            let relay = ClaudeAppRelay(
+                configuration: ClaudeAppRelay.Configuration(modDirectory: mod, workDirectory: "/private/tmp/tf-relay-work"), launcher: launcher, makeNonce: { "0123456789abcdef0123456789abcdef" },
+                sleep: { await sleeper.sleep($0) }, now: { clock.now }
+            )
+            let launchedAt = clock.now
+            #expect(await relay.send(sessionID: sid, text: "one") == .delivered(relayPID: 4001))
+            clock.advance(60)
+            await relay.shutdown()
+            let stoppedAt = clock.now
+            clock.advance(600)
+            #expect(relay.pids.ran(4001, at: launchedAt.addingTimeInterval(30)), "떠 있던 동안")
+            #expect(!relay.pids.ran(4001, at: launchedAt.addingTimeInterval(-5)), "띄우기 전")
+            #expect(!relay.pids.ran(4001, at: stoppedAt.addingTimeInterval(20)), "끝난 뒤")
+        }
+
+        @Test func aLineFromTheSamePIDOutsideTheTimeTheRelayRanOrWithoutATimeIsFromAnotherSessionUnlessThisSendConfirmedIt() async throws {
+            let rig = try await ChatRig()
+            let chat = rig.service.chat(for: sid)
+            await send(chat, "ask")
+            rig.clock.advance(100)
+            let during = rig.relayLine("during", id: "L5", messageID: "m5", pid: 4001, at: -50)
+            let beforeLaunch = rig.relayLine("before", id: "L6", messageID: "m6", pid: 4001, at: -150)
+            await rig.relay.shutdown()
+            rig.clock.advance(60)
+            let afterStop = rig.relayLine("after", id: "L7", messageID: "m7", pid: 4001, at: -10)
+            let noTime = ClaudeAppTurn(id: "L8", kind: .peer("x", ClaudeAppPeer(plugin: "tf-relay", verifiedPeerPID: 4001, messageID: "m8")), timestamp: nil)
+            let received = MessageDeliveryLine(strong: nil, text: "Received · via Taskforce")
+            let foreign = MessageDeliveryLine(strong: nil, text: "From another session")
+            #expect(rig.service.peerLine(for: during, in: sid) == received, "중계가 떠 있던 동안의 글")
+            #expect(rig.service.peerLine(for: beforeLaunch, in: sid) == foreign, "띄우기 전의 글: 같은 pid를 쓰던 다른 프로세스일 수 있다")
+            #expect(rig.service.peerLine(for: afterStop, in: sid) == foreign, "끝난 뒤의 글: 같은 pid를 받은 다른 프로세스일 수 있다")
+            #expect(rig.service.peerLine(for: noTime, in: sid) == foreign, "시각이 없으면 우리 것이 아니다")
+            rig.transcript.append(rig.relayLine("ask", id: "Lmatched", messageID: "m-ok", pid: 4001, at: -120))
+            await rig.service.tick()
+            let matched = ClaudeAppTurn(id: "Lmatched", kind: .peer("ask", ClaudeAppPeer(plugin: nil, verifiedPeerPID: nil, messageID: nil)), timestamp: nil)
+            #expect(chat.deliveries.first?.matchedTurnID == "Lmatched")
+            #expect(rig.service.peerLine(for: matched, in: sid) == received, "이 보내기로 기록에서 확인된 줄은 시각이 없어도 우리 것이다")
+            await rig.cleanup()
         }
 
         // MARK: 이미 센 글 (OA PR-D3 검토 P3-12)
@@ -856,11 +954,15 @@ extension ExternalSessionSuites {
             let unknown = ClaudeAppPeer(plugin: nil, verifiedPeerPID: nil, messageID: nil)
             let received = MessageDeliveryLine(strong: nil, text: "Received · via Taskforce")
             let foreign = MessageDeliveryLine(strong: nil, text: "From another session")
-            #expect(ClaudeAppPeerLine.of(ours, relayPIDs: [4001]) == received)
-            #expect(ClaudeAppPeerLine.of(sameNameOtherProcess, relayPIDs: [4001]) == foreign, "tf-relay라는 이름만으로 믿지 않는다")
-            #expect(ClaudeAppPeerLine.of(otherPlugin, relayPIDs: [4001]) == foreign)
-            #expect(ClaudeAppPeerLine.of(unknown, relayPIDs: [4001]) == foreign)
-            #expect(ClaudeAppPeerLine.of(ours, relayPIDs: []) == foreign, "지금 떠 있는 중계가 없으면 앞 실행의 것은 확인할 수 없다")
+            let time = Date(timeIntervalSince1970: 1_800_000_050)
+            let running = ClaudeAppRelayPIDs()
+            running.set([4001], at: Date(timeIntervalSince1970: 1_800_000_000))
+            #expect(ClaudeAppPeerLine.of(ours, at: time, relayPIDs: running) == received)
+            #expect(ClaudeAppPeerLine.of(sameNameOtherProcess, at: time, relayPIDs: running) == foreign, "tf-relay라는 이름만으로 믿지 않는다")
+            #expect(ClaudeAppPeerLine.of(otherPlugin, at: time, relayPIDs: running) == foreign)
+            #expect(ClaudeAppPeerLine.of(unknown, at: time, relayPIDs: running) == foreign)
+            #expect(ClaudeAppPeerLine.of(ours, at: nil, relayPIDs: running) == foreign, "시각이 없으면 우리 것이 아니다")
+            #expect(ClaudeAppPeerLine.of(ours, at: time, relayPIDs: ClaudeAppRelayPIDs()) == foreign, "이 실행이 띄운 중계가 없으면 앞 실행의 것은 확인할 수 없다")
         }
 
         // MARK: 게이트

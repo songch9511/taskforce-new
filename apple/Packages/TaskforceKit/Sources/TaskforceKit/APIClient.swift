@@ -36,6 +36,9 @@ public enum APIErrorCode: String, Decodable, Sendable {
     case approvalViaReview = "approval_via_review"
     /// 잠금 경합이 재시도를 넘겼다: 쓰기 0, 같은 요청을 다시 보내도 된다
     case busyRetry = "busy_retry"
+    /// Claude 데스크톱 대화 저장(`PUT /api/v2/claude-app-chats`)의 404: 없는 · 남의 · 해제된 bridge. 저장 gate가 꺼진 404(`not_found`)와 코드가 다르다 (contract.ts `claudeAppChatErrorCodeSchema`).
+    /// 모르는 코드는 상태 코드로 짐작해 원래 코드를 잃으므로(404 → `internalError`) 코드로 올려 지킨다 (OA PR-D3 재검토)
+    case bridgeNotFound = "bridge_not_found"
 }
 
 public enum APIError: Error, Equatable, Sendable, CustomStringConvertible {

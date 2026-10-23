@@ -9,12 +9,13 @@ public enum ClaudeAppRelayGate {
     }
 }
 
-/// 기록 속 peer 줄 밑에 보이는 한 줄 (계약 25.4.4, DZ 승인 · Q-D3c): **이 앱 실행이 띄운 중계 프로세스가 보낸 것**(플러그인 `tf-relay` ∧ 검증된 보낸 pid가 이 실행이 띄운 중계 pid 가운데 하나)만 "Received · via Taskforce"이고,
+/// 기록 속 peer 줄 밑에 보이는 한 줄 (계약 25.4.4, DZ 승인 · Q-D3c): **이 앱 실행이 띄운 중계 프로세스가 보낸 것**(플러그인 `tf-relay` ∧ 검증된 보낸 pid가 이 실행이 띄운 중계 pid ∧ 글의 시각이 그 중계가 떠 있던 때 안)만 "Received · via Taskforce"이고,
 /// 그 밖은 중립 표시 "From another session"이다. `tf-relay`라는 이름만으로 믿지 않는다: 앞 실행의 중계 · 다른 프로세스는 우리 사용자의 글이라는 증거가 없다.
-/// (2분 유휴로 끝났거나 다시 떠서 pid가 바뀐 이 실행의 앞선 중계는 우리 것이다: 그래서 "지금 떠 있는" 것이 아니라 "이 실행이 띄운" 모든 pid를 쓴다 — OA PR-D3 검토 P2-4)
+/// (2분 유휴로 끝났거나 다시 떠서 pid가 바뀐 이 실행의 앞선 중계는 우리 것이다: 그래서 "지금 떠 있는" 것이 아니라 "이 실행이 띄운" 모든 중계의 pid를 쓴다 — OA PR-D3 검토 P2-4.
+/// 다만 pid는 운영체제가 다시 쓰므로 pid마다 띄운 때 ~ 끝난 때를 기억하고 그 밖의 시각 · 시각 없는 글은 우리 것이 아니다 — 재검토 security P3-new-1)
 public enum ClaudeAppPeerLine {
-    public static func of(_ peer: ClaudeAppPeer, relayPIDs: Set<Int32>) -> MessageDeliveryLine {
-        let ours = peer.verifiedPeerPID.map { relayPIDs.contains($0) && peer.isTaskforceRelay(relayPID: $0) } ?? false
+    public static func of(_ peer: ClaudeAppPeer, at time: Date?, relayPIDs: ClaudeAppRelayPIDs) -> MessageDeliveryLine {
+        let ours = peer.verifiedPeerPID.map { relayPIDs.ran($0, at: time) && peer.isTaskforceRelay(relayPID: $0) } ?? false
         return MessageDeliveryLine(strong: nil, text: ours ? ClaudeAppChatCopy.receivedViaTaskforce : ClaudeAppChatCopy.fromAnotherSession)
     }
 }
@@ -275,14 +276,14 @@ public final class ClaudeAppChatService {
     public var relayPIDs: ClaudeAppRelayPIDs { environment.relay.pids }
 
     /// 기록의 한 줄 밑의 표시 (peer 줄이 아니면 nil): **이 앱 실행이 띄운 중계**가 보낸 것만 "Received · via Taskforce", 그 밖은 "From another session".
-    /// - 중계가 2분 유휴로 끝났거나 다시 떠서 pid가 바뀌어도 앞서 띄운 중계의 글은 그대로 우리 것이다 (이 실행이 띄운 모든 pid를 기억한다: `ClaudeAppRelayPIDs.launched`)
+    /// - 중계가 2분 유휴로 끝났거나 다시 떠서 pid가 바뀌어도 앞서 띄운 중계가 떠 있던 동안 쓴 글은 그대로 우리 것이다 (`ClaudeAppRelayPIDs.ran(_:at:)`: pid마다 띄운 때 ~ 끝난 때). 시각이 없는 줄은 우리 것이 아니다
     /// - 이 보내기로 기록에서 확인된 줄(`matchedTurnID`)은 pid를 몰라도 우리 것이다
     /// - 읽는 값은 모두 관찰된다 (pid 집합 · 보낸 말): pid가 바뀌면 그린 쪽이 다시 그려진다 (OA PR-D3 검토 P2-4)
     public func peerLine(for turn: ClaudeAppTurn, in sessionID: String) -> MessageDeliveryLine? {
         guard case .peer(_, let peer) = turn.kind else { return nil }
         let matched = chats[sessionID]?.deliveries.contains { $0.matchedTurnID == turn.id } == true
         if matched { return MessageDeliveryLine(strong: nil, text: ClaudeAppChatCopy.receivedViaTaskforce) }
-        return ClaudeAppPeerLine.of(peer, relayPIDs: environment.relay.pids.launched)
+        return ClaudeAppPeerLine.of(peer, at: turn.timestamp, relayPIDs: environment.relay.pids)
     }
 
     public func chat(for sessionID: String) -> ClaudeAppSessionChat {
@@ -362,15 +363,21 @@ public final class ClaudeAppChatService {
     }
 
     /// 쓰기 직전의 확인 (TOCTOU, DT1 · DT3 · DT9): 중계의 한 번에 하나 구간 안에서, 중계가 준비된 뒤 · 글을 쓰기 전에 대상을 다시 읽는다.
-    /// 프로세스(pid · 시작 시각) · 서명 · 다른 writer · 등록 하나 · 등록 폴더 읽기 중 하나라도 처음 확인과 다르면 보내지 않는다 (Not received)
-    private func recheck(sessionID: String, original: ClaudeAppSendFacts) -> @Sendable () async -> Bool {
+    /// 프로세스(pid · 시작 시각) · 서명 · 다른 writer · 등록 하나 · 등록 폴더 읽기 중 하나라도 처음 확인과 다르면 보내지 않는다 (Not received).
+    /// **계정 세대도 본다** (OA PR-D3 재검토 security P3-c): 로그아웃이 중계를 끝내기 전이라도 세대가 먼저 오르므로, 시작할 때의 세대(`started`)와 다르면 거짓이다 — 대상을 읽기 전에 한 번, 읽은 뒤에 한 번
+    func recheck(sessionID: String, original: ClaudeAppSendFacts, epoch started: Int) -> @Sendable () async -> Bool {
         let environment = environment
-        return {
+        return { [weak self] in
+            guard await self?.isCurrent(epoch: started) == true else { return false }
             let latest = await Task.detached(priority: .userInitiated) { environment.facts(sessionID) }.value
+            guard await self?.isCurrent(epoch: started) == true else { return false }
             guard let before = original.session, let now = latest.session else { return false }
             return !latest.doubled && !latest.registryUnavailable && latest.processTrusted && latest.otherWriters == .none && now.pid == before.pid && now.procStart == before.procStart
         }
     }
+
+    /// 시작할 때의 계정 세대 그대로이고 꺼지지 않았다
+    private func isCurrent(epoch started: Int) -> Bool { !isShutDown && epoch == started }
 
     /// 저장 켜짐 확인을 (처음 한 번) 시작한다: **기다리지 않는다** — 보내기는 저장과 무관하다 (§25.4.3 ⑧). 올리는 길은 확인이 켜짐이라고 답한 뒤에만 생긴다
     private func startAsking() {
@@ -397,7 +404,7 @@ public final class ClaudeAppChatService {
         ensureLoop()
         // 저장 켜짐 확인은 보내기와 나란히 간다 (기다리지 않는다)
         startAsking()
-        let result = await environment.relay.send(sessionID: sessionID, text: text, recheck: recheck(sessionID: sessionID, original: facts))
+        let result = await environment.relay.send(sessionID: sessionID, text: text, recheck: recheck(sessionID: sessionID, original: facts, epoch: started))
         guard !isShutDown, epoch == started else { return }
         switch result {
         case .delivered(let relayPID):

@@ -159,6 +159,9 @@ final class KeptClaudeAppRelayProcess: ClaudeAppRelayProcess, @unchecked Sendabl
 
     private func isClosedForWrites() -> Bool { closeLock.withLock { closedForWrites } }
 
+    /// `stop()`이 줄 서 있던 쓰기를 기다리는 한계 (초)
+    static let writeDrainBound: TimeInterval = 1
+
     func write(_ data: Data) async -> Bool {
         let fd = kept.keeper.stdinFD
         return await withCheckedContinuation { continuation in
@@ -209,8 +212,14 @@ final class KeptClaudeAppRelayProcess: ClaudeAppRelayProcess, @unchecked Sendabl
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             DispatchQueue.global(qos: .userInitiated).async {
                 _ = done.wait(timeout: .now() + 2)
-                // 줄 서 있던 쓰기가 모두 지나간 뒤에 fd를 닫는다 (닫힌 fd 번호에 쓰는 쓰기가 없다)
-                writes.sync {}
+                // 줄 서 있던 쓰기가 지나가기를 **한계 안에서** 기다린 뒤 fd를 닫는다 (닫힌 fd 번호에 쓰는 쓰기가 없다: 위 플래그가 새 쓰기와 다음 반복을 막는다).
+                // 한계가 없으면 안 된다 (OA PR-D3 재검토 P2-R1): stdin 파이프는 막히는 파이프다. 중계가 stdin을 읽지 않으면 파이프(16~64KB)가 찬 뒤 쓰기 하나가 영영 돌아오지 않고,
+                // `writes.sync {}`로 기다리면 `stop()`도 돌아오지 않아 보내기가 쥔 한 번에 하나 구간이 풀리지 않는다. 한계가 지나면 `abort`가 `claude`를 끝내고, 막힌 쓰기는 EPIPE로 풀린다.
+                // (한 줄은 최대 16,000자의 JSON이다: 영문은 약 16KB지만 한글 같은 글은 3바이트씩이라 48KB, 제어 문자만이면 이스케이프로 96KB까지 갈 수 있어 파이프 용량 아래라고 믿지 않는다)
+                let drained = DispatchGroup()
+                drained.enter()
+                writes.async { drained.leave() }
+                _ = drained.wait(timeout: .now() + Self.writeDrainBound)
                 _ = ClaudeSpawner.abort(kept.keeper, reportFD: kept.reportFD, timeout: exit)
                 continuation.resume()
             }

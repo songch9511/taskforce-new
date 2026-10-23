@@ -31,11 +31,11 @@ public actor ClaudeAppChatUploader {
         case retry
         /// 400: 버그다 (재시도하지 않는다)
         case invalid
-        /// 404: 저장이 꺼졌다 (또는 bridge를 모른다)
+        /// 404 `bridge_not_found`를 뺀 모든 404: 저장이 꺼졌다 (gate 꺼짐 · 명단 밖 · 앞단의 404 · 모르는 코드). 업로더 전체를 끈다
         case disabled
         /// 413: 사용자별 저장 한도
         case quota
-        /// 404인데 gate가 꺼진 `not_found`가 아니다 (`bridge_not_found`: 없는 · 남의 · 해제된 bridge): 그 bridge의 교환만 버린다 (OA PR-D3 검토 P3-10)
+        /// 404 `bridge_not_found`만 (없는 · 남의 · 해제된 bridge): 그 bridge의 교환만 버린다 (OA PR-D3 검토 P3-10 · 재검토)
         case bridgeGone
     }
 
@@ -134,8 +134,8 @@ public actor ClaudeAppChatUploader {
         guard let api = error as? APIError else { return .retry }
         switch api.status {
         case 404?:
-            // 알려진 `not_found`(저장 gate가 꺼짐 · 명단 밖) · 앞단이 낸 404는 모두 꺼진 것이다. `bridge_not_found`처럼 `APIErrorCode`에 없는 코드는 상태로 짐작된 다른 코드로 온다: 그 bridge만 사라진 것이다
-            if case .server(_, let code, _) = api, code != .notFound { return .bridgeGone }
+            // `bridge_not_found`만 그 bridge가 사라진 것이다. 그 밖의 404(저장 gate가 꺼진 `not_found` · 명단 밖 · 앞단이 낸 404 · 모르는 새 코드)는 모두 꺼진 것이다: 모르면 닫는다
+            if case .server(_, .bridgeNotFound, _) = api { return .bridgeGone }
             return .disabled
         case 413?: return .quota
         case 400?: return .invalid

@@ -47,7 +47,10 @@ struct ClaudeAppRelayProcessTests {
         func read(_ name: String) -> String { (try? String(contentsOfFile: home + "/" + name, encoding: .utf8)) ?? "" }
     }
 
-    private func fixture() throws -> Fixture {
+    /// 가짜 `claude`: stdin을 **읽지 않는다** (읽는 쪽이 없는 파이프: 64KB가 차면 쓰기가 막힌다)
+    private static let silentScript = "#!/bin/sh\nexec sleep 300\n"
+
+    private func fixture(script: String? = nil) throws -> Fixture {
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("tf-relay-proc-\(UUID().uuidString.lowercased().prefix(8))", isDirectory: true)
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         let root = GateFileSystem.realpath(base.path) ?? base.path
@@ -56,7 +59,7 @@ struct ClaudeAppRelayProcessTests {
         let bin = root + "/bin"
         try FileManager.default.createDirectory(atPath: bin, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o755])
         let claude = bin + "/claude"
-        try Self.script.write(toFile: claude, atomically: false, encoding: .utf8)
+        try (script ?? Self.script).write(toFile: claude, atomically: false, encoding: .utf8)
         chmod(claude, 0o755)
         return Fixture(root: root, home: home, work: root + "/work", claude: ClaudeCodeExecutable(path: claude, realPath: claude, directory: bin), mod: try ClaudeAppModFixture.copy())
     }
@@ -218,6 +221,49 @@ struct ClaudeAppRelayProcessTests {
         #expect(!wrote, "끝난 프로세스에는 쓰지 않는다")
         let leaked = paths.filter { ((try? String(contentsOfFile: $0, encoding: .utf8)) ?? "").contains("SENTINEL") }
         #expect(leaked.isEmpty, "글이 다른 파일에 들어갔다: \(leaked.count)개")
+    }
+
+    /// OA PR-D3 재검토 P2-R1: stdin 파이프는 막힌다(blocking). 중계가 stdin을 읽지 않으면(멈춘 `claude`) 64KB가 찬 뒤 쓰기 하나가 영영 돌아오지 않는다.
+    /// `stop()`이 그 쓰기를 끝까지 기다리면 `stop()`도 영영 돌아오지 않고, 보내기가 쥔 한 번에 하나 구간이 풀리지 않아 이후 모든 글이 "Sending…"에 머문다.
+    /// 그래서 기다림에 한계(1초)가 있고, 한계가 지나면 `claude`를 끝내 막힌 쓰기가 EPIPE로 풀린다.
+    /// 이 시험은 **자기 시간 제한**이 있다: 고쳐지지 않았으면 멈추지 않고 실패한다 (막힌 쓰기는 프로세스를 죽여 푼다)
+    @Test(.timeLimit(.minutes(1)))
+    func stopReturnsWithinTheBoundWhileAWriteIsBlockedOnARealPipeNobodyReads() async throws {
+        let fixture = try fixture(script: Self.silentScript)
+        defer { cleanup(fixture) }
+        let launcher = KeptClaudeAppRelayLauncher(
+            executable: fixture.claude, keeper: try BuiltProducts.url("tf-agent-keeper").path, endedFile: URL(fileURLWithPath: fixture.root + "/state/blocked.ended"),
+            appEnvironment: ["HOME": fixture.home, "USER": "tester", "LANG": "en_US.UTF-8", "PATH": "/usr/bin:/bin"], isTrustedExecutable: { _ in true }
+        )
+        let process = try await launcher.launch(arguments: ClaudeAppRelay.arguments(modDirectory: fixture.mod), cwd: fixture.work)
+        let pid = process.pid
+        defer { kill(pid, SIGKILL) }
+        // 파이프 용량(64KB)을 훨씬 넘는 글: 읽는 쪽이 없으니 쓰기가 막힌다
+        let writeReturned = ClaudeAppFlag()
+        let wrote = Box<Bool?>(nil)
+        Task {
+            let result = await process.write(Data(repeating: 0x41, count: 4_000_000))
+            wrote.value = result
+            writeReturned.set()
+        }
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(!writeReturned.isSet, "쓰기가 파이프에 막혀 있다 (이 확인이 없으면 아래 시험은 뜻이 없다)")
+
+        let stopped = ClaudeAppFlag()
+        let started = Date()
+        Task {
+            await process.stop()
+            stopped.set()
+        }
+        let deadline = Date().addingTimeInterval(8)
+        while !stopped.isSet, Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        let took = Date().timeIntervalSince(started)
+        if !stopped.isSet { kill(pid, SIGKILL) }  // 고쳐지지 않았다: 막힌 쓰기를 풀어 시험이 멈추지 않게 한다
+        #expect(stopped.isSet, "막힌 쓰기가 있어도 `stop()`은 돌아온다")
+        #expect(took < 6, "한계(1초) + 끝내기 안에 돌아온다: \(took)")
+        #expect(await relayEventually(timeout: 8) { writeReturned.isSet }, "막혀 있던 쓰기도 `claude`가 끝난 뒤 풀린다")
+        #expect(wrote.value == false, "풀린 쓰기는 실패로 돌아온다")
+        #expect(await waitGone(pid), "`claude`는 사라진다")
     }
 
     @Test func aScriptIsNotSignedByAnthropicAndTheRealClaudeBinaryIfPresentIs() throws {

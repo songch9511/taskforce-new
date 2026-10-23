@@ -137,7 +137,8 @@ struct ClaudeAppChatSnapshotTests {
             NSApp.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
             for scene in Self.scenes() where only.map({ scene.name.contains($0) }) ?? true {
                 let h = try DeskChatHarness.make()
-                h.relay.pids.set([Self.ourRelayPID])
+                // 견본 줄은 몇 분~몇 시간 전의 것이다: 중계는 그 전에 떠 있었다 (글의 시각이 중계가 떠 있던 때 안이어야 "Received · via Taskforce"다)
+                h.relay.pids.set([Self.ourRelayPID], at: Date().addingTimeInterval(-86_400))
                 // 처음부터 쉬던 세션은 레일에 없다: 쉬는 장면은 "일하다 쉰다"(끝난 링)로 만든다
                 let resting = scene.state == .idle
                 let w = await EdgeSessionsTests().rig(rows: [1], live: [EdgeSessionsTests.live(1, resting ? .busy : scene.state)], chat: h.service)

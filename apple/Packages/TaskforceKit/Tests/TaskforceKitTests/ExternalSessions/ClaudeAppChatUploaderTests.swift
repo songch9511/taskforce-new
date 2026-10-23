@@ -109,10 +109,12 @@ extension ExternalSessionSuites {
         }
 
         @Test func theServersTwoNotFoundAnswersAreToldApartByTheirCode() {
-            // `bridge_not_found`는 `APIErrorCode`에 없는 코드라 상태로 짐작된 코드(.internalError)로 온다: 알려진 `not_found`(= gate가 꺼짐)와 다르다
+            // `bridge_not_found`(`APIErrorCode.bridgeNotFound`)만 그 bridge가 사라진 것이다. 알려진 `not_found`(= gate가 꺼짐) · 모르는 코드의 404 · 앞단의 404는 모두 꺼진 것이다 (OA PR-D3 재검토)
             #expect(ClaudeAppChatUploader.outcome(for: APIError.server(status: 404, code: .notFound, message: "")) == .disabled)
-            #expect(ClaudeAppChatUploader.outcome(for: APIError.server(status: 404, code: .internalError, message: "이 Mac을 찾지 못했습니다.")) == .bridgeGone)
+            #expect(ClaudeAppChatUploader.outcome(for: APIError.server(status: 404, code: .bridgeNotFound, message: "이 Mac을 찾지 못했습니다.")) == .bridgeGone)
+            #expect(ClaudeAppChatUploader.outcome(for: APIError.server(status: 404, code: .internalError, message: "모르는 코드")) == .disabled, "모르는 코드의 404는 모두 끈다: 닫힌 쪽이다")
             #expect(ClaudeAppChatUploader.outcome(for: APIError.unexpectedStatus(404)) == .disabled, "앞단이 낸 HTML 404는 꺼진 것이다")
+            #expect(APIErrorCode(rawValue: "bridge_not_found") == .bridgeNotFound, "서버의 코드 이름 그대로")
             #expect(ClaudeAppChatUploader.outcome(for: APIError.server(status: 413, code: .internalError, message: "")) == .quota)
         }
 
@@ -415,7 +417,8 @@ extension ExternalSessionSuites {
             typealias U = ClaudeAppChatUploader
             func server(_ status: Int, _ code: APIErrorCode = .internalError) -> APIError { .server(status: status, code: code, message: "") }
             #expect(U.outcome(for: server(404, .notFound)) == .disabled && U.outcome(for: APIError.unexpectedStatus(404)) == .disabled, "저장 꺼짐 · bridge 없음 · route 없음")
-            #expect(U.outcome(for: server(404)) == .bridgeGone, "모르는 코드의 404는 `bridge_not_found`다: 그 bridge만 사라진 것이다 (알려진 `not_found` = gate가 꺼짐만 모두 끈다)")
+            #expect(U.outcome(for: server(404, .bridgeNotFound)) == .bridgeGone, "`bridge_not_found`만 그 bridge가 사라진 것이다")
+            #expect(U.outcome(for: server(404)) == .disabled, "그 밖의 404는 (모르는 코드도) 모두 끈다")
             #expect(U.outcome(for: server(413)) == .quota)
             #expect(U.outcome(for: server(400, .invalidRequest)) == .invalid)
             #expect(U.outcome(for: server(409, .busyRetry)) == .retry && U.outcome(for: server(429, .rateLimited)) == .retry && U.outcome(for: server(500)) == .retry && U.outcome(for: server(503)) == .retry)

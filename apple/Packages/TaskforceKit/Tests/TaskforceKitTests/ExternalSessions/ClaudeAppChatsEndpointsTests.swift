@@ -59,9 +59,9 @@ extension ExternalSessionSuites {
         }
 
         @Test func thePutErrorsKeepTheirStatusSoTheUploaderCanTellThemApart() async {
-            // 404: 서버의 `bridge_not_found`처럼 `APIErrorCode`에 없는 코드는 그 bridge만 사라진 것이고, 알려진 `not_found`(gate가 꺼짐)는 모두 꺼진 것이다
+            // 404: `bridge_not_found`만 그 bridge가 사라진 것이고, 알려진 `not_found`(gate가 꺼짐) · 모르는 코드는 모두 꺼진 것이다
             let expected: [(Int, String, ClaudeAppChatUploader.PutOutcome)] = [
-                (400, "some_code", .invalid), (404, "bridge_not_found", .bridgeGone), (404, "not_found", .disabled), (409, "some_code", .retry), (413, "quota_exceeded", .quota),
+                (400, "some_code", .invalid), (404, "bridge_not_found", .bridgeGone), (404, "not_found", .disabled), (404, "some_new_404_code", .disabled), (409, "some_code", .retry), (413, "quota_exceeded", .quota),
                 (429, "some_code", .retry), (500, "some_code", .retry), (503, "some_code", .retry),
             ]
             for (status, code, outcome) in expected {
