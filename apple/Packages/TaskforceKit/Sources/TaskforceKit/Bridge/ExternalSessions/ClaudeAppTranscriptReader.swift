@@ -78,7 +78,7 @@ public struct ClaudeAppTranscriptReader: Sendable {
         let scanned = scan(data, start: start, dropHead: start > 0, sessionID: sessionID, peers: &peers)
         var cursor = ClaudeAppTranscriptCursor(
             sessionID: sessionID, path: located.path, created: located.entry.created, earliestOffset: start, nextOffset: start + Int64(scanned.consumedEnd),
-            coveredBytes: 0, discarding: false, peerIDs: peers.ids, signals: scanned.signals
+            coveredBytes: 0, discarding: false, peerIDs: peers.ids, signals: scanned.signals, permissionMode: scanned.permissionMode
         )
         if start > 0, !scanned.sawNewline {
             // 창 전체가 한 줄 안이다 (창보다 긴 줄): 그 줄은 건너뛰고, 끝나는 개행까지 이어 읽기에서도 버린다
@@ -163,6 +163,7 @@ public struct ClaudeAppTranscriptReader: Sendable {
         let scanned = scan(data, start: base, dropHead: false, sessionID: cursor.sessionID, peers: &peers)
         next.peerIDs = peers.ids
         next.signals = scanned.signals
+        if let mode = scanned.permissionMode { next.permissionMode = mode }
         let leftover = data.count - scanned.consumedEnd
         if leftover > limits.maxLineBytes || (scanned.consumedEnd == 0 && data.count >= limits.windowBytes) {
             // 개행 없이 한 줄이 상한을 넘었다: 지금까지의 조각을 버리고 그 줄의 끝(개행)까지 계속 버린다
@@ -262,10 +263,13 @@ public struct ClaudeAppTranscriptReader: Sendable {
         /// 이 창에서 읽은 대화 줄 아닌 신호 (실패한 도구 · 백그라운드 일의 사건)
         var signals = ClaudeAppTranscriptSignals()
         var failedSeen = Set<String>()
+        /// 이 창에서 가장 나중에 본 `user` 줄의 권한 모드
+        var permissionMode: String?
 
         mutating func collect(_ parsed: Parsed) {
             for id in parsed.failedToolIDs where failedSeen.insert(id).inserted { signals.failedToolIDs.append(id) }
             signals.background += parsed.background
+            if let mode = parsed.permissionMode { permissionMode = mode }
         }
     }
 
@@ -274,6 +278,7 @@ public struct ClaudeAppTranscriptReader: Sendable {
         var turns: [ClaudeAppTurn] = []
         var failedToolIDs: [String] = []
         var background: [BackgroundTaskEvent] = []
+        var permissionMode: String?
     }
 
     private enum LineResult {
@@ -395,6 +400,8 @@ public struct ClaudeAppTranscriptReader: Sendable {
         var isCompactSummary: Bool?
         var isVisibleInTranscriptOnly: Bool?
         var timestamp: String?
+        /// `user` 줄에 붙는 그때의 권한 모드 (`default` · `bypassPermissions` …): 글이 아니라 설정 이름 하나다 (Bypass 세션이 보낸 글을 붙잡는 까닭을 알려 주는 데만 쓴다)
+        var permissionMode: String?
         var message: Message?
         var origin: Origin?
         /// `origin` 키가 있다 (모양이 낯설어 디코딩하지 못해도): origin이 있는데 peer가 아니면 사용자가 친 말이 아니다
@@ -403,7 +410,7 @@ public struct ClaudeAppTranscriptReader: Sendable {
         /// 백그라운드 일의 시작 줄에서만: 아이디 칸 셋뿐이다 (`stdout` · `prompt` · `outputFile` 등은 선언하지 않는다)
         var toolUseResult: ToolUseResult?
 
-        enum CodingKeys: String, CodingKey { case type, sessionId, isMeta, isSidechain, isCompactSummary, isVisibleInTranscriptOnly, timestamp, message, origin, attachment, toolUseResult }
+        enum CodingKeys: String, CodingKey { case type, sessionId, isMeta, isSidechain, isCompactSummary, isVisibleInTranscriptOnly, timestamp, permissionMode, message, origin, attachment, toolUseResult }
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -414,6 +421,7 @@ public struct ClaudeAppTranscriptReader: Sendable {
             isCompactSummary = try? container.decodeIfPresent(Bool.self, forKey: .isCompactSummary)
             isVisibleInTranscriptOnly = try? container.decodeIfPresent(Bool.self, forKey: .isVisibleInTranscriptOnly)
             timestamp = try? container.decodeIfPresent(String.self, forKey: .timestamp)
+            permissionMode = (try? container.decodeIfPresent(String.self, forKey: .permissionMode)).flatMap { $0.utf8.count <= 32 ? $0 : nil }
             message = try? container.decodeIfPresent(Message.self, forKey: .message)
             origin = try? container.decodeIfPresent(Origin.self, forKey: .origin)
             hasOrigin = container.contains(.origin) && !((try? container.decodeNil(forKey: .origin)) ?? false)
@@ -575,6 +583,7 @@ public struct ClaudeAppTranscriptReader: Sendable {
         }
         switch record.type {
         case "user":
+            signals.permissionMode = record.permissionMode
             if let origin = record.origin, origin.kind == "peer" {
                 peer(origin)
             } else if record.hasOrigin {
@@ -659,7 +668,8 @@ public struct ClaudeAppTranscriptReader: Sendable {
         return (text.isEmpty ? nil : text, truncated)
     }
 
-    private static func isStripped(_ scalar: Unicode.Scalar) -> Bool {
+    /// 평문으로 정리할 때 지우는 글자인가 (보내는 글도 같은 기준으로 정리해 두어야 기록에서 같은 글로 읽힌다: `ClaudeAppSendText`)
+    static func isStripped(_ scalar: Unicode.Scalar) -> Bool {
         switch scalar.value {
         case 0x0A, 0x09: return false
         // 글자를 잇는 데 쓰는 서식 글자 (ZWNJ · ZWJ)

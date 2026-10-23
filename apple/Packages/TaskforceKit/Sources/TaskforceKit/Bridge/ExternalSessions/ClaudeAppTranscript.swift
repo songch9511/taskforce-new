@@ -120,11 +120,15 @@ public struct ClaudeAppTranscriptCursor: Equatable, Sendable, CustomStringConver
     var peerIDs: [String]
     /// **이 읽기가** 찾은 신호 (실패한 도구 · 백그라운드 일의 사건). 읽을 때마다 새로 채워지고, 읽을 것이 없었던 번은 비어 있다: 대화 상태가 읽자마자 가져간다
     public internal(set) var signals: ClaudeAppTranscriptSignals
+    /// 지금까지 읽은 가장 나중 `user` 줄이 말하는 대상 세션의 권한 모드 (`default` · `bypassPermissions` …). 설정 이름 하나이고 글이 아니다. 모르면 nil.
+    /// 전달 줄이 "Session is in Bypass mode"를 말할지 가르는 데만 쓴다 (`ClaudeAppDeliveryTracker.Event.tick`)
+    public internal(set) var permissionMode: String?
 
     init(
         sessionID: String, path: String, created: Date, earliestOffset: Int64, nextOffset: Int64, coveredBytes: Int, discarding: Bool, peerIDs: [String],
-        signals: ClaudeAppTranscriptSignals = ClaudeAppTranscriptSignals()
+        signals: ClaudeAppTranscriptSignals = ClaudeAppTranscriptSignals(), permissionMode: String? = nil
     ) {
+        self.permissionMode = permissionMode
         self.sessionID = sessionID
         self.path = path
         self.created = created
