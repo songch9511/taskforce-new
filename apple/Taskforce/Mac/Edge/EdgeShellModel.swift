@@ -378,6 +378,11 @@ final class EdgeShellModel {
     private(set) var desktopConversation: ClaudeAppConversation?
     @ObservationIgnored private var desktopConversationShown = false
     @ObservationIgnored private var viewedDesktopID: String?
+    /// 데스크톱 세션과 대화하는 흐름 (OA PR-D3, 계약 25장): 입력창 · 보내기 전 확인 · 전달 줄 · 저장. **`ClaudeAppRelayGate`가 켜진 빌드(Debug · 내부 배포)에서만 있다** — 없으면(Release) 세션 보기는 읽기 전용 그대로다.
+    /// 세션 보기와 같은 게이트(`desktop`)가 켜져 있을 때만 쓴다
+    let desktopChat: ClaudeAppChatService?
+    /// 지금 입력창을 보이고 있는 세션 (패널이 보이는 동안만): 바뀌면 이전 세션의 입력창을 접는다
+    @ObservationIgnored private var visibleChatID: String?
 
     /// 이 실행의 Taskforce 게이트 (`EdgeSurfaces.taskforceConversation`: Debug에서 다섯 인자가 모두 있을 때만, Release 빌드는 늘 false). 셸이 만들어지는 자리에서 한 번 정한다 (OA U3 검토 1)
     let taskforceGate: Bool
@@ -477,11 +482,12 @@ final class EdgeShellModel {
         contexts: WorkContextStore? = nil, review: ReviewDesk? = nil, summary: ReturnSummaryStore? = nil, chatsEnabled: Bool = true,
         windowsEnabled: Bool = false, issues: IssueRuntime? = nil, taskforceGate: Bool = EdgeSurfaces.taskforceConversationForThisRun,
         externalSessions: ExternalSessionsStore? = nil, desktopSessions: ClaudeAppSessionsModel? = nil, railDone: (any RailDoneStore)? = nil,
-        claudeAppOpened: ClaudeAppOpenedMetric? = nil
+        claudeAppOpened: ClaudeAppOpenedMetric? = nil, desktopChat: ClaudeAppChatService? = nil
     ) {
         self.issues = issues
         self.externalSessions = issues == nil ? nil : externalSessions
         self.desktop = issues == nil || externalSessions == nil ? nil : desktopSessions
+        self.desktopChat = issues == nil || externalSessions == nil || desktopSessions == nil ? nil : desktopChat
         self.railDone = issues == nil ? nil : railDone
         if let finished = issues?.finished { lookupFinishedIssue = { await finished.read($0) } }
         self.claudeAppOpened = issues == nil || externalSessions == nil ? nil : claudeAppOpened
@@ -1023,6 +1029,10 @@ final class EdgeShellModel {
         let shown = desktopPanelShown ? desktopPanelID : nil
         if shown != nil { desktopConversation?.start() } else { desktopConversation?.stop() }
         desktop?.setViewing(shown)
+        // 입력창이 보이는 세션: 중계를 미리 띄워 두고, 접으면 쓰는 곳이 없어져 2분 뒤 끝난다 (교환을 따라가는 일은 패널을 닫아도 계속한다)
+        if let previous = visibleChatID, previous != shown { desktopChat?.chat(for: previous).setVisible(false) }
+        if let shown { desktopChat?.chat(for: shown).setVisible(true) }
+        visibleChatID = shown
     }
 
     /// 데스크톱 세션의 상태나 이 Mac 목록(제목)이 바뀌었다 (컨트롤러가 관찰해서 부른다): 레일의 링을 다시 정한다.

@@ -39,6 +39,9 @@ public struct ClaudeAppTurn: Identifiable, Equatable, Sendable, CustomStringConv
         /// 다른 세션의 메시지: 받은 글(`origin.body`, 받는 쪽이 감싼 글이 아니다)
         case peer(String, ClaudeAppPeer)
         case tool(name: String, description: String?)
+        /// **글이 없는 경계** (OA PR-D3 검토 P2-1, DT11): 데스크톱에서 턴 도중 친 말(`queued_command`) · 끼어든 작업 알림 · 훅이 넣은 줄. 그 글은 읽지도 담지도 않는다 —
+        /// 이 줄 뒤의 답은 우리가 보낸 말에 대한 답이 아니다 (교환을 끝낸다). 화면에는 나오지 않는다 (`ClaudeAppConversation`이 거른다)
+        case boundary
     }
 
     /// 기록 파일 안의 줄 위치 + 그 줄의 몇 번째: 쪽 · 이어 읽기를 넘어도 같은 줄은 같은 id
@@ -53,9 +56,12 @@ public struct ClaudeAppTurn: Identifiable, Equatable, Sendable, CustomStringConv
     public var failed: Bool
     var lineOffset: Int64
     var toolUseID: String?
+    /// 저장하는 줄의 불투명 ref 씨앗 (OA PR-D3 검토 P3-11): 기록 줄의 `uuid` + 그 줄의 몇 번째 블록. 줄 위치(`id`)는 파일이 다시 쓰이면 달라질 수 있어 uuid가 있으면 이것을 쓴다. 없으면 nil
+    var stableID: String?
 
     /// 읽는 쪽이 만든다 (줄 위치 · 도구 id를 담는다)
-    init(id: String, kind: Kind, timestamp: Date?, truncated: Bool, lineOffset: Int64, toolUseID: String?, target: String? = nil, failed: Bool = false) {
+    init(id: String, kind: Kind, timestamp: Date?, truncated: Bool, lineOffset: Int64, toolUseID: String?, target: String? = nil, failed: Bool = false, stableID: String? = nil) {
+        self.stableID = stableID
         self.id = id
         self.kind = kind
         self.timestamp = timestamp
@@ -77,6 +83,7 @@ public struct ClaudeAppTurn: Identifiable, Equatable, Sendable, CustomStringConv
         case .assistant: "assistant"
         case .peer: "peer"
         case .tool: "tool"
+        case .boundary: "boundary"
         }
         return "ClaudeAppTurn(\(name))"
     }
@@ -120,11 +127,15 @@ public struct ClaudeAppTranscriptCursor: Equatable, Sendable, CustomStringConver
     var peerIDs: [String]
     /// **이 읽기가** 찾은 신호 (실패한 도구 · 백그라운드 일의 사건). 읽을 때마다 새로 채워지고, 읽을 것이 없었던 번은 비어 있다: 대화 상태가 읽자마자 가져간다
     public internal(set) var signals: ClaudeAppTranscriptSignals
+    /// 지금까지 읽은 가장 나중 `user` 줄이 말하는 대상 세션의 권한 모드 (`default` · `bypassPermissions` …). 설정 이름 하나이고 글이 아니다. 모르면 nil.
+    /// 전달 줄이 "Session is in Bypass mode"를 말할지 가르는 데만 쓴다 (`ClaudeAppDeliveryTracker.Event.tick`)
+    public internal(set) var permissionMode: String?
 
     init(
         sessionID: String, path: String, created: Date, earliestOffset: Int64, nextOffset: Int64, coveredBytes: Int, discarding: Bool, peerIDs: [String],
-        signals: ClaudeAppTranscriptSignals = ClaudeAppTranscriptSignals()
+        signals: ClaudeAppTranscriptSignals = ClaudeAppTranscriptSignals(), permissionMode: String? = nil
     ) {
+        self.permissionMode = permissionMode
         self.sessionID = sessionID
         self.path = path
         self.created = created

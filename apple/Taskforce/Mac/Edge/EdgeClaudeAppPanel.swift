@@ -4,8 +4,9 @@ import SwiftUI
 import TaskforceKit
 import TaskforceUI
 
-// Claude 데스크톱 세션 보기 (OA PR-D2, DZ 승인 2026-10-22 `oa-desktop-rail-dz` 시트 2 · 5): 레일의 데스크톱 링이나 Sessions의 줄을 눌러 연다. **읽기 전용(S1)** — 입력창이 없고, Taskforce는 어느 질문에도 답하지 않는다.
-// 이 Mac에 있는 기록을 읽어 그대로 보인다. 글 · 경로 · 세션 id를 로그에 남기지 않는다. "via Taskforce"는 없다 (중계가 아직 없다).
+// Claude 데스크톱 세션 보기 (OA PR-D2, DZ 승인 2026-10-22 `oa-desktop-rail-dz` 시트 2 · 5): 레일의 데스크톱 링이나 Sessions의 줄을 눌러 연다. Taskforce는 어느 질문 · 승인에도 답하지 않는다 (띠 단추는 Open in Claude뿐).
+// 이 Mac에 있는 기록을 읽어 그대로 보인다. 글 · 경로 · 세션 id를 로그에 남기지 않는다.
+// **입력창은 `ClaudeAppRelayGate`가 켜진 빌드(Debug · 내부 배포)에서만 있다** (OA PR-D3m, `EdgeClaudeAppChat.swift`): 그 밖(Release)은 읽기 전용(S1) 그대로이고 입력창 · "via Taskforce" · "From another session" 표시가 없다.
 
 /// Claude 세션 패널 창이 SwiftUI에 넘기는 값: 머리 · 본문 · 띠의 높이 (창 높이를 맞춘다) · 나타남
 @MainActor
@@ -107,6 +108,9 @@ struct ClaudeAppSessionPanelView: View {
         let status = shell.desktop?.liveStatus(for: id)
         let closed = shell.desktop?.viewingClosed == true
         let band = closed ? nil : status?.band
+        // 데스크톱 세션과의 대화 (OA PR-D3): 게이트가 꺼진 빌드(Release)에는 없다 (nil → 읽기 전용 그대로)
+        let chat = shell.desktopChat?.chat(for: id)
+        let viewState: ClaudeAppSendContext.View = closed ? .closed : (conversation.phase == .failed ? .unreadable : .open)
         VStack(spacing: 0) {
             header(id, status: status, closed: closed, showsOpen: band == nil)
                 .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { presentation.headHeight = $0 }
@@ -114,7 +118,7 @@ struct ClaudeAppSessionPanelView: View {
             GeometryReader { viewport in
                 ScrollViewReader { proxy in
                     ScrollView {
-                        transcript(id, conversation, status: status, closed: closed)
+                        transcript(id, conversation, status: status, closed: closed, chat: chat)
                             .padding(EdgeInsets(top: TFSpace.xs, leading: TFSpace.lg, bottom: TFSpace.sm, trailing: TFSpace.lg))
                             .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { presentation.bodyHeight = $0 }
                             .frame(maxWidth: .infinity, minHeight: viewport.size.height, alignment: .top)
@@ -135,9 +139,12 @@ struct ClaudeAppSessionPanelView: View {
                     }
                 }
             }
-            footer(id, band: band)
+            // 입력창 자리: 첫 보내기 확인(C5) · 띠(승인 · 답을 기다릴 때, Open in Claude뿐) · 입력창 (`ClaudeAppFooterPlan`)
+            ClaudeAppFooterView(shell: shell, sessionID: id, band: band, chat: chat)
                 .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { presentation.footerHeight = $0 }
         }
+        // 닫힘 · 기록 못 읽음에는 입력창이 없다. 열쇠는 (세션, 상태): 기록 못 읽음 → 못 읽음 · 닫힘 → 닫힘처럼 상태가 같은 채 세션만 바뀌어도 새 세션의 입력창에 알린다
+        .onChange(of: ClaudeAppChatViewKey(sessionID: id, state: viewState, chat: chat.map(ObjectIdentifier.init)), initial: true) { _, key in chat?.setView(key.state) }
         // 옆줄(백그라운드 일): 이 세션의 일 목록을 먹이고, 닫힌 세션이면 돌던 일을 멈춘 것으로 하고, 꼬리 읽기는 이 세션의 이 Mac 기록 · 임시 폴더에서
         .task(id: id) {
             presentation.beginSession(id)
@@ -172,7 +179,7 @@ struct ClaudeAppSessionPanelView: View {
     // MARK: 본문
 
     @ViewBuilder
-    private func transcript(_ id: String, _ conversation: ClaudeAppConversation, status: ClaudeAppLiveStatus?, closed: Bool) -> some View {
+    private func transcript(_ id: String, _ conversation: ClaudeAppConversation, status: ClaudeAppLiveStatus?, closed: Bool, chat: ClaudeAppSessionChat?) -> some View {
         switch conversation.phase {
         case .loading:
             Color.clear.frame(height: 0)
@@ -196,42 +203,55 @@ struct ClaudeAppSessionPanelView: View {
                         return await conversation.detail(of: turn)
                     },
                     item: { itemID in
-                        if let turn = turns[itemID] { ClaudeAppTurnView(turn: turn) }
+                        if let turn = turns[itemID] { ClaudeAppTurnView(turn: turn, peerLine: peerLine(for: turn, in: id)) }
                     }
                 )
+                // 아직 기록에 나타나지 않은 보낸 말 (Sending… · Sent · Queued · Not sent): 기록에 나타나면 기록의 줄이 이어받는다
+                if let chat { ClaudeAppDeliveryBubbles(chat: chat, shownTurnIDs: Set(conversation.turns.map(\.id))) }
                 Color.clear.frame(height: 1).id(Anchor.bottom)
             }
         }
     }
 
-    // MARK: 띠 (입력창 자리)
-
-    @ViewBuilder
-    private func footer(_ id: String, band: ClaudeAppPanelBand?) -> some View {
-        if let band {
-            Notice(icon: band == .approve ? .execution : .talk, title: band.title) {
-                Button(ClaudeAppCopy.openInClaude) { shell.openDesktopInClaude(id) }.buttonStyle(TFButtonStyle(.secondary, size: .sm))
-            }
-            .padding(EdgeInsets(top: TFSpace.sm, leading: TFSpace.md, bottom: TFSpace.md, trailing: TFSpace.md))
-        } else {
-            Color.clear.frame(height: TFSpace.sm)
-        }
+    /// peer 줄 밑의 표시 (OA PR-D3, Q-D3c): 이 실행이 띄운 중계가 보낸 것은 "Received · via Taskforce", 그 밖은 "From another session". 대화 흐름이 없는 빌드(Release)는 줄이 없다.
+    /// 읽는 값(이 실행이 띄운 중계 pid · 보낸 말)이 바뀌면 이 줄도 다시 그려진다 (관찰)
+    private func peerLine(for turn: ClaudeAppTurn, in sessionID: String) -> MessageDeliveryLine? {
+        shell.desktopChat?.peerLine(for: turn, in: sessionID)
     }
+}
+
+/// 이 패널이 어느 세션의 어떤 보기 상태를 보이고 있나: 세션이 바뀌면 (보기 상태가 같아도) 그 세션의 입력창에 상태를 다시 알린다 (OA PR-D3 검토 P2-5)
+struct ClaudeAppChatViewKey: Equatable {
+    let sessionID: String
+    let state: ClaudeAppSendContext.View
+    /// 계정이 바뀌어 입력창 객체가 새로 만들어졌으면 새 객체에도 알린다
+    let chat: ObjectIdentifier?
 }
 
 /// 대화 한 줄 (읽기 전용): 데스크톱에서 친 말 · 다른 세션이 보낸 말은 오른쪽 말풍선, Claude의 말은 그대로, 도구 줄은 "이름 · description" 한 줄 회색
 struct ClaudeAppTurnView: View {
     let turn: ClaudeAppTurn
+    /// peer 줄(다른 세션이 보낸 말) 밑의 표시: "Received · via Taskforce" 또는 "From another session" (대화 흐름이 있는 빌드만)
+    var peerLine: MessageDeliveryLine?
 
     var body: some View {
         switch turn.kind {
-        case .user(let text), .peer(let text, _):
+        case .user(let text):
             Message(isUser: true) { MessageText(Self.shown(text, truncated: turn.truncated)) }
+        case .peer(let text, _):
+            VStack(alignment: .leading, spacing: 0) {
+                Message(isUser: true) { MessageText(Self.shown(text, truncated: turn.truncated)) }
+                if let peerLine { MessageDeliveryView(peerLine) }
+            }
+            .accessibilityElement(children: .contain)
         case .assistant(let text):
             // 안전한 부분만 그린다 (코드 블록 · 인라인 코드 · 목록 · 굵게): 링크 · 표 · 이미지 · HTML은 쓴 그대로 글자다
             Message(isUser: false) { SessionMarkdownView(source: Self.shown(text, truncated: turn.truncated)) }
         case .tool(let name, let description):
             EventLine(Self.toolLine(name: name, description: description))
+        case .boundary:
+            // 글이 없는 경계 (교환을 끝내는 표시): 화면에 나오지 않는다 (`ClaudeAppConversation`이 이미 거른다)
+            EmptyView()
         }
     }
 

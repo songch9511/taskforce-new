@@ -1,0 +1,6 @@
+{
+  "name": "tf-relay",
+  "version": "1.0.0",
+  "description": "Taskforce relay: sends one plain-text message to another local Claude session without a model turn.",
+  "author": { "name": "Taskforce" }
+}

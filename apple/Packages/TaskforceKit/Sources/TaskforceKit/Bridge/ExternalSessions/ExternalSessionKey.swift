@@ -29,6 +29,13 @@ public struct ExternalSessionKey: Sendable {
         return code.map { String(format: "%02x", $0) }.joined()
     }
 
+    /// 서버에 저장하는 대화 행의 불투명 ref (PR-D3k, 계약 25.2.1 `mac_ref`): `hex(HMAC-SHA256(열쇠, "tf-claude-app-chat-v1\n" + 씨앗))`. 씨앗은 세션 id · 줄 id뿐이고 글은 들어가지 않는다 (`ClaudeAppExchangeCollector`).
+    /// 세션 ref와 접두가 달라 서로 겹치지 않는다. 같은 줄은 늘 같은 값이라 두 번 올려도 서버가 한 행으로 받는다
+    public func chatRef(_ seed: String) -> String {
+        let code = HMAC<SHA256>.authenticationCode(for: Data(("tf-claude-app-chat-v1\n" + seed).utf8), using: key)
+        return code.map { String(format: "%02x", $0) }.joined()
+    }
+
     /// 파일에 쓰는 글(소문자 hex 64자)
     func hex() -> String { key.withUnsafeBytes { Data($0).map { String(format: "%02x", $0) }.joined() } }
 

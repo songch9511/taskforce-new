@@ -38,6 +38,8 @@ public enum SessionTimelineSource {
         var steps: [String: SessionStepInfo] = [:]
         for turn in turns {
             switch turn.kind {
+            case .boundary:
+                continue
             case .user, .peer:
                 items.append(SessionTimelineItem(id: turn.id, role: .user, time: turn.timestamp))
             case .assistant(let text):

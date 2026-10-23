@@ -48,6 +48,8 @@ final class TranscriptFake: ClaudeAppTranscriptSource, @unchecked Sendable {
 
     func newer(_ cursor: ClaudeAppTranscriptCursor) -> ClaudeAppTranscriptUpdate {
         lock.withLock { _tails += 1 }
+        // 못 읽는 기록은 이어 읽기도 못 읽는다 (아니면 꼬리를 읽는 순간 `failed`였던 대화가 다시 `ready`가 된다: 입력창이 깜박이는 시험이 흔들린다)
+        if unreadable { return .unreadable }
         return .turns([], cursor: cursor, hasMore: false)
     }
 }
@@ -98,7 +100,8 @@ struct EdgeSessionsTests {
     }
 
     /// - rows: 이 Mac 목록의 줄 번호 (Claude 앱이 쥔 줄). live: 처음 폴이 주는 살아 있는 세션
-    func rig(sessions: IssueSampleGateway.SessionScenario = .none, rows: [Int] = [], live: [ClaudeAppSession] = []) async -> Rig {
+    /// - chat: 데스크톱 세션과 대화하는 흐름 (OA PR-D3, 없으면 읽기 전용 그대로)
+    func rig(sessions: IssueSampleGateway.SessionScenario = .none, rows: [Int] = [], live: [ClaudeAppSession] = [], chat: ClaudeAppChatService? = nil) async -> Rig {
         let script = DeskScript()
         script.sessions = live
         let scope = AccountScope(currentAccount: { SampleData.userID })
@@ -108,7 +111,7 @@ struct EdgeSessionsTests {
         let metric = ClaudeAppOpenedMetric(send: { sent.hit(); return true }, scope: scope)
         let railDone = InMemoryRailDoneStore()
         let time = EdgeShellModelTests.ManualTime()
-        let base = X().make(sessions: sessions, desktop: desktop, railDone: railDone, opened: metric, scope: scope, time: time)
+        let base = X().make(sessions: sessions, desktop: desktop, railDone: railDone, opened: metric, scope: scope, time: time, desktopChat: chat)
         base.counter.set(rows.map(Self.heldRow))
         await base.store.refresh()
         await base.issues.sessions.refresh()
