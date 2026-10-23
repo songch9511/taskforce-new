@@ -54,8 +54,87 @@ extension ExternalSessionSuites {
             gaveUp: GaveUpLog = GaveUpLog(), disabled: ClaudeAppFlag = ClaudeAppFlag()
         ) -> ClaudeAppChatUploader {
             ClaudeAppChatUploader(
-                configuration: configuration, put: script.put, now: { [clock] in clock.now }, sleep: { await sleeper.sleep($0) }, log: log, onGaveUp: { gaveUp.add($0) }, onDisabled: { disabled.set() }
+                configuration: configuration, put: script.put, now: { [clock] in clock.now }, sleep: { await sleeper.sleep($0) }, log: log, onGaveUp: { gaveUp.add($0) }, onDisabled: { _ in disabled.set() }
             )
+        }
+
+        // MARK: 되살아나지 않는 업로더 (OA PR-D3 검토 P3-7) · bridge만 끄기 (P3-10) · 이미 센 글 (P3-12)
+
+        @Test func aRetiredUploaderStaysOffEvenIfClearedAndNothingFromItEverGoesOut() async throws {
+            let script = ClaudeAppPutScript()
+            let uploader = uploader(script)
+            await uploader.enqueue(batch([user(), answer(2)]))
+            await uploader.retire()
+            let enabledAfterRetire = await uploader.isEnabled
+            let pendingAfterRetire = await uploader.pendingRows
+            #expect(!enabledAfterRetire && pendingAfterRetire == 0)
+            await uploader.clear()
+            let enabledAfterClear = await uploader.isEnabled
+            #expect(!enabledAfterClear, "버린 업로더는 `clear()`로 되살아나지 않는다")
+            await uploader.enqueue(batch([user(), answer(2)], exchange: "x2"))
+            clock.advance(100)
+            await uploader.flush()
+            let pending = await uploader.pendingRows
+            #expect(script.requests.isEmpty && pending == 0)
+        }
+
+        @Test func aNotFoundThatNamesTheBridgeDropsOnlyThatBridgeWhileAGateOffNotFoundTurnsEverythingOff() async throws {
+            let other = UUID(uuidString: "99999999-2222-4333-8444-555555555555")!
+            let gone = ClaudeAppChatBatch(exchangeID: "gone", context: context(), rows: [user(), answer(2)])
+            let alive = ClaudeAppChatBatch(exchangeID: "alive", context: ClaudeAppChatContext(bridgeID: other, sessionRef: sessionRef, title: nil), rows: [user(11), answer(12, to: 11)])
+            let script = ClaudeAppPutScript()
+            script.queue(.bridgeGone)
+            let disabled = ClaudeAppFlag()
+            let uploader = uploader(script, disabled: disabled)
+            await uploader.enqueue(gone)
+            await uploader.enqueue(alive)
+            await uploader.flush()
+            #expect(script.requests.count == 2, "그 bridge의 묶음은 버려지고 다른 bridge의 묶음은 간다")
+            #expect(script.requests.last?.messages.map(\.body) == ["hello", "reply"] && script.requests.last?.bridgeID == other.uuidString.lowercased())
+            let stillEnabled = await uploader.isEnabled
+            #expect(stillEnabled && !disabled.isSet, "업로더 전체를 끄지 않는다")
+            await uploader.enqueue(ClaudeAppChatBatch(exchangeID: "gone2", context: context(), rows: [user(21), answer(22, to: 21)]))
+            clock.advance(10)
+            await uploader.flush()
+            #expect(script.requests.count == 2, "사라진 bridge의 새 묶음은 올리지 않는다")
+            // gate가 꺼진 404(`not_found`)는 모든 것이 꺼진 것이다
+            let all = ClaudeAppPutScript()
+            all.queue(.disabled)
+            let flag = ClaudeAppFlag()
+            let off = self.uploader(all, disabled: flag)
+            await off.enqueue(alive)
+            await off.flush()
+            let offEnabled = await off.isEnabled
+            #expect(!offEnabled && flag.isSet)
+        }
+
+        @Test func theServersTwoNotFoundAnswersAreToldApartByTheirCode() {
+            // `bridge_not_found`는 `APIErrorCode`에 없는 코드라 상태로 짐작된 코드(.internalError)로 온다: 알려진 `not_found`(= gate가 꺼짐)와 다르다
+            #expect(ClaudeAppChatUploader.outcome(for: APIError.server(status: 404, code: .notFound, message: "")) == .disabled)
+            #expect(ClaudeAppChatUploader.outcome(for: APIError.server(status: 404, code: .internalError, message: "이 Mac을 찾지 못했습니다.")) == .bridgeGone)
+            #expect(ClaudeAppChatUploader.outcome(for: APIError.unexpectedStatus(404)) == .disabled, "앞단이 낸 HTML 404는 꺼진 것이다")
+            #expect(ClaudeAppChatUploader.outcome(for: APIError.server(status: 413, code: .internalError, message: "")) == .quota)
+        }
+
+        @Test func anExchangeWhoseUserRowWasAlreadySavedIsMarkedSoAGiveUpIsNotCountedTwice() async throws {
+            let script = ClaudeAppPutScript()
+            script.queue(.saved(chatID: UUID()))
+            script.queue(repeating: .retry, count: 100)
+            let gaveUp = GaveUpLog()
+            let uploader = uploader(script, gaveUp: gaveUp)
+            await uploader.enqueue(batch([user(), answer(2)], exchange: "x1"))
+            await uploader.flush()
+            let savedEarly = await uploader.userRowSaved("x1")
+            #expect(savedEarly, "사용자 행이 올라갔다: 서버가 이미 `received`를 셌다")
+            await uploader.enqueue(batch([user(), answer(2), answer(3)], exchange: "x1"))
+            for _ in 0..<700 {
+                clock.advance(1)
+                await uploader.flush()
+            }
+            #expect(gaveUp.all == ["x1"], "답 행은 포기했다")
+            let savedLater = await uploader.userRowSaved("x1")
+            let neverSent = await uploader.userRowSaved("never-sent")
+            #expect(savedLater && !neverSent)
         }
 
         // MARK: 요청 모양 (서버 strict 스키마)
@@ -336,7 +415,7 @@ extension ExternalSessionSuites {
             typealias U = ClaudeAppChatUploader
             func server(_ status: Int, _ code: APIErrorCode = .internalError) -> APIError { .server(status: status, code: code, message: "") }
             #expect(U.outcome(for: server(404, .notFound)) == .disabled && U.outcome(for: APIError.unexpectedStatus(404)) == .disabled, "저장 꺼짐 · bridge 없음 · route 없음")
-            #expect(U.outcome(for: server(404)) == .disabled, "모르는 코드의 404도 같다 (bridge_not_found)")
+            #expect(U.outcome(for: server(404)) == .bridgeGone, "모르는 코드의 404는 `bridge_not_found`다: 그 bridge만 사라진 것이다 (알려진 `not_found` = gate가 꺼짐만 모두 끈다)")
             #expect(U.outcome(for: server(413)) == .quota)
             #expect(U.outcome(for: server(400, .invalidRequest)) == .invalid)
             #expect(U.outcome(for: server(409, .busyRetry)) == .retry && U.outcome(for: server(429, .rateLimited)) == .retry && U.outcome(for: server(500)) == .retry && U.outcome(for: server(503)) == .retry)

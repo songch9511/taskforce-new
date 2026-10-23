@@ -24,10 +24,9 @@ extension ExternalSessionSuites {
         }
 
         private func context(
-            viewed: String? = nil, confirmed: ClaudeAppSendContext.Confirmation? = nil, pending: Bool = false, relay: ClaudeAppSendContext.Relay = .ready,
-            view: ClaudeAppSendContext.View = .open
+            confirmed: ClaudeAppSendContext.Confirmation? = nil, pending: Bool = false, relay: ClaudeAppSendContext.Relay = .ready, view: ClaudeAppSendContext.View = .open
         ) -> ClaudeAppSendContext {
-            ClaudeAppSendContext(viewedSessionID: viewed ?? id, targetSessionID: id, confirmed: confirmed ?? .init(pid: 100, procStart: started), hasPending: pending, relay: relay, view: view)
+            ClaudeAppSendContext(confirmed: confirmed ?? .init(pid: 100, procStart: started), hasPending: pending, relay: relay, view: view)
         }
 
         // MARK: 통과
@@ -64,15 +63,11 @@ extension ExternalSessionSuites {
             #expect(ClaudeAppSendCheck.evaluate(facts: facts(writers: .unknown), context: context()) == .blocked(.writersUnknown), "모르면 막는다")
         }
 
-        // MARK: ⑥ 패널이 보던 세션 = 보낼 세션 · ③ pid가 바뀌면 다시 확인
-
-        @Test func aPanelThatShowsAnotherSessionThanTheTargetNeverSends() {
-            // DT3: 패널을 다른 세션으로 바꾼 직후 Enter → 보내기 0
-            #expect(ClaudeAppSendCheck.evaluate(facts: facts(), context: context(viewed: F.uuid(0xC2))) == .blocked(.idMismatch))
-        }
+        // MARK: ③ pid가 바뀌면 다시 확인
+        // (옛 ⑥ "패널이 보던 세션 = 보낼 세션"은 없앴다: 입력창은 세션마다 하나라 글은 늘 그 세션의 것으로만 가고 두 값은 같은 값이었다 — OA PR-D3 검토 P3-14)
 
         @Test func theConfirmCardIsAskedForTheFirstSendAndAgainWhenTheProcessChanged() {
-            let never = ClaudeAppSendContext(viewedSessionID: id, targetSessionID: id, confirmed: nil, hasPending: false, relay: .ready, view: .open)
+            let never = ClaudeAppSendContext(confirmed: nil, hasPending: false, relay: .ready, view: .open)
             #expect(ClaudeAppSendCheck.evaluate(facts: facts(), context: never) == .needsConfirmation, "세션마다 처음 한 번")
             // DT3: pid가 바뀌었다 (확인했던 프로세스가 아니다) → 다시 확인 줄
             #expect(ClaudeAppSendCheck.evaluate(facts: facts(session: .some(session(pid: 222))), context: context()) == .needsConfirmation)
@@ -114,7 +109,7 @@ extension ExternalSessionSuites {
             // writer가 pending · 확인보다 먼저
             #expect(ClaudeAppSendCheck.evaluate(facts: facts(writers: .found), context: context(confirmed: nil, pending: true)) == .blocked(.twoWriters))
             // pending이 확인보다 먼저
-            let never = ClaudeAppSendContext(viewedSessionID: id, targetSessionID: id, confirmed: nil, hasPending: true, relay: .ready, view: .open)
+            let never = ClaudeAppSendContext(confirmed: nil, hasPending: true, relay: .ready, view: .open)
             #expect(ClaudeAppSendCheck.evaluate(facts: facts(), context: never) == .blocked(.pending))
         }
 
@@ -124,7 +119,7 @@ extension ExternalSessionSuites {
             #expect(B.sessionClosed.notSentReason == .sessionClosed)
             #expect(B.notTrusted.notSentReason == .notReceived && B.writersUnknown.notSentReason == .notReceived)
             #expect(B.unavailable.notSentReason == .relayFailed && B.relayMismatch.notSentReason == .relayFailed)
-            #expect(B.pending.notSentReason == nil && B.idMismatch.notSentReason == nil && B.unreadable.notSentReason == nil, "줄 없이 막는다 (입력창이 없거나 한 번에 하나)")
+            #expect(B.pending.notSentReason == nil && B.unreadable.notSentReason == nil, "줄 없이 막는다 (입력창이 없거나 한 번에 하나)")
         }
 
         // MARK: 사실 모으기 (가짜 홈 · 가짜 사실)

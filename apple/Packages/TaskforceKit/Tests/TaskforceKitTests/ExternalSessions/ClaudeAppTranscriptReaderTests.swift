@@ -50,8 +50,94 @@ extension ExternalSessionSuites {
             turns.compactMap { turn in
                 switch turn.kind {
                 case .user(let text), .assistant(let text), .peer(let text, _): text
-                case .tool: nil
+                case .tool, .boundary: nil
                 }
+            }
+        }
+
+        /// 정해 둔 줄만 주는 가짜 기록
+        private final class FixedTurnsSource: ClaudeAppTranscriptSource, @unchecked Sendable {
+            let turns: [ClaudeAppTurn]
+            init(turns: [ClaudeAppTurn]) { self.turns = turns }
+            func open(sessionID: String, cwd: String?) -> ClaudeAppTranscriptLoad {
+                .page(ClaudeAppTranscriptPage(turns: turns, cursor: ClaudeAppTranscriptCursor(sessionID: sessionID), hasEarlier: false, skippedLines: 0))
+            }
+            func earlier(_ cursor: ClaudeAppTranscriptCursor) -> ClaudeAppTranscriptLoad { .unreadable }
+            func newer(_ cursor: ClaudeAppTranscriptCursor) -> ClaudeAppTranscriptUpdate { .turns([], cursor: cursor, hasMore: false) }
+        }
+
+        private func kinds(_ turns: [ClaudeAppTurn]) -> [String] {
+            turns.map { turn in
+                switch turn.kind {
+                case .user: "user"
+                case .assistant: "assistant"
+                case .peer: "peer"
+                case .tool: "tool"
+                case .boundary: "boundary"
+                }
+            }
+        }
+
+        // MARK: 글 없는 경계 (OA PR-D3 검토 P2-1, DT11) · 안정된 ref 씨앗 (P3-11)
+
+        /// 실측(Claude Code 2.1.x, 일회용 세션): 턴이 도는 동안 보낸 글은 `queue-operation enqueue` 뒤에 `attachment`(`type: queued_command`, `prompt` = 친 글, `commandMode: "prompt"`, **`origin` 없음**)로 기록된다.
+        /// 우리 글 L 뒤에 이런 줄이 끼면 그 뒤의 답은 L에 대한 답이 아니다 → 글 없는 경계 줄
+        @Test func aPromptTypedOnTheDesktopMidTurnATaskNotificationAndAHookLineEachBecomeATextlessBoundary() throws {
+            try withHome { home in
+                let typed = "SENTINEL-DESKTOP-TYPED-MIDTURN"
+                let hook = "SENTINEL-HOOK-LINE"
+                let notice = "<task-notification><task-id>bgtask1</task-id><status>completed</status><summary>SENTINEL-NOTICE-SUMMARY</summary></task-notification>"
+                let lines = [
+                    peerUser(msg: "m1", body: "from relay"),
+                    L.assistant(id: id, text: "answer one"),
+                    F.json([
+                        "type": "attachment", "sessionId": id, "uuid": UUID().uuidString.lowercased(), "timestamp": "2026-10-22T01:00:05.000Z",
+                        "attachment": ["type": "queued_command", "prompt": typed, "source_uuid": UUID().uuidString.lowercased(), "commandMode": "prompt"],
+                    ]),
+                    L.assistant(id: id, text: "answer two"),
+                    F.json(["type": "user", "sessionId": id, "message": ["role": "user", "content": hook], "origin": ["kind": "hook", "body": hook]]),
+                    L.assistant(id: id, text: "answer three"),
+                    F.json(["type": "attachment", "sessionId": id, "attachment": ["type": "queued_command", "prompt": notice, "commandMode": "task-notification"]]),
+                    L.assistant(id: id, text: "answer four"),
+                ]
+                try home.transcript(directory: directory, id: id, lines: lines)
+                guard let page = page(reader(home).open(sessionID: id, cwd: cwd)) else { return }
+                #expect(kinds(page.turns) == ["peer", "assistant", "boundary", "assistant", "boundary", "assistant", "boundary", "assistant"])
+                var dump = ""
+                Swift.dump(page, to: &dump)
+                let all = dump + String(reflecting: page.turns) + String(describing: page.cursor)
+                for sentinel in [typed, hook, "SENTINEL-NOTICE-SUMMARY"] { #expect(!all.contains(sentinel), Comment(rawValue: "경계 줄에는 글이 없다: \(sentinel)")) }
+            }
+        }
+
+        @MainActor
+        @Test func aBoundaryNeverReachesTheConversationTheWindowShows() async throws {
+            let turns = [
+                ClaudeAppTurn(id: "1", kind: .user("hello")), ClaudeAppTurn(id: "2", kind: .boundary), ClaudeAppTurn(id: "3", kind: .assistant("hi")),
+            ]
+            let conversation = ClaudeAppConversation(sessionID: id, cwd: cwd, source: FixedTurnsSource(turns: turns))
+            conversation.start()
+            var waited = 0
+            while conversation.phase != .ready, waited < 400 {
+                try? await Task.sleep(for: .milliseconds(5))
+                waited += 1
+            }
+            #expect(conversation.phase == .ready)
+            #expect(kinds(conversation.turns) == ["user", "assistant"], "화면의 대화에는 글 없는 경계가 없다")
+            conversation.stop()
+        }
+
+        @Test func everyConversationLineCarriesTheRecordUUIDAndItsBlockIndexAsAStableID() throws {
+            try withHome { home in
+                let uuid = "11111111-2222-4333-8444-555555555555"
+                let record = F.json([
+                    "type": "assistant", "sessionId": id, "uuid": uuid, "timestamp": "2026-10-22T01:00:02.000Z",
+                    "message": ["role": "assistant", "content": [["type": "text", "text": "first block"], ["type": "tool_use", "id": "toolu_1", "name": "Read", "input": [:]], ["type": "text", "text": "last block"]]],
+                ])
+                let noUUID = F.json(["type": "assistant", "sessionId": id, "message": ["role": "assistant", "content": [["type": "text", "text": "no uuid here"]]]])
+                try home.transcript(directory: directory, id: id, lines: [record, noUUID])
+                guard let page = page(reader(home).open(sessionID: id, cwd: cwd)) else { return }
+                #expect(page.turns.map(\.stableID) == ["\(uuid)-0", "\(uuid)-1", "\(uuid)-2", nil], "uuid가 있으면 uuid + 몇 번째 블록, 없으면 nil(줄 위치로 되돌아간다)")
             }
         }
 
@@ -81,8 +167,8 @@ extension ExternalSessionSuites {
                     .user("Please list the files"), .assistant("I will look."), .tool(name: "Bash", description: "List files"), .assistant("Here are the files."),
                     .peer("Please also run the tests", relay), .assistant("Running the tests."),
                     .peer("And summarize", ClaudeAppPeer(plugin: "tf-relay", verifiedPeerPID: 4321, messageID: "00000000-0000-4000-8000-0000000000b2")),
-                    .tool(name: "Read", description: nil), .assistant("All done."),
-                ])
+                    .tool(name: "Read", description: nil), .boundary, .assistant("All done."),
+                ], "peer가 아닌 `queued_command`는 글 없는 경계로만 남는다 (OA PR-D3 검토 P2-1)")
                 #expect(!page.hasEarlier)
                 #expect(page.skippedLines == 0)
                 #expect(Set(page.turns.map(\.id)).count == page.turns.count, "줄 위치로 만든 id는 겹치지 않는다")
@@ -463,7 +549,7 @@ extension ExternalSessionSuites {
                 for startCwd in [nil, "/Users/tester/proj"] as [String?] {
                     let recording = RecordingFileSystem()
                     guard let page = page(reader(home, fileSystem: recording.fileSystem).open(sessionID: id, cwd: startCwd)) else { return }
-                    #expect(page.turns.count == 9, "\(startCwd ?? "nil")")
+                    #expect(page.turns.count == 10, "\(startCwd ?? "nil"): 대화 줄 9 + 글 없는 경계 1")
                     #expect(Set(recording.reads.map(\.path)) == [path])
                     #expect(Set(recording.listed).isSubset(of: [home.projects]), "나열은 projects 한 곳")
                 }

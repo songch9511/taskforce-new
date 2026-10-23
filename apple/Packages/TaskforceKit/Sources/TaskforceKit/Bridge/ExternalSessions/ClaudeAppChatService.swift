@@ -9,8 +9,9 @@ public enum ClaudeAppRelayGate {
     }
 }
 
-/// 기록 속 peer 줄 밑에 보이는 한 줄 (계약 25.4.4, DZ 승인 · Q-D3c): **우리 중계 프로세스가 보낸 것**(플러그인 `tf-relay` ∧ 검증된 보낸 pid가 지금 떠 있는 중계)만 "Received · via Taskforce"이고,
-/// 그 밖은 중립 표시 "From another session"이다. `tf-relay`라는 이름만으로 믿지 않는다: 앞 실행의 중계 · 다른 프로세스는 우리 사용자의 글이라는 증거가 없다
+/// 기록 속 peer 줄 밑에 보이는 한 줄 (계약 25.4.4, DZ 승인 · Q-D3c): **이 앱 실행이 띄운 중계 프로세스가 보낸 것**(플러그인 `tf-relay` ∧ 검증된 보낸 pid가 이 실행이 띄운 중계 pid 가운데 하나)만 "Received · via Taskforce"이고,
+/// 그 밖은 중립 표시 "From another session"이다. `tf-relay`라는 이름만으로 믿지 않는다: 앞 실행의 중계 · 다른 프로세스는 우리 사용자의 글이라는 증거가 없다.
+/// (2분 유휴로 끝났거나 다시 떠서 pid가 바뀐 이 실행의 앞선 중계는 우리 것이다: 그래서 "지금 떠 있는" 것이 아니라 "이 실행이 띄운" 모든 pid를 쓴다 — OA PR-D3 검토 P2-4)
 public enum ClaudeAppPeerLine {
     public static func of(_ peer: ClaudeAppPeer, relayPIDs: Set<Int32>) -> MessageDeliveryLine {
         let ours = peer.verifiedPeerPID.map { relayPIDs.contains($0) && peer.isTaskforceRelay(relayPID: $0) } ?? false
@@ -213,6 +214,8 @@ public final class ClaudeAppChatService {
         var relayPID: Int32?
         let sentAt: Date
         let baseline: Set<String>
+        /// 보내기 전 기록을 읽지 못해 baseline을 모른다: 보낸 시각 뒤에 쓰인 줄만 우리 것으로 본다 (OA PR-D3 검토 P3-13)
+        let baselineUnknown: Bool
         var matchedTurnID: String?
         /// 교환이 끝났다 (더 모으지 않는다)
         var exchangeDone = false
@@ -222,12 +225,13 @@ public final class ClaudeAppChatService {
         var identity: ClaudeAppChatIdentity?
         var noBridgeReported = false
 
-        init(id: String, sessionID: String, text: String, startedAt: Date, baseline: Set<String>) {
+        init(id: String, sessionID: String, text: String, startedAt: Date, baseline: Set<String>, baselineUnknown: Bool) {
             self.id = id
             self.sessionID = sessionID
             self.text = text
             self.sentAt = startedAt
             self.baseline = baseline
+            self.baselineUnknown = baselineUnknown
             tracker = ClaudeAppDeliveryTracker(startedAt: startedAt)
         }
     }
@@ -255,6 +259,10 @@ public final class ClaudeAppChatService {
     private var isShutDown = false
     private var interestOwners = Set<String>()
     private var interestChain: Task<Void, Never>?
+    /// 계정 세대 (OA PR-D3 검토 P3-6): `accountLeft()`가 올린다. 보내기 · 읽기 · 올리기 · 미리 띄우기는 시작할 때의 값을 쥐고 있다가 기다림이 끝날 때마다 같은지 보고, 다르면 그만둔다 — 떠난 계정의 글이 다음 계정으로 가지 않는다
+    private var epoch = 0
+    /// 저장 켜짐 확인 (처음 한 번): 보내기는 이것을 기다리지 않고, 교환을 모을 때만 답을 기다린다
+    private var askTask: Task<Void, Never>?
 
     public init(environment: ClaudeAppChatEnvironment) {
         self.environment = environment
@@ -266,9 +274,15 @@ public final class ClaudeAppChatService {
     /// 중계 프로세스의 pid (레일 · 목록 · 다른 writer 확인이 뺀다)
     public var relayPIDs: ClaudeAppRelayPIDs { environment.relay.pids }
 
-    /// 기록 속 peer 줄 밑의 표시: 지금 떠 있는 우리 중계가 보낸 것만 "Received · via Taskforce", 그 밖은 "From another session"
-    public func peerLine(for peer: ClaudeAppPeer) -> MessageDeliveryLine {
-        ClaudeAppPeerLine.of(peer, relayPIDs: environment.relay.pids.current)
+    /// 기록의 한 줄 밑의 표시 (peer 줄이 아니면 nil): **이 앱 실행이 띄운 중계**가 보낸 것만 "Received · via Taskforce", 그 밖은 "From another session".
+    /// - 중계가 2분 유휴로 끝났거나 다시 떠서 pid가 바뀌어도 앞서 띄운 중계의 글은 그대로 우리 것이다 (이 실행이 띄운 모든 pid를 기억한다: `ClaudeAppRelayPIDs.launched`)
+    /// - 이 보내기로 기록에서 확인된 줄(`matchedTurnID`)은 pid를 몰라도 우리 것이다
+    /// - 읽는 값은 모두 관찰된다 (pid 집합 · 보낸 말): pid가 바뀌면 그린 쪽이 다시 그려진다 (OA PR-D3 검토 P2-4)
+    public func peerLine(for turn: ClaudeAppTurn, in sessionID: String) -> MessageDeliveryLine? {
+        guard case .peer(_, let peer) = turn.kind else { return nil }
+        let matched = chats[sessionID]?.deliveries.contains { $0.matchedTurnID == turn.id } == true
+        if matched { return MessageDeliveryLine(strong: nil, text: ClaudeAppChatCopy.receivedViaTaskforce) }
+        return ClaudeAppPeerLine.of(peer, relayPIDs: environment.relay.pids.launched)
     }
 
     public func chat(for sessionID: String) -> ClaudeAppSessionChat {
@@ -285,7 +299,12 @@ public final class ClaudeAppChatService {
         setInterest("view:\(chat.sessionID)", chat.isVisible)
         if chat.isVisible {
             let relay = environment.relay
-            Task { await relay.prepare() }
+            let started = epoch
+            // 줄 서 있는 동안 계정이 떠났으면 띄우지 않는다 (OA PR-D3 검토 P3-9)
+            Task { [weak self] in
+                guard let self, epoch == started, !isShutDown else { return }
+                await relay.prepare()
+            }
         }
     }
 
@@ -297,9 +316,16 @@ public final class ClaudeAppChatService {
         guard before != after else { return }
         let relay = environment.relay
         let previous = interestChain
-        interestChain = Task {
+        let started = epoch
+        interestChain = Task { [weak self] in
             await previous?.value
-            if after { await relay.retain() } else { await relay.release() }
+            // 떠난 계정이 걸어 둔 `retain`은 버린다 (`release`는 그대로: 끝내는 쪽이다)
+            if after {
+                guard let self, epoch == started, !isShutDown else { return }
+                await relay.retain()
+            } else {
+                await relay.release()
+            }
         }
     }
 
@@ -309,16 +335,17 @@ public final class ClaudeAppChatService {
     fileprivate func begin(chat: ClaudeAppSessionChat, text: String, replacing replaced: String?) async {
         guard !isShutDown else { return }
         let sessionID = chat.sessionID
+        let started = epoch
         chat.isChecking = true
         defer { chat.isChecking = false }
         let facts = await detached { [environment] in environment.facts(sessionID) }
-        guard !isShutDown, chat.composerShown else { return }
+        // 기다리는 동안 계정이 떠났으면 이 입력창은 이미 남의 것이 아니다: 아무것도 만들지 않는다 (카드 · 막힘 줄 · 보내기 모두)
+        guard !isShutDown, epoch == started, chat.composerShown else { return }
         var readiness = await environment.relay.readiness()
+        guard epoch == started else { return }
         // 띄운 뒤 정체가 바뀐 중계는 보내기가 새로 띄운다 (⑤: 안 되면 Not received)
         if readiness == .mismatch { readiness = .notRunning }
-        let context = ClaudeAppSendContext(
-            viewedSessionID: chat.sessionID, targetSessionID: sessionID, confirmed: chat.confirmation, hasPending: chat.hasPending && replaced == nil, relay: readiness, view: chat.view
-        )
+        let context = ClaudeAppSendContext(confirmed: chat.confirmation, hasPending: chat.hasPending && replaced == nil, relay: readiness, view: chat.view)
         switch ClaudeAppSendCheck.evaluate(facts: facts, context: context) {
         case .needsConfirmation:
             chat.candidate = facts.session.map { ClaudeAppSendContext.Confirmation(pid: $0.pid, procStart: $0.procStart) }
@@ -330,27 +357,48 @@ public final class ClaudeAppChatService {
             if replaced == nil { chat.draft = "" }
             noteTerminal(.notSent(reason))
         case .allowed:
-            await send(chat: chat, text: text, replacing: replaced, cwd: facts.session?.cwd)
+            await send(chat: chat, text: text, replacing: replaced, facts: facts, epoch: started)
         }
     }
 
-    private func send(chat: ClaudeAppSessionChat, text: String, replacing replaced: String?, cwd: String?) async {
+    /// 쓰기 직전의 확인 (TOCTOU, DT1 · DT3 · DT9): 중계의 한 번에 하나 구간 안에서, 중계가 준비된 뒤 · 글을 쓰기 전에 대상을 다시 읽는다.
+    /// 프로세스(pid · 시작 시각) · 서명 · 다른 writer · 등록 하나 · 등록 폴더 읽기 중 하나라도 처음 확인과 다르면 보내지 않는다 (Not received)
+    private func recheck(sessionID: String, original: ClaudeAppSendFacts) -> @Sendable () async -> Bool {
+        let environment = environment
+        return {
+            let latest = await Task.detached(priority: .userInitiated) { environment.facts(sessionID) }.value
+            guard let before = original.session, let now = latest.session else { return false }
+            return !latest.doubled && !latest.registryUnavailable && latest.processTrusted && latest.otherWriters == .none && now.pid == before.pid && now.procStart == before.procStart
+        }
+    }
+
+    /// 저장 켜짐 확인을 (처음 한 번) 시작한다: **기다리지 않는다** — 보내기는 저장과 무관하다 (§25.4.3 ⑧). 올리는 길은 확인이 켜짐이라고 답한 뒤에만 생긴다
+    private func startAsking() {
+        guard askTask == nil else { return }
+        let saver = environment.saver
+        askTask = Task { await saver.ensureAsked() }
+    }
+
+    private func send(chat: ClaudeAppSessionChat, text: String, replacing replaced: String?, facts: ClaudeAppSendFacts, epoch started: Int) async {
         let sessionID = chat.sessionID
         let id = UUID().uuidString.lowercased()
-        // 보내기 **전에** 기록을 열어 둔다: 이미 있던 줄은 이번 보내기의 것이 아니다
+        // 보내기 **전에** 기록을 열어 둔다: 이미 있던 줄은 이번 보내기의 것이 아니다. 못 열면 baseline을 모른다 (보낸 시각 뒤의 줄만 우리 것)
         let follower = followers[sessionID] ?? Follower(sessionID: sessionID)
         followers[sessionID] = follower
-        await openOrCatchUp(follower, cwd: cwd ?? environment.session(sessionID)?.cwd)
-        let active = Active(id: id, sessionID: sessionID, text: text, startedAt: environment.now(), baseline: Set(follower.turns.map(\.id)))
+        await openOrCatchUp(follower, cwd: facts.session?.cwd ?? environment.session(sessionID)?.cwd)
+        guard epoch == started, !isShutDown else { return }
+        let active = Active(
+            id: id, sessionID: sessionID, text: text, startedAt: environment.now(), baseline: Set(follower.turns.map(\.id)), baselineUnknown: follower.cursor == nil
+        )
         actives[sessionID, default: []].append(active)
         setInterest("follow:\(sessionID)", true)
         place(ClaudeAppSessionChat.Delivery(id: id, text: text, state: .sending, matchedTurnID: nil), in: chat, replacing: replaced)
         if replaced == nil { chat.draft = "" }
         ensureLoop()
-        // 글을 보내기 **전에** 저장이 켜졌는지 묻는다 (처음 한 번: 그 뒤는 1시간마다). 보내기는 저장과 무관하다: 못 물어도 보낸다 (그때는 올리지 않는다)
-        await environment.saver.ensureAsked()
-        let result = await environment.relay.send(sessionID: sessionID, text: text)
-        guard !isShutDown else { return }
+        // 저장 켜짐 확인은 보내기와 나란히 간다 (기다리지 않는다)
+        startAsking()
+        let result = await environment.relay.send(sessionID: sessionID, text: text, recheck: recheck(sessionID: sessionID, original: facts))
+        guard !isShutDown, epoch == started else { return }
         switch result {
         case .delivered(let relayPID):
             active.relayPID = relayPID
@@ -404,16 +452,19 @@ public final class ClaudeAppChatService {
 
     private func tick(_ sessionID: String) async {
         guard let follower = followers[sessionID], let list = actives[sessionID], !list.isEmpty else { return }
+        let started = epoch
         let session = environment.session(sessionID)
         follower.absent = session == nil ? follower.absent + 1 : 0
         let closed = follower.absent > ClaudeAppRail.missingGrace
         await read(follower, cwd: session?.cwd)
+        guard epoch == started else { return }
         let mode = follower.cursor?.permissionMode
         for active in list {
             let now = environment.now()
             if active.tracker.isPending { active.tracker.apply(.target(session?.state), at: now) }
             if active.matchedTurnID != nil, session?.state == .busy { active.seenBusy = true }
             await collect(active, follower: follower, session: session, closed: closed, now: now)
+            guard epoch == started else { return }
             if active.tracker.isPending {
                 if closed { active.tracker.apply(.targetClosed, at: now) }
                 active.tracker.apply(.tick(permissionMode: mode), at: now)
@@ -426,16 +477,21 @@ public final class ClaudeAppChatService {
     private func collect(_ active: Active, follower: Follower, session: ClaudeAppSession?, closed: Bool, now: Date) async {
         guard let relayPID = active.relayPID, !active.exchangeDone else { return }
         let ended = active.matchedTurnID != nil && (closed || (active.seenBusy && session?.state == .idle && follower.readComplete))
+        let started = epoch
+        // 저장 켜짐 확인의 답을 기다린다 (보내기는 기다리지 않았다: 시간 제한이 있는 호출이라 오래 걸리지 않는다). 답이 오기 전에는 올리는 길이 없다
+        await askTask?.value
+        guard epoch == started else { return }
         // 저장이 켜져 있을 때만 이 세션의 저장 표시 · ref 열쇠가 필요하다 (꺼져 있으면 서버에 관한 것은 아무것도 읽지 않는다: DT14)
         let saving = await environment.saver.isSaving
         if saving, active.identity == nil { active.identity = await environment.identity(active.sessionID) }
+        guard epoch == started else { return }
         // 열쇠를 아직 모르면 행은 쓰지 않는다 (받았는지 찾는 데만 쓴다): 씨앗 그대로를 돌려주는 자리 값
         let plain: @Sendable (String) -> String = { seed in seed }
         let ref: @Sendable (String) -> String = active.identity.map(\.ref) ?? plain
         let exchange = ClaudeAppExchangeCollector.collect(
             ClaudeAppExchangeInput(
                 sessionID: active.sessionID, turns: follower.turns, relayPID: relayPID, sentText: active.text, sentAt: active.sentAt, now: now, turnEnded: ended, baseline: active.baseline,
-                ref: ref
+                baselineUnknown: active.baselineUnknown, ref: ref
             )
         )
         guard let matched = exchange.matchedTurnID else { return }
@@ -463,9 +519,16 @@ public final class ClaudeAppChatService {
         await environment.saver.enqueue(ClaudeAppChatBatch(exchangeID: active.id, context: identity.context, rows: exchange.rows))
     }
 
+    /// 올리기를 포기했다: 그 교환의 사용자 행이 이미 올라갔으면 서버가 `received`를 센 것이다 — 다시 세지 않는다 (OA PR-D3 검토 P3-12). 사용자 행조차 못 올렸을 때만 "받았지만 올리지 못했다"를 알린다
     private func uploadGaveUp(exchangeID: String) {
         guard !isShutDown else { return }
-        report(.receivedButNotUploaded)
+        let saver = environment.saver
+        let started = epoch
+        Task { [weak self] in
+            let counted = await saver.userRowSaved(exchangeID)
+            guard let self, !counted, !isShutDown, epoch == started else { return }
+            report(.receivedButNotUploaded)
+        }
     }
 
     // MARK: 끝난 것
@@ -574,7 +637,8 @@ public final class ClaudeAppChatService {
     /// 앱 종료 · 게이트 꺼짐: 따라가기 · 중계 · 올리기를 바로 끝낸다 (못 올린 것은 버린다). 이 서비스는 다시 쓰지 않는다
     public func shutdown() async {
         isShutDown = true
-        await stopEverything()
+        epoch += 1
+        await stopEverything(terminal: true)
     }
 
     /// 앱 종료 직전(`applicationWillTerminate`): 중계 프로세스를 막힘 있게 끝낸다 (최대 `timeout`초: 메인을 오래 잡지 않는다). 메인에서 불러도 된다 — 메인이 아닌 중계 actor만 기다린다
@@ -582,7 +646,8 @@ public final class ClaudeAppChatService {
         let relay = quitRelay
         let done = DispatchSemaphore(value: 0)
         Task.detached {
-            await relay.shutdown()
+            // 종료는 끝이다: 줄 서 있던 미리 띄우기 · 보내기가 이 뒤에 중계를 되살리지 못한다 (OA PR-D3 검토 P3-9)
+            await relay.shutdown(terminal: true)
             done.signal()
         }
         _ = done.wait(timeout: .now() + timeout)
@@ -590,11 +655,14 @@ public final class ClaudeAppChatService {
 
     /// 로그아웃 · 계정 바뀜: 하던 일을 모두 끝내고 이 계정의 입력 상태(쓰던 글 · 보낸 말)를 버린다. 서비스는 다음 계정으로 다시 쓴다
     public func accountLeft() async {
+        // 세대를 먼저 올린다 (기다리는 중인 보내기 · 읽기 · 올리기 · 미리 띄우기가 깨어나면 이 값이 달라 그만둔다)
+        epoch += 1
+        askTask = nil
         chats = [:]
-        await stopEverything()
+        await stopEverything(terminal: false)
     }
 
-    private func stopEverything() async {
+    private func stopEverything(terminal: Bool) async {
         loop?.cancel()
         loop = nil
         actives = [:]
@@ -602,7 +670,7 @@ public final class ClaudeAppChatService {
         interestOwners = []
         interestChain?.cancel()
         interestChain = nil
-        await environment.relay.shutdown()
+        await environment.relay.shutdown(terminal: terminal)
         await environment.saver.clear()
     }
 }

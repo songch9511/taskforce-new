@@ -59,9 +59,13 @@ extension ExternalSessionSuites {
         }
 
         @Test func thePutErrorsKeepTheirStatusSoTheUploaderCanTellThemApart() async {
-            let expected: [(Int, ClaudeAppChatUploader.PutOutcome)] = [(400, .invalid), (404, .disabled), (409, .retry), (413, .quota), (429, .retry), (500, .retry), (503, .retry)]
-            for (status, outcome) in expected {
-                let (api, _) = client(status: status, body: #"{"error":{"code":"some_code","message":"x"}}"#)
+            // 404: 서버의 `bridge_not_found`처럼 `APIErrorCode`에 없는 코드는 그 bridge만 사라진 것이고, 알려진 `not_found`(gate가 꺼짐)는 모두 꺼진 것이다
+            let expected: [(Int, String, ClaudeAppChatUploader.PutOutcome)] = [
+                (400, "some_code", .invalid), (404, "bridge_not_found", .bridgeGone), (404, "not_found", .disabled), (409, "some_code", .retry), (413, "quota_exceeded", .quota),
+                (429, "some_code", .retry), (500, "some_code", .retry), (503, "some_code", .retry),
+            ]
+            for (status, code, outcome) in expected {
+                let (api, _) = client(status: status, body: #"{"error":{"code":"\#(code)","message":"x"}}"#)
                 do {
                     _ = try await api.putClaudeAppChat(request())
                     Issue.record("\(status)인데 던지지 않았다")

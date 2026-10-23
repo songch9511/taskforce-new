@@ -199,6 +199,27 @@ struct ClaudeAppRelayProcessTests {
         #expect(!KeptClaudeAppRelayLauncher.prepareFolder("relative/path") && !KeptClaudeAppRelayLauncher.prepareFolder("/a/../b"))
     }
 
+    /// OA PR-D3 검토 P3-8: 끝낸 뒤에는 stdin fd에 쓰지 않는다. 끝나면서 닫힌 fd 번호를 다른 파일이 곧바로 쓰므로(fd 재사용), 앞서 줄 서 있던 쓰기가 그 번호로 가면 글이 엉뚱한 파일에 들어간다
+    @Test func aWriteAfterTheStopNeverReachesAFileDescriptorThatWasReusedByAnotherFile() async throws {
+        let fixture = try fixture()
+        defer { cleanup(fixture) }
+        let keeper = try BuiltProducts.url("tf-agent-keeper").path
+        let launcher = KeptClaudeAppRelayLauncher(
+            executable: fixture.claude, keeper: keeper, endedFile: URL(fileURLWithPath: fixture.root + "/state/stale.ended"),
+            appEnvironment: ["HOME": fixture.home, "USER": "tester", "LANG": "en_US.UTF-8", "PATH": "/usr/bin:/bin"], isTrustedExecutable: { _ in true }
+        )
+        let process = try await launcher.launch(arguments: ClaudeAppRelay.arguments(modDirectory: fixture.mod), cwd: fixture.work)
+        await process.stop()
+        // 닫힌 fd 번호를 다른 파일이 쓴다 (낮은 번호부터 재사용된다)
+        let paths = (0..<64).map { fixture.root + "/reused-\($0).txt" }
+        let descriptors = paths.map { open($0, O_CREAT | O_WRONLY, 0o600) }
+        defer { for descriptor in descriptors where descriptor >= 0 { close(descriptor) } }
+        let wrote = await process.write(Data("SENTINEL-STALE-WRITE\n".utf8))
+        #expect(!wrote, "끝난 프로세스에는 쓰지 않는다")
+        let leaked = paths.filter { ((try? String(contentsOfFile: $0, encoding: .utf8)) ?? "").contains("SENTINEL") }
+        #expect(leaked.isEmpty, "글이 다른 파일에 들어갔다: \(leaked.count)개")
+    }
+
     @Test func aScriptIsNotSignedByAnthropicAndTheRealClaudeBinaryIfPresentIs() throws {
         let fixture = try fixture()
         defer { cleanup(fixture) }

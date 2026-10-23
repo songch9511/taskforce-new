@@ -295,17 +295,23 @@ final class ExternalSessionsEnvironment: @unchecked Sendable {
         if let existing = lock.withLock({ scanner }), existing.partition == id { return existing.scanner }
         // 열쇠를 두지 못하면 목록을 내지 않는다 (id 없이 서버로 보낼 수 없다)
         guard let key = try? FileExternalSessionKeyStore(directory: context.paths.partitionDirectory).loadOrCreate() else { return nil }
-        let sessionsRoot = context.paths.sessionsRoot
-        let configuration = ExternalSessionScanner.Configuration(
-            claudeDirectory: home + "/.claude", folderRules: ExternalSessionFolderRules.lexical(home: home, protectedRoots: context.paths.protectedRoots),
-            protectedRoots: context.paths.protectedRoots, taskforceSessionIDs: { Self.taskforceSessionIDs(sessionsRoot: sessionsRoot) },
-            // 우리 중계 `claude`(데스크톱 세션과 대화, PR-D3)는 이 Mac의 세션 목록에 오르지 않는다
-            ownPIDs: { ClaudeAppRelayPIDs.shared.current },
+        let configuration = Self.scannerConfiguration(
+            home: home, protectedRoots: context.paths.protectedRoots, sessionsRoot: context.paths.sessionsRoot,
             installedCLIVersion: { [weak self] in self?.lock.withLock { self?.currentVersion } }
         )
         let made = ExternalSessionScanner(configuration: configuration, key: key)
         lock.withLock { scanner = (id, made) }
         return made
+    }
+
+    /// "On this Mac" 훑기의 설정. **우리 중계 `claude`(데스크톱 세션과 대화, PR-D3)의 pid는 목록에서 뺀다**: 이 실행이 지금 띄운 중계 pid(`ClaudeAppRelayPIDs.shared`)를 읽는다 (OA PR-D3 검토 P3-16: 시험이 이 연결을 본다)
+    static func scannerConfiguration(
+        home: String, protectedRoots: [String], sessionsRoot: URL, installedCLIVersion: @escaping @Sendable () -> String?
+    ) -> ExternalSessionScanner.Configuration {
+        ExternalSessionScanner.Configuration(
+            claudeDirectory: home + "/.claude", folderRules: ExternalSessionFolderRules.lexical(home: home, protectedRoots: protectedRoots), protectedRoots: protectedRoots,
+            taskforceSessionIDs: { taskforceSessionIDs(sessionsRoot: sessionsRoot) }, ownPIDs: { ClaudeAppRelayPIDs.shared.current }, installedCLIVersion: installedCLIVersion
+        )
     }
 
     /// Taskforce가 띄운 세션의 Claude id (세션 폴더의 `state.json`): 목록에서 뺀다
@@ -387,7 +393,7 @@ enum ClaudeAppRuntime {
         let agents = ClaudeAgentsLister.live(locator: .standard(home: home), log: log)
         // 중계(PR-D3)는 레일 폴러보다 먼저 만든다: 폴러가 중계의 pid를 뺀다 (중계 `claude`는 `sdk-cli`라 레일에 오르지 않지만, 정체를 아는 값은 모두 같은 곳에서 뺀다)
         let relay = chatEnabled ? ClaudeAppChatRuntime.makeRelay(home: home, log: log) : nil
-        let poller = ClaudeAppStatusPoller(sessionsDirectory: home + "/.claude/sessions", ownPIDs: { ClaudeAppRelayPIDs.shared.current }, agents: { await agents.list() }, log: log)
+        let poller = makePoller(home: home, agents: { await agents.list() }, log: log)
         let sessions = ClaudeAppSessionsModel(poll: { await poller.poll() }, scope: scope, done: done)
         let api = services.api
         let opened = ClaudeAppOpenedMetric(send: { (try? await api.claudeAppSessionOpened()) != nil }, scope: scope, log: log)
@@ -395,6 +401,10 @@ enum ClaudeAppRuntime {
         return Made(sessions: sessions, opened: opened, chat: chat)
     }
 
+    /// 레일의 폴러. **우리 중계 `claude`의 pid는 데스크톱 세션에서 뺀다** (`ClaudeAppRelayPIDs.shared`): 이 연결을 시험이 본다 (OA PR-D3 검토 P3-16)
+    static func makePoller(home: String, agents: @escaping @Sendable () async -> [ClaudeAgentsItem]?, log: any BridgeLogSink) -> ClaudeAppStatusPoller {
+        ClaudeAppStatusPoller(sessionsDirectory: home + "/.claude/sessions", ownPIDs: { ClaudeAppRelayPIDs.shared.current }, agents: agents, log: log)
+    }
 }
 
 /// 안 연 끝남 표시의 두 저장소 (계약 23장): 레일 링(Taskforce 세션 · 이슈)과 Claude 데스크톱 링. `ChatRuntime`이 들고 셸 컨트롤러가 그대로 쓴다.

@@ -86,7 +86,31 @@ final class RigWorld: @unchecked Sendable {
         set { lock.withLock { _bridge = newValue } }
     }
 
-    func readFacts() -> ClaudeAppSendFacts { lock.withLock { _factsCalls += 1; return _facts } }
+    /// 다음 읽기들이 차례로 받을 사실 (모자라면 `facts`): 확인한 뒤 · 보내기 직전에 사실이 달라지는 경우를 만든다 (TOCTOU)
+    func script(_ next: ClaudeAppSendFacts...) { lock.withLock { _factsScript += next } }
+    private var _factsScript: [ClaudeAppSendFacts] = []
+    private var _factsGate: DispatchSemaphore?
+
+    /// 사실 읽기를 붙들어 둔다 (`releaseFacts()`까지 읽는 쪽이 멈춘다): 읽는 도중에 계정이 떠나는 경우를 만든다
+    func holdFacts() { lock.withLock { _factsGate = DispatchSemaphore(value: 0) } }
+
+    func releaseFacts() {
+        let gate = lock.withLock { () -> DispatchSemaphore? in
+            defer { _factsGate = nil }
+            return _factsGate
+        }
+        for _ in 0..<8 { gate?.signal() }
+    }
+
+    func readFacts() -> ClaudeAppSendFacts {
+        let gate = lock.withLock { () -> DispatchSemaphore? in
+            _factsCalls += 1
+            return _factsGate
+        }
+        gate?.wait()
+        return lock.withLock { _factsScript.isEmpty ? _facts : _factsScript.removeFirst() }
+    }
+
     var factsCalls: Int { lock.withLock { _factsCalls } }
 
     /// 세션의 상태를 바꾼다 (등록 파일 · 확인 사실이 같이 바뀐다)
@@ -615,18 +639,211 @@ extension ExternalSessionSuites {
             await rig.cleanup()
         }
 
-        @Test func theStatusIsAskedBeforeTheFirstTextReachesTheRelay() async throws {
+        /// OA PR-D3 검토 P2-3 (§25.4.3 ⑧): 저장 켜짐 확인은 보내기를 막지 않는다 — 처음 한 번 부르되 기다리지 않는다. 올리는 길은 확인이 켜짐이라고 답한 뒤에만 있다 (그 전에는 PUT 0)
+        @Test func theSendDoesNotWaitForTheStatusAndNothingIsPutBeforeItAnswers() async throws {
             let rig = try await ChatRig(preAsk: false)
-            let observed = ClaudeAppFlag()
-            let launcher = rig.launcher
-            rig.status.onCall = {
-                if launcher.processes.contains(where: { $0.contents.contains { $0.hasPrefix("/tfsend") } }) { observed.set() }
-            }
-            #expect(rig.status.calls == 0)
+            rig.status.hold()
+            #expect(rig.status.calls == 0, "만들기만 해서는 서버를 부르지 않는다")
             let chat = rig.service.chat(for: sid)
             await send(chat, "hello")
-            #expect(rig.status.calls == 1 && !observed.isSet, "글이 중계에 닿기 전에 저장 켜짐을 물었다")
-            #expect(chat.deliveries.first?.state == .sent, "물은 뒤에 보냈다")
+            #expect(chat.deliveries.first?.state == .sent, "status가 아직 답하지 않아도 보냈다")
+            #expect(rig.launcher.processes.first?.contents.contains { $0.hasPrefix("/tfsend") } == true)
+            rig.transcript.append(rig.relayLine("hello"), rig.reply("hi"))
+            finishExchange(rig)
+            let ticking = Task { await rig.service.tick() }
+            try await Task.sleep(for: .milliseconds(60))
+            rig.saverSleeper.advance(5)
+            try await Task.sleep(for: .milliseconds(40))
+            #expect(rig.put.requests.isEmpty, "status가 답하기 전에는 올리지 않는다")
+            rig.status.release()
+            await ticking.value
+            #expect(rig.status.calls == 1, "처음 한 번만 물었다")
+            rig.saverSleeper.advance(2)
+            #expect(await relayEventually { rig.put.requests.count == 1 }, "켜짐이라고 답한 뒤에는 그 교환이 올라간다 (받았다는 지표는 저장 함수가 센다)")
+            #expect(rig.put.requests.first?.messages.map(\.body) == ["hello", "hi"] && rig.reports.all.isEmpty)
+            await rig.cleanup()
+        }
+
+        // MARK: 글 없는 경계 (OA PR-D3 검토 P2-1, DT11)
+
+        @Test func aPromptTypedOnTheDesktopMidTurnEndsTheExchangeAndItsAnswerIsNeverUploaded() async throws {
+            let rig = try await ChatRig()
+            let chat = rig.service.chat(for: sid)
+            await send(chat, "ask")
+            rig.transcript.append(rig.relayLine("ask"), rig.reply("answer before the boundary", id: "A1"))
+            await rig.service.tick()
+            rig.transcript.append(ClaudeAppTurn(id: "B1", kind: .boundary, timestamp: rig.clock.now.addingTimeInterval(5)), rig.reply("SENTINEL-answer-to-the-desktop-prompt", id: "A2"))
+            await rig.service.tick()
+            rig.saverSleeper.advance(2)
+            #expect(await relayEventually { !rig.put.requests.isEmpty })
+            try await Task.sleep(for: .milliseconds(40))
+            let bodies = rig.put.requests.flatMap(\.messages).map(\.body)
+            #expect(bodies == ["ask", "answer before the boundary"], "경계 뒤의 답은 우리가 보낸 말에 대한 답이 아니다")
+            #expect(!bodies.joined().contains("SENTINEL"))
+            await rig.cleanup()
+        }
+
+        // MARK: 쓰기 직전에 다시 확인 (OA PR-D3 검토 P2-2, TOCTOU · DT1 · DT3 · DT9)
+
+        @Test func theTargetIsReadAgainRightBeforeTheWriteAndAnythingThatChangedMeansNothingIsSent() async throws {
+            let ok = ClaudeAppSendFacts(session: RigWorld.session(), doubled: false, processTrusted: true, otherWriters: .none)
+            let changes: [(String, ClaudeAppSendFacts)] = [
+                ("대상 프로세스가 바뀌었다", ClaudeAppSendFacts(session: RigWorld.session(pid: 222), doubled: false, processTrusted: true, otherWriters: .none)),
+                ("다른 writer가 생겼다", ClaudeAppSendFacts(session: RigWorld.session(), doubled: false, processTrusted: true, otherWriters: .found)),
+                ("writer를 알 수 없다", ClaudeAppSendFacts(session: RigWorld.session(), doubled: false, processTrusted: true, otherWriters: .unknown)),
+                ("서명 · 조상이 맞지 않는다", ClaudeAppSendFacts(session: RigWorld.session(), doubled: false, processTrusted: false, otherWriters: .none)),
+                ("같은 id의 등록이 둘이 됐다", ClaudeAppSendFacts(session: nil, doubled: true, processTrusted: false, otherWriters: .none)),
+                ("등록이 사라졌다", ClaudeAppSendFacts(session: nil, doubled: false, processTrusted: false, otherWriters: .none)),
+                ("등록 폴더를 읽을 수 없다", ClaudeAppSendFacts(session: nil, doubled: false, processTrusted: false, otherWriters: .none, registryUnavailable: true)),
+            ]
+            for (why, changed) in changes {
+                let rig = try await ChatRig()
+                let chat = rig.service.chat(for: sid)
+                chat.draft = "careful with this one"
+                await chat.submit().value
+                #expect(chat.isConfirming, "\(why): 먼저 C5")
+                rig.world.script(ok, changed)    // 확인을 누른 뒤의 확인은 그대로, 쓰기 직전의 확인에서 달라진다
+                await chat.confirm().value
+                #expect(chat.deliveries.map(\.state) == [.notSent(.notReceived)], "\(why)")
+                #expect(rig.launcher.processes.allSatisfy { !$0.contents.contains { $0.hasPrefix("/tfsend") } }, "\(why): 글이 중계로 가지 않았다")
+                #expect(await relayEventually { rig.reports.all == [.notSent(.notReceived)] }, "\(why)")
+                await rig.cleanup()
+            }
+            // 달라진 것이 없으면 간다
+            let rig = try await ChatRig()
+            let chat = rig.service.chat(for: sid)
+            chat.draft = "all good"
+            await chat.submit().value
+            rig.world.script(ok, ok)
+            await chat.confirm().value
+            #expect(chat.deliveries.first?.state == .sent)
+            await rig.cleanup()
+        }
+
+        // MARK: 계정 세대 (OA PR-D3 검토 P3-6) · 떠난 뒤의 중계 (P3-9)
+
+        @Test func anAccountThatLeavesWhileTheFactsAreBeingReadNeverGetsItsTextSentOrAnythingShown() async throws {
+            let rig = try await ChatRig()
+            let chat = rig.service.chat(for: sid)
+            chat.draft = "text of the account that is leaving"
+            rig.world.holdFacts()
+            let submitting = chat.submit()
+            #expect(await relayEventually { rig.world.factsCalls == 1 }, "사실을 읽는 중이다")
+            await rig.service.accountLeft()
+            rig.world.releaseFacts()
+            await submitting.value
+            #expect(!chat.isConfirming && chat.deliveries.isEmpty, "떠난 계정의 입력 상태에는 아무것도 생기지 않는다")
+            #expect(rig.launcher.launches.isEmpty && rig.reports.all.isEmpty)
+            let next = rig.service.chat(for: sid)
+            #expect(next !== chat && next.deliveries.isEmpty && !next.isConfirming && next.draft.isEmpty, "다음 계정에는 아무것도 넘어가지 않는다")
+            await rig.cleanup()
+        }
+
+        @Test func aRelayPrepareQueuedBeforeTheAccountLeftNeverLaunchesTheRelayAfterwards() async throws {
+            let rig = try await ChatRig()
+            let chat = rig.service.chat(for: sid)
+            chat.setVisible(true)
+            await rig.service.accountLeft()
+            try await Task.sleep(for: .milliseconds(150))
+            #expect(rig.launcher.launches.isEmpty, "떠난 계정이 걸어 둔 미리 띄우기는 버려진다")
+            await rig.cleanup()
+        }
+
+        @Test func afterTheQuitShutdownTheRelayIsNeverStartedAgain() async throws {
+            let rig = try await ChatRig()
+            let chat = rig.service.chat(for: sid)
+            await send(chat, "before quitting")
+            rig.service.stopRelayForQuit(timeout: 5)
+            #expect(rig.launcher.processes.first?.isStopped == true)
+            chat.setVisible(true)
+            let again = rig.service.chat(for: ChatRigIDs.other)
+            again.setVisible(true)
+            try await Task.sleep(for: .milliseconds(150))
+            #expect(rig.launcher.launches.count == 1, "종료가 정해진 뒤에는 미리 띄우기도 보내기도 중계를 다시 띄우지 않는다")
+            #expect(await rig.relay.send(sessionID: sid, text: "too late") == .notDelivered(.relayFailed))
+            #expect(rig.launcher.launches.count == 1)
+            await rig.cleanup()
+        }
+
+        // MARK: 우리 글은 "다른 세션"으로 바뀌지 않는다 (OA PR-D3 검토 P2-4)
+
+        @Test func ourOwnLineKeepsItsReceivedLineAfterTheRelayStoppedOrWasReplacedWhileAForeignPidDoesNot() async throws {
+            let rig = try await ChatRig()
+            let chat = rig.service.chat(for: sid)
+            await send(chat, "ask")
+            rig.transcript.append(rig.relayLine("ask"))
+            await rig.service.tick()
+            let ours = rig.relayLine("ask")
+            await rig.relay.shutdown()
+            #expect(rig.service.relayPIDs.current.isEmpty)
+            let received = MessageDeliveryLine(strong: nil, text: "Received · via Taskforce")
+            let foreign = MessageDeliveryLine(strong: nil, text: "From another session")
+            #expect(rig.service.peerLine(for: ours, in: sid) == received, "중계가 멈춘 뒤에도 이 실행이 띄운 중계가 보낸 글이다")
+            // 이 보내기로 확인된 줄이 아닌 앞선 줄(다른 id)도 pid만으로 알아본다: 이 실행이 띄운 중계(4001)의 글이다
+            let earlier = rig.relayLine("an earlier message", id: "L77", messageID: "m77", pid: 4001)
+            #expect(rig.service.peerLine(for: earlier, in: sid) == received, "pid로 알아본다: 지금 떠 있는 중계가 아니어도 이 실행이 띄운 pid다")
+            // 다른 중계(pid 4002)가 떠도 앞 중계의 글은 그대로
+            await send(rig.service.chat(for: ChatRigIDs.other), "second")
+            #expect(rig.service.peerLine(for: earlier, in: sid) == received)
+            #expect(rig.service.peerLine(for: rig.relayLine("x", id: "L9", messageID: "m9", pid: 9999), in: sid) == foreign, "이 실행이 띄운 적 없는 pid는 우리 것이 아니다")
+            let named = ClaudeAppTurn(id: "L1", kind: .peer("ask", ClaudeAppPeer(plugin: nil, verifiedPeerPID: nil, messageID: nil)))
+            #expect(rig.service.peerLine(for: named, in: sid) == received, "이 보내기로 기록에서 확인된 줄은 pid를 몰라도 우리 것이다")
+            #expect(rig.service.peerLine(for: ClaudeAppTurn(id: "A1", kind: .assistant("hi")), in: sid) == nil, "peer 줄이 아니면 줄이 없다")
+            await rig.cleanup()
+        }
+
+        @Test func theRelayPIDSetIsObservableSoThePeerLinesRedrawWhenItChangesAndKeepsEveryPIDLaunchedThisRun() {
+            let pids = ClaudeAppRelayPIDs()
+            let fired = ClaudeAppFlag()
+            withObservationTracking { _ = pids.launched } onChange: { fired.set() }
+            pids.set([4001])
+            #expect(fired.isSet, "pid가 바뀌면 그린 쪽이 다시 그려진다")
+            pids.set([])
+            pids.set([4002])
+            #expect(pids.current == [4002] && pids.launched == [4001, 4002], "이 실행이 띄운 모든 중계 pid를 기억한다")
+        }
+
+        // MARK: 이미 센 글 (OA PR-D3 검토 P3-12)
+
+        @Test func whenTheUploaderGivesUpAfterTheUserRowWasSavedTheReceivedMetricIsNotReportedTwice() async throws {
+            let rig = try await ChatRig()
+            rig.put.queue(.saved(chatID: UUID()))
+            rig.put.queue(repeating: .retry, count: 100)
+            let chat = rig.service.chat(for: sid)
+            await send(chat, "hello")
+            rig.transcript.append(rig.relayLine("hello"), rig.reply("first answer", id: "A1"))
+            await rig.service.tick()
+            rig.saverSleeper.advance(2)
+            #expect(await relayEventually { rig.put.requests.count == 1 }, "사용자 행이 먼저 올라갔다")
+            rig.transcript.append(rig.reply("second answer", id: "A2"))
+            await rig.service.tick()
+            finishExchange(rig)
+            await rig.service.tick()
+            for _ in 0..<80 {
+                rig.clock.advance(10)
+                rig.saverSleeper.advance(10)
+                try await Task.sleep(for: .milliseconds(3))
+            }
+            #expect(await relayEventually { rig.put.requests.count > 1 }, "뒤의 답 행은 다시 시도했다")
+            try await Task.sleep(for: .milliseconds(60))
+            #expect(rig.reports.all.isEmpty, "사용자 행은 서버가 이미 `received`로 셌다: 답 행을 포기해도 다시 세지 않는다")
+            await rig.cleanup()
+        }
+
+        // MARK: 모르는 baseline (OA PR-D3 검토 P3-13)
+
+        @Test func ifTheTranscriptCouldNotBeOpenedBeforeTheSendAnEarlierIdenticalLineFromTheSameRelayIsNotTaken() async throws {
+            let rig = try await ChatRig()
+            rig.transcript.append(rig.relayLine("OK", id: "Lold", messageID: "m-old", pid: 4001, at: -50))
+            rig.transcript.setUnreadable(true)
+            let chat = rig.service.chat(for: sid)
+            await send(chat, "OK")
+            rig.transcript.setUnreadable(false)
+            await rig.service.tick()
+            #expect(chat.deliveries.first?.state == .sent && chat.deliveries.first?.matchedTurnID == nil, "보내기 전에 기록에 있던 같은 글은 이번 것이 아니다")
+            rig.transcript.append(rig.relayLine("OK", id: "Lnew", messageID: "m-new", pid: 4001, at: 3))
+            await rig.service.tick()
+            #expect(chat.deliveries.first?.state == .received && chat.deliveries.first?.matchedTurnID == "Lnew")
             await rig.cleanup()
         }
 

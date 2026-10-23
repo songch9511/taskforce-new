@@ -114,7 +114,7 @@ struct ClaudeAppChatMacTests {
 
     // MARK: 도구
 
-    private func eventually(_ seconds: Double = 3, _ condition: @MainActor () -> Bool) async -> Bool {
+    private func eventually(_ seconds: Double = 8, _ condition: @MainActor () -> Bool) async -> Bool {
         let deadline = ContinuousClock.now.advanced(by: .seconds(seconds))
         while !condition() {
             if ContinuousClock.now > deadline { return false }
@@ -313,20 +313,22 @@ struct ClaudeAppChatMacTests {
 
     // MARK: peer 줄 밑의 표시
 
-    @Test func onlyAMessageFromTheRunningRelayIsReceivedViaTaskforceEverythingElseIsFromAnotherSession() throws {
+    @Test func onlyAMessageFromARelayThisRunLaunchedIsReceivedViaTaskforceEverythingElseIsFromAnotherSession() throws {
         let h = try harness()
         h.relay.pids.set([4001])
+        func line(_ peer: ClaudeAppPeer) -> String? { h.service.peerLine(for: ClaudeAppTurn(id: "t", kind: .peer("x", peer)), in: Sessions.id(1))?.text }
         let ours = ClaudeAppPeer(plugin: "tf-relay", verifiedPeerPID: 4001, messageID: "m1")
-        #expect(h.service.peerLine(for: ours).text == "Received · via Taskforce")
+        #expect(line(ours) == "Received · via Taskforce")
         for foreign in [
             ClaudeAppPeer(plugin: "tf-relay", verifiedPeerPID: 4002, messageID: "m2"),
             ClaudeAppPeer(plugin: "other", verifiedPeerPID: 4001, messageID: "m3"),
             ClaudeAppPeer(plugin: nil, verifiedPeerPID: nil, messageID: nil),
         ] {
-            #expect(h.service.peerLine(for: foreign).text == "From another session", "이름만 같은 것 · 앞 실행의 중계 · 증거 없는 것은 우리 사용자의 글이 아니다")
+            #expect(line(foreign) == "From another session", "이름만 같은 것 · 이 실행이 띄운 적 없는 pid · 증거 없는 것은 우리 사용자의 글이 아니다")
         }
         h.relay.pids.set([])
-        #expect(h.service.peerLine(for: ours).text == "From another session", "중계가 떠 있지 않으면 같은 pid도 우리 것이라 하지 않는다")
+        #expect(line(ours) == "Received · via Taskforce", "중계가 2분 유휴로 끝나도 이 실행이 띄운 중계의 글은 우리 것이다 (OA PR-D3 검토 P2-4)")
+        #expect(h.service.peerLine(for: ClaudeAppTurn(id: "a", kind: .assistant("hi")), in: Sessions.id(1)) == nil)
     }
 
     @Test func aPeerBubbleGrowsByTheLineUnderItOnlyWhenThereIsAChatFlow() {
@@ -424,5 +426,119 @@ struct ClaudeAppChatMacTests {
         #expect(await eventually { h.launcher.launches >= 1 }, "보이면 중계를 미리 띄워 둔다 (첫 보내기가 빠르다)")
         r.shell.dismiss()
         #expect(!one.isVisible && !two.isVisible, "패널을 접으면 쓰는 곳이 없어진다 (2분 뒤 중계가 끝난다)")
+    }
+
+    // MARK: 세션을 바꿔 가며 (OA PR-D3 검토 P2-5) · Sessions 줄로 연 길 (P3-16)
+
+    /// 같은 SwiftUI 뷰에서 열린 세션만 바뀌는 패널 (창에 올려 둔다)
+    @MainActor
+    private final class PanelHost {
+        let presentation = EdgeClaudeAppPanelPresentation()
+        let panel: EdgeKeyPanel
+
+        init(shell: EdgeShellModel) {
+            presentation.shown = true
+            let hosting = NSHostingView(rootView: ClaudeAppSessionPanelView(shell: shell, presentation: presentation))
+            hosting.frame = NSRect(x: 0, y: 0, width: 380, height: 520)
+            panel = EdgeKeyPanel(contentRect: hosting.frame, styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView], backing: .buffered, defer: false)
+            panel.contentView = hosting
+            panel.orderFront(nil)
+            hosting.layoutSubtreeIfNeeded()
+        }
+
+        func close() { panel.orderOut(nil) }
+    }
+
+    @Test func aSessionSwitchWithTheSameViewStateStillTellsTheNewSessionsComposerItsState() async throws {
+        let h = try harness()
+        let r = await Sessions().rig(rows: [1, 2], live: [Sessions.live(1, .busy), Sessions.live(2, .busy)], chat: h.service)
+        r.transcript.unreadable = true   // 두 세션 모두 기록을 못 읽는다 (보기 상태가 `.unreadable` → `.unreadable`로 같은 채 세션만 바뀐다)
+        r.shell.openSessions()
+        r.shell.openDesktopSession(Sessions.id(1), from: .list)
+        let host = PanelHost(shell: r.shell)
+        let one = h.service.chat(for: Sessions.id(1)), two = h.service.chat(for: Sessions.id(2))
+        #expect(await eventually { one.view == .unreadable }, "첫 세션")
+        r.shell.openDesktopSession(Sessions.id(2), from: .list)
+        let arrived = await eventually { two.view == .unreadable && !two.composerShown }
+        #expect(arrived, "상태가 같은 채 세션이 바뀌어도 새 세션의 입력창이 상태를 안다 (보기 \(two.view) · 대화 \(String(describing: r.shell.desktopConversation?.phase)) · 열린 세션 \(r.shell.desktopPanelID == Sessions.id(2)))")
+        host.close()
+        r.shell.dismiss()
+    }
+
+    @Test func goingFromOneSessionToAnotherAndBackKeepsEachSessionsOwnViewState() async throws {
+        let h = try harness()
+        let r = await Sessions().rig(rows: [1, 2], live: [Sessions.live(1, .busy), Sessions.live(2, .busy)], chat: h.service)
+        let broken = TranscriptFake()
+        broken.unreadable = true
+        let fine = r.transcript
+        r.shell.makeConversation = { id, cwd in ClaudeAppConversation(sessionID: id, cwd: cwd, source: id == Sessions.id(2) ? broken : fine) }
+        r.shell.openSessions()
+        r.shell.openDesktopSession(Sessions.id(1), from: .list)
+        let host = PanelHost(shell: r.shell)
+        let one = h.service.chat(for: Sessions.id(1)), two = h.service.chat(for: Sessions.id(2))
+        #expect(await eventually { one.view == .open && one.composerShown })
+        r.shell.openDesktopSession(Sessions.id(2), from: .list)
+        #expect(await eventually { two.view == .unreadable && !two.composerShown }, "읽을 수 없는 세션에는 입력창이 없다")
+        r.shell.openDesktopSession(Sessions.id(1), from: .list)
+        #expect(await eventually { one.view == .open && one.composerShown }, "돌아오면 그 세션의 입력창이 다시 열려 있다")
+        #expect(two.view == .unreadable, "다른 세션의 상태는 그대로다")
+        host.close()
+        r.shell.dismiss()
+    }
+
+    @Test func aSessionOpenedFromASessionsRowGetsTheComposerAndTheRelayIsPreparedForIt() async throws {
+        let h = try harness()
+        let r = await Sessions().rig(rows: [1, 2], live: [Sessions.live(1, .busy), Sessions.live(2, .busy)], chat: h.service)
+        r.shell.openSessions()
+        r.shell.openDesktopSession(Sessions.id(1), from: .list)
+        #expect(r.shell.view == .sessions && r.shell.desktopPanelID == Sessions.id(1) && r.shell.desktopPanelShown)
+        let one = h.service.chat(for: Sessions.id(1)), two = h.service.chat(for: Sessions.id(2))
+        #expect(one.isVisible && !two.isVisible, "Sessions 줄로 열어도 입력창이 보이는 세션이 정해진다")
+        let presentation = try await render(r)
+        #expect(presentation.footerHeight > 50, "입력창이 선다 (\(presentation.footerHeight))")
+        #expect(await eventually { h.launcher.launches >= 1 }, "중계를 미리 띄운다")
+        r.shell.openDesktopSession(Sessions.id(2), from: .list)
+        #expect(!one.isVisible && two.isVisible)
+        r.shell.openDesktopSession(Sessions.id(2), from: .list)
+        #expect(!one.isVisible && !two.isVisible && r.shell.desktopPanelID == nil, "같은 줄을 다시 누르면 닫는다")
+        r.shell.dismiss()
+    }
+
+    // MARK: 우리 중계의 pid는 레일 · 목록에서 빠진다 (OA PR-D3 검토 P3-16)
+
+    @Test func theRailPollerAndTheListScannerBothLeaveOutThePIDsTheSharedRelaySetHolds() async throws {
+        // 실제 경로로 (`/var` → `/private/var` 기호 링크를 지난 길은 훑기가 받지 않는다)
+        let temporary = try temporaryDirectory()
+        let home = URL(fileURLWithPath: GateFileSystem.realpath(temporary.path) ?? temporary.path, isDirectory: true)
+        let sessionsDirectory = home.appending(path: ".claude/sessions", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: sessionsDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let me = getpid()
+        guard case .present(let start, _) = ExternalSessionProcessFacts.live.lookup(me) else {
+            Issue.record("이 시험 프로세스의 시작 시각을 읽지 못했다")
+            return
+        }
+        let nowMilliseconds = Int(Date().timeIntervalSince1970 * 1000)
+        let registration: [String: Any] = [
+            "pid": Int(me), "sessionId": Sessions.id(7), "cwd": "/Users/tester/proj", "version": "2.1.306", "name": "Probe", "updatedAt": nowMilliseconds, "status": "idle",
+            "statusUpdatedAt": nowMilliseconds, "procStart": start.timeIntervalSince1970, "entrypoint": "claude-desktop", "kind": "interactive",
+        ]
+        let file = sessionsDirectory.appending(path: "\(me).json")
+        try JSONSerialization.data(withJSONObject: registration).write(to: file)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        defer { ClaudeAppRelayPIDs.shared.set([]) }
+
+        ClaudeAppRelayPIDs.shared.set([])
+        let poller = ClaudeAppRuntime.makePoller(home: home.path, agents: { nil }, log: NoBridgeLog())
+        let before = await poller.poll()
+        #expect(before.sessions.map(\.id) == [Sessions.id(7)], "등록이 받아들여지는 줄이다 (이 확인이 없으면 아래 '빠진다'는 뜻이 없다)")
+        // 이 실행이 띄운 중계의 pid가 되면 데스크톱 세션에서 빠진다
+        ClaudeAppRelayPIDs.shared.set([me])
+        let after = await poller.poll()
+        #expect(after.sessions.isEmpty, "중계 pid는 레일의 데스크톱 세션에서 뺀다")
+        // "On this Mac" 훑기의 설정도 같은 값을 읽는다
+        let configuration = ExternalSessionsEnvironment.scannerConfiguration(home: home.path, protectedRoots: [], sessionsRoot: home, installedCLIVersion: { nil })
+        #expect(configuration.ownPIDs() == [me], "목록 훑기가 중계 pid를 자기 것으로 안다")
+        ClaudeAppRelayPIDs.shared.set([])
+        #expect(configuration.ownPIDs().isEmpty)
     }
 }

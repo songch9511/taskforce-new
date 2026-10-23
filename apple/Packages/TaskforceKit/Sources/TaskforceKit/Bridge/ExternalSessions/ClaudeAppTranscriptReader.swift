@@ -11,8 +11,10 @@ import Foundation
 ///   그 밖 모든 종류 — `attachment`의 다른 종류(`session_context`의 계정 이메일 · `credential_org` · `prompt_snapshot`), `api-request*`(시스템 프롬프트), 시스템 · 계정 줄 — 은 **대화로 만들지 않는다**:
 ///   `"user"` · `"assistant"` · `"queued_command"` 글자가 하나도 없는 줄은 디코딩조차 하지 않고, 글자가 있는 줄은(계정 · 첨부 줄에 우연히 있을 수도 있다) 디코딩하되 **선언한 칸만** 꺼낸다
 ///   (`thinking` · 도구 입력 · 도구 결과 · 첨부 칸은 선언하지 않아 값으로 남지 않는다. 디코딩은 그 줄을 잠깐 메모리에 둔다)
-/// - 건너뛰는 줄: 서브에이전트(`isSidechain`) · 다른 세션 id를 단 줄 · 메타(`isMeta`, peer가 아니면) · `origin`이 있는데 peer가 아닌 줄(훅 · 작업 알림 등) · peer가 아닌 `queued_command` ·
+/// - 건너뛰는 줄: 서브에이전트(`isSidechain`) · 다른 세션 id를 단 줄 · 메타(`isMeta`, peer가 아니면) ·
 ///   Claude Code 표시 줄(`<command-name>` 등으로 시작하는 `user` 글 · `isCompactSummary` · `isVisibleInTranscriptOnly`)
+/// - **글 없는 경계(`ClaudeAppTurn.Kind.boundary`)로만 남기는 줄**: `origin`이 있는데 peer가 아닌 `user` 줄(훅 · 작업 알림 등) · peer가 아닌 `queued_command`(턴 도중 데스크톱에서 친 말 · 끼어든 작업 알림).
+///   글은 읽지 않는다. 이 줄 뒤의 답은 우리가 보낸 말에 대한 답이 아니므로 교환을 끝내는 표시일 뿐이다 (OA PR-D3 검토 P2-1, DT11)
 /// - peer 줄의 글은 받는 쪽이 감싼 글(`message.content`, "not typed by your user …")이 아니라 보낸 글 `origin.body`다. 같은 (`msg_id`, 검증된 보낸 pid, 플러그인)은 한 번만 (`user`와 `queued_command` 두 모양으로 기록돼도). `msg_id`만 같은 다른 보낸이의 메시지는 가리지 않는다
 ///
 /// 상한: 한 줄 1 MiB(넘으면 그 줄을 통째로 건너뛴다) · 한 번에 읽는 창 2 MiB · 처음 열면 꼬리부터 마지막 200개 · 이전 쪽은 **거슬러 간 거리**가 총량 16 MiB를 넘지 않게 · 글 한 칸 32 KiB.
@@ -394,6 +396,8 @@ public struct ClaudeAppTranscriptReader: Sendable {
     private struct Record: Decodable {
         var type: String?
         var sessionId: String?
+        /// 기록 줄의 `uuid`: 저장하는 줄의 불투명 ref 씨앗에만 쓴다 (줄 위치는 파일이 다시 쓰이면 달라진다). 64바이트를 넘거나 모양이 낯서면 없는 것이다
+        var uuid: String?
         var isMeta: Bool?
         var isSidechain: Bool?
         /// Claude Code가 대화를 줄여 넣은 요약 · 기록에서만 보이는 줄: 대화가 아니다
@@ -410,12 +414,15 @@ public struct ClaudeAppTranscriptReader: Sendable {
         /// 백그라운드 일의 시작 줄에서만: 아이디 칸 셋뿐이다 (`stdout` · `prompt` · `outputFile` 등은 선언하지 않는다)
         var toolUseResult: ToolUseResult?
 
-        enum CodingKeys: String, CodingKey { case type, sessionId, isMeta, isSidechain, isCompactSummary, isVisibleInTranscriptOnly, timestamp, permissionMode, message, origin, attachment, toolUseResult }
+        enum CodingKeys: String, CodingKey { case type, sessionId, uuid, isMeta, isSidechain, isCompactSummary, isVisibleInTranscriptOnly, timestamp, permissionMode, message, origin, attachment, toolUseResult }
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             type = try? container.decodeIfPresent(String.self, forKey: .type)
             sessionId = try? container.decodeIfPresent(String.self, forKey: .sessionId)
+            uuid = (try? container.decodeIfPresent(String.self, forKey: .uuid)).flatMap { value in
+                !value.isEmpty && value.utf8.count <= 64 && value.utf8.allSatisfy({ ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x41 && $0 <= 0x5A) || ($0 >= 0x61 && $0 <= 0x7A) || $0 == 0x2D || $0 == 0x5F }) ? value : nil
+            }
             isMeta = try? container.decodeIfPresent(Bool.self, forKey: .isMeta)
             isSidechain = try? container.decodeIfPresent(Bool.self, forKey: .isSidechain)
             isCompactSummary = try? container.decodeIfPresent(Bool.self, forKey: .isCompactSummary)
@@ -567,7 +574,12 @@ public struct ClaudeAppTranscriptReader: Sendable {
         var out: [ClaudeAppTurn] = []
         var signals = Parsed()
         func add(_ kind: ClaudeAppTurn.Kind, truncated: Bool = false, toolID: String? = nil, target: String? = nil) {
-            out.append(ClaudeAppTurn(id: "\(offset)-\(out.count)", kind: kind, timestamp: time, truncated: truncated, lineOffset: offset, toolUseID: toolID, target: target))
+            out.append(
+                ClaudeAppTurn(
+                    id: "\(offset)-\(out.count)", kind: kind, timestamp: time, truncated: truncated, lineOffset: offset, toolUseID: toolID, target: target,
+                    stableID: record.uuid.map { "\($0)-\(out.count)" }
+                )
+            )
         }
         func user(_ raw: String) {
             guard let (kept, cut) = plain(raw), !Self.markupPrefixes.contains(where: kept.hasPrefix) else { return }
@@ -590,6 +602,8 @@ public struct ClaudeAppTranscriptReader: Sendable {
                 // origin이 있는데 peer가 아니다(훅 · 작업 알림 등): 사용자가 친 말이 아니다. 백그라운드 일의 끝 알림만 대화가 아닌 신호로 읽는다 (출처 표시가 있는 줄만: 사용자가 친 글은 알림이 아니다)
                 if record.origin?.kind == "task-notification", case .text(let text)? = record.message?.content,
                    let event = BackgroundTaskText.notification(text, at: time) { signals.background.append(event) }
+                // 글이 없는 경계: 이 줄 뒤의 답은 훅 · 작업 알림에 대한 것이지 우리가 보낸 말에 대한 것이 아니다 (OA PR-D3 검토 P2-1, DT11)
+                add(.boundary)
             } else if record.isMeta != true, let content = record.message?.content {
                 switch content {
                 case .text(let text):
@@ -616,11 +630,15 @@ public struct ClaudeAppTranscriptReader: Sendable {
                 }
             }
         case "attachment":
-            if record.attachment?.type == "queued_command", let origin = record.attachment?.origin, origin.kind == "peer" {
+            guard record.attachment?.type == "queued_command" else { break }
+            if let origin = record.attachment?.origin, origin.kind == "peer" {
                 peer(origin)
-            } else if record.attachment?.type == "queued_command", let text = record.attachment?.notificationText, let event = BackgroundTaskText.notification(text, at: time) {
-                // 턴이 도는 동안 끼어든 끝 알림 (`commandMode == "task-notification"`)
-                signals.background.append(event)
+            } else {
+                // 턴이 도는 동안 끼어든 끝 알림 (`commandMode == "task-notification"`): 대화가 아닌 신호만
+                if let text = record.attachment?.notificationText, let event = BackgroundTaskText.notification(text, at: time) { signals.background.append(event) }
+                // 실측(일회용 세션): 턴 도중 데스크톱에서 친 말은 `queue-operation enqueue` 뒤 `attachment`(`queued_command`, `prompt` = 친 글, `origin` 없음)로 남는다.
+                // 그 글은 읽지 않는다. 글 없는 경계만 남긴다: 이 줄 뒤의 답은 우리가 보낸 말에 대한 답이 아니다 (OA PR-D3 검토 P2-1, DT11)
+                add(.boundary)
             }
         default:
             break

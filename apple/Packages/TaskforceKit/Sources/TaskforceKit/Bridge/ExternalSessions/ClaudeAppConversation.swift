@@ -248,7 +248,7 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
                 prepend(page.turns)
                 settle(fresh: page.turns, signals: page.cursor.signals)
                 // 건너뛴 줄뿐이라 빈 쪽이다: 끝이 아니면 한 번 누른 안에서 더 앞으로 간다 (한도까지)
-                guard page.turns.isEmpty, page.hasEarlier else { return }
+                guard Self.visible(page.turns).isEmpty, page.hasEarlier else { return }
                 empties += 1
                 if empties >= Self.maxEmptyWindowsPerPress { return }
             }
@@ -257,13 +257,17 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
 
     // MARK: 반영
 
-    private func replace(with fresh: [ClaudeAppTurn]) {
+    /// 글 없는 경계(교환을 끝내는 표시, OA PR-D3 검토 P2-1)는 화면의 대화에 나오지 않는다
+    private static func visible(_ turns: [ClaudeAppTurn]) -> [ClaudeAppTurn] { turns.filter { $0.kind != .boundary } }
+
+    private func replace(with all: [ClaudeAppTurn]) {
+        let fresh = Self.visible(all)
         turns = fresh
         shownIDs = Set(fresh.map(\.id))
     }
 
     private func append(_ more: [ClaudeAppTurn]) {
-        let fresh = more.filter { shownIDs.insert($0.id).inserted }
+        let fresh = Self.visible(more).filter { shownIDs.insert($0.id).inserted }
         guard !fresh.isEmpty else { return }
         turns += fresh
         trimToLimit()
@@ -288,7 +292,7 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
     }
 
     private func prepend(_ older: [ClaudeAppTurn]) {
-        let fresh = older.filter { shownIDs.insert($0.id).inserted }
+        let fresh = Self.visible(older).filter { shownIDs.insert($0.id).inserted }
         guard !fresh.isEmpty else { return }
         turns = fresh + turns
     }

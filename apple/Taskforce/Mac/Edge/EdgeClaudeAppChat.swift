@@ -37,12 +37,16 @@ enum ClaudeAppChatRuntime {
         )
     }
 
+    /// 저장 켜짐 확인(`GET claude-app-chats/status`)을 기다리는 최대 시간
+    nonisolated static let statusTimeout: TimeInterval = 5
+
     /// 저장 쪽: 저장이 켜졌는지(`GET claude-app-chats/status`)와 올리기(`PUT claude-app-chats`)를 서버 API에 잇는다. 서버를 부르는 것은 `ensureAsked()`부터다
     static func makeSaver(
         api: APIClient, log: any BridgeLogSink, sleep: @escaping ClaudeAppChatSaver.Sleep = { try? await Task.sleep(for: .seconds($0)) }
     ) -> ClaudeAppChatSaver {
         ClaudeAppChatSaver(
-            status: { try await api.claudeAppChatsStatus() },
+            // 짧은 시간 제한: 서버가 느려도 교환을 모으는 쪽이 오래 기다리지 않는다 (넘으면 모르는 답: 저장은 켜지 않고 1분 뒤 다시 묻는다, OA PR-D3 검토 P2-3)
+            status: { try await ClaudeAppChatSaver.timed(seconds: statusTimeout) { try await api.claudeAppChatsStatus() } },
             put: { request in
                 do {
                     return .saved(chatID: try await api.putClaudeAppChat(request).chatID)

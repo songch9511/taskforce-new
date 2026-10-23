@@ -9,9 +9,35 @@ final class ClaudeAppStatusScript: @unchecked Sendable {
     private var answers: [Result<ClaudeAppChatsStatus, APIError>] = []
     private var _calls = 0
     private var _onCall: (@Sendable () -> Void)?
+    private var holding = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
 
     var calls: Int { lock.withLock { _calls } }
     func queue(_ answer: Result<ClaudeAppChatsStatus, APIError>...) { lock.withLock { answers += answer } }
+
+    /// 답을 내지 않고 붙들어 둔다 (느린 서버): `release()`가 풀어 줄 때까지 `status()`가 돌아오지 않는다
+    func hold() { lock.withLock { holding = true } }
+
+    func release() {
+        let pending = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            holding = false
+            defer { waiters = [] }
+            return waiters
+        }
+        for waiter in pending { waiter.resume() }
+    }
+
+    private func waitWhileHeld() async {
+        guard lock.withLock({ holding }) else { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let resumeNow = lock.withLock { () -> Bool in
+                guard holding else { return true }
+                waiters.append(continuation)
+                return false
+            }
+            if resumeNow { continuation.resume() }
+        }
+    }
     /// 부를 때마다 (답을 내기 전에) 한 번 부른다: 부르는 순서를 본다
     var onCall: (@Sendable () -> Void)? {
         get { lock.withLock { _onCall } }
@@ -21,6 +47,7 @@ final class ClaudeAppStatusScript: @unchecked Sendable {
     var status: ClaudeAppChatSaver.Status {
         { [self] in
             onCall?()
+            await waitWhileHeld()
             let answer = lock.withLock { () -> Result<ClaudeAppChatsStatus, APIError> in
                 _calls += 1
                 return answers.isEmpty ? .success(ClaudeAppChatsStatus(save: true)) : (answers.count == 1 ? answers[0] : answers.removeFirst())
@@ -175,6 +202,64 @@ extension ExternalSessionSuites {
                 try await Task.sleep(for: .milliseconds(5))
             }
             #expect(off, "업로더가 스스로 꺼지면 주인도 저장 중이 아니다")
+        }
+
+        // MARK: 버린 업로더 (OA PR-D3 검토 P3-7) · 느린 status (P2-3)
+
+        @Test func aLateDisabledReportFromARetiredUploaderDoesNotTearDownTheCurrentOne() async throws {
+            let status = ClaudeAppStatusScript()
+            status.queue(.success(ClaudeAppChatsStatus(save: true)), .success(ClaudeAppChatsStatus(save: false)), .success(ClaudeAppChatsStatus(save: true)))
+            let saver = saver(status, ClaudeAppPutScript())
+            _ = await saver.refresh()
+            let first = try #require(await saver.uploaderIdentity)
+            _ = await saver.refresh()
+            let gone = await saver.uploaderIdentity
+            let goneSaving = await saver.isSaving
+            #expect(gone == nil && !goneSaving)
+            _ = await saver.refresh()
+            let second = try #require(await saver.uploaderIdentity)
+            #expect(first != second)
+            await saver.uploaderDisabled(first)
+            let stillOn = await saver.isSaving
+            #expect(stillOn, "버린 업로더의 늦은 `disabled` 알림은 지금 업로더를 끄지 못한다")
+            await saver.uploaderDisabled(second)
+            let off = await saver.isSaving
+            #expect(!off, "지금 업로더의 알림은 끈다")
+        }
+
+        @Test func theSaverSaysWhetherAnExchangesUserRowWasSaved() async throws {
+            let status = ClaudeAppStatusScript()
+            let put = ClaudeAppPutScript()
+            let sleeper = ClaudeAppManualSleeper()
+            let saver = saver(status, put, sleeper: sleeper)
+            _ = await saver.refresh()
+            await saver.enqueue(batch(2, exchange: "x9"))
+            #expect(await relayEventually { sleeper.pending >= 1 })
+            sleeper.advance(2)
+            #expect(await relayEventually { put.requests.count == 1 })
+            var saved = false
+            for _ in 0..<200 {
+                saved = await saver.userRowSaved("x9")
+                if saved { break }
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            #expect(saved)
+            let other = await saver.userRowSaved("x-other")
+            #expect(!other)
+        }
+
+        @Test func aStatusCallThatNeverAnswersEndsAsAnUnknownAnswerAfterTheTimeoutAndAFastOneIsLeftAlone() async throws {
+            do {
+                _ = try await ClaudeAppChatSaver.timed(seconds: 0.05) {
+                    try await Task.sleep(for: .seconds(30))
+                    return ClaudeAppChatsStatus(save: true)
+                }
+                Issue.record("답이 없는데 던지지 않았다")
+            } catch {
+                #expect((error as? APIError) == .transport("status timed out"), "모르는 답으로 끝난다: 저장은 켜지 않고 1분 뒤 다시 묻는다")
+            }
+            let fast = try await ClaudeAppChatSaver.timed(seconds: 5) { ClaudeAppChatsStatus(save: true) }
+            #expect(fast == ClaudeAppChatsStatus(save: true))
         }
 
         // MARK: 다시 묻기

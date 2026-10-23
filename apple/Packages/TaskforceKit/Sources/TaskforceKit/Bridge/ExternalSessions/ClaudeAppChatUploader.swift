@@ -35,6 +35,8 @@ public actor ClaudeAppChatUploader {
         case disabled
         /// 413: 사용자별 저장 한도
         case quota
+        /// 404인데 gate가 꺼진 `not_found`가 아니다 (`bridge_not_found`: 없는 · 남의 · 해제된 bridge): 그 bridge의 교환만 버린다 (OA PR-D3 검토 P3-10)
+        case bridgeGone
     }
 
     public typealias Put = @Sendable (ClaudeAppChatPutRequest) async -> PutOutcome
@@ -82,19 +84,27 @@ public actor ClaudeAppChatUploader {
     private let sleep: Sleep
     private let log: any BridgeLogSink
     private let onGaveUp: @Sendable (String) -> Void
-    private let onDisabled: @Sendable () -> Void
+    private let onDisabled: @Sendable (UUID) -> Void
+    /// 이 업로더의 정체: 버린 업로더의 늦은 `onDisabled` 알림을 주인이 걸러 낸다 (OA PR-D3 검토 P3-7)
+    public nonisolated let id = UUID()
 
     private var queue: [Entry] = []
     private var known: [String] = []
     private var knownSet: Set<String> = []
     private var stopped: Set<String> = []
+    /// 사용자 행이 서버에 올라간 교환 (서버가 `received`를 이미 센 교환)
+    private var savedUsers: Set<String> = []
+    /// 서버가 "그런 bridge가 없다"고 한 bridge (그 bridge의 교환만 버린다)
+    private var goneBridges: Set<UUID> = []
+    /// 버렸다: 다시 켜지지 않는다 (`clear()`로도)
+    private var retired = false
     private var loop: Task<Void, Never>?
     public private(set) var isEnabled = true
     public private(set) var quotaReached = false
 
     public init(
         configuration: Configuration = Configuration(), put: @escaping Put, now: @escaping @Sendable () -> Date = { Date() }, sleep: @escaping Sleep = { try? await Task.sleep(for: .seconds($0)) },
-        log: any BridgeLogSink = NoBridgeLog(), onGaveUp: @escaping @Sendable (String) -> Void = { _ in }, onDisabled: @escaping @Sendable () -> Void = {}
+        log: any BridgeLogSink = NoBridgeLog(), onGaveUp: @escaping @Sendable (String) -> Void = { _ in }, onDisabled: @escaping @Sendable (UUID) -> Void = { _ in }
     ) {
         self.configuration = configuration
         self.put = put
@@ -107,11 +117,26 @@ public actor ClaudeAppChatUploader {
 
     public var pendingRows: Int { queue.count }
 
+    /// 이 교환의 사용자 행이 서버에 올라갔다 (서버가 `received`를 이미 셌다: 뒤의 답 행을 포기해도 다시 세지 않는다)
+    public func userRowSaved(_ exchangeID: String) -> Bool { savedUsers.contains(exchangeID) }
+
+    /// 버린다: 큐를 비우고 멈추며 다시 켜지지 않는다 (`clear()`로도). 이미 날아간 요청의 늦은 답은 아무것도 바꾸지 못한다
+    public func retire() {
+        retired = true
+        isEnabled = false
+        queue = []
+        loop?.cancel()
+        loop = nil
+    }
+
     /// 서버 답을 업로더의 일로 옮긴다 (순수): 모르는 오류는 다시 시도한다
     public static func outcome(for error: Error) -> PutOutcome {
         guard let api = error as? APIError else { return .retry }
         switch api.status {
-        case 404?: return .disabled
+        case 404?:
+            // 알려진 `not_found`(저장 gate가 꺼짐 · 명단 밖) · 앞단이 낸 404는 모두 꺼진 것이다. `bridge_not_found`처럼 `APIErrorCode`에 없는 코드는 상태로 짐작된 다른 코드로 온다: 그 bridge만 사라진 것이다
+            if case .server(_, let code, _) = api, code != .notFound { return .bridgeGone }
+            return .disabled
         case 413?: return .quota
         case 400?: return .invalid
         default: return .retry
@@ -122,7 +147,7 @@ public actor ClaudeAppChatUploader {
 
     /// 이 행들을 올릴 줄에 세운다. 이미 본 행 · 멈춘 교환의 행 · 꺼진 업로더는 아무 일도 없다
     public func enqueue(_ batch: ClaudeAppChatBatch) {
-        guard isEnabled, !stopped.contains(batch.exchangeID) else { return }
+        guard isEnabled, !stopped.contains(batch.exchangeID), !goneBridges.contains(batch.context.bridgeID) else { return }
         let time = now()
         for row in batch.rows {
             let key = batch.context.sessionRef + "|" + row.macRef
@@ -136,14 +161,16 @@ public actor ClaudeAppChatUploader {
         }
     }
 
-    /// 로그아웃 · 계정 바뀜: 큐 · 본 행 · 멈춘 교환을 모두 비운다 (다시 켜진다)
+    /// 로그아웃 · 계정 바뀜: 큐 · 본 행 · 멈춘 교환을 모두 비운다 (다시 켜진다. 단 버린 업로더는 다시 켜지지 않는다)
     public func clear() {
         queue = []
         known = []
         knownSet = []
         stopped = []
+        savedUsers = []
+        goneBridges = []
         quotaReached = false
-        isEnabled = true
+        isEnabled = !retired
     }
 
     // MARK: 루프
@@ -197,6 +224,8 @@ public actor ClaudeAppChatUploader {
             switch outcome {
             case .saved(let chat):
                 finish(refs, exchange: exchange)
+                // 사용자 행이 올라갔다: 서버가 `received`를 이미 셌다 (뒤의 답 행을 포기해도 다시 세지 않는다)
+                if request.messages.contains(where: { $0.role == "user" }) { savedUsers.insert(exchange) }
                 if chat == nil {
                     stopped.insert(exchange)
                     queue.removeAll { $0.exchangeID == exchange }
@@ -211,11 +240,19 @@ public actor ClaudeAppChatUploader {
             case .invalid:
                 finish(refs, exchange: exchange)
                 note("invalid", rows: refs.count)
+            case .bridgeGone:
+                // 그 bridge의 것만 버린다 (업로더 전체는 켜 둔다): 큐의 그 bridge 행도 새로 들어오는 그 bridge의 묶음도
+                if let bridge = request.entries.first?.context.bridgeID {
+                    goneBridges.insert(bridge)
+                    queue.removeAll { $0.context.bridgeID == bridge }
+                }
+                note("bridge_gone", rows: refs.count)
+                return
             case .disabled:
                 queue = []
                 isEnabled = false
                 note("disabled", rows: refs.count)
-                onDisabled()
+                onDisabled(id)
                 return
             case .quota:
                 quotaReached = true
@@ -351,7 +388,7 @@ public actor ClaudeAppChatSaver {
                 configuration.maxBytes = state.maxBytes
                 let made = ClaudeAppChatUploader(
                     configuration: configuration, put: put, now: now, sleep: sleep, log: log, onGaveUp: { [weak self] id in Task { await self?.gaveUp(id) } },
-                    onDisabled: { [weak self] in Task { await self?.uploaderDisabled() } }
+                    onDisabled: { [weak self] id in Task { await self?.uploaderDisabled(id) } }
                 )
                 uploader = made
                 await made.start()
@@ -427,15 +464,39 @@ public actor ClaudeAppChatSaver {
         await discardUploader()
     }
 
+    /// 버린 업로더는 다시 켜지지 않는다 (`retire()`): 이미 날아간 요청의 늦은 답이 새 업로더의 일을 건드리지 못한다
     private func discardUploader() async {
         let old = uploader
         uploader = nil
-        await old?.stop()
-        await old?.clear()
+        await old?.retire()
     }
 
-    private func uploaderDisabled() async {
+    /// 지금 업로더의 정체 (없으면 nil)
+    var uploaderIdentity: UUID? { uploader?.id }
+
+    /// 업로더가 스스로 꺼졌다고 알린다: **정체가 지금 업로더일 때만** 받는다 (버린 업로더의 늦은 알림은 새 업로더를 끄지 못한다, OA PR-D3 검토 P3-7)
+    func uploaderDisabled(_ id: UUID) async {
+        guard uploader?.id == id else { return }
         await discardUploader()
+    }
+
+    /// 이 교환의 사용자 행이 서버에 올라갔다 (서버가 `received`를 이미 셌다)
+    public func userRowSaved(_ exchangeID: String) async -> Bool {
+        await uploader?.userRowSaved(exchangeID) ?? false
+    }
+
+    /// 오래 걸리는 status 호출을 시간 안에서만 기다린다: 넘으면 모르는 답(`APIError.transport`)으로 끝난다 (저장은 켜지 않고 1분 뒤 다시 묻는다). 취소에 반응하는 호출이어야 일찍 돌아온다 (`URLSession`은 그렇다)
+    public static func timed<T: Sendable>(seconds: TimeInterval, _ operation: @escaping @Sendable () async throws -> T) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await operation() }
+            group.addTask {
+                try await Task.sleep(for: .seconds(seconds))
+                throw APIError.transport("status timed out")
+            }
+            defer { group.cancelAll() }
+            guard let first = try await group.next() else { throw APIError.transport("status timed out") }
+            return first
+        }
     }
 }
 #endif

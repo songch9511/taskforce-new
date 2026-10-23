@@ -34,14 +34,55 @@ extension ExternalSessionSuites {
         }
 
         private func collect(
-            _ turns: [ClaudeAppTurn], baseline: Set<String> = [], now: Date? = nil, ended: Bool = false, text: String? = nil
+            _ turns: [ClaudeAppTurn], baseline: Set<String> = [], now: Date? = nil, ended: Bool = false, text: String? = nil, baselineUnknown: Bool = false
         ) -> ClaudeAppExchange {
             ClaudeAppExchangeCollector.collect(
                 ClaudeAppExchangeInput(
                     sessionID: session, turns: turns, relayPID: relayPID, sentText: text ?? sent, sentAt: sentAt, now: now ?? sentAt.addingTimeInterval(20), turnEnded: ended, baseline: baseline,
-                    ref: { "ref(\($0))" }
+                    baselineUnknown: baselineUnknown, ref: { "ref(\($0))" }
                 )
             )
+        }
+
+        // MARK: 글 없는 경계 (OA PR-D3 검토 P2-1) · 안정된 ref 씨앗 (P3-11) · 모르는 baseline (P3-13)
+
+        @Test func aBoundaryTurnEndsTheExchangeSoNothingAfterItIsKept() {
+            let boundary = ClaudeAppTurn(id: "b1", kind: .boundary, timestamp: sentAt.addingTimeInterval(5))
+            let result = collect([peer("p1", sent), assistant("a1", "answer before the boundary"), boundary, assistant("a2", "answer to something typed on the desktop")])
+            #expect(result.rows.map(\.body) == [sent, "answer before the boundary"], "경계 뒤의 답은 우리가 보낸 말에 대한 답이 아니다")
+            #expect(result.finished == .desktopUserLine)
+            // 경계가 L 앞에 있는 것은 이 교환과 상관없다
+            let before = collect([boundary, peer("p1", sent), assistant("a1", "answer")])
+            #expect(before.rows.map(\.body) == [sent, "answer"] && before.finished == nil)
+        }
+
+        @Test func theAnswerRefSeedIsTheRecordUUIDAndBlockIndexWhenThereIsOneSoAMovedLineKeepsItsRef() {
+            func answer(offset: Int, stable: String?) -> ClaudeAppTurn {
+                ClaudeAppTurn(
+                    id: "\(offset)-0", kind: .assistant("Same answer"), timestamp: sentAt.addingTimeInterval(2), truncated: false, lineOffset: Int64(offset), toolUseID: nil, stableID: stable
+                )
+            }
+            let first = collect([peer("p1", sent), answer(offset: 100, stable: "uuid-aaa-0")])
+            let moved = collect([peer("p1", sent), answer(offset: 9_999, stable: "uuid-aaa-0")])
+            #expect(first.rows.count == 2 && moved.rows.count == 2)
+            #expect(first.rows.last?.macRef == moved.rows.last?.macRef, "파일이 다시 쓰여 줄 위치가 달라져도 같은 줄은 같은 ref")
+            #expect(first.rows.last?.macRef.contains("uuid-aaa-0") == true)
+            let other = collect([peer("p1", sent), answer(offset: 100, stable: "uuid-bbb-0")])
+            #expect(other.rows.last?.macRef != first.rows.last?.macRef, "다른 uuid는 다른 ref")
+            // uuid가 없으면 줄 위치로 되돌아간다
+            let fallback = collect([peer("p1", sent), answer(offset: 100, stable: nil)])
+            #expect(fallback.rows.last?.macRef.contains("100-0") == true)
+        }
+
+        @Test func withoutAKnownBaselineOnlyALineWrittenAfterTheSendCanBeOurs() {
+            // 보내기 전에 기록을 읽지 못했다: 같은 중계 pid가 앞서 보낸 같은 글(보낸 시각보다 먼저 쓰임)을 이번 것으로 보지 않는다
+            let earlier = peer("p1", sent, at: -50)
+            #expect(collect([earlier, assistant("a1", "old answer")], baselineUnknown: true).matchedTurnID == nil)
+            #expect(collect([earlier, assistant("a1", "old answer")], baselineUnknown: false).matchedTurnID == "p1", "baseline을 알면 이 판정은 baseline이 한다")
+            let newer = peer("p2", sent, messageID: "msg-2", at: 1)
+            #expect(collect([earlier, newer, assistant("a1", "new answer")], baselineUnknown: true).matchedTurnID == "p2")
+            let undated = ClaudeAppTurn(id: "p3", kind: .peer(sent, ClaudeAppPeer(plugin: "tf-relay", verifiedPeerPID: 4242, messageID: "m3")))
+            #expect(collect([undated], baselineUnknown: true).matchedTurnID == nil, "시각을 모르면 새것이라 할 수 없다")
         }
 
         // MARK: 기본 모양

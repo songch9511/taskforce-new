@@ -57,19 +57,14 @@ public struct ClaudeAppSendContext: Equatable, Sendable {
         case open, closed, unreadable
     }
 
-    /// 패널이 보여 주는 세션
-    public var viewedSessionID: String
-    /// 보낼 세션
-    public var targetSessionID: String
     public var confirmed: Confirmation?
     /// ④ 이 세션에 확인 전 글이 있다
     public var hasPending: Bool
     public var relay: Relay
     public var view: View
 
-    public init(viewedSessionID: String, targetSessionID: String, confirmed: Confirmation?, hasPending: Bool, relay: Relay, view: View) {
-        self.viewedSessionID = viewedSessionID
-        self.targetSessionID = targetSessionID
+    /// (옛 ⑥ "패널이 보던 세션 = 보낼 세션"은 없앴다: 입력창은 세션마다 하나라 글은 늘 그 입력창의 세션으로만 가고 두 값이 같은 값이었다 — OA PR-D3 검토 P3-14)
+    public init(confirmed: Confirmation?, hasPending: Bool, relay: Relay, view: View) {
         self.confirmed = confirmed
         self.hasPending = hasPending
         self.relay = relay
@@ -91,8 +86,6 @@ public enum ClaudeAppSendBlock: Equatable, Sendable {
     case twoWriters
     /// writer가 있는지 확인할 수 없다
     case writersUnknown
-    /// 패널이 보던 세션과 보낼 세션이 다르다
-    case idMismatch
     /// 확인 전 글이 있다 (한 번에 하나)
     case pending
     /// 중계의 정체가 띄운 뒤 바뀌었다
@@ -105,7 +98,7 @@ public enum ClaudeAppSendBlock: Equatable, Sendable {
         case .sessionClosed: .sessionClosed
         case .notTrusted, .writersUnknown: .notReceived
         case .unavailable, .relayMismatch: .relayFailed
-        case .pending, .idMismatch, .unreadable: nil
+        case .pending, .unreadable: nil
         }
     }
 }
@@ -118,7 +111,7 @@ public enum ClaudeAppSendVerdict: Equatable, Sendable {
 }
 
 /// 보내기 전 확인 ①–⑧ (PR-D3k, 계약 21.2 DR-S2c · 25.4.3): 순수 판정이다. 순서가 고정이라 가장 구체적인 이유가 이긴다.
-/// 보기 닫힘 · 기록 못 읽음 → 중계 꺼짐 → ① 세션(둘이면 두 곳 · 없으면 닫힘 · 서명) → ② 다른 writer → ⑥ 같은 세션 → ④ 한 번에 하나 → ⑤ 중계 정체 → C5 확인.
+/// 보기 닫힘 · 기록 못 읽음 → 중계 꺼짐 → ① 세션(둘이면 두 곳 · 없으면 닫힘 · 서명) → ② 다른 writer → ④ 한 번에 하나 → ⑤ 중계 정체 → C5 확인.
 /// ⑧ 저장이 켜졌는지는 보내기를 막지 않는다 (입력에 없다)
 public enum ClaudeAppSendCheck {
     public static func evaluate(facts: ClaudeAppSendFacts, context: ClaudeAppSendContext) -> ClaudeAppSendVerdict {
@@ -137,7 +130,6 @@ public enum ClaudeAppSendCheck {
         case .unknown: return .blocked(.writersUnknown)
         case .none: break
         }
-        if context.viewedSessionID != context.targetSessionID { return .blocked(.idMismatch) }
         if context.hasPending { return .blocked(.pending) }
         if context.relay == .mismatch { return .blocked(.relayMismatch) }
         guard let confirmed = context.confirmed, confirmed.pid == session.pid, confirmed.procStart == session.procStart else { return .needsConfirmation }

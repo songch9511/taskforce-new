@@ -74,12 +74,16 @@ public struct ClaudeAppExchangeInput: Sendable {
     public var turnEnded: Bool
     /// 보내기 **전에** 이미 기록에 있던 줄의 id: 같은 글을 이전에 보낸 줄을 이번 것으로 착각하지 않는다
     public var baseline: Set<String>
+    /// 보내기 전의 기록을 읽지 못해 baseline을 모른다 (OA PR-D3 검토 P3-13): 이때는 보낸 시각보다 **나중에 쓰인** 줄만 우리 것으로 본다 (같은 중계 pid가 앞서 보낸 같은 글을 이번 것으로 착각하지 않는다)
+    public var baselineUnknown: Bool
     /// 씨앗 글 → 불투명 ref (실제 앱은 Mac 열쇠 HMAC, 시험은 가짜). 씨앗은 세션 · 줄 id뿐이고 글은 들어가지 않는다
     public var ref: @Sendable (String) -> String
 
     public init(
-        sessionID: String, turns: [ClaudeAppTurn], relayPID: Int32, sentText: String, sentAt: Date, now: Date, turnEnded: Bool, baseline: Set<String>, ref: @escaping @Sendable (String) -> String
+        sessionID: String, turns: [ClaudeAppTurn], relayPID: Int32, sentText: String, sentAt: Date, now: Date, turnEnded: Bool, baseline: Set<String>, baselineUnknown: Bool = false,
+        ref: @escaping @Sendable (String) -> String
     ) {
+        self.baselineUnknown = baselineUnknown
         self.sessionID = sessionID
         self.turns = turns
         self.relayPID = relayPID
@@ -110,7 +114,7 @@ public enum ClaudeAppExchangeCollector {
         }
         let line = input.turns[start]
         let lineTime = line.timestamp ?? input.sentAt
-        let userRef = input.ref("user\n\(input.sessionID)\n\(peer.messageID ?? line.id)\n\(input.relayPID)")
+        let userRef = input.ref("user\n\(input.sessionID)\n\(peer.messageID ?? line.stableID ?? line.id)\n\(input.relayPID)")
         // 사용자 행의 글은 보낸 글 그대로다 (읽기가 32 KiB에서 자른 글이 아니다)
         var rows = [ClaudeAppChatRow(macRef: userRef, role: .user, replyToRef: nil, body: input.sentText, truncated: false, saidAt: lineTime, toolNames: [])]
         var finished: ClaudeAppExchangeEnd?
@@ -131,6 +135,10 @@ public enum ClaudeAppExchangeCollector {
             case .peer:
                 finished = .nextPeer
                 break walk
+            case .boundary:
+                // 글 없는 경계 (턴 도중 데스크톱에서 친 말 · 끼어든 작업 알림 · 훅): 이 뒤의 답은 우리가 보낸 말에 대한 답이 아니다 (DT11)
+                finished = .desktopUserLine
+                break walk
             case .tool(let name, _):
                 // 이름만: 설명 · 입력 · 결과는 읽지 않는다. 서버가 받는 모양이 아닌 이름은 그 이름 하나만 버린다
                 if isToolName(name), pendingTools.count < maxToolNames { pendingTools.append(name) }
@@ -150,7 +158,8 @@ public enum ClaudeAppExchangeCollector {
                 lastTime = time
                 rows.append(
                     ClaudeAppChatRow(
-                        macRef: input.ref("assistant\n\(input.sessionID)\n\(turn.id)"), role: .assistant, replyToRef: userRef, body: body, truncated: turn.truncated || !fits, saidAt: time, toolNames: pendingTools
+                        // 줄의 uuid + 블록 번호가 있으면 그것이 씨앗이다 (줄 위치는 파일이 다시 쓰이면 달라진다: OA PR-D3 검토 P3-11)
+                        macRef: input.ref("assistant\n\(input.sessionID)\n\(turn.stableID ?? turn.id)"), role: .assistant, replyToRef: userRef, body: body, truncated: turn.truncated || !fits, saidAt: time, toolNames: pendingTools
                     )
                 )
                 pendingTools = []
@@ -175,6 +184,10 @@ public enum ClaudeAppExchangeCollector {
     /// 읽기가 글 한 칸을 32 KiB에서 자른 줄(`truncated`)은 보낸 글의 앞부분이면 같은 글이다 (긴 글이 "Not received"가 되지 않게)
     private static func isOurLine(_ turn: ClaudeAppTurn, _ input: ClaudeAppExchangeInput) -> Bool {
         guard !input.baseline.contains(turn.id), case .peer(let text, let peer) = turn.kind, peer.isTaskforceRelay(relayPID: input.relayPID) else { return false }
+        // baseline을 모르면(보내기 전 기록을 읽지 못했다) 보낸 시각보다 나중에 쓰인 줄만 우리 것이다 (시각을 모르면 새것이라 할 수 없다)
+        if input.baselineUnknown {
+            guard let time = turn.timestamp, time > input.sentAt else { return false }
+        }
         return text == input.sentText || (turn.truncated && !text.isEmpty && input.sentText.hasPrefix(text))
     }
 

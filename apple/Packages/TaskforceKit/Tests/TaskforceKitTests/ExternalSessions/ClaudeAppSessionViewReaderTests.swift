@@ -227,7 +227,7 @@ extension ExternalSessionSuites {
                     V.notification(id: id, taskID: "a02862466294fcd8e", status: "completed", summary: "Agent \"\(V.summarySentinel)\" finished", timestamp: "2026-10-22T01:00:50.000Z"),
                 ])
                 guard let page = page(reader(home).open(sessionID: id, cwd: cwd)) else { return }
-                #expect(page.turns.count == 1, "알림 줄은 대화가 아니다")
+                #expect(page.turns.map(\.kind) == [.user("go"), .boundary, .boundary, .boundary], "알림 줄은 대화가 아니다: 글 없는 경계로만 남는다 (그 뒤의 답은 우리가 보낸 말에 대한 답이 아니다)")
                 #expect(page.cursor.signals.background == [
                     .finished(taskID: "bk1abc9xy", kind: .command, status: .failed, exitCode: 3, at: V.date("2026-10-22T01:00:30.000Z")),
                     .finished(taskID: "bk2def0za", kind: .command, status: .done, exitCode: 0, at: V.date("2026-10-22T01:00:40.000Z")),
@@ -245,7 +245,7 @@ extension ExternalSessionSuites {
                     V.queuedNotification(id: id, taskID: "bk3ghi1ab", status: "failed", summary: "Background command \"\(V.summarySentinel)\" failed with exit code 12"),
                 ])
                 guard let page = page(reader(home).open(sessionID: id, cwd: cwd)) else { return }
-                #expect(page.turns.count == 1)
+                #expect(page.turns.map(\.kind) == [.user("go"), .boundary])
                 #expect(page.cursor.signals.background == [
                     .finished(taskID: "bk3ghi1ab", kind: .command, status: .failed, exitCode: 12, at: V.date("2026-10-22T01:00:31.000Z")),
                 ])
@@ -326,7 +326,7 @@ extension ExternalSessionSuites {
                 ])
                 _ = try home.transcript(directory: directory, id: id, lines: [L.user(id: id, text: "go"), hook])
                 guard let page = page(reader(home).open(sessionID: id, cwd: cwd)) else { return }
-                #expect(page.turns.map(\.kind) == [.user("go")], "task-notification이 아닌 origin 줄은 지금처럼 버린다")
+                #expect(page.turns.map(\.kind) == [.user("go"), .boundary], "task-notification이 아닌 origin 줄은 글 없는 경계로만 남는다 (글은 버린다)")
                 #expect(page.cursor.signals == ClaudeAppTranscriptSignals())
             }
         }

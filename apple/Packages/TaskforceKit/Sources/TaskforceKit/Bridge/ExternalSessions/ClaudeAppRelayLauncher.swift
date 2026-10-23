@@ -153,18 +153,29 @@ final class KeptClaudeAppRelayProcess: ClaudeAppRelayProcess, @unchecked Sendabl
         }
     }
 
+    /// 끝냈다 (`stop()`): 이 뒤로는 stdin fd에 쓰지 않는다. 지킴이를 거두면 fd가 닫히고 그 번호는 곧 다른 파일이 쓴다 — 줄 서 있던 쓰기가 그 번호로 가면 글이 엉뚱한 곳에 들어간다 (OA PR-D3 검토 P3-8)
+    private let closeLock = NSLock()
+    private var closedForWrites = false
+
+    private func isClosedForWrites() -> Bool { closeLock.withLock { closedForWrites } }
+
     func write(_ data: Data) async -> Bool {
         let fd = kept.keeper.stdinFD
         return await withCheckedContinuation { continuation in
-            writeQueue.async { continuation.resume(returning: Self.writeAll(fd: fd, data)) }
+            writeQueue.async { [self] in
+                // 줄 서 있는 동안 끝났을 수 있다: 닫힌 뒤에는 `write(2)`를 부르지 않는다
+                let closed: @Sendable () -> Bool = { [self] in isClosedForWrites() }
+                continuation.resume(returning: !closed() && Self.writeAll(fd: fd, data, closed: closed))
+            }
         }
     }
 
-    private static func writeAll(fd: Int32, _ data: Data) -> Bool {
+    private static func writeAll(fd: Int32, _ data: Data, closed: () -> Bool) -> Bool {
         var offset = 0
         return data.withUnsafeBytes { raw in
             guard let base = raw.baseAddress else { return true }
             while offset < raw.count {
+                if closed() { return false }
                 let count = Darwin.write(fd, base + offset, raw.count - offset)
                 if count < 0 {
                     if errno == EINTR { continue }
@@ -187,14 +198,19 @@ final class KeptClaudeAppRelayProcess: ClaudeAppRelayProcess, @unchecked Sendabl
             return !stopping
         }
         guard first else { return }
+        // 쓰기를 먼저 닫는다: 이 뒤로 들어오는 쓰기는 하지 않고, 쓰는 중인 쓰기는 다음 반복에서 물러난다
+        closeLock.withLock { closedForWrites = true }
         // 읽기 스레드가 먼저 물러난다 (fd를 닫는 동안 읽지 않게)
         stopFlag.set()
         let done = readerDone
         let kept = kept
         let exit = keeperExit
+        let writes = writeQueue
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             DispatchQueue.global(qos: .userInitiated).async {
                 _ = done.wait(timeout: .now() + 2)
+                // 줄 서 있던 쓰기가 모두 지나간 뒤에 fd를 닫는다 (닫힌 fd 번호에 쓰는 쓰기가 없다)
+                writes.sync {}
                 _ = ClaudeSpawner.abort(kept.keeper, reportFD: kept.reportFD, timeout: exit)
                 continuation.resume()
             }

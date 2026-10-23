@@ -48,6 +48,8 @@ final class TranscriptFake: ClaudeAppTranscriptSource, @unchecked Sendable {
 
     func newer(_ cursor: ClaudeAppTranscriptCursor) -> ClaudeAppTranscriptUpdate {
         lock.withLock { _tails += 1 }
+        // 못 읽는 기록은 이어 읽기도 못 읽는다 (아니면 꼬리를 읽는 순간 `failed`였던 대화가 다시 `ready`가 된다: 입력창이 깜박이는 시험이 흔들린다)
+        if unreadable { return .unreadable }
         return .turns([], cursor: cursor, hasMore: false)
     }
 }

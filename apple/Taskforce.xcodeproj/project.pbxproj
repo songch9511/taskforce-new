@@ -270,21 +270,21 @@
 		8B558000C480F1E830643F86 /* CopyFiles */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
-			dstPath = "tf-relay/hooks";
+			dstPath = "tf-relay/.claude-plugin";
 			dstSubfolderSpec = 7;
 			files = (
-				FCF678B963B9BBC8A5E155EE /* hooks.json in CopyFiles */,
-				5FD0BE10E3B4467F2865102C /* register.js in CopyFiles */,
+				70741C0208766BEED659BE97 /* plugin.json in CopyFiles */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		D477825CF8ECC938348094AD /* CopyFiles */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
-			dstPath = "tf-relay/.claude-plugin";
+			dstPath = "tf-relay/hooks";
 			dstSubfolderSpec = 7;
 			files = (
-				70741C0208766BEED659BE97 /* plugin.json in CopyFiles */,
+				FCF678B963B9BBC8A5E155EE /* hooks.json in CopyFiles */,
+				5FD0BE10E3B4467F2865102C /* register.js in CopyFiles */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

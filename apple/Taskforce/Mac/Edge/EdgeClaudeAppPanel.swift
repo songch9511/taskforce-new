@@ -141,8 +141,8 @@ struct ClaudeAppSessionPanelView: View {
             ClaudeAppFooterView(shell: shell, sessionID: id, band: band, chat: chat)
                 .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { presentation.footerHeight = $0 }
         }
-        // 닫힘 · 기록 못 읽음에는 입력창이 없다
-        .onChange(of: viewState, initial: true) { _, state in chat?.setView(state) }
+        // 닫힘 · 기록 못 읽음에는 입력창이 없다. 열쇠는 (세션, 상태): 기록 못 읽음 → 못 읽음 · 닫힘 → 닫힘처럼 상태가 같은 채 세션만 바뀌어도 새 세션의 입력창에 알린다
+        .onChange(of: ClaudeAppChatViewKey(sessionID: id, state: viewState, chat: chat.map(ObjectIdentifier.init)), initial: true) { _, key in chat?.setView(key.state) }
         // 옆줄(백그라운드 일): 이 세션의 일 목록을 먹이고, 닫힌 세션이면 돌던 일을 멈춘 것으로 하고, 꼬리 읽기는 이 세션의 이 Mac 기록 · 임시 폴더에서
         .task(id: id) {
             presentation.beginSession(id)
@@ -207,7 +207,7 @@ struct ClaudeAppSessionPanelView: View {
                         return await conversation.detail(of: turn)
                     },
                     item: { itemID in
-                        if let turn = turns[itemID] { ClaudeAppTurnView(turn: turn, peerLine: peerLine(for: turn)) }
+                        if let turn = turns[itemID] { ClaudeAppTurnView(turn: turn, peerLine: peerLine(for: turn, in: id)) }
                     }
                 )
                 // 아직 기록에 나타나지 않은 보낸 말 (Sending… · Sent · Queued · Not sent): 기록에 나타나면 기록의 줄이 이어받는다
@@ -217,11 +217,19 @@ struct ClaudeAppSessionPanelView: View {
         }
     }
 
-    /// peer 줄 밑의 표시 (OA PR-D3, Q-D3c): 우리 중계가 보낸 것은 "Received · via Taskforce", 그 밖은 "From another session". 대화 흐름이 없는 빌드(Release)는 줄이 없다
-    private func peerLine(for turn: ClaudeAppTurn) -> MessageDeliveryLine? {
-        guard let service = shell.desktopChat, case .peer(_, let peer) = turn.kind else { return nil }
-        return service.peerLine(for: peer)
+    /// peer 줄 밑의 표시 (OA PR-D3, Q-D3c): 이 실행이 띄운 중계가 보낸 것은 "Received · via Taskforce", 그 밖은 "From another session". 대화 흐름이 없는 빌드(Release)는 줄이 없다.
+    /// 읽는 값(이 실행이 띄운 중계 pid · 보낸 말)이 바뀌면 이 줄도 다시 그려진다 (관찰)
+    private func peerLine(for turn: ClaudeAppTurn, in sessionID: String) -> MessageDeliveryLine? {
+        shell.desktopChat?.peerLine(for: turn, in: sessionID)
     }
+}
+
+/// 이 패널이 어느 세션의 어떤 보기 상태를 보이고 있나: 세션이 바뀌면 (보기 상태가 같아도) 그 세션의 입력창에 상태를 다시 알린다 (OA PR-D3 검토 P2-5)
+struct ClaudeAppChatViewKey: Equatable {
+    let sessionID: String
+    let state: ClaudeAppSendContext.View
+    /// 계정이 바뀌어 입력창 객체가 새로 만들어졌으면 새 객체에도 알린다
+    let chat: ObjectIdentifier?
 }
 
 /// 대화 한 줄 (읽기 전용): 데스크톱에서 친 말 · 다른 세션이 보낸 말은 오른쪽 말풍선, Claude의 말은 그대로, 도구 줄은 "이름 · description" 한 줄 회색
@@ -245,6 +253,9 @@ struct ClaudeAppTurnView: View {
             Message(isUser: false) { SessionMarkdownView(source: Self.shown(text, truncated: turn.truncated)) }
         case .tool(let name, let description):
             EventLine(Self.toolLine(name: name, description: description))
+        case .boundary:
+            // 글이 없는 경계 (교환을 끝내는 표시): 화면에 나오지 않는다 (`ClaudeAppConversation`이 이미 거른다)
+            EmptyView()
         }
     }
 

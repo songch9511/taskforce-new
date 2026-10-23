@@ -1,5 +1,6 @@
 #if os(macOS)
 import Foundation
+import Observation
 import Security
 
 /// 중계 프로세스 하나 (PR-D3k): 지킴이 아래 `claude -p`의 stdin · stdout. 시험은 가짜를 쓴다 (`ClaudeAppRelayLauncher`)
@@ -23,17 +24,41 @@ public protocol ClaudeAppRelayLauncher: Sendable {
 }
 
 /// 중계 프로세스의 pid (레일 · "On this Mac" 목록 · 다른 writer 확인이 Taskforce 자신의 프로세스로 빼는 값, 계약 25.4.1 "자기 제외"). 동기로 읽는다
-public final class ClaudeAppRelayPIDs: @unchecked Sendable {
+/// 읽는 쪽이 화면이면 pid가 바뀔 때 다시 그려지도록 관찰할 수 있다 (`Observable`: 읽을 때 `access`, 바꿀 때 `withMutation`)
+public final class ClaudeAppRelayPIDs: @unchecked Sendable, Observable {
     private let lock = NSLock()
+    private let registrar = ObservationRegistrar()
     private var value: Set<Int32> = []
+    private var ever: Set<Int32> = []
 
     public init() {}
 
     /// 앱 하나에 중계가 하나다: 레일 폴러 · "On this Mac" 훑기 · 다른 writer 확인이 모두 이 값을 읽는다 (시험은 자기 값을 넘긴다)
     public static let shared = ClaudeAppRelayPIDs()
 
-    public var current: Set<Int32> { lock.withLock { value } }
-    func set(_ pids: Set<Int32>) { lock.withLock { value = pids } }
+    /// 지금 떠 있는 중계의 pid
+    public var current: Set<Int32> {
+        registrar.access(self, keyPath: \.current)
+        return lock.withLock { value }
+    }
+
+    /// 이 앱 실행이 띄운 모든 중계의 pid (끝난 것 포함): 앞서 띄운 중계가 보낸 기록의 줄도 우리 것으로 알아본다 (OA PR-D3 검토 P2-4).
+    /// 이 실행 안에서만 믿는다 — 다음 실행에는 없다 (앞 실행의 중계 · 다른 프로세스는 우리 사용자의 글이라는 증거가 없다)
+    public var launched: Set<Int32> {
+        registrar.access(self, keyPath: \.launched)
+        return lock.withLock { ever }
+    }
+
+    func set(_ pids: Set<Int32>) {
+        registrar.withMutation(of: self, keyPath: \.current) {
+            registrar.withMutation(of: self, keyPath: \.launched) {
+                lock.withLock {
+                    value = pids
+                    ever.formUnion(pids)
+                }
+            }
+        }
+    }
 }
 
 public enum ClaudeAppRelaySendResult: Equatable, Sendable {
@@ -128,6 +153,8 @@ public actor ClaudeAppRelay {
     private var interest = 0
     private var idleTask: Task<Void, Never>?
     private var idleToken = 0
+    /// 앱 종료가 정해졌다: 다시는 띄우지 않는다 (`shutdown(terminal: true)`, OA PR-D3 검토 P3-9). 계정이 바뀐 뒤의 끝내기는 이 값을 올리지 않는다 (다음 계정이 다시 쓴다)
+    private var terminated = false
 
     public init(
         configuration: Configuration, launcher: any ClaudeAppRelayLauncher, fileSystem: ExternalSessionFileSystem = .live, makeNonce: @escaping @Sendable () -> String = ClaudeAppRelay.randomNonce,
@@ -146,7 +173,7 @@ public actor ClaudeAppRelay {
 
     /// ⑤ 보내기 전 확인이 보는 중계의 상태
     public func readiness() -> ClaudeAppSendContext.Relay {
-        if disabled { return .unavailable }
+        if disabled || terminated { return .unavailable }
         guard let process, phase == .ready else { return .notRunning }
         return process.identityMatches() ? .ready : .mismatch
     }
@@ -155,6 +182,7 @@ public actor ClaudeAppRelay {
 
     /// 입력창이 보이거나 따라가는 교환이 있다: 끝내기를 미룬다
     public func retain() {
+        guard !terminated else { return }
         interest += 1
         cancelIdle()
     }
@@ -167,6 +195,7 @@ public actor ClaudeAppRelay {
     /// 입력창이 보일 때 미리 띄워 둔다 (첫 보내기가 중계가 뜨기를 4초쯤 기다리지 않게): 글은 쓰지 않는다. 준비됐으면 true
     @discardableResult
     public func prepare() async -> Bool {
+        guard !terminated else { return false }
         await acquire()
         defer { releaseGate() }
         guard await ensureReady() else { return false }
@@ -194,7 +223,8 @@ public actor ClaudeAppRelay {
     }
 
     private func idleExpired(_ token: Int) async {
-        guard token == idleToken, interest == 0, process != nil else { return }
+        // 명령이 도는 동안에는 끝내지 않는다 (그 명령이 끝나면 보내기 · 준비가 2분 시계를 다시 건다: OA PR-D3 검토 P3-9)
+        guard token == idleToken, interest == 0, process != nil, !busy else { return }
         log.log("claude_app_relay", ["result": .code("idle_stop")])
         await stopProcess()
     }
@@ -203,15 +233,22 @@ public actor ClaudeAppRelay {
 
     /// 글을 `sessionID`(소문자 UUID)의 데스크톱 세션에 넣는다. 부르는 쪽이 보내기 전 확인(`ClaudeAppSendCheck`)을 먼저 한다.
     /// 막히는 일이 없게 중계를 띄우고 명령이 끝날 때까지 기다린다 (한 번에 하나)
-    public func send(sessionID: String, text: String) async -> ClaudeAppRelaySendResult {
+    public func send(sessionID: String, text: String, recheck: @escaping @Sendable () async -> Bool = { true }) async -> ClaudeAppRelaySendResult {
         // mod가 거절할 입력은 프로세스에 닿지 않는다 (옵션 · 줄바꿈 주입 · 길이 · NUL)
         guard ExternalSessionRules.isCanonicalUUID(sessionID), (1...Self.maxTextLength).contains(text.utf16.count), !text.unicodeScalars.contains(where: { $0.value == 0 }) else {
             return .notDelivered(.relayFailed)
         }
+        guard !terminated else { return .notDelivered(.relayFailed) }
         await acquire()
         defer { releaseGate() }
         guard await ensureReady() else { return .notDelivered(.relayFailed) }
-        guard let process else { return .notDelivered(.relayFailed) }
+        // 쓰기 **직전**에 대상을 다시 확인한다 (DT1 · DT3 · DT9, TOCTOU): 중계가 뜨는 동안 · 앞 보내기를 기다리는 동안 대상이 바뀌었을 수 있다. 달라졌으면 글을 쓰지 않는다 (중계는 멀쩡하다)
+        guard await recheck() else {
+            if interest == 0 { scheduleIdle() }
+            return .notDelivered(.notReceived)
+        }
+        // 확인하는 동안(액터를 놓았다) 중계가 끝났거나 바뀌었으면 그 프로세스에 쓰지 않는다
+        guard !terminated, phase == .ready, let process else { return .notDelivered(.relayFailed) }
         let pid = process.pid
         let reply = await command("/tfsend \(sessionID)\n\(text)", timeout: configuration.commandTimeout)
         let result: ClaudeAppRelaySendResult
@@ -230,8 +267,10 @@ public actor ClaudeAppRelay {
         return result
     }
 
-    /// 앱 종료 · 로그아웃 · 플래그 꺼짐: 바로 끝낸다
-    public func shutdown() async {
+    /// 앱 종료 · 로그아웃 · 플래그 꺼짐: 바로 끝낸다.
+    /// - terminal: 앱 종료가 정해졌다 — 이 뒤로는 미리 띄우기도 보내기도 중계를 다시 띄우지 않는다 (줄 서 있던 일이 종료 뒤에 프로세스를 되살리지 못한다). 계정이 바뀌어 끝내는 것은 terminal이 아니다
+    public func shutdown(terminal: Bool = false) async {
+        if terminal { terminated = true }
         cancelIdle()
         interest = 0
         await stopProcess()
@@ -240,7 +279,7 @@ public actor ClaudeAppRelay {
     // MARK: 띄우기 · 건강 확인
 
     private func ensureReady() async -> Bool {
-        if disabled { return false }
+        if disabled || terminated { return false }
         if let process, phase == .ready {
             if process.identityMatches() { return true }
             // ⑤ 띄운 뒤 정체가 바뀌었다: 글을 쓰지 않고 새로 띄운다

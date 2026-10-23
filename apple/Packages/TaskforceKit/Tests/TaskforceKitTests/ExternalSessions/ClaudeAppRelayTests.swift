@@ -22,12 +22,15 @@ extension ExternalSessionSuites {
             var pidsEmpty: Bool { relay.pids.current.isEmpty }
         }
 
-        private func makeRig(_ launcher: FakeRelayLauncher = FakeRelayLauncher(), mod: String? = nil, nonce: String = "0123456789abcdef0123456789abcdef") throws -> Rig {
+        private func makeRig(
+            _ launcher: FakeRelayLauncher = FakeRelayLauncher(), mod: String? = nil, nonce: String = "0123456789abcdef0123456789abcdef", commandTimeout: TimeInterval = 20
+        ) throws -> Rig {
             let sleeper = ClaudeAppManualSleeper()
             let log = RelayLog()
             let mod = try mod ?? ClaudeAppModFixture.copy()
             let relay = ClaudeAppRelay(
-                configuration: ClaudeAppRelay.Configuration(modDirectory: mod, workDirectory: work), launcher: launcher, makeNonce: { nonce }, sleep: { await sleeper.sleep($0) }, log: log
+                configuration: ClaudeAppRelay.Configuration(modDirectory: mod, workDirectory: work, commandTimeout: commandTimeout), launcher: launcher, makeNonce: { nonce },
+                sleep: { await sleeper.sleep($0) }, log: log
             )
             return Rig(relay: relay, launcher: launcher, sleeper: sleeper, log: log, mod: mod)
         }
@@ -339,6 +342,61 @@ extension ExternalSessionSuites {
             #expect(rig.launcher.processes[0].isStopped && rig.pidsEmpty)
             #expect(await rig.relay.readiness() == .notRunning)
             #expect(await rig.relay.send(sessionID: target, text: "two") == .delivered(relayPID: 4002))
+        }
+
+        // MARK: 쓰기 직전의 확인 (OA PR-D3 검토 P2-2) · 종료는 끝 (P3-9) · 일하는 중에는 유휴로 끝내지 않는다 (P3-9)
+
+        @Test func theWriteWaitsForTheRecheckAfterTheRelayIsReadyAndAFailedRecheckSendsNothing() async throws {
+            let rig = try makeRig()
+            defer { ClaudeAppModFixture.cleanup(rig.mod) }
+            let launcher = rig.launcher
+            let seen = RelayLog()
+            // 확인하는 시점에 중계는 이미 건강 확인을 마쳤고 글은 아직 쓰지 않았다
+            let result = await rig.relay.send(sessionID: target, text: secret, recheck: {
+                seen.log("probe", ["pinged": .count(launcher.processes.first?.contents.filter { $0.hasPrefix("/tfping") }.count ?? 0), "sent": .count(launcher.processes.first?.contents.filter { $0.hasPrefix("/tfsend") }.count ?? 0)])
+                return false
+            })
+            #expect(result == .notDelivered(.notReceived), "달라졌으면 보내지 않는다: Not received")
+            #expect(seen.events("probe").count == 1 && seen.events("probe")[0]["pinged"] == .count(1) && seen.events("probe")[0]["sent"] == .count(0))
+            let process = try #require(rig.launcher.processes.first)
+            #expect(process.contents == ["/tfping 0123456789abcdef0123456789abcdef"], "글은 쓰지 않았다")
+            let readiness = await rig.relay.readiness()
+            #expect(!process.isStopped && readiness == .ready, "중계는 멀쩡하다: 막은 것은 이 보내기뿐이다")
+            // 달라진 것이 없으면 간다
+            #expect(await rig.relay.send(sessionID: target, text: "fine", recheck: { true }) == .delivered(relayPID: 4001))
+        }
+
+        @Test func aTerminalShutdownIsForeverAndEveryWayToStartTheRelayIsRefused() async throws {
+            let rig = try makeRig()
+            defer { ClaudeAppModFixture.cleanup(rig.mod) }
+            await rig.relay.shutdown(terminal: true)
+            await rig.relay.retain()
+            #expect(await rig.relay.prepare() == false)
+            #expect(await rig.relay.send(sessionID: target, text: "late") == .notDelivered(.relayFailed))
+            #expect(rig.launcher.launches.isEmpty, "종료가 정해진 뒤에는 띄우지 않는다")
+            #expect(await rig.relay.readiness() == .unavailable)
+            // 끝내기만 하는 종료는 다음 보내기가 다시 띄운다 (계정이 바뀐 뒤처럼)
+            let plain = try makeRig()
+            defer { ClaudeAppModFixture.cleanup(plain.mod) }
+            await plain.relay.shutdown()
+            #expect(await plain.relay.send(sessionID: target, text: "next account") == .delivered(relayPID: 4001))
+        }
+
+        @Test func theIdleStopDoesNotKillTheRelayWhileACommandIsStillInFlight() async throws {
+            let rig = try makeRig(commandTimeout: 1_000)
+            defer { ClaudeAppModFixture.cleanup(rig.mod) }
+            let process = FakeRelayProcess(pid: 4001) { content, nonce in content.hasPrefix("/tfping ") ? L.ping(nonce: nonce ?? "") : nil }
+            rig.launcher.enqueue(process)
+            #expect(await rig.relay.prepare(), "쓰는 곳이 없는 채로 준비만 했다: 2분 시계가 선다")
+            #expect(await relayEventually { rig.sleeper.requested.contains(120) })
+            let sending = Task { await rig.relay.send(sessionID: target, text: "slow") }
+            #expect(await relayEventually { process.contents.contains { $0.hasPrefix("/tfsend") } }, "명령이 날아갔고 답을 기다린다")
+            rig.sleeper.advance(120)
+            try await Task.sleep(for: .milliseconds(60))
+            #expect(!process.isStopped, "명령이 도는 동안에는 유휴 시계가 끝내지 못한다")
+            process.emit(L.sent(delivered: true))
+            #expect(await sending.value == .delivered(relayPID: 4001))
+            #expect(await relayEventually { rig.sleeper.requested.filter { $0 == 120 }.count >= 2 }, "끝난 뒤에는 2분 시계가 다시 선다")
         }
 
         // MARK: 자기 제외
