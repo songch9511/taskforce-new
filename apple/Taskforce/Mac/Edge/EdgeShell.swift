@@ -102,7 +102,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         shell = EdgeShellModel(
             reduceMotion: Self.systemReduceMotion, pinStore: pinStore, contexts: chat?.contexts, review: review, summary: summary, chatsEnabled: chat != nil,
             windowsEnabled: windows, issues: chat?.issues, externalSessions: externalSessions, desktopSessions: desktop?.sessions,
-            railDone: chat?.issues != nil ? doneStores.rail : nil, claudeAppOpened: desktop?.opened
+            railDone: chat?.issues != nil ? doneStores.rail : nil, claudeAppOpened: desktop?.opened, desktopChat: desktop?.chat
         )
         // 세션 보기가 이 Mac에 두는 것(열어 본 시각 저장본 · 일 목록 판)은 계정과 함께 간다 (보안 P3-1): 로그인이 바뀔 때 셸이, 계정이 기기를 떠날 때(로그아웃 · 세션 만료 · 계정 삭제) 계정 경계가 비운다
         let backgroundSessions = BackgroundTaskAccount(openStore: doneStores.backgroundOpen, board: chat?.backgroundBoard ?? .shared)
@@ -238,6 +238,12 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
                     // 깨면 Taskforce 요청도 한 번 읽는다 (잔 사이 다른 기기에서 바뀌었을 수 있다, OA U3-20)
                     self?.shell.taskforceWoke()
                 }
+            })
+        }
+        // 종료가 정해지면 데스크톱 세션과 대화하는 중계 `claude`를 끝낸다 (OA PR-D3, 최대 2초. 대화를 쓰지 않은 실행 · 게이트가 꺼진 빌드는 할 일이 없다)
+        if let chat = shell.desktopChat {
+            observers.append(NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { _ in
+                chat.stopRelayForQuit()
             })
         }
         // 해상도 · 화면 구성이 바뀌면 레일을 다시 화면 모서리에 붙이고, 열린 패널도 그 옆으로

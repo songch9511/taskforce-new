@@ -664,3 +664,95 @@ Claude 세션 보기(20-3)와 Taskforce 세션 패널, Assistant 창의 대화 �
 - **Taskforce 패널의 오래된 턴은 단계가 없다(결정: 아무것도 보이지 않는다)**: 이 Mac의 기록(`ClaudeAppConversation`)은 꼬리(열 때 마지막 200개 안팎)만 들고 앞쪽을 더 읽지 않으므로, 그보다 오래된 서버 턴에는 단계가 붙지 않는다. 빈 줄이나 설명 문구로 알리지 않는다(없는 것을 있는 척하지도, 알림을 늘리지도 않는다). 서버 저장(V2)이 이 틈을 메운다.
 - 에이전트 일의 꼬리에서 Show earlier는 창(`window`)을 넓히지만 에이전트 읽기는 고정 창(2 MiB, 마지막 200개)을 쓰므로 더 앞이 나오지 않는다(V1 이전부터의 한계, 이 PR 범위 밖).
 - 시험용 가짜 CLI(`Sources/FakeClaudeCode/main.swift`)는 이 PR의 범위 파일이 아니라(범위 훅이 막는다) 고치지 못했다: "첫 `result` 뒤에도 일이 도는" 시나리오는 이미 있는 `ignore_sigint` + `sleep` 단계로 시험한다.
+
+## 23. Claude 데스크톱 세션과 대화하기 · 중계 · 보내기 확인 · 전달 줄 · 저장 올리기 (OA PR-D3k · D3m, 계약 `handoffs/oa-external-sessions-contract.md` 25장 · 26장(사용자 결정이 이긴다), DZ `oa-desktop-rail-dz` 시트 2–5)
+
+사용자가 Claude **데스크톱 앱**에 열린 세션에 Taskforce Mac 앱에서 글을 보낸다. 서버는 이 길을 시작하지 못한다(DT3): 보내는 것은 Mac 안에서만 일어나고, 서버는 "Received"로 확인된 교환을 **저장**만 한다(서버 API · 표 · 보관은 **22장**). 새 서버 경로 · 마이그레이션은 이 장에 없다. 로그에는 글 · 세션 id · 경로 · pid · 제목이 없고 고정 코드뿐이다(`claude_app_relay {result}` · `claude_app_send {result, reason_code}` · `claude_app_chat_status {result}` · `claude_app_chat_upload {result, rows_bucket}`).
+
+### 23-1. 게이트
+
+- **`ClaudeAppRelayGate`: Debug 빌드 ∨ 내부 배포 빌드(`InternalBuildFlag`)에서만 켜지고 Release는 늘 꺼진다**(25.7). 꺼진 빌드는 중계 · 입력창 · 확인 카드 · 올리기 · 지표가 모두 없고 세션 보기는 지금처럼 읽기 전용이다(peer 줄 밑의 "Received · via Taskforce" · "From another session" 표시도 이 게이트 뒤에 있다). 켜는 조건은 사용자 L 확인 ①–⑥ + 보안 검토 뒤다(출시 빌드에서 켜는 것은 이 PR이 아니다).
+- 서버에는 22장의 게이트(`CLAUDE_APP_CHATS_ENABLED` 등)가 따로 있다. 서버가 꺼져 있어도(저장 404) 보내기 · 전달 줄 · 확인은 이 Mac 안에서 그대로 돈다.
+
+### 23-2. 중계 (`ClaudeAppRelay`, Kit `Bridge/ExternalSessions/`)
+
+- 글을 데스크톱 세션의 "다른 세션이 보낸 메시지"로 넣는 길은 하나다: 지킴이 아래 `claude -p`(stream-json 입출력)를 떠 있게 두고, 번들 mod `tf-relay`의 `/tfsend <소문자 UUID>\n<글>`이 `$.session.send({to:{sessionId}, text})`를 **한 번** 부른다. 모델 호출 0 · 비용 0이다.
+- **인자는 바이트까지 고정**이다(`ClaudeAppRelay.arguments`, 시험이 바이트 비교): `-p --input-format stream-json --output-format stream-json --verbose --plugin-dir <번들 mod> --setting-sources "" --strict-mcp-config --tools SendMessage --permission-mode default --name Taskforce --max-budget-usd 0.01 --no-session-persistence`. bypass · auto · dontAsk 없음, 도구는 `SendMessage`뿐, 기록 파일은 만들지 않는다(실측 23-8). 환경은 지킴이 공용 4변수(`ClaudeCodeEnvironment.child`)뿐이다.
+- **글은 stdin으로만** 간다(DT6): 한 줄짜리 stream-json user 메시지의 `content` 안에만 있고 argv · 환경 · 파일 · 로그에는 없다(가짜 `claude`를 실제 지킴이로 띄우는 `ClaudeAppRelayProcessTests`가 바이트로 확인). 입력은 프로세스에 닿기 전에 거른다: 소문자 UUID가 아니거나, 1–16,000(UTF-16)이 아니거나, NUL이 있으면 보내지 않는다.
+- **mod는 번들 안 읽기 전용 경로**(`Taskforce.app/Contents/Resources/tf-relay/{.claude-plugin/plugin.json, hooks/hooks.json, hooks/register.js}`; `apple/project.yml`이 이 세 파일만 폴더 모양 그대로 복사하고 `tests/`는 넣지 않는다)다. **띄우기 전에** `ClaudeAppRelayMod.verify`가 파일 셋이 정확히 같은지(`unexpected`/`missing`), 각 파일이 일반 파일 · 이 사용자나 root 소유 · 다른 사용자가 쓸 수 없음 · 64 KiB 이하인지, SHA-256이 소스의 상수와 같은지 본다(DT7). **mod 파일을 고치면 `ClaudeAppRelayMod.files`의 상수도 함께 고친다**(시험이 번들의 실제 파일로 맞춰 본다).
+- **띄운 뒤 첫 명령은 `/tfping <무작위 nonce>`**: 같은 nonce가 `tf-relay: {...}` 줄로 돌아와야 보낸다(DT12). 줄은 `tf-relay: ` 접두를 요구하고 JSON이 `mod`/`version`/`ok`/`nonce`를 말해야 한다.
+- **모델이 불린 흔적이 어느 줄에든 있으면**(assistant 모델이 `<synthetic>`이 아님 · `num_turns` ≠ 0 · 비용 ≠ 0 · `modelUsage`가 비어 있지 않음 · `local_command` ≠ `custom`) **즉시 프로세스를 끝내고 이 실행 동안 중계를 끈다**(DT5): mod가 안 올라와 `/tfsend`가 모델로 간 경우가 이것이다. 끈 뒤의 보내기는 Not sent("Not received", 이유 코드 `relay_failed`).
+- 한 번에 한 명령만 돈다. 명령 답 기다림 20초 · 첫 띄우기 30초. 쓰는 곳(입력창이 보임 · 따라가는 교환이 있음)이 없어진 뒤 **2분**에 끝낸다. 중계가 죽으면 다음 보내기가 다시 띄운다(pid가 바뀐다). 앱 종료(`NSApplication.willTerminateNotification` → `stopRelayForQuit`, 최대 2초) · 로그아웃 · 게이트 꺼짐에서는 바로 끝낸다.
+- **실행 파일은 Anthropic이 서명한 것이어야 한다**(`KeptClaudeAppRelayLauncher`가 `SecStaticCodeCheckValidity`로 팀 `Q6L2SF6YDW` 확인): npm 스크립트 `claude`는 띄우지 않는다(DT1). 작업 폴더는 앱 데이터 안 빈 폴더(`<Application Support>/<번들 id>/claude-app-relay/cwd`)이고 사용자 프로젝트가 아니다.
+- **중계 프로세스의 pid는 레일 · "On this Mac" 목록 · 다른 writer 확인에서 뺀다**(`ClaudeAppRelayPIDs.shared`, 계약 25.4.1 "자기 제외"): 우리 `claude`가 데스크톱 세션으로 보이거나 "같은 세션을 쥔 다른 writer"로 세어지지 않는다. 중계 자신의 대화는 어디에도 보이지 않고 저장되지 않는다(DT13).
+
+### 23-3. 보내기 전 확인 (`ClaudeAppSendCheck`: 순수 판정 + `ClaudeAppSendVerifier`: 사실 읽기)
+
+- 사실은 **보낼 때마다** 등록 파일 · 프로세스에서 새로 읽는다(메인 밖). 판정 순서는 고정이라 가장 구체적인 이유가 이긴다: 보기 닫힘 · 기록 못 읽음 → 중계 꺼짐 → 등록 폴더를 못 읽음(= 모름 → 막음) → 같은 id의 등록이 둘(DT1) → 등록 없음(닫힘) → **서명 · 조상**(그 프로세스가 Anthropic 서명이고 3단계 안 조상에 Claude.app 본체가 있다) → 다른 writer(`--resume <id>` 등, 모르면 막음) → 패널이 보던 세션 = 보낼 세션 → **확인 전 글 한 번에 하나** → 중계 정체(⑤: 띄운 pid · 시작 시각 그대로) → **C5**.
+- **C5**: 이 세션 · **이 프로세스**(pid + 시작 시각)에 처음 보낼 때 "Send to this session?" 카드가 먼저 뜬다. 눌러야 보낸다. 같은 세션이어도 프로세스가 바뀌면 다시 묻는다(카드가 물었던 프로세스와 누른 뒤의 프로세스가 다르면 보내지 않고 다시 묻는다).
+- 막힌 이유는 화면의 "Not sent" 줄 네 가지로 모인다(23-6). 막힌 말은 서버 저장 켜짐을 묻지도 올리지도 않는다.
+
+### 23-4. 전달 상태 (`ClaudeAppDeliveryTracker`: 순수 상태 기계, 시계 주입)
+
+- 상태: Sending… → **Sent**(mod가 `isDelivered true`) → **Received · via Taskforce**(대상 기록에서 우리 줄을 찾음). 대상이 질문을 기다리면 **Queued · Needs approval in Claude / Needs your answer in Claude**이고 30초 시계가 멈춘다. 못 보내면 **Not sent · {이유}**. 끝난 상태(Received · Not sent)는 늦게 온 사건으로 되돌아가지 않는다.
+- 30초는 중계가 넘긴(Sent) 때부터 센다(질문 때문에 멈춘 시간은 세지 않는다). 시간 안에 기록에 줄이 나타나지 않으면 Not sent · Not received, 단 기록이 말하는 대상의 `permissionMode`가 `bypassPermissions`이면 **Session is in Bypass mode**(실측 23-8: bypass 대상은 소켓에는 닿지만 기록에 peer 줄이 안 남는다). 대상 프로세스가 끝나면 Session is closed.
+- **우리 줄 찾기(Received)** = 기록의 peer 줄이 `plugin == "tf-relay"` ∧ **검증된 보낸 pid == 우리 중계 pid** ∧ 글이 보낸 글과 같고(읽는 쪽이 32 KiB에서 자른 줄은 앞부분이 같으면) ∧ 보내기 전 기록에 없던 줄(baseline)일 때다. `tf-relay`라는 이름만으로 믿지 않는다. 앞 실행의 중계 · 다른 프로세스가 같은 이름으로 보낸 줄은 Received가 아니다.
+- **peer 줄 밑의 표시**(`ClaudeAppPeerLine`, 승인 Q-D3c): 지금 떠 있는 **우리 중계가 보낸** 줄만 "Received · via Taskforce", 그 밖(다른 세션 · 앞 실행의 중계 · 증거 없음)은 중립 "From another session"이다.
+
+### 23-5. 저장 올리기 (`ClaudeAppExchangeCollector` · `ClaudeAppChatUploader` · `ClaudeAppChatSaver`)
+
+- **교환 모으기(순수)**: Received가 된 줄부터 사용자 행(보낸 글 그대로) → 그 뒤 **assistant 글 행**(각 행 앞에서 쓴 도구 **이름**들, 정규식 `^[A-Za-z0-9_-]{1,128}$`에 맞는 것만 최대 40개, 맞지 않는 이름은 그 이름만 버린다)을 기록 순서로 모은다. 사용자가 데스크톱에서 직접 친 글 · 다른 peer 줄 · 도구 입력 · 결과 · 경로 · 설명 · 이메일은 행에 들어가지 않는다(DT11, 시험이 금지어를 직접 찾는다). 교환은 ① 데스크톱 사용자 줄이 나옴 ② 다음 peer 줄이 나옴 ③ 대상이 `busy → idle`이고 기록을 끝까지 읽음 ④ 30분 ⑤ 64 KiB · 40 블록 중 먼저 오는 것에서 끝난다. 제어 글자는 지운다. `mac_ref`는 열쇠 HMAC(`ExternalSessionKey.chatRef`, 접두 `tf-claude-app-chat-v1\n`)이라 같은 줄은 늘 같은 값이다(DT15, 두 번 올려도 한 행).
+- **올리기**: 메모리 큐뿐(디스크 · Keychain 0). 2초마다 묶어 `PUT /api/v2/claude-app-chats`(행 ≤ 서버가 말한 `max_batch` 20 · 본문 ≤ `max_bytes` 262144, 사용자 행이 먼저). 실패(409 · 429 · 5xx · 네트워크)는 2 · 4 · 8 … 60초로 물러나고 **10분이 지나면 버린다**(그 교환에 한 번 `{result:"received", uploaded:false}`로 알린다: 22-4의 측정 공백). 400은 버린다. **413은 두드리지 않는다: 5분 뒤 한 번만 다시, 10분이면 버린다**. 응답 `chat_id: null`은 그 교환만 멈춘다. 로그아웃 때 큐를 비운다.
+- **저장 켜짐 확인 = 글을 보내기 전 처음 한 번**(`ensureAsked`: 그 뒤 1시간마다, 못 물었으면 1분 뒤): `GET /api/v2/claude-app-chats/status`가 **404면 업로더를 만들지 않고** 글을 서버로 한 바이트도 보내지 않는다(DT14). 저장이 꺼져 있으면 이 세션의 저장 표시(bridge id · 세션 ref · 제목)도 읽지 않는다. **앱 시작 · 로그인에 미리 묻지 않는다**: 이 대화를 한 번도 안 쓴 사용자에게는 서버 호출이 0이다.
+- 저장 표시: bridge id · `session_ref`(= `external_sessions`와 같은 열쇠의 HMAC) · 제목(`ExternalSessionRules.sanitizedTitle`, 모르면 칸을 뺀다). **Claude 세션 id · 폴더 · 경로는 서버 요청에 없다.**
+
+### 23-6. 화면 (Mac, `EdgeClaudeAppChat.swift` · `EdgeClaudeAppPanel.swift`; 승인된 문구만 — DZ `oa-desktop-rail-dz`)
+
+- 입력창은 Claude 세션 패널 아래의 기존 `Composer`다(레일 링 · Sessions 줄 어디서 열어도 같다). 자리표시 · 접근성 이름 "Message Claude Code". 닫힘(Closed in Claude) · 기록 못 읽음에는 입력창이 없다. 확인 전 글이 있거나 확인 중이면 Send가 꺼진다(글은 계속 쓸 수 있다). 보내면 입력창은 바로 비워지고 보낸 말이 말풍선으로 남는다.
+- 첫 보내기 카드(C5, 기존 `ConfirmCard`): "Send to this session?" / "Claude sees it as a message from Taskforce. Approvals stay in Claude." / `Send` · `Cancel`. 입력창 바로 위.
+- 전달 줄(보낸 말풍선 밑, 오른쪽 맞춤 footnote 한 줄): `Sending…` · `Sent` · `Queued · Needs approval in Claude` · `Queued · Needs your answer in Claude` · `Received · via Taskforce`. Received가 되어 기록에 그 줄이 보이면 말풍선은 기록의 줄이 이어받고(중복 없음) 아직 기록에 없는 말만 아래에 말풍선으로 남는다.
+- 실패 줄: 굵은 **Not sent** + 이유(회색) + `Send again` 링크 — 이유 넷: `Session is closed`(링크 없음) · `Not received` · `Session is in Bypass mode` · `Running in two places`. 빨강 · 아이콘 없음.
+- **승인 · 답을 기다리는 띠(`Approve in Claude` 등)는 단추가 `Open in Claude` 하나뿐이다**(DR-S2e): Taskforce는 어느 질문 · 권한에도 답하지 않는다. 띠가 있어도 입력창은 열려 있다(그 사이 보낸 말은 Queued).
+- peer 줄(다른 세션이 보낸 말)은 말풍선 밑에 한 줄을 단다: 우리 중계가 보낸 것은 `Received · via Taskforce`, 그 밖은 **`From another session`**.
+- 이 장의 사용자 문구는 모두 승인된 DZ 표의 것이다(새 문구 없음: 저장 한도 초과를 사용자에게 알리는 문구는 DZ에 없어 넣지 않았다).
+
+### 23-7. 지표 · 계정 경계
+
+- 보내기 결과마다 `POST /api/v2/external-sessions/claude-app-sent`(22-2): `received`(저장이 꺼져 있을 때만 이 route가 센다) · `received`+`uploaded:false`(올리기를 포기) · `not_sent`+이유 코드 다섯(`session_closed` · `not_received` · `bypass` · `two_writers` · `relay_failed`; 화면의 "Not received"는 `not_received`와 `relay_failed` 둘이 같은 글이다). 본문에 글 · id · 경로 0.
+- 로그아웃 · 계정 바뀜(`AccountScope.onLeft`): 따라가기 · 중계 · 올리기를 끝내고 쓰던 글 · 보낸 말 · C5 확인을 버린다(다음 계정으로 넘어가지 않는다).
+
+### 23-8. 실측(Claude Code 2.1.306 · 일회용 세션만, 사용자의 실제 세션에는 보내거나 읽지 않았다)
+
+- `--no-session-persistence`는 stream-json과 함께도 먹는다(기록 파일 0 vs 대조군 1; 빈 `memory` 폴더만 생긴다).
+- 줄바꿈 · 특수문자가 든 글이 슬래시 명령 인자에서 **바이트까지 같게** 온다. 끝 공백만 잘린다(그래서 입력창이 다듬는다: 줄바꿈 정리 · 눈에 안 보이는 글자 제거 · 앞뒤 공백 제거).
+- mod 없이 `/tfping`을 보내면 모델이 불린다(비용 약 2.6센트: 예산 상한이 막았다): 모델 턴 감지의 신호는 assistant 모델 ≠ `<synthetic>` · `num_turns` ≠ 0 · 비용 ≠ 0 · `modelUsage` 비어 있지 않음 · `local_command` ≠ `custom`이다.
+- bypass 세션을 대상으로 하면 mod는 `isDelivered:true`를 말하지만 기록에 peer 줄이 40초 안에 나타나지 않는다. 기록의 `permissionMode:"bypassPermissions"`가 그 이유 말("Session is in Bypass mode")을 고른다.
+- 데스크톱 세션 프로세스의 계보: 실행 파일은 앱 데이터 안 `claude.app`, 부모는 `Claude.app/Contents/Helpers/disclaimer`, 조부모는 Claude.app 본체, 모두 팀 `Q6L2SF6YDW`.
+
+### 23-9. 위협 대응 · 시험
+
+| 위협 | 막는 곳 | 고정하는 시험 |
+|---|---|---|
+| DT1 거짓 데스크톱 세션 · 두 등록 | 서명 · 조상 · 한 등록 | `ClaudeAppSendCheckTests` · `ClaudeAppRelayProcessTests`(서명 안 된 실행 파일 거절) |
+| DT3 서버가 보내게 함 | 서버 경로 없음 | 22장 시험 |
+| DT5 · DT12 모델 호출 · 가짜 mod | 모델 턴 감지 · `/tfping` nonce | `ClaudeAppRelayTests` · `ClaudeAppRelayOutputTests` |
+| DT6 글이 argv에 | stdin만 | `ClaudeAppRelayProcessTests`(argv · 환경 · cwd 바이트 비교) |
+| DT7 mod 바꿔치기 | 파일 셋 · SHA-256 · 소유 · 권한 | `ClaudeAppRelayModTests` · `ClaudeAppChatMacTests`(번들의 실제 파일) |
+| DT10 중계 이름 사칭 | pid ∧ 플러그인 이름 | `ClaudeAppExchangeCollectorTests` · `ClaudeAppChatMacTests` |
+| DT11 교환 밖의 것이 올라감 | 수집기가 행만 만듦 | `ClaudeAppExchangeCollectorTests` · `ClaudeAppChatUploaderTests` |
+| DT13 중계 자신의 대화 | pid를 레일 · 목록 · writer 확인에서 뺌 | `ClaudeAppSendCheckTests`(`ourOwnRelayPID…`) · `ClaudeAppStatusPollerTests` · `ExternalSessionHoldTests` |
+| DT14 저장 꺼짐인데 올림 | status 404 → 업로더 없음 | `ClaudeAppChatSaverTests` · `ClaudeAppChatMacTests` |
+| DT15 중복 행 | 멱등 `mac_ref` | `ClaudeAppChatUploaderTests` |
+
+시험 위치: Kit `Tests/TaskforceKitTests/ExternalSessions/ClaudeApp{DeliveryTracker,SendCheck,ExchangeCollector,RelayMod,RelayOutput,Relay,ChatUploader,ChatSaver,ChatsEndpoints,SendText,ChatService}Tests` · 실제 지킴이 + 가짜 `claude` `Tests/TaskforceKitTests/ClaudeCode/ClaudeAppRelayProcessTests`(CI의 "process" 묶음) · mod 자체 `apple/Taskforce/Resources/tf-relay/tests/tf-relay.test.ts`(`claude plugin test`). 앱 `TaskforceTests/ClaudeAppChatMacTests`(번들 mod 해시 · 게이트 · 서버 연결 · 입력창 자리 · 닫힘 · 기록 못 읽음) · `ClaudeAppChatSnapshotTests`(`TF_DESKTOP_CHAT_SHOTS`가 있을 때만 그림 · `TF_DESKTOP_CHAT_ONLY`로 장면 고르기).
+
+### 23-10. 계약과 다른 점 · 남은 것
+
+- 저장 켜짐 확인은 앱 시작 · 로그인이 아니라 **처음 글을 보내기 전**이다(25.6의 "시작 시 확인"을 서버 호출 0을 지키는 쪽으로 바꿨다).
+- 413(한도)은 1시간 뒤가 아니라 **5분 뒤 한 번**이고 10분이면 버린다. 한도 초과를 사용자에게 알리는 문구는 DZ에 없어 넣지 않았다.
+- 상태 확인의 404는 두 코드(`not_found` · `bridge_not_found`) 모두 "끔"으로 본다.
+- 앱 종료 때 중계를 끝내는 호출은 `MacAppDelegate`가 아니라 `EdgeShell`의 종료 알림이다(`MacAppDelegate.swift`가 이 PR의 범위 밖이라 거기에 걸지 못했다).
+- 중계의 작업 폴더는 파티션이 아니라 `<Application Support>/<번들 id>/` 아래다.
+- 중계의 `readiness()`가 `mismatch`(띄운 뒤 정체가 바뀜)를 알려도 보내기는 막지 않고 새로 띄운다(순수 판정에는 막는 갈래가 그대로 있다).
+- 입력창은 DS의 한 줄 `Composer`다: 줄바꿈이 든 글을 직접 쓰는 길(Shift+Enter)은 DZ에 없어 만들지 않았다(붙여 넣은 여러 줄 글의 표시는 사용자 확인 L 항목).
+- 사용자 L 확인 · 실제 데스크톱 세션 끝에서 끝까지(Received · 답 저장)는 이 PR에서 하지 못했다(일회용 세션으로 중계 · mod · 모델 턴 · bypass만 실측했다). 다른 기기에서 보는 화면 · 지우는 UI는 D3v다.
