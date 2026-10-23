@@ -13,6 +13,8 @@ import { openPglite } from "./pglite-template";
 const MIGRATIONS = path.resolve(__dirname, "../../supabase/migrations");
 const D2_MIGRATION_NAME = "20261206000000_claude_app_session_metrics.sql";
 const MINE = "20261207000000_claude_app_chats.sql";
+/** 20261208(D3v-s)은 20261207이 먼저 있어야 적용된다 (자기 가드). 20261207을 뺀 시험 DB에서는 함께 뺀다 */
+const LATER = "20261208000000_claude_app_chats_delete_all.sql";
 const mineSql = readFileSync(path.join(MIGRATIONS, MINE), "utf8");
 const code = mineSql.split("\n").filter((line) => !line.trim().startsWith("--")).join("\n").trim();
 
@@ -36,7 +38,7 @@ describe("적용 순서 가드 (20261207 → 20261206)", () => {
   it("20261206 없이 20261207을 적용하면 거절되고 아무것도 남지 않는다 (실제 적용)", APPLY, async () => {
     const db = await openPglite();
     try {
-      for (const script of await supabaseSchemaScripts({ without: [D2_MIGRATION_NAME, MINE] })) await db.exec(script);
+      for (const script of await supabaseSchemaScripts({ without: [D2_MIGRATION_NAME, MINE, LATER] })) await db.exec(script);
       await expect(db.exec(mineSql)).rejects.toThrow(/20261206/);
       await db.exec("rollback").catch(() => undefined);
       const { rows } = await db.query<{ chats: string | null; domain: string | null; kinds: boolean }>(
@@ -52,7 +54,7 @@ describe("적용 순서 가드 (20261207 → 20261206)", () => {
   it("종류 검사에 claude_app_session_opened가 없는 DB(20261204까지)에서도 같다: 20261206만 빠진 것과 구별하지 않고 멈춘다", APPLY, async () => {
     const db = await openPglite();
     try {
-      for (const script of await supabaseSchemaScripts({ without: [D2_MIGRATION_NAME, MINE] })) await db.exec(script);
+      for (const script of await supabaseSchemaScripts({ without: [D2_MIGRATION_NAME, MINE, LATER] })) await db.exec(script);
       const { rows } = await db.query<{ has: boolean }>("select pg_get_constraintdef(oid) like '%claude_app_session_opened%' as has from pg_constraint where conname = 'metric_events_type_check'");
       expect(rows[0].has).toBe(false);
       await expect(db.exec(mineSql)).rejects.toThrow(/claude_app_session_opened|20261206/);
@@ -64,7 +66,7 @@ describe("적용 순서 가드 (20261207 → 20261206)", () => {
   it("20261206을 적용한 뒤에는 통과한다 (정상 순서)", APPLY, async () => {
     const db = await openPglite();
     try {
-      for (const script of await supabaseSchemaScripts({ without: [MINE] })) await db.exec(script);
+      for (const script of await supabaseSchemaScripts({ without: [MINE, LATER] })) await db.exec(script);
       const { rows: before } = await db.query<{ has: boolean }>("select pg_get_constraintdef(oid) like '%claude_app_session_opened%' as has from pg_constraint where conname = 'metric_events_type_check'");
       expect(before[0].has).toBe(true);
       await db.exec(mineSql);
