@@ -608,7 +608,7 @@ Claude 세션 보기(20-3)와 Taskforce 세션 패널, Assistant 창의 대화 �
 
 ### 21-1. 단계 · 묶음 (`SessionTimeline` · `SessionStepText` · `SessionTimelineSource`)
 
-- 한 번(사용자 글 → 다음 사용자 글)의 도구 단계가 **연속 4개 이상**이면 도구 이름 한 줄로 묶는다(`groupThreshold`, 첫 등장 순서의 고유 이름을 " · "로 잇는다). 개수는 글자로 보이지 않고 접근성 이름("{n} steps")에만 있다. 펼치면 마지막 6개 + Show all / Show less(`visibleRecent`). 열린 묶음 머리는 위에 붙는다(`LazyVStack` 고정 머리). 마지막 묶음은 도는 중 열려 있고 끝나면 접힌다(사용자가 고른 것은 그대로).
+- 한 번(사용자 글 → 다음 사용자 글)의 도구 단계가 **연속 4개 이상**이면 도구 이름 한 줄로 묶는다(`groupThreshold`, 첫 등장 순서의 고유 이름을 " · "로 잇는다). 개수는 글자로 보이지 않고 접근성 이름("{n} steps")에만 있다. 펼치면 마지막 6개 + Show all / Show less(`visibleRecent`). 열린 묶음 머리는 위에 붙지 않고 줄 사이에 그대로 선다(21-7: 본문이 즉시 쌓기 `VStack`이라 고정 머리가 없다). 마지막 묶음은 도는 중 열려 있고 끝나면 접힌다(사용자가 고른 것은 그대로).
 - 단계 줄은 "이름 · 파일 이름"이다: 파일 이름만(경로의 마지막 구성요소, `ExternalSessionRules.sanitizedTitle`로 정리, 30자 넘으면 가운데를 줄이고 확장자를 지킨다). **경로 · 명령은 어떤 줄에도 담지 않는다.** Bash는 모델이 쓴 `description`을 보인다. 실패는 `tool_result.is_error`로 정하고 굵은 "Failed"를 붙인다.
 - 본문(Input / Result)은 펼칠 때만: Claude 패널은 `ClaudeAppConversation.detail(of:)`(19-3의 reader `detail`, 메인 밖), Taskforce 패널은 이 Mac에 그 세션의 기록이 있을 때(`BridgeRuntime.localTranscriptTarget(forAgentSession:)` → 공급자 세션 id + cwd) 같은 reader로 읽고, 없으면 이름만 보인다. 읽은 본문은 64개까지 캐시하되 **끝까지 읽은 것(결과까지 있는 것)만** 둔다: 읽지 못한 것(`nil`)과 도는 중이라 Result가 아직 없는 것은 저장하지 않고 다시 열 때 다시 읽는다(진행 중인 읽기는 겹쳐 시작하지 않는다). 다른 세션을 열면 열어 둔 줄 · 읽은 본문을 모두 비운다(`SessionStepsState.reset`, 줄 id는 세션 안에서만 겹치지 않는다).
 - 읽는 쪽 변화(`ClaudeAppTranscriptReader`): `ClaudeAppTurn`에 `target`(파일 이름) · `failed`가 생겼고, 선언한 필드만 해석하는 규칙은 그대로다(`file_path`/`notebook_path`의 값에서 마지막 구성요소만 꺼내 나머지는 버린다. 경로 · 명령 · 검색어 칸은 선언하지 않는다). 19-3의 "도구 줄은 이름과 description만"은 "이름 · description · 파일 이름"으로 바뀌었다(`ClaudeAppTranscriptReaderTests.aToolRowIsOnlyTheNameTheDescriptionAndAFileName`가 경로 · 명령 · 입력 칸 이름이 없음을 고정한다).
@@ -628,7 +628,7 @@ Claude 세션 보기(20-3)와 Taskforce 세션 패널, Assistant 창의 대화 �
 
 ### 21-4. 안전한 마크다운 (`SafeMarkdown` · `SessionMarkdownRender`)
 
-- 직접 만든 파서가 **코드 블록**(` ``` ` · `~~~`, 언어 이름은 20자 이하 `[A-Za-z0-9_+#.-]`만, 색칠 없음, 긴 블록은 Show all / Show less) · **인라인 코드** · **목록**(깊이 2 · 번호) · **굵게** · 제목(굵기만)만 만든다. 링크 · 이미지 · 표 · HTML · 인용은 **쓴 그대로 글자**다. `AttributedString`을 직접 쌓아 링크 속성을 만들 길 자체가 없다(`link == nil`을 시험이 고정). 인라인 해석은 한 문단 8 KiB로 자르고 굵게는 겹치지 않는다(닫는 백틱 짝은 길이별로 한 번 훑어 두고 찾아 O(n)이다: 안 닫히는 백틱이 많아도 제곱으로 느려지지 않는다). Apple의 마크다운 해석기는 쓰지 않는다. 화면은 같은 원문을 다시 해석하지 않는다(`SessionMarkdownCache`: 원문이 열쇠, 128개, 64 KiB를 넘는 글은 두지 않고 그때그때 해석한다, 계정이 떠나면 비운다). 사용자 말풍선 안에서는 글 폭에 맞춘다(`messageHugsText`).
+- 직접 만든 파서가 **코드 블록**(` ``` ` · `~~~`, 언어 이름은 20자 이하 `[A-Za-z0-9_+#.-]`만, 색칠 없음, 긴 블록은 Show all / Show less: 접을지는 **그리기 전에 글의 줄 수로** 정한다 — 9줄 넘으면 접고, 긴 한 줄은 48자마다 한 줄로 센다, 21-7) · **인라인 코드** · **목록**(깊이 2 · 번호) · **굵게** · 제목(굵기만)만 만든다. 링크 · 이미지 · 표 · HTML · 인용은 **쓴 그대로 글자**다. `AttributedString`을 직접 쌓아 링크 속성을 만들 길 자체가 없다(`link == nil`을 시험이 고정). 인라인 해석은 한 문단 8 KiB로 자르고 굵게는 겹치지 않는다(닫는 백틱 짝은 길이별로 한 번 훑어 두고 찾아 O(n)이다: 안 닫히는 백틱이 많아도 제곱으로 느려지지 않는다). Apple의 마크다운 해석기는 쓰지 않는다. 화면은 같은 원문을 다시 해석하지 않는다(`SessionMarkdownCache`: 원문이 열쇠, 128개, 64 KiB를 넘는 글은 두지 않고 그때그때 해석한다, 계정이 떠나면 비운다). 사용자 말풍선 안에서는 글 폭에 맞춘다(`messageHugsText`).
 
 ### 21-5. 백그라운드 일 · 사이드 탭
 
@@ -667,6 +667,13 @@ Claude 세션 보기(20-3)와 Taskforce 세션 패널, Assistant 창의 대화 �
 - **Taskforce 패널의 오래된 턴은 단계가 없다(결정: 아무것도 보이지 않는다)**: 이 Mac의 기록(`ClaudeAppConversation`)은 꼬리(열 때 마지막 200개 안팎)만 들고 앞쪽을 더 읽지 않으므로, 그보다 오래된 서버 턴에는 단계가 붙지 않는다. 빈 줄이나 설명 문구로 알리지 않는다(없는 것을 있는 척하지도, 알림을 늘리지도 않는다). 서버 저장(V2)이 이 틈을 메운다.
 - 에이전트 일의 꼬리에서 Show earlier는 창(`window`)을 넓히지만 에이전트 읽기는 고정 창(2 MiB, 마지막 200개)을 쓰므로 더 앞이 나오지 않는다(V1 이전부터의 한계, 이 PR 범위 밖).
 - 시험용 가짜 CLI(`Sources/FakeClaudeCode/main.swift`)는 이 PR의 범위 파일이 아니라(범위 훅이 막는다) 고치지 못했다: "첫 `result` 뒤에도 일이 도는" 시나리오는 이미 있는 `ignore_sigint` + `sleep` 단계로 시험한다.
+
+### 21-7. 핫픽스: 긴 세션을 열면 앱이 멈추던 문제 (#187 뒤, 2026-10-23)
+
+- **증상**: 긴 대화의 세션 패널(Claude 패널)을 열어 두면 메인 스레드가 99%에서 내려오지 않고 SwiftUI가 패널을 가라앉지 않게 다시 배치했다 (`sample` 두 장: `LazyStack` 배치 → `signalPrefetch` → `requestUpdate`, 줄 `SessionEntry` · `SessionCopyButton`이 한 번 배치할 때마다 만들어졌다 사라짐, `onScrollGeometryChange` · `SelectionOverlay` 갱신이 매번).
+- **확인한 것 / 못 한 것**: 시험 호스트에서 **끝없는 반복 자체는 만들지 못했다**(줄 높이가 들쭉날쭉한 대화 씨앗 여럿 · 영어 · 한국어 · 코드 빽빽한 대화 · 도는 꼬리 · 옆줄 · 창 높이 맞춤 · 스크롤 훑기를 모두 시도, 가라앉았다). 대신 원인의 종류를 **재현했다**: (1) 코드 블록의 높이가 그린 뒤에 두 번 정해진다(처음 전체 높이 ≈ 1000, 그다음 접힌 높이), (2) 본문이 `LazyVStack`이라 **내용 높이가 스크롤 위치마다 2배–10배 달라진다**(같은 대화가 19k → 88k, 65k → 262k pt) — 게으른 쌓기가 아직 그리지 않은 줄을 어림하고, 줄이 만들어졌다 버려질 때마다 어림을 고치기 때문이다. 맨 아래에 붙은 스크롤(`defaultScrollAnchor(.bottom)`) · 본문 높이 → 창 높이 맞춤 · 스크롤 위치 알림이 그 흔들림을 먹으면 돌아가는 고리가 닫힌다. 사용자의 Mac에서 멈춘 그 대화로 다시 확인한 것은 아니다.
+- **고침**: (a) 본문 `SessionEntriesView`를 즉시 쌓기 `VStack`으로(줄은 `ClaudeAppConversation.maxTurns` 1000 · Taskforce 패널은 서버 대화 상한까지라 한꺼번에 그려도 된다): 내용 높이가 스크롤 위치와 무관하다. 대가: **열린 묶음 머리가 위에 붙지 않는다**(E3 "머리 붙임"은 `LazyVStack` 고정 머리의 기능이었다). (b) 코드 블록은 **그리기 전에 글의 줄 수로** 접을지 정한다(`SessionCodeBlockView.isLong(text:)`: 9줄 넘으면, 긴 한 줄은 48자마다 한 줄로 어림). 예전 규칙(그린 뒤 본문 높이 > 181)과 1–16줄에서 같은 답이다(시험이 실제로 그린 높이와 대조). (c) 두 세션 패널의 `fit()`은 1pt보다 작은 차이에 창을 움직이지 않는다(`EdgePanelMotion.isSameFrame`). Taskforce 패널 · 옆줄 꼬리는 같은 `SessionEntriesView`라 같이 고쳐진다.
+- **시험**: `SessionPanelHangTests`(진짜 패널 창과, 두 패널이 본문을 감싼 모양 그대로의 호스팅 창에 줄 300–600개의 대화를 열어 잰다: 스크롤 위치와 무관한 내용 높이 · 가라앉은 뒤의 런루프 깸 · 마크다운 줄 재계산 · 본문 높이 · 창 틀 · 처음 그릴 때의 코드 블록 높이 · 줄 수 규칙 대 실제 높이 · 1pt 아래 창 맞춤). 메인 스레드가 정말 멈추면 파수꾼이 시험 프로세스를 죽여 CI가 매달리지 않고 실패한다.
 
 ## 22. Claude 데스크톱 대화 저장 서버 (OA PR-D3s, 사용자 결정 2026-10-22)
 

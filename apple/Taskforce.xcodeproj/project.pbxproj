@@ -70,6 +70,7 @@
 		5020EF0FA3E7F009DF938515 /* RailOrdering.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23F7BF891037000F11537653 /* RailOrdering.swift */; };
 		51A41EC52940EB555842641B /* EdgeShellModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 997F7CDADCE1B82032C6E3C9 /* EdgeShellModelTests.swift */; };
 		51DD873085D1961D40AC7681 /* TaskforceUI in Frameworks */ = {isa = PBXBuildFile; productRef = 80B175BF4CA400FA877FD5AF /* TaskforceUI */; };
+		53693893F58CA681CD32D5D1 /* SessionPanelHangTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F2785B2FE0D2FDF9479588D /* SessionPanelHangTests.swift */; };
 		53F1CB481BC6C08A788E1FE6 /* EdgeTaskforceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 536211C5DCA9714C9693EDA4 /* EdgeTaskforceTests.swift */; };
 		54D5EEF036FFF9B8C37B68E8 /* BridgeSecretSubmitterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BFABA2B3A32BF5846AF461F3 /* BridgeSecretSubmitterTests.swift */; };
 		578284CEF0A8A1DD0672CB7E /* LauncherSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 524FC1544A0E35537AE10E50 /* LauncherSnapshot.swift */; };
@@ -311,6 +312,7 @@
 		398336C7527982A0AA290CD8 /* WorkspacePickerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspacePickerTests.swift; sourceTree = "<group>"; };
 		3D33D8B88164A6B656028BE0 /* SessionViewReviewMacTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionViewReviewMacTests.swift; sourceTree = "<group>"; };
 		3D43D09D38ACB649AE46CFE3 /* MacSettingsTabTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacSettingsTabTests.swift; sourceTree = "<group>"; };
+		3F2785B2FE0D2FDF9479588D /* SessionPanelHangTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionPanelHangTests.swift; sourceTree = "<group>"; };
 		3F2E137BDCFE54052D520EA3 /* EdgeWorkLinks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeWorkLinks.swift; sourceTree = "<group>"; };
 		4575E663CCDD3F320C873CBA /* TaskforceTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TaskforceTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		45DC1763AFCD705F9B737246 /* SettingsSnapshotPlan.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsSnapshotPlan.swift; sourceTree = "<group>"; };
@@ -755,6 +757,7 @@
 				A87E77273D7F4913EA35415E /* ReviewTestSupport.swift */,
 				67FA98B6AD5F48FCE46EAB29 /* RunStoreTests.swift */,
 				A73A859A7BB30F65EB4610B5 /* S3bGateTests.swift */,
+				3F2785B2FE0D2FDF9479588D /* SessionPanelHangTests.swift */,
 				D1D64CF3CD9AA19012A7C2C0 /* SessionViewMacTests.swift */,
 				3D33D8B88164A6B656028BE0 /* SessionViewReviewMacTests.swift */,
 				72344B9C722BA26242759E45 /* SessionViewSnapshotTests.swift */,
@@ -1157,6 +1160,7 @@
 				91557E6519E4E8A5A26216C5 /* ReviewTestSupport.swift in Sources */,
 				7BE3D371436C7BFC7B67A63F /* RunStoreTests.swift in Sources */,
 				FCBCDF2154E2D338E891C24D /* S3bGateTests.swift in Sources */,
+				53693893F58CA681CD32D5D1 /* SessionPanelHangTests.swift in Sources */,
 				05C502E4011291C4E465E800 /* SessionViewMacTests.swift in Sources */,
 				7D021BD8BC506E2A3EA3CA42 /* SessionViewReviewMacTests.swift in Sources */,
 				8DFA96C279738593906A4D42 /* SessionViewSnapshotTests.swift in Sources */,

@@ -599,7 +599,7 @@ final class EdgeSessionPanelController {
 
     /// 내용 높이 · 이슈 패널 자리가 바뀌면 위를 맞춘 채로 맞춘다. 이슈 패널이 세로 가운데로 다시 갈 때 같은 움직임으로 따라간다 (세션 패널 자신은 가운데로 서지 않는다: 이슈 패널의 위에 맞춘다)
     func fit() {
-        guard panel.isVisible, presentation.shown, let target = targetFrame(), target != panel.frame else { return }
+        guard panel.isVisible, presentation.shown, let target = targetFrame(), !EdgePanelMotion.isSameFrame(target, panel.frame) else { return }
         let extra = presentation.pane.windowExtra
         if extra != appliedExtra {
             // 옆줄이 나타나거나 사라지거나 접힘 ↔ 펼침: 창 틀은 움직이지 않고 바로 맞춘다 (안의 두 겹이 크로스페이드한다)

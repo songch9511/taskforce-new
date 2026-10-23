@@ -6,7 +6,10 @@ import TaskforceUI
 
 /// 두 세션 패널이 같이 그리는 본문의 줄들 (DZ oa-session-view-dz v2): `SessionTimeline`이 정한 순서 그대로 — 말 · 단계 줄 · 접힌 묶음 · 답 밑 줄 · 도는 중 시계.
 /// 말(사용자 · 어시스턴트 · 이벤트)은 쓰는 쪽이 그린다 (`item`): Claude 패널은 읽기 전용 말풍선, Taskforce 패널은 전달 줄 · View full이 붙은 줄.
-/// 간격은 4/8 격자다: 블록 사이 12, 복사 줄은 답 바로 밑 4, 답 위의 "Worked for"는 답에 4로 붙는다. 열린 묶음의 머리는 패널 본문 위에 붙는다 (DZ E3 "머리 붙임": 61줄을 스크롤해도 어느 묶음인지 보인다)
+/// 간격은 4/8 격자다: 블록 사이 12, 복사 줄은 답 바로 밑 4, 답 위의 "Worked for"는 답에 4로 붙는다.
+/// **즉시 쌓기 `VStack`이다 (`LazyVStack`이 아니다)**: 게으른 쌓기는 아직 그리지 않은 줄의 높이를 어림해 스크롤 위치마다 내용 높이가 크게 달라지고(실측 2배–10배),
+/// 맨 아래에 붙은 스크롤 · 창 높이 맞춤 · 스크롤 위치 알림이 그 흔들림을 먹으며 끝없이 다시 배치해 앱이 멈췄다 (#187 핫픽스, `agent-gateway.md` 21-7). 줄은 상한(1000)까지라 한꺼번에 그려도 된다.
+/// 그래서 열린 묶음의 머리는 패널 본문 위에 붙지 않는다 (DZ E3 "머리 붙임"은 `LazyVStack`의 고정 머리에만 있다: 즉시 쌓기에는 없다. 머리는 줄 사이에 그대로 선다)
 struct SessionEntriesView<Item: View>: View {
     let entries: [SessionEntry]
     let steps: [String: SessionStepInfo]
@@ -34,7 +37,7 @@ struct SessionEntriesView<Item: View>: View {
 
     var body: some View {
         let footerIDs = Set(entries.compactMap { entry -> String? in if case .footer(let footer) = entry { footer.id } else { nil } })
-        LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+        VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
                 entryView(entry, index: index, footerIDs: footerIDs)
             }
@@ -55,13 +58,7 @@ struct SessionEntriesView<Item: View>: View {
                     if inside { state.hoveredFooter = footer } else if state.hoveredFooter == footer { state.hoveredFooter = nil }
                 }
         case .steps(let run):
-            if run.isGroup, state.isOpen(run) {
-                // 열린 묶음은 머리가 붙는 `Section`이다: 위 간격을 `padding`으로 주면 머리와 본문 각각에 붙어 머리가 12 내려앉고 본문이 12 벌어진다. 따로 한 칸을 둔다
-                Color.clear.frame(height: gap)
-                stepsView(run)
-            } else {
-                stepsView(run).padding(.top, gap)
-            }
+            stepsView(run).padding(.top, gap)
         case .footer(let footer):
             SessionFooterView(footer: footer, revealed: state.hoveredFooter == footer.id, showsTime: showsTime) { inside in
                 if inside { state.hoveredFooter = footer.id } else if state.hoveredFooter == footer.id { state.hoveredFooter = nil }
@@ -90,7 +87,8 @@ struct SessionEntriesView<Item: View>: View {
     private func groupView(_ run: SessionStepRun) -> some View {
         let open = state.isOpen(run)
         if open {
-            Section {
+            VStack(alignment: .leading, spacing: 0) {
+                groupHead(run, open: true)
                 VStack(alignment: .leading, spacing: 0) {
                     if state.hidesSteps(run) {
                         QuietLink(SessionViewCopy.showAll) { state.toggleShowAll(run) }
@@ -104,15 +102,13 @@ struct SessionEntriesView<Item: View>: View {
                             .padding(.leading, -6)
                     }
                 }
-            } header: {
-                groupHead(run, open: true)
             }
         } else {
             groupHead(run, open: false)
         }
     }
 
-    /// 묶음 머리 (E3): 열린 머리는 본문 위에 붙고(패널 폭 전체 · `bg/elevated` 불투명) `text/primary`로 열림을 말한다. 개수는 접근성 이름에만
+    /// 묶음 머리 (E3): 열린 머리는 패널 폭 전체 · `bg/elevated` 띠이고 `text/primary`로 열림을 말한다 (본문 위에 붙지는 않는다). 개수는 접근성 이름에만
     private func groupHead(_ run: SessionStepRun, open: Bool) -> some View {
         SessionStepRowView(
             line: run.label, failed: false, expandable: true, isOpen: open, emphasized: open, showsChevronAtRest: true,
