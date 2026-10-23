@@ -6,7 +6,7 @@ import TaskforceUI
 
 /// 두 세션 패널이 같이 그리는 본문의 줄들 (DZ oa-session-view-dz v2): `SessionTimeline`이 정한 순서 그대로 — 말 · 단계 줄 · 접힌 묶음 · 답 밑 줄 · 도는 중 시계.
 /// 말(사용자 · 어시스턴트 · 이벤트)은 쓰는 쪽이 그린다 (`item`): Claude 패널은 읽기 전용 말풍선, Taskforce 패널은 전달 줄 · View full이 붙은 줄.
-/// 간격은 4/8 격자다: 블록 사이 12, 답 밑 줄은 답 바로 밑 4. 열린 묶음의 머리는 패널 본문 위에 붙는다 (DZ E3 "머리 붙임": 61줄을 스크롤해도 어느 묶음인지 보인다)
+/// 간격은 4/8 격자다: 블록 사이 12, 복사 줄은 답 바로 밑 4, 답 위의 "Worked for"는 답에 4로 붙는다. 열린 묶음의 머리는 패널 본문 위에 붙는다 (DZ E3 "머리 붙임": 61줄을 스크롤해도 어느 묶음인지 보인다)
 struct SessionEntriesView<Item: View>: View {
     let entries: [SessionEntry]
     let steps: [String: SessionStepInfo]
@@ -18,12 +18,17 @@ struct SessionEntriesView<Item: View>: View {
     /// 답 밑 줄에 시간을 보이나 (Assistant 창은 복사만)
     var showsTime = true
 
-    /// 항목 위 간격 (4/8 격자): 첫 항목은 0, 답 밑 줄 · 시계 줄은 바로 밑 4, 나머지는 블록 사이 12
-    static func gap(before entry: SessionEntry, at index: Int) -> CGFloat {
+    /// 항목 위 간격 (4/8 격자): 첫 항목은 0, 답 밑 복사 줄 · 턴 끝의 시간 줄 · 시계 줄은 바로 밑 4, 나머지는 블록 사이 12.
+    /// "Worked for"가 답 위에 서는 턴(사용자 결정 2026-10-23): 그 시간 줄은 앞 블록과 12 떨어지고, 그 바로 뒤의 답은 시간 줄에 4로 붙는다
+    static func gap(before entry: SessionEntry, at index: Int, previous: SessionEntry? = nil) -> CGFloat {
         guard index > 0 else { return 0 }
         switch entry {
-        case .footer, .clock: return TFSpace.xs
-        case .item, .steps: return TFSpace.md
+        case .footer(let footer): return footer.aboveAnswer ? TFSpace.md : TFSpace.xs
+        case .clock: return TFSpace.xs
+        case .item:
+            if case .footer(let footer)? = previous, footer.aboveAnswer { return TFSpace.xs }
+            return TFSpace.md
+        case .steps: return TFSpace.md
         }
     }
 
@@ -38,13 +43,13 @@ struct SessionEntriesView<Item: View>: View {
 
     @ViewBuilder
     private func entryView(_ entry: SessionEntry, index: Int, footerIDs: Set<String>) -> some View {
-        let gap = Self.gap(before: entry, at: index)
+        let gap = Self.gap(before: entry, at: index, previous: index > 0 ? entries[index - 1] : nil)
         switch entry {
         case .item(let id):
             item(id)
                 .padding(.top, gap)
                 .onHover { inside in
-                    // 이 답의 줄이 있으면 답 위 호버가 줄의 복사 아이콘을 드러낸다 (줄은 답 바로 밑에 선다: 답이 턴의 끝이 아니면 복사만 있는 줄이고, 시간은 턴의 끝에 따로 선다)
+                    // 이 답의 복사 줄이 있으면 답 위 호버가 줄의 복사 아이콘을 드러낸다 (복사 줄은 답 바로 밑에 서고, 일한 시간은 답 바로 위에 따로 선다)
                     let footer = "footer-\(id)"
                     guard footerIDs.contains(footer) else { return }
                     if inside { state.hoveredFooter = footer } else if state.hoveredFooter == footer { state.hoveredFooter = nil }

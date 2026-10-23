@@ -185,7 +185,8 @@ struct SessionStepDetailView: View {
     }
 }
 
-/// 답 밑 한 줄 (E5): 왼쪽 "Worked for 4m 12s"(13/18 숫자 고정폭), 오른쪽 복사 아이콘(답 위 호버 · 포커스에서만). 높이 28은 늘 잡혀 있다
+/// 턴의 한 줄 (E5, 사용자 결정 2026-10-23): "Worked for 4m 12s"(13/18 숫자 고정폭)는 답 **바로 위**의 캡션 줄(높이 18)이고,
+/// 복사 아이콘은 답 **바로 밑**의 줄 오른쪽(답 위 호버 · 포커스에서만, 높이 28은 늘 잡혀 있다)이다. 답 없는 턴의 끝 시간 줄은 28 그대로
 struct SessionFooterView: View {
     let footer: SessionFooter
     /// 복사 아이콘을 보이나 (마우스가 이 답 위에 있다)
@@ -209,7 +210,7 @@ struct SessionFooterView: View {
                     .padding(.trailing, -7)
             }
         }
-        .frame(height: 28)
+        .frame(height: footer.aboveAnswer ? 18 : 28)
         .contentShape(Rectangle())
         .onHover(perform: onHover)
     }
