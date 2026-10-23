@@ -12,10 +12,13 @@ extension ExternalSessionSuites {
         /// 끝까지 거두는 일회용 자식
         final class Child {
             let process = Process()
+            /// 쓰는 쪽을 쥐고 있어 셸의 `read`가 멈춰 기다린다 (`stop`까지)
+            let input = Pipe()
             init(executable: String, arguments: [String], directory: String? = nil) throws {
                 process.executableURL = URL(fileURLWithPath: executable)
                 process.arguments = arguments
                 if let directory { process.currentDirectoryURL = URL(fileURLWithPath: directory) }
+                process.standardInput = input
                 process.standardOutput = FileHandle.nullDevice
                 process.standardError = FileHandle.nullDevice
                 try process.run()
@@ -31,12 +34,13 @@ extension ExternalSessionSuites {
         @Test func anArgvThatNamesASessionIsSeenInEveryFormAndOurOwnPIDsAreSkipped() throws {
             let ids = (0xA1...0xA4).map { F.uuid($0) }
             let notThere = F.uuid(0xA9)
+            // 셸은 내장 `read`로 기다린다: `sleep`을 띄우려고 fork하면 그 복사본이 exec 전까지 같은 argv를 다른 pid로 보여 "뺀 pid" 기대가 가끔 깨졌다 (CI)
             let children = [
-                try Child(executable: "/bin/sh", arguments: ["-c", "sleep 30; :", "claude", "--resume", ids[0]]),
-                try Child(executable: "/bin/sh", arguments: ["-c", "sleep 30; :", "claude", "--resume=\(ids[1])"]),
-                try Child(executable: "/bin/sh", arguments: ["-c", "sleep 30; :", "claude", "--session-id", ids[2]]),
+                try Child(executable: "/bin/sh", arguments: ["-c", "read line", "claude", "--resume", ids[0]]),
+                try Child(executable: "/bin/sh", arguments: ["-c", "read line", "claude", "--resume=\(ids[1])"]),
+                try Child(executable: "/bin/sh", arguments: ["-c", "read line", "claude", "--session-id", ids[2]]),
                 // `-r` 뒤의 값이 정규 UUID가 아니면 세션 id가 아니다 (경로 · 옵션 · 대문자)
-                try Child(executable: "/bin/sh", arguments: ["-c", "sleep 30; :", "claude", "-r", ids[3], "--resume", "/tmp/a.jsonl", "-r", "--x", "--resume", F.uuid(0xC1).uppercased()]),
+                try Child(executable: "/bin/sh", arguments: ["-c", "read line", "claude", "-r", ids[3], "--resume", "/tmp/a.jsonl", "-r", "--x", "--resume", F.uuid(0xC1).uppercased()]),
             ]
             defer { children.forEach { $0.stop() } }
             var seen = Set<String>()

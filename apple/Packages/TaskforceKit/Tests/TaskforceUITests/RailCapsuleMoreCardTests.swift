@@ -17,6 +17,14 @@ struct RailCapsuleMoreCardTests {
         #expect(frame.size == CGSize(width: 170, height: 76))
     }
 
+    @Test func onASmallScreenTheCardStillSitsBesideTheCapsuleAtTheRightEdge() {
+        // 1024 × 768 화면(CI 러너): 화면 오른쪽 끝에 붙은 레일의 카드는 안으로 밀리지 않는다
+        let small = CGRect(x: 0, y: 0, width: 1024, height: 768)
+        let capsule = CGRect(x: small.maxX - 50, y: 300, width: 44, height: 112)
+        let frame = RailMoreCardGeometry.frame(size: CGSize(width: 170, height: 76), capsule: capsule, visible: small)
+        #expect(frame.maxX == capsule.minX - 10 && frame.minY == capsule.minY)
+    }
+
     @Test func aCardThatWouldLeaveTheScreenIsPushedBackIn() {
         let lowCapsule = CGRect(x: 1390, y: -20, width: 44, height: 112)
         #expect(RailMoreCardGeometry.frame(size: CGSize(width: 170, height: 76), capsule: lowCapsule, visible: visible).minY == 0)
