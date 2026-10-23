@@ -46,6 +46,7 @@ struct SavedChatsMacTests {
         private let lock = NSLock()
         private var _pages: [[SavedChatRow]]
         private var _calls = 0
+        private var _messageReads = 0
         private var _messages: [UUID: [SavedChatMessageRecord]] = [:]
         private var _messageError: (any Error)?
         private var _deleted: [UUID] = []
@@ -77,6 +78,8 @@ struct SavedChatsMacTests {
         }
 
         var calls: Int { lock.withLock { _calls } }
+        /// 말 읽기를 부른 횟수 (보기가 다시 읽었는지)
+        var messageReads: Int { lock.withLock { _messageReads } }
         var deleted: [UUID] { lock.withLock { _deleted } }
         var deleteAllCalls: Int { lock.withLock { _deleteAllCalls } }
         func setPages(_ pages: [[SavedChatRow]]) { lock.withLock { _pages = pages } }
@@ -94,6 +97,7 @@ struct SavedChatsMacTests {
 
         func readMessages(_ chat: UUID, _ offset: Int, _ limit: Int) throws -> [SavedChatMessageRecord] {
             try lock.withLock {
+                _messageReads += 1
                 if let _messageError { throw _messageError }
                 let newestFirst = Array((_messages[chat] ?? []).reversed())
                 guard offset < newestFirst.count else { return [] }
@@ -316,6 +320,93 @@ struct SavedChatsMacTests {
         r.shell.openSavedChat(Self.id(2))
         #expect(await X().until { r.shell.savedChatPanelID == nil }, "다른 기기에서 이미 지운 대화를 열어 둔 경우도 패널이 닫힌다")
         #expect(await X().until { !r.store.rows.contains { $0.id == Self.id(2) } }, "줄도 목록에서 빠진다")
+    }
+
+    // MARK: 지운 대화가 메모리에서 되살아나지 않는다 (재검토 P1)
+
+    @Test func deleteAllWhileSessionsIsCollapsedDoesNotBringTheOpenChatBackWhenSessionsOpensAgain() async {
+        // 대화를 연 채 Settings로 가면(Sessions가 접힌다) 열어 둔 id와 보기가 남는다: 모두 지운 뒤 다시 열면 옛 글이 메모리에서 보였다
+        let r = await rig()
+        let detail = await opened(r, 2)
+        #expect(detail?.messages.count == 2)
+        r.shell.dismiss()
+        #expect(r.shell.savedChatPanelID == Self.id(2), "접어도 열어 둔 대화는 남는다 (지우기 전에는)")
+        await r.store.deleteAllChats()
+        #expect(r.store.rows.isEmpty)
+        #expect(r.shell.savedChatPanelID == nil && r.shell.savedChatDetail == nil, "모두 지우기가 성공하면 열어 둔 대화는 닫힌다: 접혀 있는 동안에도")
+        r.backend.setPages([[]])
+        r.shell.openSessions()
+        #expect(r.shell.savedChatPanelID == nil && r.shell.savedChatDetail == nil && !r.shell.savedChatPanelShown, "다시 열어도 지운 대화는 없다")
+    }
+
+    @Test func deleteAllWhileThePanelIsStillShownClosesIt() async {
+        let r = await rig()
+        _ = await opened(r, 2)
+        #expect(r.shell.savedChatPanelShown)
+        await r.store.deleteAllChats()
+        #expect(r.shell.savedChatPanelID == nil && !r.shell.savedChatPanelShown && r.shell.savedChatDetail == nil)
+    }
+
+    @Test func aChatDeletedOnAnotherDeviceWhileSessionsWasCollapsedIsGoneOnceTheListIsReadAgain() async {
+        let r = await rig()
+        _ = await opened(r, 2)
+        r.shell.dismiss()
+        r.backend.setPages([(1...5).filter { $0 != 2 }.map { Self.row($0) }])
+        r.backend.setMessages([], for: Self.id(2))
+        r.shell.openSessions()
+        #expect(await X().until { r.shell.savedChatPanelID == nil && r.shell.savedChatDetail == nil }, "다시 읽은 목록에 없는 대화는 열어 둔 채로 두지 않는다")
+        #expect(!r.store.rows.contains { $0.id == Self.id(2) })
+    }
+
+    @Test func aChatBeyondTheFirstPageIsNotClosedJustBecauseTheFreshFirstPageDoesNotHoldIt() async {
+        // 목록이 더 있으면(가득 찬 쪽) 다시 읽은 첫 쪽에 없다고 지워진 것은 아니다: 그 대화 스스로 읽어 본다
+        let r = await rig(rows: (1...20).map { Self.row($0) })
+        r.backend.setPages([(1...20).map { Self.row($0) }, (21...40).map { Self.row($0) }, (1...20).map { Self.row($0) }])
+        await r.store.loadMore()
+        #expect(r.store.rows.count == 40)
+        let detail = await opened(r, 30)
+        #expect(detail?.phase == .ready)
+        r.shell.dismiss()
+        r.shell.openSessions()
+        #expect(await X().until { r.store.rows.count == 20 }, "다시 열면 처음 쪽만 읽는다")
+        #expect(await X().until { detail?.phase == .ready && detail?.messages.count == 2 })
+        #expect(r.shell.savedChatPanelID == Self.id(30) && r.shell.savedChatPanelShown, "첫 쪽에 없어도 그 대화는 아직 있다 (더 읽을 쪽이 있다)")
+    }
+
+    @Test func aChatBeyondTheFirstPageDeletedElsewhereClosesThroughItsOwnReload() async {
+        let r = await rig(rows: (1...20).map { Self.row($0) })
+        r.backend.setPages([(1...20).map { Self.row($0) }, (21...40).map { Self.row($0) }, (1...20).map { Self.row($0) }])
+        await r.store.loadMore()
+        _ = await opened(r, 30)
+        r.shell.dismiss()
+        r.backend.setMessages([], for: Self.id(30))
+        r.shell.openSessions()
+        #expect(await X().until { r.shell.savedChatPanelID == nil }, "더 읽을 쪽이 있어 목록으로는 모르지만, 보기가 다시 읽으면 말이 없어 지운 대화로 드러난다")
+    }
+
+    @Test func showingThePanelAgainReloadsTheOpenChatAndNeverShowsTheOldTextMeanwhile() async {
+        let r = await rig()
+        let detail = await opened(r, 2)
+        #expect(detail?.messages.map(\.body) == ["first", "second"])
+        r.shell.dismiss()
+        r.backend.setMessages([Self.message(1, role: "user", body: "first"), Self.message(2, role: "assistant", body: "second"), Self.message(3, role: "assistant", body: "third")], for: Self.id(2))
+        let gate = Gate()
+        r.backend.messageGate = gate
+        r.shell.openSessions()
+        #expect(r.shell.savedChatDetail === detail)
+        #expect(detail?.phase == .loading && detail?.messages.isEmpty == true, "다시 보이는 즉시 메모리의 옛 글을 비우고 읽는 중이다")
+        await gate.open()
+        #expect(await X().until { detail?.messages.count == 3 }, "다시 읽은 새 글이 보인다")
+    }
+
+    @Test func aPanelThatStaysShownIsNotReloadedAgain() async {
+        let r = await rig()
+        let detail = await opened(r, 2)
+        let before = r.backend.messageReads
+        r.shell.openSessions()
+        r.shell.openSessions()
+        for _ in 0..<20 { await Task.yield() }
+        #expect(detail?.phase == .ready && r.backend.messageReads == before, "계속 보이는 패널은 다시 읽지 않는다 (보이게 될 때만)")
     }
 
     // MARK: 지우기: 오른쪽 클릭 → 읽기 패널 + 확인 카드 → 결과

@@ -6,8 +6,9 @@ public enum SavedChatItem: Equatable, Sendable {
     /// 보낸 말: 쓴 그대로 (서식 없음), 밑에 "Received · via Taskforce"
     case sent(text: String)
     /// 답: 세션 보기와 같은 **안전한 서식**(`SafeMarkdown`: 코드 · 목록 · 굵게, 링크 · 표 · 이미지 · HTML은 글자 그대로)으로 그린다. 계약 27장 Q-D3v4가 DZ 그림의 "글자 그대로"를 바꿨다.
-    /// `markdown`은 원문(복사할 글)이다. `time`은 그 답을 기록한 시각 (24시간 "09:41")
-    case reply(markdown: String, time: String)
+    /// `markdown`은 그리는 글이다 (상한에서 잘렸으면 끝에 그림용 말줄임 "…"이 붙는다). `copyText`는 **저장된 원문 그대로**(복사할 글, 말줄임 없음).
+    /// `time`은 그 답을 기록한 시각 (24시간 "09:41")
+    case reply(markdown: String, copyText: String, time: String)
 
     /// 안전한 서식으로 그리나 (답만)
     public var rendersMarkdown: Bool {
@@ -55,7 +56,8 @@ public struct SavedChatTimeline: Equatable, Sendable {
                 }
                 timelineItems.append(SessionTimelineItem(id: id, role: .assistant))
                 // 상한에서 잘린 글은 끝에 말줄임을 붙인다 (세션 보기의 `ClaudeAppTurnView.shown`과 같다)
-                items[id] = .reply(markdown: message.truncated ? message.body + "…" : message.body, time: WhenText.time(message.saidAt, timeZone: timeZone))
+                let shown = message.truncated ? message.body + "…" : message.body
+                items[id] = .reply(markdown: shown, copyText: message.body, time: WhenText.time(message.saidAt, timeZone: timeZone))
             }
         }
         return SavedChatTimeline(entries: SessionTimeline.build(timelineItems, state: .finished), steps: steps, items: items, dayLabels: dayLabels)

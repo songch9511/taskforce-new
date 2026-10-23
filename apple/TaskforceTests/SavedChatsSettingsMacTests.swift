@@ -79,6 +79,7 @@ struct SavedChatsSettingsMacTests {
         await store.refresh()
         let model = SettingsWindowModel()
         model.savedChats = store
+        model.confirming = .deleteAllSavedChats
         let first = Task { await model.deleteAllSavedChats() }
         #expect(await EdgeExternalSessionsTests().until { store.deleteAllState == .deleting })
         #expect(SavedChatsSettingsPlan.of(store: store, confirming: true) == .confirm(busy: true))
@@ -103,8 +104,83 @@ struct SavedChatsSettingsMacTests {
     @Test func aServerErrorUsesTheGenericReasonLine() async {
         let (model, store, backend, _) = await make()
         backend.failDeleteAll(APIError.server(status: 500, code: .internalError, message: "x"))
+        model.confirming = .deleteAllSavedChats
         await model.deleteAllSavedChats()
         #expect(SavedChatsSettingsPlan.of(store: store, confirming: false) == .failed(detail: "Couldn't delete · Something went wrong. Try again in a moment."))
+    }
+
+    // MARK: 확인을 거쳐야 보낸다 · 실패 줄은 거둔다 (재검토 P3/P4)
+
+    @Test func deleteAllNeedsTheConfirmRowToHaveBeenOpenedAndSendsNothingOtherwise() async {
+        let (model, store, backend, _) = await make()
+        await model.deleteAllSavedChats()
+        #expect(backend.deleteAllCalls == 0 && store.rows.count == 3 && model.confirming == nil, "확인 줄을 거치지 않으면 보내지 않는다")
+        let mac = UUID()
+        model.confirming = .removeMac(mac)
+        await model.deleteAllSavedChats()
+        #expect(backend.deleteAllCalls == 0 && model.confirming == .removeMac(mac), "다른 확인 줄이 열려 있으면 모두 지우지도, 그 확인 줄을 닫지도 않는다")
+        model.confirming = .deleteAllSavedChats
+        await model.deleteAllSavedChats()
+        #expect(backend.deleteAllCalls == 1 && store.rows.isEmpty, "확인 줄에서 눌러야 간다")
+    }
+
+    @Test func tryAgainOnTheFailedRowSendsWithoutOpeningTheConfirmRowAgain() async {
+        let (model, store, backend, _) = await make()
+        backend.failDeleteAll(APIError.transport("offline"))
+        model.confirming = .deleteAllSavedChats
+        await model.deleteAllSavedChats()
+        #expect(model.confirming == nil && store.deleteAllState == .failed(.offline))
+        backend.failDeleteAll(nil)
+        await model.deleteAllSavedChats()
+        #expect(backend.deleteAllCalls == 2 && store.rows.isEmpty && model.confirming == nil, "실패 뒤에는 Try again이 확인 없이 다시 보낸다 (이미 한 번 확인했다)")
+    }
+
+    @Test func finishingDoesNotCloseAConfirmRowThatSomethingElseOpenedMeanwhile() async {
+        let gate = M.Gate()
+        let scope = AccountScope(currentAccount: { SampleData.userID })
+        let store = SavedChatsStore(
+            scope: scope, readPage: { _, _ in (1...3).map { M.row($0) } }, readMessages: { _, _, _ in [] }, deleteChat: { _ in }, deleteAll: { await gate.wait() }
+        )
+        await store.refresh()
+        let model = SettingsWindowModel()
+        model.savedChats = store
+        model.confirming = .deleteAllSavedChats
+        let running = Task { await model.deleteAllSavedChats() }
+        #expect(await EdgeExternalSessionsTests().until { store.deleteAllState == .deleting })
+        model.confirming = .disconnectAgent
+        await gate.open()
+        await running.value
+        #expect(model.confirming == .disconnectAgent, "끝났다고 지금 열린 다른 확인 줄을 닫지 않는다")
+    }
+
+    @Test func closingTheWindowOrChangingTheTabOrGoingBackDropsTheFailureRow() async {
+        // 창을 닫을 때 · 탭을 옮길 때 · Back에서 모두 `close()`를 지난다
+        let (model, store, backend, _) = await make()
+        backend.failDeleteAll(APIError.transport("offline"))
+        model.confirming = .deleteAllSavedChats
+        await model.deleteAllSavedChats()
+        #expect(SavedChatsSettingsPlan.of(store: store, confirming: false) != .hidden && store.deleteAllState == .failed(.offline))
+        model.close()
+        #expect(store.deleteAllState == .idle && SavedChatsSettingsPlan.of(store: store, confirming: false) == .delete, "다시 열면 실패 줄이 남아 있지 않다: 평소 줄이다")
+    }
+
+    @Test func closingWhileDeletingDoesNotCancelTheRequestOrHideTheBusyRow() async {
+        let gate = M.Gate()
+        let scope = AccountScope(currentAccount: { SampleData.userID })
+        let store = SavedChatsStore(
+            scope: scope, readPage: { _, _ in (1...3).map { M.row($0) } }, readMessages: { _, _, _ in [] }, deleteChat: { _ in }, deleteAll: { await gate.wait() }
+        )
+        await store.refresh()
+        let model = SettingsWindowModel()
+        model.savedChats = store
+        model.confirming = .deleteAllSavedChats
+        let running = Task { await model.deleteAllSavedChats() }
+        #expect(await EdgeExternalSessionsTests().until { store.deleteAllState == .deleting })
+        model.close()
+        #expect(store.deleteAllState == .deleting, "지우는 중에는 창을 닫아도 일은 계속한다")
+        await gate.open()
+        await running.value
+        #expect(store.rows.isEmpty)
     }
 
     @Test func theTrayRowDeletesNothingWithoutAStore() async {
@@ -116,6 +192,7 @@ struct SavedChatsSettingsMacTests {
     @Test func anAccountSwitchClearsTheRowAndTheFailure() async {
         let (model, store, backend, scope) = await make()
         backend.failDeleteAll(APIError.transport("offline"))
+        model.confirming = .deleteAllSavedChats
         await model.deleteAllSavedChats()
         #expect(SavedChatsSettingsPlan.of(store: store, confirming: false) != .hidden)
         scope.accountLeft()

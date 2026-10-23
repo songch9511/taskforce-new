@@ -148,11 +148,15 @@ private struct SavedChatDayLine: View {
     }
 }
 
-/// 답 하나: 세션 보기와 같은 안전한 서식의 글 + 밑 줄(왼쪽 시각, 오른쪽 Copy: 마우스를 올리거나 포커스가 있을 때만 보이고 마크다운 원문을 복사한다)
+/// 답 하나: 세션 보기와 같은 안전한 서식의 글 + 밑 줄(왼쪽 시각, 오른쪽 Copy: 마우스를 올리거나 포커스가 있을 때만 보이고 **저장된 원문**을 복사한다 — 그림용 말줄임 "…"은 가져가지 않는다)
 struct SavedChatReplyView: View {
     let markdown: String
+    let copyText: String
     let time: String
     var revealed = false
+
+    /// Copy 단추: 그리는 글(`markdown`, 잘린 답은 끝에 "…")이 아니라 저장된 원문(`copyText`)을 복사한다
+    var copyButton: SessionCopyButton { SessionCopyButton(text: copyText, alwaysVisible: false, revealed: revealed) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: TFSpace.xs) {
@@ -165,7 +169,7 @@ struct SavedChatReplyView: View {
                     .monospacedDigit()
                     .foregroundStyle(TFColor.textSecondary)
                 Spacer(minLength: 0)
-                SessionCopyButton(text: markdown, alwaysVisible: false, revealed: revealed)
+                copyButton
                     .padding(.trailing, -7)
             }
             .frame(height: 28)
@@ -186,13 +190,19 @@ struct SavedChatItemView: View {
             case .sent(let text)?:
                 Message(isUser: true) { MessageText(text) }
                 MessageDeliveryView(SavedChatItem.deliveryLine)
-            case .reply(let markdown, let time)?:
-                SavedChatReplyView(markdown: markdown, time: time, revealed: hovering)
+            case .reply?:
+                if let reply = Self.replyView(item, revealed: hovering) { reply }
             case nil:
                 EmptyView()
             }
         }
         .onHover { hovering = $0 }
+    }
+
+    /// 답이면 그 답의 그림 (아니면 nil): 시험이 복사 단추가 무엇을 복사하는지 본다
+    static func replyView(_ item: SavedChatItem?, revealed: Bool) -> SavedChatReplyView? {
+        guard case .reply(let markdown, let copyText, let time)? = item else { return nil }
+        return SavedChatReplyView(markdown: markdown, copyText: copyText, time: time, revealed: revealed)
     }
 }
 

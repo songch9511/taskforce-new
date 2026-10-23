@@ -172,11 +172,13 @@ final class SettingsWindowModel {
         agents.dismissFailure()
     }
 
-    /// Back · 탭 바꾸기 · 창 밖에서 열기 (More 메뉴 · 메뉴 막대 · 알림)
+    /// Back · 탭 바꾸기 · 창 닫기 · 창 밖에서 열기 (More 메뉴 · 메뉴 막대 · 알림)
     func close() {
         detail = nil
         confirming = nil
         agents.dismissFailure()
+        // "Couldn't delete" 줄은 떠나면 거둔다: 다시 열면 평소 줄이다 (지우는 중에는 건드리지 않는다)
+        savedChats?.dismissDeleteAllFailure()
     }
 
     /// Back 링크: 기억 하나에서는 목록으로, 그 밖은 탭 첫 화면으로
@@ -224,12 +226,14 @@ final class SettingsWindowModel {
         plan.invalidate()
     }
 
-    /// 확인 줄의 Delete all · 실패 줄의 Try again (OA D3v-m): 서버에 한 번 보낸다. 지우는 동안 확인 줄이 바쁘고, 끝나면 확인 줄을 닫는다 (남았으면 실패 줄이, 다 지워졌으면 줄이 없다)
+    /// 확인 줄의 Delete all · 실패 줄의 Try again (OA D3v-m): 서버에 한 번 보낸다. **확인 줄이 열려 있어야만 보낸다** — 실패 뒤의 Try again만 예외다 (이미 한 번 확인했다).
+    /// 지우는 동안 확인 줄이 바쁘고, 끝나면 확인 줄을 닫는다: 그사이 다른 확인 줄이 열렸다면 그것은 두고 (남았으면 실패 줄이, 다 지워졌으면 줄이 없다)
     func deleteAllSavedChats() async {
         guard let store = savedChats, store.deleteAllState != .deleting else { return }
-        confirming = .deleteAllSavedChats
+        let retrying: Bool = if case .failed = store.deleteAllState { true } else { false }
+        guard confirming == .deleteAllSavedChats || retrying else { return }
         await store.deleteAllChats()
-        confirming = nil
+        if confirming == .deleteAllSavedChats { confirming = nil }
     }
 
     /// 대화 · 기억 상태에 붙는다: 계정이 떠나면 열린 기억 상세를 닫는다 (다른 계정의 기억 id로 상세가 남지 않게)

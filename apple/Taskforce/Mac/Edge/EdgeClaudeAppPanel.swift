@@ -110,7 +110,7 @@ struct ClaudeAppSessionPanelView: View {
         let band = closed ? nil : status?.band
         // 데스크톱 세션과의 대화 (OA PR-D3): 게이트가 꺼진 빌드(Release)에는 없다 (nil → 읽기 전용 그대로)
         let chat = shell.desktopChat?.chat(for: id)
-        let viewState: ClaudeAppSendContext.View = closed ? .closed : (conversation.phase == .failed ? .unreadable : .open)
+        let viewState = EdgeShellModel.chatViewState(closed: closed, phase: conversation.phase)
         VStack(spacing: 0) {
             header(id, status: status, closed: closed, showsOpen: band == nil)
                 .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { presentation.headHeight = $0 }

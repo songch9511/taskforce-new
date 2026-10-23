@@ -74,16 +74,15 @@ public final class SavedChatDetailModel {
             let records = try await read(0, pageSize)
             guard started == generation else { return }
             readCount = records.count
-            let ordered = SavedChatMessages.ordered(records)
-            guard !ordered.isEmpty else {
-                // 대화가 있으면 말이 하나는 있다: 비었으면 다른 기기에서 이미 지웠다
+            guard !records.isEmpty else {
+                // 대화가 있으면 말이 하나는 있다: 받은 기록이 없으면 다른 기기에서 이미 지웠다 (모르는 역할만 있어 거른 뒤 빈 것과 다르다)
                 phase = .gone
                 messages = []
                 hasEarlier = false
                 onGone()
                 return
             }
-            messages = ordered
+            messages = SavedChatMessages.ordered(records)
             hasEarlier = records.count >= pageSize && readCount < maxMessages
             phase = .ready
         } catch {
@@ -97,6 +96,18 @@ public final class SavedChatDetailModel {
     @discardableResult
     public func retry() -> Task<Void, Never> {
         Task { await load() }
+    }
+
+    /// 패널이 다시 보일 때: **부르는 즉시** 메모리에 있던 글을 비우고(지운 대화가 한 프레임도 되살아 보이지 않게) 처음 쪽부터 다시 읽는다. 돌던 읽기의 늦은 답은 쓰지 않는다.
+    /// 그사이 다른 기기에서 지웠으면 첫 쪽이 비어 `gone`이 된다
+    @discardableResult
+    public func reload() -> Task<Void, Never> {
+        stop()
+        messages = []
+        hasEarlier = false
+        readCount = 0
+        phase = .loading
+        return Task { await load() }
     }
 
     /// 위의 "Show earlier": 앞 쪽을 읽어 맨 위에 붙인다. 한 번에 하나만 돈다. 읽지 못하면 보이는 것은 그대로 두고 다시 누를 수 있다

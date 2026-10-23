@@ -14,15 +14,23 @@ struct SavedChatDetailModelTests {
         private var all: [SavedChatMessageRecord]
         private var _calls: [(offset: Int, limit: Int)] = []
         private var _fail: (any Error)?
+        private var _gate: SavedChatsGate?
         init(count: Int) {
             all = (1...max(count, 1)).prefix(count).map { S.messageRecord($0, role: $0.isMultiple(of: 2) ? "assistant" : "user", body: "m\($0)", at: Date(timeIntervalSince1970: 1_800_000_000 + Double($0) * 60), seq: Int64($0)) }
         }
 
         var calls: [(offset: Int, limit: Int)] { lock.withLock { _calls } }
         func fail(_ error: (any Error)?) { lock.withLock { _fail = error } }
+        /// 읽기를 문이 열릴 때까지 붙잡는다 (nil이면 푼다)
+        func hold(with gate: SavedChatsGate?) { lock.withLock { _gate = gate } }
+        /// 다른 기기에서 지웠다: 말이 하나도 남지 않는다
+        func removeAll() { lock.withLock { all = [] } }
+        /// 모르는 역할의 말만 남는다 (더 새 서버의 새 역할)
+        func replaceWithUnknownRoles() { lock.withLock { all = [S.messageRecord(1, role: "system", body: "x")] } }
 
         func read(_ offset: Int, _ limit: Int) async throws -> [SavedChatMessageRecord] {
-            try lock.withLock {
+            if let gate = lock.withLock({ _gate }) { await gate.wait() }
+            return try lock.withLock {
                 _calls.append((offset, limit))
                 if let _fail { throw _fail }
                 let newestFirst = Array(all.reversed())
@@ -116,6 +124,61 @@ struct SavedChatDetailModelTests {
         let (model, _) = make(chat: Chat(count: 0), sink: sink)
         await model.load()
         #expect(model.phase == .gone && sink.gone == 1, "다른 기기에서 이미 지운 대화를 열어 둔 경우도 패널이 닫힌다")
+    }
+
+    @Test func aChatWhoseMessagesAreAllOfUnknownRolesIsNotGoneItJustShowsNothingYet() async {
+        // 지운 대화와 모르는 역할만 있는 대화는 다르다: 비었는지는 받은 기록으로 본다 (거른 뒤 말이 아니다)
+        let chat = Chat(count: 1), sink = Sink()
+        chat.replaceWithUnknownRoles()
+        let (model, _) = make(chat: chat, sink: sink)
+        await model.load()
+        #expect(model.phase == .ready && model.messages.isEmpty && sink.gone == 0, "읽은 기록이 있으면 대화는 있다")
+    }
+
+    // MARK: 다시 보일 때 다시 읽는다 (재검토 P1)
+
+    private func settle() async {
+        for _ in 0..<40 { await Task.yield() }
+    }
+
+    @Test func reloadStartsOverFromTheLoadingStateWithoutTheOldMessagesAndReadsTheNewestPageAgain() async {
+        let chat = Chat(count: 5), gate = SavedChatsGate()
+        let (model, _) = make(chat: chat, pageSize: 3)
+        await model.load()
+        #expect(model.messages.map(\.body) == ["m3", "m4", "m5"])
+        chat.hold(with: gate)
+        let reloading = model.reload()
+        #expect(model.phase == .loading && model.messages.isEmpty && !model.hasEarlier, "부르는 즉시(읽기가 끝나기 전에) 메모리에 있던 옛 글을 비운다: 다시 보일 때 옛 글이 한 프레임도 보이지 않는다")
+        await settle()
+        #expect(model.phase == .loading && model.messages.isEmpty, "읽는 동안도")
+        await gate.open()
+        await reloading.value
+        #expect(model.phase == .ready && model.messages.map(\.body) == ["m3", "m4", "m5"])
+        #expect(chat.calls.map(\.offset) == [0, 0])
+    }
+
+    @Test func reloadOfAChatDeletedMeanwhileIsGoneAndClosesTheView() async {
+        let chat = Chat(count: 2), sink = Sink()
+        let (model, _) = make(chat: chat, sink: sink)
+        await model.load()
+        chat.removeAll()
+        await model.reload().value
+        #expect(model.phase == .gone && model.messages.isEmpty && sink.gone == 1, "다른 기기에서 지운 대화는 다시 읽을 때 드러난다")
+    }
+
+    @Test func reloadDiscardsALateShowEarlierThatStartedBeforeIt() async {
+        let chat = Chat(count: 5), gate = SavedChatsGate()
+        let (model, _) = make(chat: chat, pageSize: 3)
+        await model.load()
+        chat.hold(with: gate)
+        let earlier = Task { await model.showEarlier() }
+        await settle()
+        let reloading = model.reload()
+        await settle()
+        await gate.open()
+        await earlier.value
+        await reloading.value
+        #expect(model.messages.map(\.body) == ["m3", "m4", "m5"] && !model.loadingEarlier, "다시 읽기 전에 시작한 앞 쪽은 새 목록에 붙지 않는다")
     }
 
     @Test func theMessagesAreCappedSoAVeryLongChatCannotFillTheMemory() async {

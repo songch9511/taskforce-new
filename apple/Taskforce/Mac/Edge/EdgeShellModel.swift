@@ -529,6 +529,10 @@ final class EdgeShellModel {
             let timer = schedule(delay, work)
             return { timer.cancel() }
         }
+        // 저장된 대화 목록의 줄이 달라지면 열어 둔 대화가 빠졌는지 본다 (OA D3v-m 재검토 P1)
+        self.savedChats?.onListChanged = { [weak self] in self?.savedChatListChanged() }
+        // 세션 보기의 상태(닫힘 · 기록 못 읽음 · 열림)는 모델이 입력창에 알린다 (패널이 화면에 있든 없든)
+        if self.desktopChat != nil { watchDesktopChatView() }
     }
 
     // MARK: 레일 모양
@@ -1055,8 +1059,12 @@ final class EdgeShellModel {
     }
 
     /// 열어 둔 대화가 바뀌었거나 패널이 보이게 · 숨게 됐다: 보기를 그 대화 것으로 맞추고(처음 쪽을 읽는다), 숨으면 열려 있던 지우기 카드를 닫는다
-    /// (다시 열 때 바로 지울 수 있는 카드가 남지 않는다). 닫으면 도는 읽기의 늦은 답을 막는다
+    /// (다시 열 때 바로 지울 수 있는 카드가 남지 않는다). 닫으면 도는 읽기의 늦은 답을 막는다.
+    /// **접었다가 다시 보일 때마다 같은 대화의 보기도 다시 읽는다**(`reload`): 접혀 있는 동안 지웠거나 다른 기기에서 지운 대화가 메모리의 옛 글로 되살아나지 않게 (재검토 P1)
     private func savedChatPanelChanged() {
+        let shown = savedChatPanelShown
+        let reappeared = shown && !savedChatPanelWasShown
+        savedChatPanelWasShown = shown
         if let id = savedChatPanelID {
             if savedChatDetail?.chat.id != id {
                 savedChatDetail?.stop()
@@ -1068,12 +1076,24 @@ final class EdgeShellModel {
                     savedChatDetail = detail
                     if let detail { Task { await detail.load() } }
                 }
+            } else if reappeared {
+                savedChatDetail?.reload()
             }
         } else if let detail = savedChatDetail {
             detail.stop()
             savedChatDetail = nil
         }
-        if !savedChatPanelShown { savedChatDetail?.cancelDelete() }
+        if !shown { savedChatDetail?.cancelDelete() }
+    }
+
+    /// 저장된 대화 패널이 직전에 보였나 (접혔다 다시 보이는 때를 알아챈다)
+    @ObservationIgnored private var savedChatPanelWasShown = false
+
+    /// 저장된 대화 목록의 줄이 달라졌다 (저장소가 알린다: 읽기가 쓰였다 · 지웠다 · 모두 지웠다 · 계정이 떠났다): 열어 둔 대화가 목록에서 빠졌으면 닫는다 — 접혀 있는 동안에도.
+    /// 더 읽을 쪽이 남아 있으면(가득 찬 쪽) 다시 읽은 첫 쪽에 없다고 지워진 것이 아니다: 닫지 않고, 보기 스스로 다시 읽어(`reload`) 비어 있으면 그때 닫힌다
+    private func savedChatListChanged() {
+        guard let id = savedChatPanelID, let savedChats, !savedChats.hasMore, !savedChats.rows.contains(where: { $0.id == id }) else { return }
+        savedChatPanelID = nil
     }
 
     /// 다른 기기에서 이미 지운 대화였다: 패널을 닫고 목록을 다시 읽는다 (줄이 빠진다)
@@ -1123,6 +1143,35 @@ final class EdgeShellModel {
         if let previous = visibleChatID, previous != shown { desktopChat?.chat(for: previous).setVisible(false) }
         if let shown { desktopChat?.chat(for: shown).setVisible(true) }
         visibleChatID = shown
+        pushDesktopChatView()
+    }
+
+    // MARK: 세션 보기의 상태를 입력창에 알린다 (모델이 직접: 화면에 패널이 없어도)
+
+    /// 입력창에 알릴 보기 상태: Claude에서 닫혔으면 `.closed`, 기록을 못 읽었으면 `.unreadable`, 아니면 `.open`. 세션 패널(`ClaudeAppSessionPanelView`)도 같은 규칙을 쓴다
+    static func chatViewState(closed: Bool, phase: ClaudeAppConversation.Phase) -> ClaudeAppSendContext.View {
+        closed ? .closed : (phase == .failed ? .unreadable : .open)
+    }
+
+    /// 지금 열어 둔 데스크톱 세션과 그 보기 상태 (읽기만 한다: 관찰이 이 값들의 변화를 본다)
+    private func desktopChatViewTarget() -> (id: String, state: ClaudeAppSendContext.View)? {
+        guard desktopChat != nil, let id = desktopPanelID, let conversation = desktopConversation, conversation.sessionID == id else { return nil }
+        return (id, Self.chatViewState(closed: desktop?.viewingClosed == true, phase: conversation.phase))
+    }
+
+    /// 열어 둔 세션의 입력창에 보기 상태를 알린다. 이전에는 패널의 SwiftUI `.onChange`만 알려서, 화면 밖 호스트(시험)에서는 알림이 늦거나 오지 않아 입력창이 상태를 몰랐다
+    private func pushDesktopChatView() {
+        guard let target = desktopChatViewTarget() else { return }
+        desktopChat?.chat(for: target.id).setView(target.state)
+    }
+
+    /// 보기 상태가 바뀔 때마다(대화 읽기가 실패로 끝났다 · Claude에서 닫혔다 · 다른 세션을 열었다) 다시 알린다: 읽은 값이 바뀌면 한 번 더 걸고 알린다
+    private func watchDesktopChatView() {
+        let target = withObservationTracking { desktopChatViewTarget() } onChange: { [weak self] in
+            Task { @MainActor [weak self] in self?.watchDesktopChatView() }
+        }
+        guard let target else { return }
+        desktopChat?.chat(for: target.id).setView(target.state)
     }
 
     /// 데스크톱 세션의 상태나 이 Mac 목록(제목)이 바뀌었다 (컨트롤러가 관찰해서 부른다): 레일의 링을 다시 정한다.

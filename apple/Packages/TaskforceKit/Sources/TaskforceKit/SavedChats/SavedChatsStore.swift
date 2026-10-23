@@ -68,11 +68,18 @@ public final class SavedChatsStore {
     @ObservationIgnored private let log: @Sendable (_ event: String, _ code: String) -> Void
     /// 계정이 떠날 때마다 오른다: 그 전에 시작한 일의 늦은 답은 쓰지 않는다
     @ObservationIgnored private var generation = 0
+    /// 목록이 달라질 일이 생길 때마다 오른다 (처음 쪽 읽기를 시작할 때 · 지우기가 성공할 때 · 모두 지우기가 성공하거나 답을 잃을 때): 그 전에 시작한 읽기(처음 쪽 · Show earlier)의 늦은 답은 쓰지 않는다.
+    /// 옛 읽기는 지우기 전 목록이거나 낡은 자리(offset)의 쪽이라, 쓰면 지운 대화가 되살아나거나 줄이 건너뛴다
+    @ObservationIgnored private var listEpoch = 0
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
+    /// `refreshTask`가 시작한 때의 `listEpoch`: 그 뒤 목록이 달라졌다면 그 읽기에 합쳐지지 않고 새로 읽는다
+    @ObservationIgnored private var refreshEpoch = 0
     @ObservationIgnored private var refreshSerial = 0
     /// 서버 목록에서 다음 쪽이 시작하는 자리 (지운 줄은 뺀다)
     @ObservationIgnored private var nextOffset = 0
     @ObservationIgnored private var deletes: [UUID: Task<SavedChatDeleteOutcome, Never>] = [:]
+    /// 줄이 달라졌다 (읽기가 쓰였다 · 지웠다 · 비웠다): 열어 둔 보기가 목록에서 빠졌는지 보게 한다
+    @ObservationIgnored public var onListChanged: (@MainActor () -> Void)?
 
     public init(
         scope: AccountScope, readPage: @escaping SavedChatsLive.ReadPage, readMessages: @escaping SavedChatsLive.ReadMessages,
@@ -103,51 +110,64 @@ public final class SavedChatsStore {
     /// Sessions 절이 그리는 것: 상태 · 접힌 줄 · 끝의 Show earlier
     public func section(expanded: Bool) -> SavedChatsSection {
         let fold = SavedChatRules.fold(rows, expanded: expanded)
-        return SavedChatsSection(state: sectionState, fold: fold, showsEarlier: fold.expanded && hasMore)
+        // 펴지 않아도 Show all이 없는 짧은 목록(셋 이하)이면 더 읽을 길이 Show earlier뿐이다 (지우고 나면 가득 찼던 쪽이 그렇게 줄 수 있다)
+        return SavedChatsSection(state: sectionState, fold: fold, showsEarlier: hasMore && (fold.expanded || !fold.togglesFold))
     }
 
     /// 계정이 떠난다: 비우고, 돌던 읽기 · 지우기의 늦은 답을 막는다
     public func reset() {
         generation += 1
+        invalidateReads()
         refreshTask?.cancel()
         refreshTask = nil
         deletes = [:]
         phase = .idle
         rows = []
         hasMore = false
-        loadingMore = false
         nextOffset = 0
         deleteAllState = .idle
+        onListChanged?()
     }
 
     // MARK: 읽기
 
-    /// 처음 쪽부터 다시 읽는다. 이미 읽는 중이면 그 읽기를 기다린다 (겹쳐 읽지 않는다). 이미 보이는 줄이 있으면 읽기 실패로 지우지 않는다
+    /// 돌고 있는 읽기(처음 쪽 · Show earlier)의 늦은 답을 막는다
+    private func invalidateReads() {
+        listEpoch += 1
+        loadingMore = false
+    }
+
+    /// 처음 쪽부터 다시 읽는다. 이미 읽는 중이면 그 읽기를 기다린다 (겹쳐 읽지 않는다). 그 읽기가 시작된 뒤 지우기 따위로 목록이 달라졌다면 기다리지 않고 새로 읽는다.
+    /// 이미 보이는 줄이 있으면 읽기 실패로 지우지 않는다
     public func refresh() async {
-        if let refreshTask {
+        if let refreshTask, refreshEpoch == listEpoch {
             await refreshTask.value
             return
         }
+        invalidateReads()
+        let epoch = listEpoch
+        refreshEpoch = epoch
         refreshSerial += 1
         let serial = refreshSerial
-        let task = Task { await self.readFirstPage() }
+        let task = Task { await self.readFirstPage(epoch: epoch) }
         refreshTask = task
         await task.value
         if refreshSerial == serial { refreshTask = nil }
     }
 
-    private func readFirstPage() async {
+    private func readFirstPage(epoch: Int) async {
         let started = generation
         if rows.isEmpty { phase = .loading }
         do {
             let page = try await readPage(0, pageSize)
-            guard started == generation else { return }
+            guard started == generation, epoch == listEpoch else { return }
             rows = Self.unique(page, after: [])
             nextOffset = page.count
             hasMore = page.count >= pageSize
             phase = .ready
+            onListChanged?()
         } catch {
-            guard started == generation, !(error is CancellationError) else { return }
+            guard started == generation, epoch == listEpoch, !(error is CancellationError) else { return }
             log("saved_chats_load_failed", Self.code(error))
             phase = .failed
         }
@@ -164,22 +184,24 @@ public final class SavedChatsStore {
         Task { await refresh() }
     }
 
-    /// 끝의 Show earlier: 다음 20개. 더 없으면 읽지 않는다
+    /// 끝의 Show earlier: 다음 20개. 더 없으면 읽지 않는다. 읽는 사이 목록이 달라졌으면(새로 읽었다 · 지웠다) 그 쪽은 낡은 자리의 것이라 쓰지 않는다 (다시 누르면 새 자리에서 읽는다)
     public func loadMore() async {
         guard hasMore, !loadingMore, !rows.isEmpty, phase != .loading else { return }
-        let started = generation
+        let started = generation, epoch = listEpoch, offset = nextOffset
         loadingMore = true
         do {
-            let page = try await readPage(nextOffset, pageSize)
-            guard started == generation else { return }
+            let page = try await readPage(offset, pageSize)
+            guard started == generation, epoch == listEpoch, offset == nextOffset else { return }
             rows += Self.unique(page, after: rows)
             nextOffset += page.count
             hasMore = page.count >= pageSize
+            onListChanged?()
         } catch {
-            guard started == generation, !(error is CancellationError) else { return }
+            guard started == generation, epoch == listEpoch, !(error is CancellationError) else { return }
             log("saved_chats_more_failed", Self.code(error))
         }
-        if started == generation { loadingMore = false }
+        // 낡은 읽기는 `loadingMore`에 손대지 않는다 (목록이 달라질 때 이미 내렸고, 그 뒤 새로 시작한 Show earlier의 표시일 수 있다)
+        if started == generation, epoch == listEpoch { loadingMore = false }
     }
 
     /// 읽는 사이 새 대화가 생겨 다음 쪽의 앞이 앞 쪽의 끝과 겹칠 수 있다: 이미 있는 줄은 더하지 않는다
@@ -214,6 +236,8 @@ public final class SavedChatsStore {
                     removeLocally(id, ifStill: started)
                     return .deleted
                 case .retry where !retried:
+                    // 그사이 계정이 바뀌었으면 앞 계정의 지우기를 새 로그인으로 다시 보내지 않는다
+                    guard started == generation else { return .failed(.generic) }
                     retried = true
                 case .retry:
                     log("saved_chat_delete_failed", Self.code(error))
@@ -227,9 +251,13 @@ public final class SavedChatsStore {
     }
 
     private func removeLocally(_ id: UUID, ifStill started: Int) {
-        guard started == generation, rows.contains(where: { $0.id == id }) else { return }
+        guard started == generation else { return }
+        // 지웠다: 이 전에 시작한 읽기(지우기 전 목록 · 낡은 자리의 쪽)의 늦은 답은 쓰지 않는다
+        invalidateReads()
+        guard rows.contains(where: { $0.id == id }) else { return }
         rows.removeAll { $0.id == id }
         nextOffset = max(0, nextOffset - 1)
+        onListChanged?()
     }
 
     // MARK: 모두 지우기
@@ -250,14 +278,19 @@ public final class SavedChatsStore {
         }
         guard started == generation else { return }
         guard let failure else {
+            // 지우기 전에 시작한 읽기의 늦은 답(지우기 전 목록)이 와도 쓰지 않는다
+            invalidateReads()
             rows = []
             hasMore = false
             nextOffset = 0
             phase = .ready
             deleteAllState = .idle
+            onListChanged?()
             return
         }
-        // 실패했다: 그래도 응답만 잃었을 수 있다 (서버는 지웠다). 목록을 다시 읽어 맞춘다: 비어 있으면 성공이고 남아 있으면 실패다
+        // 실패했다: 그래도 응답만 잃었을 수 있다 (서버는 지웠다). 목록을 다시 읽어 맞춘다: 비어 있으면 성공이고 남아 있으면 실패다.
+        // 돌고 있는 읽기는 지우기 전에 시작했을 수 있어(옛 목록) 그 읽기에 합쳐지지 않고 새로 읽는다
+        invalidateReads()
         await refresh()
         guard started == generation else { return }
         deleteAllState = phase == .ready && rows.isEmpty ? .idle : .failed(failure)

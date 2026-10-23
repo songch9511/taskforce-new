@@ -18,6 +18,7 @@ struct SavedChatsStoreTests {
         private var _deleteAllErrors: [any Error] = []
         private var _deleteAllCalls = 0
         private var _readError: (any Error)?
+        private var _pageGates: [Int: SavedChatsGate] = [:]
 
         var calls: [(offset: Int, limit: Int)] { lock.withLock { _calls } }
         var deleted: [UUID] { lock.withLock { _deleted } }
@@ -27,13 +28,16 @@ struct SavedChatsStoreTests {
         func failReads(with error: (any Error)?) { lock.withLock { _readError = error } }
         func failDeletes(_ errors: [any Error]) { lock.withLock { _deleteErrors = errors } }
         func failDeleteAll(_ errors: [any Error]) { lock.withLock { _deleteAllErrors = errors } }
+        /// n번째(0부터) 읽기를 문이 열릴 때까지 붙잡는다: 답은 부른 때 정해져 있어서, 풀린 뒤 늦게 오는 옛 답을 만든다
+        func hold(call index: Int, with gate: SavedChatsGate) { lock.withLock { _pageGates[index] = gate } }
 
         func page(_ offset: Int, _ limit: Int) async throws -> [SavedChatRow] {
-            let (page, error) = lock.withLock { () -> ([SavedChatRow], (any Error)?) in
+            let (page, error, gate) = lock.withLock { () -> ([SavedChatRow], (any Error)?, SavedChatsGate?) in
                 _calls.append((offset, limit))
                 let index = _calls.count - 1
-                return (index < _pages.count ? _pages[index] : _pages.last ?? [], _readError)
+                return (index < _pages.count ? _pages[index] : _pages.last ?? [], _readError, _pageGates[index])
             }
+            if let gate { await gate.wait() }
             if let error { throw error }
             return page
         }
@@ -165,7 +169,166 @@ struct SavedChatsStoreTests {
         #expect(store.rows.count == 22)
     }
 
+    // MARK: 읽는 중인 읽기가 지우기를 덮지 않는다 (재검토 P2)
+
+    /// 붙잡힌 읽기가 가짜 서버에 닿고 연쇄가 끝나도록 충분히 양보한다
+    private func settle() async {
+        for _ in 0..<40 { await Task.yield() }
+    }
+
+    @Test func aDeleteAllWhileTheFirstPageIsLoadingDropsTheLateRead() async {
+        let fake = Fake(), gate = SavedChatsGate()
+        fake.setPages([rows(1...5)])
+        fake.hold(call: 0, with: gate)
+        let (store, _, _) = make(fake)
+        let read = Task { await store.refresh() }
+        await settle()
+        await store.deleteAllChats()
+        #expect(store.rows.isEmpty && store.deleteAllState == .idle && store.sectionState == .absent)
+        await gate.open()
+        await read.value
+        #expect(store.rows.isEmpty && store.sectionState == .absent && !store.hasChats, "지우기 전에 시작한 읽기가 늦게 와도 지운 대화를 되살리지 않는다")
+    }
+
+    @Test func aSingleDeleteWhileTheFirstPageIsLoadingDropsTheLateRead() async {
+        let fake = Fake(), gate = SavedChatsGate()
+        fake.setPages([rows(1...3), rows(1...3)])
+        fake.hold(call: 1, with: gate)
+        let (store, _, _) = make(fake)
+        await store.refresh()
+        let read = Task { await store.refresh() }
+        await settle()
+        #expect(await store.delete(S.id(2)) == .deleted)
+        await gate.open()
+        await read.value
+        #expect(store.rows.map(\.id) == [S.id(1), S.id(3)], "지우기 전에 시작한 읽기의 옛 목록(지운 줄 포함)을 쓰지 않는다")
+    }
+
+    @Test func aDeleteWhileShowEarlierIsReadingDropsThatPageAndTheNextShowEarlierStartsAtTheRightOffset() async {
+        let fake = Fake(), gate = SavedChatsGate()
+        fake.setPages([rows(1...20), rows(21...40)])
+        fake.hold(call: 1, with: gate)
+        let (store, _, _) = make(fake)
+        await store.refresh()
+        let more = Task { await store.loadMore() }
+        await settle()
+        #expect(store.loadingMore)
+        #expect(await store.delete(S.id(5)) == .deleted)
+        await gate.open()
+        await more.value
+        #expect(store.rows.count == 19 && !store.rows.contains { $0.id == S.id(5) } && !store.rows.contains { $0.id == S.id(21) }, "지우기 전에 시작한 다음 쪽(오프셋이 낡았다)은 쓰지 않는다")
+        #expect(!store.loadingMore && store.hasMore)
+        await store.loadMore()
+        #expect(fake.calls.map(\.offset) == [0, 20, 19], "다시 누르면 지운 줄을 뺀 자리에서 읽는다")
+    }
+
+    @Test func aRefreshWhileShowEarlierIsReadingDropsThatPageSoTheListNeverSkipsAhead() async {
+        let fake = Fake(), gate = SavedChatsGate()
+        fake.setPages([rows(1...20), rows(21...40), rows(1...20), rows(21...40)])
+        fake.hold(call: 1, with: gate)
+        let (store, _, _) = make(fake)
+        await store.refresh()
+        let more = Task { await store.loadMore() }
+        await settle()
+        await store.refresh()
+        #expect(store.rows.map(\.id) == (1...20).map { S.id($0) })
+        await gate.open()
+        await more.value
+        #expect(store.rows.map(\.id) == (1...20).map { S.id($0) } && !store.loadingMore, "새로 읽은 목록 뒤에 옛 쪽을 붙이지 않는다 (1–20 다음 21–40이 아니라 다른 자리의 쪽이 붙는 일)")
+        await store.loadMore()
+        #expect(store.rows.map(\.id) == (1...40).map { S.id($0) } && fake.calls.map(\.offset) == [0, 20, 0, 20], "다음 Show earlier는 새 목록 바로 뒤에서 읽는다")
+    }
+
+    @Test func aLostDeleteAllAnswerWhileARefreshIsInFlightReadsFreshAndIgnoresTheOlderRead() async {
+        // 모두 지우기는 서버에서 끝났는데 답을 잃었고, 그 전에 시작한 옛 읽기(지우기 전 목록)가 아직 돈다: 실패 길은 그 읽기를 기다리지 않고 새로 읽는다
+        let fake = Fake(), gate = SavedChatsGate()
+        fake.setPages([rows(1...5), rows(1...5), []])
+        fake.hold(call: 1, with: gate)
+        fake.failDeleteAll([APIError.transport("offline")])
+        let (store, _, _) = make(fake)
+        await store.refresh()
+        let older = Task { await store.refresh() }
+        await settle()
+        let all = Task { await store.deleteAllChats() }
+        await settle()
+        await gate.open()
+        await all.value
+        await older.value
+        #expect(fake.calls.count == 3, "옛 읽기에 합쳐지지 않고 새로 한 번 읽었다")
+        #expect(store.rows.isEmpty && store.deleteAllState == .idle, "새로 읽은 목록이 비었으니 성공이다 (옛 읽기의 1–5가 아니다)")
+    }
+
+    @Test func twoOverlappingRefreshesReadTheFirstPageOnce() async {
+        let fake = Fake(), gate = SavedChatsGate()
+        fake.setPages([rows(1...3)])
+        fake.hold(call: 0, with: gate)
+        let (store, _, _) = make(fake)
+        let first = Task { await store.refresh() }
+        await settle()
+        let second = Task { await store.refresh() }
+        await settle()
+        await gate.open()
+        await first.value
+        await second.value
+        #expect(fake.calls.count == 1 && store.rows.count == 3, "겹쳐 읽지 않는다")
+    }
+
+    @Test func theListChangedHookFiresWheneverTheRowsChange() async {
+        // 열어 둔 보기가 목록에서 빠졌는지 보게 하는 신호: 읽기가 쓰일 때 · 지울 때 · 모두 지울 때 · 계정이 떠날 때
+        let fake = Fake(), hits = SavedChatsCounter()
+        fake.setPages([rows(1...20), rows(21...22)])
+        let (store, _, scope) = make(fake)
+        store.onListChanged = { hits.hit() }
+        await store.refresh()
+        #expect(hits.count == 1)
+        await store.loadMore()
+        #expect(hits.count == 2)
+        _ = await store.delete(S.id(3))
+        #expect(hits.count == 3)
+        await store.deleteAllChats()
+        #expect(hits.count == 4)
+        scope.accountLeft()
+        #expect(hits.count == 5)
+    }
+
+    @Test func aDroppedLateReadDoesNotFireTheListChangedHook() async {
+        let fake = Fake(), gate = SavedChatsGate(), hits = SavedChatsCounter()
+        fake.setPages([rows(1...3)])
+        fake.hold(call: 0, with: gate)
+        let (store, _, _) = make(fake)
+        store.onListChanged = { hits.hit() }
+        let read = Task { await store.refresh() }
+        await settle()
+        await store.deleteAllChats()
+        let afterDeleteAll = hits.count
+        await gate.open()
+        await read.value
+        #expect(hits.count == afterDeleteAll, "버린 읽기는 목록을 바꾸지 않았으니 알리지 않는다")
+    }
+
     // MARK: 절 모양: 처음 셋 · Show all · Show earlier
+
+    @Test func theSectionOffersShowEarlierWhenThereAreThreeOrFewerRowsButMore() async {
+        // 지우고 나면 한 쪽이 가득 찼던 목록이 셋 이하로 줄 수 있다: Show all이 없으니 Show earlier가 유일한 길이다
+        let fake = Fake()
+        fake.setPages([rows(1...3)])
+        let (store, _, _) = make(fake, pageSize: 3)
+        await store.refresh()
+        #expect(store.hasMore)
+        let folded = store.section(expanded: false)
+        #expect(!folded.fold.togglesFold && folded.showsEarlier, "셋 이하이고 더 있으면 접힘과 상관없이 끝에 Show earlier")
+        #expect(store.section(expanded: true).showsEarlier)
+        fake.setPages([rows(1...3), rows(4...6)])
+        await store.loadMore()
+        let more = store.section(expanded: false)
+        #expect(store.hasMore && more.fold.togglesFold && !more.fold.expanded && !more.showsEarlier, "여섯 줄이 되어 접히면 펴기 전에는 없다")
+        #expect(store.section(expanded: true).showsEarlier)
+        let short = Fake()
+        short.setPages([rows(1...2)])
+        let (lone, _, _) = make(short, pageSize: 3)
+        await lone.refresh()
+        #expect(!lone.hasMore && !lone.section(expanded: false).showsEarlier, "더 없으면 없다")
+    }
 
     @Test func theSectionFoldsToThreeAndOffersShowEarlierOnlyWhenOpenAndThereIsMore() async {
         let fake = Fake()
@@ -209,7 +372,7 @@ struct SavedChatsStoreTests {
             scope: scope, readPage: { _, _ in await gate.wait(); return (1...3).map { S.row($0) } }, readMessages: { _, _, _ in [] }, deleteChat: { _ in }, deleteAll: {}, pageSize: 20
         )
         let read = Task { await store.refresh() }
-        await Task.yield()
+        await settle()
         scope.accountLeft()
         await gate.open()
         await read.value
@@ -260,6 +423,30 @@ struct SavedChatsStoreTests {
         #expect(await store.delete(S.id(1)) == .deleted)
         #expect(fake.deleted == [S.id(1), S.id(1)], "한 번 조용히 다시 보낸다")
         #expect(store.rows.count == 1)
+    }
+
+    @Test func aBusyRetryIsNotSentAgainOnceTheAccountHasLeft() async {
+        // 계정이 떠난 뒤 늦게 온 409로 앞 계정의 지우기를 새 로그인에서 다시 보내지 않는다
+        let gate = SavedChatsGate(), counter = SavedChatsCounter()
+        let scope = AccountScope(currentAccount: { S.id(999) })
+        let store = SavedChatsStore(
+            scope: scope, readPage: { _, _ in (1...2).map { S.row($0) } }, readMessages: { _, _, _ in [] },
+            deleteChat: { _ in
+                counter.hit()
+                await gate.wait()
+                throw APIError.server(status: 409, code: .busyRetry, message: "x")
+            },
+            deleteAll: {}, pageSize: 20
+        )
+        await store.refresh()
+        let running = Task { await store.delete(S.id(1)) }
+        for _ in 0..<40 { await Task.yield() }
+        #expect(counter.count == 1)
+        scope.accountLeft()
+        await gate.open()
+        let outcome = await running.value
+        #expect(counter.count == 1, "계정이 바뀌었으니 다시 보내지 않는다")
+        #expect(outcome == .failed(.generic))
     }
 
     @Test func aSecondBusyRetryIsAFailureWithTheGenericReasonAndTheRowStays() async {

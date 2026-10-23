@@ -338,7 +338,8 @@ struct SavedChatsSnapshotTests {
             let previousStore = model.savedChats
             model.savedChats = store
             model.confirming = nil
-            if confirming { model.confirming = .deleteAllSavedChats }
+            // 모두 지우기는 확인 줄을 거쳐야 간다: 지우는 중 · 실패 장면도 확인 줄에서 눌러 만든다
+            if confirming || hold || failing { model.confirming = .deleteAllSavedChats }
             if hold {
                 Task { await model.deleteAllSavedChats() }
                 await pause(0.4)

@@ -94,17 +94,19 @@ struct SavedChatTimelineTests {
         let body = "**Lifetime** card: `price` only. [link](https://example.com/phish)"
         let reply = S.message(2, role: .assistant, body: body, at: at(0, 9, 41))
         let t = timeline([S.message(1, role: .user, at: at(0, 9)), reply])
-        guard case .reply(let markdown, let time)? = t.items[reply.id.uuidString] else { Issue.record("답이 아니다"); return }
+        guard case .reply(let markdown, let copyText, let time)? = t.items[reply.id.uuidString] else { Issue.record("답이 아니다"); return }
         #expect(markdown == body, "원문 그대로를 안전한 서식 그림이 읽는다 (링크는 그림이 글자로 둔다)")
+        #expect(copyText == body, "복사는 원문 그대로")
         #expect(time == "09:41", "24시간 \(time)")
         #expect(t.items[reply.id.uuidString]?.rendersMarkdown == true, "답은 세션 보기와 같은 안전한 서식으로 그린다")
     }
 
-    @Test func aTruncatedReplyEndsWithAnEllipsis() {
+    @Test func aTruncatedReplyShowsAnEllipsisButCopiesTheRawStoredBody() {
         let reply = SavedChatMessage(id: S.id(7), role: .assistant, body: "cut off here", truncated: true, toolNames: [], saidAt: at(0, 9), seq: 7)
         let t = timeline([S.message(1, role: .user, at: at(0, 8)), reply])
-        guard case .reply(let markdown, _)? = t.items[S.id(7).uuidString] else { Issue.record("답이 아니다"); return }
-        #expect(markdown == "cut off here…")
+        guard case .reply(let markdown, let copyText, _)? = t.items[S.id(7).uuidString] else { Issue.record("답이 아니다"); return }
+        #expect(markdown == "cut off here…", "보이는 글은 끝에 말줄임")
+        #expect(copyText == "cut off here", "복사는 저장된 원문 그대로다: 그림용 말줄임을 붙여 가지 않는다")
     }
 
     // MARK: 날짜 줄
