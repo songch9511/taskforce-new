@@ -11,15 +11,16 @@
 | PR | 이름 | 사용자에게 보이는 것 | 앞에 필요한 것 | 검토 |
 |---|---|---|---|---|
 | **T1** | 트리 모델 · Claude 관찰 | 세션 패널 옆줄의 백그라운드 목록이 부모 · 자식 트리로 바뀐다. Claude 데스크톱 세션은 바로 실데이터(이 Mac 기록에 하위 에이전트 444개, 중첩 68개) | 없음 | 코드 · 보안(기록 파일 읽기) |
-| **T2** | Agent 허용 | Taskforce가 띄운 Claude 세션이 하위 에이전트를 쓴다. 자식이 필요한 질문은 부모가 대신 묻는다 | T1 | 코드 · **보안 필수** · 실제 CLI 재실측 |
-| **T3s** | 열기 지표(서버) | 없음 (지표 두 종류가 쌓일 준비) | 없음 | 코드 · DB/RLS · 운영 적용 승인 |
+| **T2** | Agent 허용 | Taskforce가 띄운 Claude 세션이 하위 에이전트를 쓴다. 자식이 필요한 질문은 부모가 대신 묻는다. 서버에서 끌 수 있다 | T1 · T3s | 코드 · **보안 필수** · 실제 CLI 재실측 |
+| **T3s** | 지표(서버) | 없음 (열기 지표 두 종류 + T2 지표 두 종류가 쌓일 준비) | 없음 | 코드 · DB/RLS · 운영 적용 승인 |
 | **T3m** | 프로젝트 Sessions | 프로젝트 이슈 목록 맨 위에 Sessions 묶음과 세션별 트리 | T1 · T3s | 코드 · 시각 확인 |
 | C | Codex 트리 | Codex 세션의 하위 에이전트 트리 · 자식별 승인 · 자식까지 멈추는 Stop | Codex adapter(D3b) | 기존 계약의 검토 규칙 |
 
 ```text
-T1 ──┬──> T2
-     └──> T3m <── T3s
-T3s는 언제든 시작할 수 있다. T2와 T3m은 파일이 갈려 나란히 갈 수 있지만,
+T1 ──┬──> T2  <──┐
+     └──> T3m <──┴── T3s
+T3s는 언제든 시작할 수 있고, T2 · T3m보다 먼저 병합한다(둘 다 그 route를 부른다).
+T2와 T3m은 파일이 갈려 나란히 갈 수 있지만,
 앱 시험 파일을 더하는 PR끼리는 apple/Taskforce.xcodeproj/project.pbxproj가,
 T3s · T3m은 docs/FEATURE_MAP.md가 겹친다: 나중에 병합하는 쪽이 main을 받아 푼다.
 ```
@@ -67,27 +68,38 @@ T3s · T3m은 docs/FEATURE_MAP.md가 겹친다: 나중에 병합하는 쪽이 ma
 9. 맞춰 고칠 곳: `FakeClaudeCode/main.swift:341`의 `--tools` 검사와 시나리오 셋(백그라운드 자식 2 + 여러 `result` · 자식 질문 거절 → 부모 보류 · killed), 공유 fixture `apple/Packages/TaskforceKit/Tests/TaskforceKitTests/Fixtures/bridge-v1/claude-code-adapter.json`(Swift golden 시험과 `src/lib/bridge/swift-fixtures.test.ts`가 대조한다), 훅 wire 버전을 고정한 `apple/Packages/TaskforceKit/Tests/TaskforceAgentWireTests/HookRereview7Tests.swift`.
 10. 서버: `src/lib/agents/registry.ts`의 Claude 근거 문장(읽기 등급 "init tools exactly Read Glob Grep + ask_user")을 새 실측과 버전 문턱으로 바꾼다. `docs/rollouts/claude-code-r1-evidence.md`에 재실측 절.
 11. 문서: Assistant 계약 13장의 `--tools` 줄 · agent-gateway 16장(D3a) · 21-5의 "첫 `result` 뒤" 절.
+12. **원격 끄기 칸(사용자 확정 2026-10-23).** 서버가 턴 명령(`message` · 답 · 닫기)에 `subagents: boolean` 한 칸을 싣고, Mac은 `true`일 때만 `Agent`를 넣어 띄운다. **칸이 없거나 `false`면 지금 도구 집합 그대로**(닫힌 쪽이 기본, 1의 버전 문턱과 둘 다 맞아야 켠다).
+    - 서버: 환경변수 `AGENT_CLAUDE_SUBAGENTS_ENABLED`(기본 켜짐, 끄면 다음 턴부터 모든 Mac이 Agent 없이 띄운다). 명령 모양은 `bridgeV1CommandPayloadSchema`의 엄격한 객체라(`src/lib/api/contract.ts:1755-1761`) 옛 Mac은 모르는 칸을 거절한다. 그래서 **bridge가 서술자에 이 칸을 안다고 알린 경우에만** 칸을 싣는다(옛 Mac에는 지금 명령 그대로). 서술자 칸 · 명령 칸 · Swift fixture · `swift-fixtures.test.ts`를 함께 고친다.
+    - 이미 돌고 있는 프로세스는 끄지 않는다(다음 턴부터). 끈 상태에서 resume한 세션의 지난 자식 기록은 트리에 그대로 보인다.
+13. **T2 측정(사용자 확정 2026-10-23).** Mac이 턴이 끝날 때(7의 마지막 `result` 판정 뒤) T3s의 route로 한 번씩 알린다.
+    - 그 턴에 에이전트 일(`task_type == local_agent`)이 하나라도 시작됐으면 `subagent_turn_used`.
+    - 그 턴에 4의 "자식 defer → deny"가 한 번이라도 있었으면 `subagent_question_redirected`.
+    - 값은 그 턴의 `agent_task_id` 하나뿐(개수 · 이름 · 글 0). 답 resume으로 한 턴이 여러 spawn이 돼도 서버가 턴 id로 한 번만 센다. 실패는 조용히 버린다(지표가 턴을 막지 않는다).
 
 **실제 CLI 재실측(병합 전, 2.1.306)** — 처음에 확인할 두 가지: 자식 훅의 `tool_name`이 `Agent`인지 `Task`인지, 자식 훅의 `session_id`가 부모와 같은지(`HookSocketServer.swift:249`는 다르면 거절한다). 그다음: R1-02/02b(읽기 등급 자식에게도 Edit · Write · Bash 없음), R1-03 계열(자식의 작업 폴더 밖 Read · Write 거절), 자식 질문 → 부모 보류 → 답 resume(C8 · C9), 자식의 Edit가 서버 승인 요구일 때 deny되고 파일 해시 그대로, 자식 2 + 중첩 1의 마지막 답이 사용자에게 간 답과 같고 자식 글이 대화에 없음, 세션 Stop 뒤 자식 모두 Stopped, CLI가 훅 전에 `Agent`를 거절하는 경우(없는 `subagent_type`)에 턴이 죽지 않는지(죽으면 ④의 거절 허용 목록에 `Agent`를 더한다, `ClaudeEventMapper.swift:257`), 자식 둘의 도구 호출이 한 줄 훅 잠금(`ClaudeCodeProcess.swift:886-903`) 뒤에서 4초 예산(`HookWire.budget`)을 넘겨 `bridge_timeout`으로 거절되는지. **열린 확인 하나:** 백그라운드 자식이 도는 중에 부모가 보류로 프로세스를 끝내면 그 자식이 어떻게 되는지. 죽는다면 보류 전 기다리라는 문장을 프롬프트 v3에 더한다.
 
-**범위 파일(초안)** — `TaskforceKit/Bridge/ClaudeCode/ClaudeCodeLaunch.swift` · `ClaudeToolGate.swift` · `ClaudeStreamParser.swift` · `ClaudeEventMapper.swift` · `ClaudeCodeProcess.swift` · `ProcessIdentity.swift`, `TaskforceKit/Bridge/HookSocketServer.swift`(필요하면), `TaskforceAgentWire/Hook*.swift`, `tf-agent-hook/**`, `FakeClaudeCode/**`, 시험(`Tests/TaskforceKitTests/ClaudeCode/*` · `Tests/TaskforceAgentWireTests/*` · `Fixtures/bridge-v1/claude-code-adapter.json`), `src/lib/agents/registry.ts` · `src/lib/bridge/swift-fixtures.test.ts` · registry 시험, `docs/rollouts/claude-code-r1-evidence.md`, `docs/agent-gateway.md`, `docs/design/taskforce-0.2.0-assistant-contract-2026-10-12.md`.
+**범위 파일(초안)** — `TaskforceKit/Bridge/ClaudeCode/ClaudeCodeLaunch.swift` · `ClaudeToolGate.swift` · `ClaudeStreamParser.swift` · `ClaudeEventMapper.swift` · `ClaudeCodeProcess.swift` · `ProcessIdentity.swift`, `TaskforceKit/Bridge/HookSocketServer.swift`(필요하면), `TaskforceAgentWire/Hook*.swift`, `tf-agent-hook/**`, `FakeClaudeCode/**`, 시험(`Tests/TaskforceKitTests/ClaudeCode/*` · `Tests/TaskforceAgentWireTests/*` · `Fixtures/bridge-v1/claude-code-adapter.json`), `src/lib/agents/registry.ts` · `src/lib/bridge/swift-fixtures.test.ts` · registry 시험, `src/lib/api/contract.ts`(명령 · 서술자의 `subagents` 칸), 서버의 명령 만드는 곳과 그 시험, `.env.example`(새 환경변수), Kit API 클라이언트(지표 두 호출), `docs/rollouts/claude-code-r1-evidence.md`, `docs/agent-gateway.md`, `docs/design/taskforce-0.2.0-assistant-contract-2026-10-12.md`.
 
-**완료 기준** — 위 재실측 전부 통과 기록, 보안 검토 승인(게이트 · 훅 wire · 자식 권한 · 프로세스 수명), `npm run lint` · `typecheck` · `test`(TS가 바뀌므로), Kit `swift test` · 앱 `xcodebuild test`. `--max-budget-usd 25`가 자식까지 합친 값인지 재실측의 `total_cost_usd`로 확인해 근거에 적는다.
+재실측에 둘을 더한다: 서버 칸을 끈 턴은 init 도구 집합이 지금과 같다(Agent 없음), 칸을 모르는 옛 Mac에 칸이 실린 명령이 가지 않는다.
 
-### T3s. 열기 지표 (서버)
+**완료 기준** — 위 재실측 전부 통과 기록, 보안 검토 승인(게이트 · 훅 wire · 자식 권한 · 프로세스 수명 · 끄기 칸이 닫힌 쪽 기본인지), `npm run lint` · `typecheck` · `test`(TS가 바뀌므로), Kit `swift test` · 앱 `xcodebuild test`. `--max-budget-usd 25`가 자식까지 합친 값인지 재실측의 `total_cost_usd`로 확인해 근거에 적는다.
 
-**모양** — 앞선 `claude_app_session_opened`(20261206000000)와 같다: 본문에 칸이 없고, 앱이 v2 route로 알리면 route가 서버 권한으로 `metric_events`에 남기며, 같은 날(UTC) 두 번째는 조용히 넘긴다.
+### T3s. 지표 (서버)
 
-| 종류 | 언제 | route |
-|---|---|---|
-| `project_sessions_opened` | 프로젝트 이슈 목록의 Sessions 묶음이 행 1개 이상으로 펼쳐 보인 날 | `POST /api/v2/agent-tree/project-sessions-opened` |
-| `subagent_row_opened` | 하위 에이전트 줄을 눌러 꼬리 보기를 연 날 (옆줄 · 프로젝트 어디서든) | `POST /api/v2/agent-tree/subagent-opened` |
+**모양** — 앞선 `claude_app_session_opened`(20261206000000)와 같다: 앱이 v2 route로 알리면 route가 서버 권한으로 `metric_events`에 남긴다(앱은 이 종류를 직접 넣지 못한다).
+
+| 종류 | 언제 | 한 번만 세는 단위 | 본문 · props | route |
+|---|---|---|---|---|
+| `project_sessions_opened` | 프로젝트 이슈 목록의 Sessions 묶음이 행 1개 이상으로 펼쳐 보인 날 | 사용자 · UTC 날짜 | 없음 | `POST /api/v2/agent-tree/project-sessions-opened` |
+| `subagent_row_opened` | 하위 에이전트 줄을 눌러 꼬리 보기를 연 날 (옆줄 · 프로젝트 어디서든) | 사용자 · UTC 날짜 | 없음 | `POST /api/v2/agent-tree/subagent-opened` |
+| `subagent_turn_used` | Taskforce가 띄운 Claude 턴이 하위 에이전트를 하나 이상 썼다 (T2 13) | 턴(`agent_task_id`) | 본문 `{agent_task_id}` → props `{agent_task_id}` | `POST /api/v2/agent-tree/turn-used` |
+| `subagent_question_redirected` | 그 턴에 자식의 질문 · 승인 대기가 거절돼 부모에게 돌아갔다 (T2 4) | 턴(`agent_task_id`) | 〃 | `POST /api/v2/agent-tree/question-redirected` |
 
 **할 일**
-- 새 마이그레이션 하나(번호는 원장에 예약: 지금 최고 `20261207000000`, 후보 `20261208000000`): 종류 검사를 바로 앞 목록 전체 + 두 종류로 다시 만들고, 종류마다 하루 한 번 부분 unique 인덱스. 맨 앞에 **적용 순서 가드**(앞 마이그레이션의 종류가 검사에 있는지 보고 없으면 멈춤, `20261207000000_claude_app_chats.sql:51-54`와 같은 모양).
-- 지표 등록부 `src/lib/metrics/agents.ts`(:69 근처)에 두 종류, 관리자 지표 화면 이름표 `src/app/admin/metrics/page.tsx`(:61 근처).
-- `contract.ts`에 두 스키마(`z.strictObject({})`). route 둘: `authenticateRequest`, 쿠키 쓰기는 CSRF 확인, 앞선 route와 같은 문(`src/lib/api/external-sessions.ts:144, 159`의 `betaAllowed` 확인과 adapter 플래그 `AGENT_ADAPTER_CLAUDE_CODE_ENABLED`), 꺼져 있으면 404.
-- 시험: route · CSRF · 같은 날 두 번 · 다른 사용자 · 플래그 꺼짐 · `tests/metrics/agent-event-registry.test.ts` 최신 목록 대조 · `tests/db/` RLS(앱이 이 종류를 직접 넣지 못함) · 적용 순서 가드.
+- 새 마이그레이션 하나(번호는 원장에 예약: 지금 최고 `20261207000000`, 후보 `20261208000000`): 종류 검사를 바로 앞 목록 전체 + 네 종류로 다시 만든다. 열기 두 종류는 하루 한 번 부분 unique 인덱스, T2 두 종류는 `(user_id, (props->>'agent_task_id'))` 부분 unique 인덱스. 기존 props 검사(`metric_events_props_shape`, 20261121000000)는 객체인지만 보므로, T2 두 종류에만 걸리는 검사를 새로 더한다(props가 `agent_task_id` 키 하나이고 값이 uuid 글자). 맨 앞에 **적용 순서 가드**(앞 마이그레이션의 종류가 검사에 있는지 보고 없으면 멈춤, `20261207000000_claude_app_chats.sql:51-54`와 같은 모양).
+- 지표 등록부 `src/lib/metrics/agents.ts`(:69 근처)에 네 종류(열기 둘은 `activity: true`, T2 둘은 모델이 정한 일이라 `activity: false`), 관리자 지표 화면 이름표 `src/app/admin/metrics/page.tsx`(:61 근처).
+- `contract.ts`에 스키마 넷(열기 둘은 `z.strictObject({})`, T2 둘은 `z.strictObject({ agent_task_id: z.uuid() })`). route 넷: `authenticateRequest`, 쿠키 쓰기는 CSRF 확인, 앞선 route와 같은 문(`src/lib/api/external-sessions.ts:144, 159`의 `betaAllowed` 확인과 adapter 플래그 `AGENT_ADAPTER_CLAUDE_CODE_ENABLED`), 꺼져 있으면 404. T2 두 route는 **그 `agent_task_id`가 이 사용자의 Claude Code 턴인지 서버가 확인**하고 아니면 404(다른 사람 턴 id로 세지 못한다). 같은 단위의 두 번째는 unique 위반(23505)으로 조용히 넘긴다.
+- 시험: route · CSRF · 같은 날/같은 턴 두 번 · 다른 사용자 · 남의 턴 id · Codex 턴 id · 플래그 꺼짐 · `tests/metrics/agent-event-registry.test.ts` 최신 목록 대조 · `tests/db/` RLS(앱이 네 종류를 직접 넣지 못함) · props 모양 검사 · 적용 순서 가드.
 
 **완료 기준** — lint · typecheck · test · `test:pg`(마이그레이션이 바뀌므로). **운영 DB 적용은 병합 직전 사용자 승인 뒤 `supabase db query --linked -f`로 한 번**(db push 금지). 적용 뒤 종류 검사 · 인덱스 존재 확인 SELECT를 원장 상태 열에 적는다.
 
@@ -120,16 +132,16 @@ T3s · T3m은 docs/FEATURE_MAP.md가 겹친다: 나중에 병합하는 쪽이 ma
 ## 3. 공통 규칙
 
 - worktree `~/.claude/worktrees/taskforce-020/oa-agent-tree-<pr>`, 브랜치 `claude/020-oa-agent-tree-<pr>`, base는 그때의 `origin/main`. 작업자 · 검토자 배치는 기존 규칙(코딩 Sonnet 5.5 xhigh, 조정 · 최종 검토 Opus 5.5).
-- 사용자 데이터 원칙: 트리의 이름은 모델이 쓴 `description`뿐이다. 프롬프트 · 요약 · 경로 · 명령은 화면 값과 로그에 없다. 서버로 가는 것은 T3s의 종류 두 개뿐이다(4장의 T2 측정을 고르면 그 두 종류까지).
+- 사용자 데이터 원칙: 트리의 이름은 모델이 쓴 `description`뿐이다. 프롬프트 · 요약 · 경로 · 명령은 화면 값과 로그에 없다. 서버로 가는 것은 T3s의 지표 네 종류(T2 둘은 턴 id 하나만)와 T2의 끄기 칸뿐이다.
 - 진실 규칙 · 추출 파이프라인 · 프롬프트(`src/lib/ai/prompts/`)는 건드리지 않으므로 `npm run eval`이 필요한 PR은 없다(T2의 Claude 시스템 프롬프트는 adapter 글이고 eval 대상이 아니다).
 - 커밋 전 검사는 CLAUDE.md 순서(lint → typecheck → test → eval), 마이그레이션이 있는 T3s는 `test:pg`까지.
 
-## 4. 사용자가 정할 것 (검토에서 나온 것)
+## 4. 검토에서 나와 정한 것 (사용자 확정 2026-10-23)
 
-| 무엇 | 왜 | 추천 |
+| 무엇 | 왜 | 정한 것 |
 |---|---|---|
-| **Agent 원격 끄기** | 지금 계획대로면 T2 뒤 Agent를 끄려면 앱을 다시 내야 한다 | 서버가 턴 시작 명령에 "하위 에이전트 허용" 한 칸을 싣고, 꺼져 있으면 Mac이 지금 도구 집합으로 띄운다. 환경변수 하나(기본 켜짐). T2에 넣는다 |
-| **T2 자체의 측정** | 원칙 6: Agent를 켠 효과(자식을 쓴 턴 수, 자식이 "묻지 못함"으로 거절된 수)를 셀 수단이 없다. 확정한 열기 이벤트 2개는 화면 쪽만 센다 | 서버 지표 종류 둘을 더한다: 자식을 쓴 턴(하루 한 번 아님, 턴마다 1, 개수 칸 없음) · 자식 질문 거절(턴마다 1). T2와 같이, 또는 T3s에 합친다. 이름 · 글 · 개수는 싣지 않는다 |
+| **Agent 원격 끄기** | 이것이 없으면 T2 뒤 Agent를 끄려면 앱을 다시 내야 한다 | 서버가 턴 명령에 `subagents` 한 칸을 싣는다. 환경변수 `AGENT_CLAUDE_SUBAGENTS_ENABLED`(기본 켜짐). 칸이 없으면 Mac은 Agent 없이 띄운다(T2 12) |
+| **T2 자체의 측정** | 원칙 6: 확정한 열기 이벤트 2개는 화면 쪽만 센다. Agent를 켠 효과는 셀 수단이 없었다 | `subagent_turn_used` · `subagent_question_redirected`를 턴마다 한 번(T2 13, 서버 쪽은 T3s) |
 
 ## 5. 이번에 정하지 않은 것
 
