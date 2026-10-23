@@ -47,8 +47,8 @@ describe("마이그레이션 경계 (20261208000000_claude_app_chats_delete_all)
     expect(code.match(/^commit;$/gm)).toHaveLength(1);
   });
 
-  it("만드는 것: 함수 하나(delete_all_claude_app_chats) + take_rate_limit 재정의뿐이다 (새 표 · 도메인 · 트리거 · 정책 · 인덱스 · 열 0)", () => {
-    expect([...code.matchAll(/create (?:or replace )?function public\.([a-z_]+)/g)].map((m) => m[1])).toEqual(["delete_all_claude_app_chats", "take_rate_limit"]);
+  it("만드는 것: 새 함수 하나(delete_all_claude_app_chats) + 다시 만드는 함수 둘(delete_claude_app_chat · take_rate_limit)뿐이다 (새 표 · 도메인 · 트리거 · 정책 · 인덱스 · 열 0)", () => {
+    expect([...code.matchAll(/create (?:or replace )?function public\.([a-z_]+)/g)].map((m) => m[1])).toEqual(["delete_all_claude_app_chats", "delete_claude_app_chat", "take_rate_limit"]);
     expect([...code.matchAll(/create function public\.([a-z_]+)/g)].map((m) => m[1])).toEqual(["delete_all_claude_app_chats"]);
     expect(code).not.toMatch(/create\s+(table|domain|trigger|policy|index|unique index|view)\b|add column|drop table|drop function|drop policy/i);
     // 바꾸는 기존 표는 metric_events(종류 검사)와 rate_limit_events(종류 검사)뿐이다
@@ -57,24 +57,71 @@ describe("마이그레이션 경계 (20261208000000_claude_app_chats_delete_all)
   });
 
   it("함수 권한: PUBLIC · anon · authenticated는 거두고 service_role에만 준다. invoker(security definer 아님) + search_path 빈 값", () => {
-    expect(code).toMatch(/revoke all on function public\.delete_all_claude_app_chats\(uuid\) from public, anon, authenticated;/);
-    expect(code).toMatch(/grant execute on function public\.delete_all_claude_app_chats\(uuid\) to service_role;/);
+    expect(code).toMatch(/revoke all on function public\.delete_all_claude_app_chats\(uuid, integer\) from public, anon, authenticated;/);
+    expect(code).toMatch(/grant execute on function public\.delete_all_claude_app_chats\(uuid, integer\) to service_role;/);
+    expect(code).toMatch(/revoke all on function public\.delete_claude_app_chat\(uuid, uuid\) from public, anon, authenticated;\s+grant execute on function public\.delete_claude_app_chat\(uuid, uuid\) to service_role;/);
     expect(code).toMatch(/revoke execute on function public\.take_rate_limit from public, anon, authenticated;/);
     expect(code).toMatch(/grant execute on function public\.take_rate_limit to service_role;/);
     expect(code).not.toMatch(/\bgrant\b[^;]*\bto\s+(?:public|anon|authenticated)\b/i);
     expect(code).not.toMatch(/security definer/i);
-    expect(code.match(/set search_path = ''/g)).toHaveLength(2);
+    expect(code.match(/set search_path = ''/g)).toHaveLength(3);
   });
 
-  it("지우는 문장은 둘이고 모두 호출한 사용자 것만 겨냥한다 (채팅 · 묘비 개수 상한). 자동 정리 · 시간 간격이 없다 (26장 Q-D3b)", () => {
-    expect([...code.matchAll(/delete from ([a-z_.]+)/g)].map((m) => m[1])).toEqual(["public.claude_app_chats", "public.claude_app_chat_tombstones"]);
-    expect(code).toMatch(/delete from public\.claude_app_chats where user_id = p_user_id;/);
-    expect(code).toMatch(/delete from public\.claude_app_chat_tombstones t\s+where t\.user_id = p_user_id/);
+  it("지우는 문장은 호출한 사용자 것만 겨냥한다: 모두 지우기의 채팅(100개씩) · 묘비 상한, 하나 지우기의 채팅 · 묘비 상한. 자동 정리가 없다 (26장 Q-D3b)", () => {
+    expect([...code.matchAll(/delete from ([a-z_.]+)/g)].map((m) => m[1])).toEqual(["public.claude_app_chats", "public.claude_app_chat_tombstones", "public.claude_app_chats", "public.claude_app_chat_tombstones"]);
+    // 채팅: 바깥도 안쪽 select도 호출한 사용자로 좁힌다 (한 판 100개)
+    expect(code).toMatch(/delete from public\.claude_app_chats where user_id = p_user_id and id in \(select c\.id from public\.claude_app_chats c where c\.user_id = p_user_id order by c\.id limit c_batch\);/);
+    expect(code).toMatch(/c_batch constant integer := 100;/);
+    // 하나 지우기는 20261207과 같다 (id + 사용자)
+    expect(code).toMatch(/delete from public\.claude_app_chats where id = p_chat_id and user_id = p_user_id returning id into v_id;/);
+    // 묘비 상한: 두 함수 모두 넘친 묘비를 materialized CTE로 한 번 구하고 호출한 사용자로 좁힌다
+    expect(code.match(/with excess as materialized \(\s+select o\.bridge_id, o\.session_ref, o\.mac_ref from public\.claude_app_chat_tombstones o\s+where o\.user_id = p_user_id order by o\.created_at desc, o\.mac_ref desc offset c_max_tombstones\s+\)/g)).toHaveLength(2);
     expect(code).not.toMatch(/purge|retention|expire/i);
-    // 시간 간격은 이 함수에 없다 (take_rate_limit 본문의 v_window interval은 20261207에서 이어 받은 것이다)
+  });
+
+  // 20261207의 delete_claude_app_chat에서 바꾼 것은 묘비 상한 정리 한 문장뿐이다 (잠금 · 묘비 · 응답 · 지표는 같다)
+  it("delete_claude_app_chat 다시 만들기: 묘비 상한 정리 문장을 빼면 20261207의 본문과 글자 하나 다르지 않다", () => {
+    const fnBody = (sql: string, header: RegExp) => {
+      const text = strip(sql);
+      const from = text.search(header);
+      if (from < 0) throw new Error("delete_claude_app_chat not found");
+      const close = text.indexOf("$$;", text.indexOf("$$", from) + 2);
+      return text.slice(from, close + 3);
+    };
+    const norm = (sql: string) => sql.replace(/\s+/g, " ").trim();
+    const withoutTrim = (body: string) => norm(body.replace(/(?:with excess as materialized \([\s\S]*?\)\s+)?delete from public\.claude_app_chat_tombstones t[\s\S]*?;/, ""));
+    const before = fnBody(read(PREVIOUS), /create function public\.delete_claude_app_chat\(/);
+    const after = fnBody(migration, /create or replace function public\.delete_claude_app_chat\(/);
+    expect(withoutTrim(after)).toBe(withoutTrim(before.replace("create function", "create or replace function")));
+    // 바뀐 문장은 있다
+    expect(norm(after)).not.toBe(norm(before));
+    expect(norm(after)).toContain("with excess as materialized");
+    expect(norm(before)).not.toContain("materialized");
+  });
+
+  // 보안 검토 P3-1: 묘비 상한 정리는 하루가 안 된 묘비를 지우지 않는다 (방금 하나씩 지운 대화의 묘비가 밀려나 재시도가 되살아나는 것을 막는다)
+  it("묘비 상한 정리는 (모두 지우기 · 하나 지우기 모두) created_at이 하루보다 오래된 것만 지운다 · 모두 지우기 함수의 시간 간격은 그 '1 day' 하나뿐이다", () => {
+    const young = /delete from public\.claude_app_chat_tombstones t using excess e\s+where t\.user_id = p_user_id\s+and t\.created_at < now\(\) - interval '1 day'\s+and t\.bridge_id = e\.bridge_id and t\.session_ref = e\.session_ref and t\.mac_ref = e\.mac_ref;/g;
+    expect(code.match(young)).toHaveLength(2);
     const fn = code.slice(code.indexOf("create function public.delete_all_claude_app_chats"), code.indexOf("revoke all on function public.delete_all_claude_app_chats"));
+    expect(fn.match(young)).toHaveLength(1);
     expect(fn.length).toBeGreaterThan(500);
-    expect(fn).not.toMatch(/interval|now\(\)|clock_timestamp/i);
+    expect([...fn.matchAll(/interval\s+'([^']*)'/g)].map((m) => m[1])).toEqual(["1 day"]);
+    expect(fn.match(/now\(\)/g)).toHaveLength(1);
+  });
+
+  // 보안 검토 P3-2: 함수 안에서 statement_timeout을 바꾸는 방법(function SET · 본문의 set local)은 이미 시작된 문장의 제한을 바꾸지 못한다 (tests/db/claude-app-chats.scenarios.ts의 관찰 시험).
+  // 그래서 함수가 채팅을 100개씩 지우며 사이사이에 자기 제한을 본다: 넘으면 57014로 멈춰 호출 전체가 롤백된다 (route가 409 busy_retry로 돌려준다).
+  it("자기 시간 제한: p_max_seconds(기본 60, 0–600 밖은 22023)를 사용자별 잠금을 쥔 뒤부터 재고, 더 지울 것이 있을 때만(한 판이 꽉 찼을 때만) 57014로 멈춘다. 묘비 · 지표는 그 뒤에 쓴다", () => {
+    const fn = code.slice(code.indexOf("create function public.delete_all_claude_app_chats"), code.indexOf("revoke all on function public.delete_all_claude_app_chats"));
+    expect(fn).toMatch(/create function public\.delete_all_claude_app_chats\(p_user_id uuid, p_max_seconds integer default 60\) returns jsonb/);
+    expect(fn).toMatch(/p_max_seconds not between 0 and 600/);
+    expect(fn).toMatch(/v_started := clock_timestamp\(\);/);
+    expect(fn.indexOf("pg_advisory_xact_lock")).toBeLessThan(fn.indexOf("v_started := clock_timestamp()"));
+    expect(fn).toMatch(/exit when v_round < c_batch;\s+if clock_timestamp\(\) - v_started > make_interval\(secs => p_max_seconds\) then\s+raise exception '[^']*' using errcode = '57014';/);
+    // 시간 검사는 채팅 지우기 판 안에 있고, 지표 · 묘비 상한 정리는 판이 끝난 뒤다
+    expect(fn.indexOf("errcode = '57014'")).toBeLessThan(fn.indexOf("delete from public.claude_app_chat_tombstones"));
+    expect(fn.indexOf("errcode = '57014'")).toBeLessThan(fn.indexOf("insert into public.metric_events"));
   });
 
   it("묘비는 지우기 전에 남긴다 (지운 뒤에는 사용자 글이 없다) · 사용자 글만 · 호출자 것만", () => {
@@ -158,7 +205,7 @@ describe("적용 순서 가드 (20261208 → 20261207)", () => {
       await expect(db.exec(migration)).rejects.toThrow(/20261207/);
       await db.exec("rollback").catch(() => undefined);
       const { rows } = await db.query<{ fn: string | null; type: boolean; kind: boolean }>(
-        `select to_regprocedure('public.delete_all_claude_app_chats(uuid)')::text as fn,
+        `select to_regprocedure('public.delete_all_claude_app_chats(uuid,integer)')::text as fn,
                 (select pg_get_constraintdef(oid) like '%${NEW_TYPE}%' from pg_constraint where conname = 'metric_events_type_check') as type,
                 (select pg_get_constraintdef(oid) like '%${NEW_KIND}%' from pg_constraint where conname = 'rate_limit_events_kind_check') as kind`,
       );
@@ -188,11 +235,11 @@ describe("적용 순서 가드 (20261208 → 20261207)", () => {
       for (const script of await supabaseSchemaScripts({ without: [FILE] })) await db.exec(script);
       await db.exec(migration);
       const { rows } = await db.query<{ fn: string | null; types: string; kinds: string }>(
-        `select to_regprocedure('public.delete_all_claude_app_chats(uuid)')::text as fn,
+        `select to_regprocedure('public.delete_all_claude_app_chats(uuid,integer)')::text as fn,
                 (select pg_get_constraintdef(oid) from pg_constraint where conname = 'metric_events_type_check') as types,
                 (select pg_get_constraintdef(oid) from pg_constraint where conname = 'rate_limit_events_kind_check') as kinds`,
       );
-      expect(rows[0].fn).toBe("delete_all_claude_app_chats(uuid)");
+      expect(rows[0].fn).toBe("delete_all_claude_app_chats(uuid,integer)");
       for (const type of typeList(FILE)) expect(rows[0].types, type).toContain(`'${type}'`);
       for (const kind of kindList(FILE)) expect(rows[0].kinds, kind).toContain(`'${kind}'`);
     } finally {

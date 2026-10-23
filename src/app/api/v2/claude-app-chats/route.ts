@@ -6,7 +6,7 @@ export async function PUT(request: Request) {
   return handleSaveClaudeAppChat(request, realClaudeAppChatsDeps());
 }
 
-// 사용자가 저장된 Claude 데스크톱 대화를 **모두** 지운다 (OA D3v-s, 계약 27장): 200 { deleted: 지운 채팅 수 }. 한 SQL 함수가 한 트랜잭션으로 지운다(일부만 지워진 상태 없음, 묘비로 재시도가 되살리지 못함).
+// 사용자가 저장된 Claude 데스크톱 대화를 **모두** 지운다 (OA D3v-s, 계약 27장): DELETE …/claude-app-chats?all=true → 200 { deleted: 지운 채팅 수 }. 쿼리가 정확히 ?all=true가 아니면 400 (끝 슬래시 308 · 빈 id가 모두 지우기가 되지 않게). 한 SQL 함수가 한 트랜잭션으로 지운다(일부만 지워진 상태 없음, 묘비로 재시도가 되살리지 못함).
 // **늘 열려 있다**: PUT과 달리 CLAUDE_APP_CHATS_ENABLED · 대화 v2 · adapter 플래그도 베타 명단도 보지 않는다 (대화마다 지우는 DELETE와 같다). 로그인(Bearer · 쿠키 + CSRF)은 필요하고 자기 행만 지운다. 속도 제한 10분에 5번.
 export async function DELETE(request: Request) {
   return handleDeleteAllClaudeAppChats(request, realClaudeAppChatsDeps());

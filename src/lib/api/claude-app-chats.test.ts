@@ -24,6 +24,8 @@ import {
   claudeAppChatSaveRequestSchema,
   claudeAppChatSaveResponseSchema,
   claudeAppChatStatusResponseSchema,
+  CLAUDE_APP_CHATS_DELETE_ALL_QUERY,
+  claudeAppChatsDeleteAllQuerySchema,
   claudeAppChatsDeleteAllResponseSchema,
   claudeAppSentRequestSchema,
 } from "./contract";
@@ -76,7 +78,9 @@ const put = (body: unknown, headers: Record<string, string> = {}) =>
   new Request("https://api.example.dev/api/v2/claude-app-chats", { method: "PUT", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body) });
 const get = () => new Request("https://api.example.dev/api/v2/claude-app-chats/status", { method: "GET" });
 const del = () => new Request(`https://api.example.dev/api/v2/claude-app-chats/${CHAT}`, { method: "DELETE" });
-const delAll = (init: RequestInit = {}, url = "https://api.example.dev/api/v2/claude-app-chats") => new Request(url, { method: "DELETE", ...init });
+const ALL = "https://api.example.dev/api/v2/claude-app-chats";
+/** 모두 지우기는 쿼리가 정확히 ?all=true일 때만 지운다 (끝 슬래시 308 · 빈 id가 모두 지우기가 되지 않게) */
+const delAll = (init: RequestInit = {}, url = `${ALL}?all=true`) => new Request(url, { method: "DELETE", ...init });
 const sent = (body: unknown) =>
   new Request("https://api.example.dev/api/v2/external-sessions/claude-app-sent", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
@@ -487,6 +491,39 @@ describe("DELETE /api/v2/claude-app-chats/{id}", () => {
 // ───────────────────────── DELETE (모두 지우기, D3v-s) ─────────────────────────
 
 describe("DELETE /api/v2/claude-app-chats (모두 지우기)", () => {
+  // 보안 검토 P2-1: Next 기본 설정은 DELETE …/claude-app-chats/ (끝 슬래시 · 빈 id)를 308로 …/claude-app-chats에 돌리고 메서드를 지킨다 (관찰: next dev 16.3.6, 쿼리도 따라간다).
+  // 그래서 컬렉션 DELETE는 쿼리가 정확히 ?all=true일 때만 지운다 — 대화 하나 지우기가 모두 지우기로 바뀌는 길을 막는다.
+  it("?all=true가 정확히 있어야 지운다: 쿼리가 없거나 조금이라도 다르면 400 invalid_request이고 속도 제한도 지우기도 하지 않는다", async () => {
+    const bad = ["", "?", "?all", "?all=", "?all=false", "?all=FALSE", "?all=TRUE", "?all=True", "?all=1", "?all=yes", "?ALL=true", "?all=true&x=1", "?x=1&all=true", "?all=true&all=true", "?all=false&all=true", "?all=true&", "?&all=true", "?all=%74rue", "?all=true%20", "?all=true=", "?all[]=true", "?user_id=22222222-0000-4000-8000-000000000002"];
+    for (const query of bad) {
+      const d = deps();
+      const response = await handleDeleteAllClaudeAppChats(delAll({}, `${ALL}${query}`), d.value);
+      expect(response.status, JSON.stringify(query)).toBe(400);
+      expect(await response.json(), JSON.stringify(query)).toMatchObject({ error: { code: "invalid_request" } });
+      expect(d.takeDeleteAllLimit, JSON.stringify(query)).not.toHaveBeenCalled();
+      expect(d.removeAll, JSON.stringify(query)).not.toHaveBeenCalled();
+    }
+    // 끝 슬래시 · 빈 id 모양의 URL도 마커가 없으면 400이다 (308이 돌려 준 요청 모양)
+    for (const url of [`${ALL}/`, `${ALL}//`, `${ALL}/?x=1`]) {
+      const d = deps();
+      expect((await handleDeleteAllClaudeAppChats(delAll({}, url), d.value)).status, url).toBe(400);
+      expect(d.removeAll, url).not.toHaveBeenCalled();
+    }
+    // 정확히 ?all=true는 지운다
+    const ok = deps();
+    expect((await handleDeleteAllClaudeAppChats(delAll({}, `${ALL}?all=true`), ok.value)).status).toBe(200);
+    expect(ok.removeAll).toHaveBeenCalledTimes(1);
+  });
+
+  it("로그인하지 않았으면 마커가 없어도 401이다 (인증이 첫 검사: 마커가 없다는 말도 로그인하지 않은 쪽에는 알리지 않는다). 마커 검사는 속도 제한 앞이다", async () => {
+    const anonymous = deps({ authenticate: async () => null });
+    expect((await handleDeleteAllClaudeAppChats(delAll({}, ALL), anonymous.value)).status).toBe(401);
+    const order: string[] = [];
+    const d = deps({ authenticate: async () => (order.push("auth"), { user: { id: USER } }), takeDeleteAllLimit: async () => (order.push("limit"), null) });
+    await handleDeleteAllClaudeAppChats(delAll({}, ALL), d.value);
+    expect(order).toEqual(["auth"]);
+  });
+
   // 대화마다 지우는 DELETE와 같다: 늘 열려 있다(gate · 베타 명단을 보지 않는다). 그래도 로그인(Bearer · 쿠키 + CSRF)이 필요하고 자기 행만 지운다.
   it("로그인하지 않았으면 401: 속도 제한도 지우기도 하지 않는다 (인증이 첫 검사다)", async () => {
     const anonymous = deps({ authenticate: async () => null });
@@ -526,12 +563,9 @@ describe("DELETE /api/v2/claude-app-chats (모두 지우기)", () => {
     expect(await emptyResponse.json()).toEqual({ deleted: 0 });
   });
 
-  it("사용자 id는 인증에서만 온다: 요청의 본문 · 쿼리 · 헤더에 다른 사용자 id가 있어도 지우는 것은 인증된 사용자의 채팅이다", async () => {
+  it("사용자 id는 인증에서만 온다: 요청의 본문 · 헤더에 다른 사용자 id가 있어도 지우는 것은 인증된 사용자의 채팅이다", async () => {
     const d = deps();
-    const request = delAll(
-      { headers: { "content-type": "application/json", "x-user-id": "22222222-0000-4000-8000-000000000002" }, body: JSON.stringify({ user_id: "22222222-0000-4000-8000-000000000002", deleted: 999 }) },
-      "https://api.example.dev/api/v2/claude-app-chats?user_id=22222222-0000-4000-8000-000000000002&all=false",
-    );
+    const request = delAll({ headers: { "content-type": "application/json", "x-user-id": "22222222-0000-4000-8000-000000000002" }, body: JSON.stringify({ user_id: "22222222-0000-4000-8000-000000000002", deleted: 999 }) });
     expect((await handleDeleteAllClaudeAppChats(request, d.value)).status).toBe(200);
     expect(d.takeDeleteAllLimit).toHaveBeenCalledExactlyOnceWith({ user: { id: USER } });
     expect(d.removeAll).toHaveBeenCalledExactlyOnceWith({ user: { id: USER } });
@@ -584,6 +618,22 @@ describe("DELETE /api/v2/claude-app-chats (모두 지우기)", () => {
     // SQL이 인자 모양을 거절하면(22023) 다른 route와 같은 규칙으로 400 invalid_request다 (사용자 id는 인증에서만 오므로 두 검사가 어긋났다는 신호일 뿐이다)
     const shape = deps({ removeAll: async () => Promise.reject(Object.assign(new Error("x"), { code: "22023" })) });
     expect((await handleDeleteAllClaudeAppChats(delAll(), shape.value)).status).toBe(400);
+  });
+
+  // 보안 검토 P3-2: 서버의 statement_timeout이나 함수의 자체 시간 제한(SQLSTATE 57014)은 트랜잭션이 통째로 롤백된 일이다 → 500이 아니라 409 busy_retry (같은 요청을 다시 보내도 된다)
+  it("시간 제한(57014)은 500이 아니라 409 busy_retry다: 같은 호출을 다시 하지 않고(시간 제한을 세 번 기다리지 않는다) 로그에는 오류 이름과 code뿐이다", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const removeAll = vi.fn(async (): Promise<number> => Promise.reject(Object.assign(new Error(`내 비밀 글 ${USER}`), { code: "57014" })));
+    const response = await handleDeleteAllClaudeAppChats(delAll(), deps({ removeAll }).value);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: "busy_retry" } });
+    expect(removeAll).toHaveBeenCalledTimes(1);
+    const logged = JSON.stringify(error.mock.calls);
+    expect(logged).toContain("57014");
+    expect(logged).toContain("claude_app_chats_delete_all_failed");
+    expect(logged).not.toMatch(/비밀|11111111/);
+    // 다른 오류 코드는 그대로 500이다
+    expect((await handleDeleteAllClaudeAppChats(delAll(), deps({ removeAll: async () => Promise.reject(Object.assign(new Error("x"), { code: "57P01" })) }).value)).status).toBe(500);
   });
 
   it("함수가 이상한 숫자(음수 · 소수 · 숫자 아님)를 돌려주면 500이다 (응답 스키마가 막는다)", async () => {
@@ -726,6 +776,12 @@ describe("POST /api/v2/external-sessions/claude-app-sent", () => {
 // ───────────────────────── 스키마 ─────────────────────────
 
 describe("계약 스키마", () => {
+  it("모두 지우기 쿼리: 정확히 \"?all=true\" 글자 하나뿐 (스키마도 같은 글자만 받는다)", () => {
+    expect(CLAUDE_APP_CHATS_DELETE_ALL_QUERY).toBe("?all=true");
+    expect(claudeAppChatsDeleteAllQuerySchema.safeParse("?all=true").success).toBe(true);
+    for (const bad of ["", "?", "?all=false", "?all=true&x=1", "all=true", "?all=True", " ?all=true", "?all=true "]) expect(claudeAppChatsDeleteAllQuerySchema.safeParse(bad).success, bad).toBe(false);
+  });
+
   it("모두 지우기 응답: { deleted: 0 이상 정수 }뿐 (strict)", () => {
     expect(claudeAppChatsDeleteAllResponseSchema.parse({ deleted: 0 })).toEqual({ deleted: 0 });
     expect(claudeAppChatsDeleteAllResponseSchema.parse({ deleted: 2000 })).toEqual({ deleted: 2000 });

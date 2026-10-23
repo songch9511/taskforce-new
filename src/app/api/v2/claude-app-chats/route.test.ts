@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ admin: vi.fn(), auth: vi.fn(), rpc: vi.fn() }));
@@ -202,7 +205,9 @@ describe("PUT /api/v2/claude-app-chats: 저장", () => {
 // ───────────────────────── DELETE (모두 지우기, OA D3v-s, 계약 27장) ─────────────────────────
 // 대화마다 지우는 DELETE([id]/route.ts)와 같다: 늘 열려 있다(세 플래그도 베타 명단도 보지 않는다). 로그인(Bearer · 쿠키 + CSRF)이 필요하고 자기 행만 지운다.
 // 속도 제한(claude_app_chat_delete_all, 사용자별 10분에 5번) 뒤 SQL 함수 delete_all_claude_app_chats 하나가 한 트랜잭션으로 지운다.
-const callAll = (init: RequestInit = {}) => DELETE(new Request("https://api.example.dev/api/v2/claude-app-chats", { method: "DELETE", ...init }));
+const ALL = "https://api.example.dev/api/v2/claude-app-chats";
+/** 모두 지우기는 쿼리가 정확히 ?all=true일 때만 지운다 (보안 검토 P2-1) */
+const callAll = (init: RequestInit = {}, url = `${ALL}?all=true`) => DELETE(new Request(url, { method: "DELETE", ...init }));
 const rpcCalls = () => mocks.rpc.mock.calls.map((c) => [c[0], c[1]]);
 
 describe("DELETE /api/v2/claude-app-chats (모두 지우기)", () => {
@@ -245,12 +250,41 @@ describe("DELETE /api/v2/claude-app-chats (모두 지우기)", () => {
     expect(mocks.rpc).not.toHaveBeenCalled();
   });
 
-  it("본문 · 쿼리의 사용자 id는 받지 않는다: 지우는 것은 인증된 사용자의 채팅뿐이다", async () => {
-    const response = await DELETE(
-      new Request(`https://api.example.dev/api/v2/claude-app-chats?user_id=${OTHER}`, { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ user_id: OTHER, p_user_id: OTHER }) }),
-    );
+  it("본문의 사용자 id는 받지 않는다: 지우는 것은 인증된 사용자의 채팅뿐이다", async () => {
+    const response = await callAll({ headers: { "content-type": "application/json" }, body: JSON.stringify({ user_id: OTHER, p_user_id: OTHER }) });
     expect(response.status).toBe(200);
     expect(rpcCalls().map((c) => c[1])).toEqual([{ p_user_id: USER, p_kind: "claude_app_chat_delete_all", p_max: 5, p_window_seconds: 600 }, { p_user_id: USER }]);
+  });
+
+  // 보안 검토 P2-1: 끝 슬래시 · 빈 id가 모두 지우기가 되지 않게 ?all=true를 요구한다.
+  // 관찰(next dev 16.3.6, 이 저장소의 next.config.ts 그대로): DELETE /api/v2/claude-app-chats/ → 308 Permanent Redirect, location: /api/v2/claude-app-chats (메서드를 지키는 308이라 클라이언트는 DELETE로 따라간다),
+  //   DELETE /api/v2/claude-app-chats/?all=true → 308 location: /api/v2/claude-app-chats?all=true (쿼리도 따라간다), DELETE /api/v2/claude-app-chats/%20 → 대화 하나 지우기([id]) 길로 간다.
+  it("?all=true가 없으면 400 invalid_request이고 DB를 부르지 않는다 (플래그가 꺼져 있어도 · 켜져 있어도)", async () => {
+    for (const query of ["", "?all=false", "?all=true&x=1", "?x=1", "?all="]) {
+      const response = await callAll({}, `${ALL}${query}`);
+      expect(response.status, JSON.stringify(query)).toBe(400);
+      expect(await response.json(), JSON.stringify(query)).toMatchObject({ error: { code: "invalid_request" } });
+    }
+    open();
+    expect((await callAll({}, ALL)).status).toBe(400);
+    expect(mocks.admin).not.toHaveBeenCalled();
+    expect(mocks.rpc).not.toHaveBeenCalled();
+    // 로그인하지 않았으면 마커가 없어도 401
+    mocks.auth.mockResolvedValue(null);
+    expect((await callAll({}, ALL)).status).toBe(401);
+  });
+
+  it("끝 슬래시는 308로 쿼리 없는 컬렉션 경로가 되어 400이다: next.config.ts가 기본 정규화를 그대로 두고, 돌려진 요청(쿼리 없음)은 지우지 않는다", async () => {
+    const config = readFileSync(path.resolve(import.meta.dirname, "../../../../..", "next.config.ts"), "utf8");
+    // 이 설정이 생기면 끝 슬래시 요청이 308 없이 그대로 route에 닿거나 경로가 바뀐다 — 그때는 이 관찰을 다시 해야 한다
+    expect(config).not.toMatch(/trailingSlash|skipTrailingSlashRedirect|skipMiddlewareUrlNormalize|skipProxyUrlNormalize/);
+    // 308이 돌려 준 요청 모양: 경로 끝의 슬래시가 빠진 컬렉션 경로, 쿼리는 원래 요청의 것 그대로
+    const redirected = await callAll({}, ALL);
+    expect(redirected.status).toBe(400);
+    expect(mocks.rpc).not.toHaveBeenCalled();
+    // 쿼리를 단 채로 돌려지면 그 쿼리가 따라가므로 의도한 호출은 그대로 지운다
+    expect((await callAll({}, `${ALL}?all=true`)).status).toBe(200);
+    expect(mocks.rpc.mock.calls.map((c) => c[0])).toEqual(["take_rate_limit", "delete_all_claude_app_chats"]);
   });
 
   it("지울 것이 없으면 200 { deleted: 0 }", async () => {
@@ -276,6 +310,19 @@ describe("DELETE /api/v2/claude-app-chats (모두 지우기)", () => {
       rpcReturns({ delete_all_claude_app_chats: bad });
       expect((await callAll()).status, JSON.stringify(bad)).toBe(500);
     }
+  });
+
+  it("시간 제한(57014)은 409 busy_retry다 — 다시 시도하지 않고(한 번만 부른다) 로그에 오류 이름과 코드뿐이다 (보안 검토 P3-2)", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    mocks.rpc.mockImplementation((name: string) => ({
+      throwOnError: () => (name === "delete_all_claude_app_chats" ? Promise.reject(Object.assign(new Error(`내 비밀 글 ${USER}`), { code: "57014" })) : Promise.resolve({ data: null, error: null })),
+    }));
+    const response = await callAll();
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: "busy_retry" } });
+    expect(mocks.rpc.mock.calls.filter((c) => c[0] === "delete_all_claude_app_chats")).toHaveLength(1);
+    expect(JSON.stringify(error.mock.calls)).toContain("57014");
+    expect(JSON.stringify(error.mock.calls)).not.toMatch(/비밀|11111111/);
   });
 
   it("잠금 경합은 409 busy_retry (같은 호출을 세 번까지 다시 한 뒤), 그 밖의 오류는 500이고 로그에 오류 이름과 코드뿐이다", async () => {

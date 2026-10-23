@@ -508,6 +508,16 @@ export function claudeAppChatsTests(db: () => ClaudeAppChatsDb) {
 
   const deleteAll = (owner: string) => one("select public.delete_all_claude_app_chats($1) as result", [owner]).then((r) => r.result);
   const tombstoneCount = (owner: string) => count("select 1 from public.claude_app_chat_tombstones where user_id = $1", [owner]);
+  /**
+   * 큰 시험의 뒷정리: 이 사용자의 묘비 1만 개와 죽은 튜플을 치우고 통계를 새로 한다. 같은 표를 쓰는 뒤 시험이 낡은 통계 · 자동 vacuum의 끼어들기에 흔들리지 않게 한다
+   * (한 사용자가 묘비를 1만 개 쌓은 채 통계를 찍으면 다음 사용자의 묘비 계획이 틀어지고, 10만 행을 지운 뒤 자동 vacuum이 한복판에서 돈다)
+   */
+  async function cleanUpHeavy(owner: string) {
+    await withLongStatements(async () => {
+      await q("delete from public.claude_app_chat_tombstones where user_id = $1", [owner]);
+      for (const table of ["claude_app_chat_messages", "claude_app_chats", "claude_app_chat_tombstones"]) await q(`vacuum (analyze) public.${table}`);
+    });
+  }
 
   it("delete_all_claude_app_chats: 호출한 사용자의 채팅 · 메시지를 모두 지우고 {deleted: 채팅 수}를 돌려준다 — Mac이 둘이어도 bridge가 해제됐어도 지우고, 다른 사용자의 것은 그대로다", async () => {
     const alice = await world();
@@ -566,7 +576,7 @@ export function claudeAppChatsTests(db: () => ClaudeAppChatsDb) {
   });
 
   it("DT10: delete_all_claude_app_chats는 service role만 부른다 (앱 · 익명은 실행 권한 없음), invoker + search_path 빈 값 — 앱 권한으로 부르면 거절되고 아무것도 지워지지 않는다", async () => {
-    const fn = "delete_all_claude_app_chats(uuid)";
+    const fn = "delete_all_claude_app_chats(uuid, integer)";
     for (const role of ["anon", "authenticated"]) {
       expect(await one("select has_function_privilege($1, $2, 'EXECUTE') as run", [role, `public.${fn}`]), role).toEqual({ run: false });
     }
@@ -679,8 +689,155 @@ export function claudeAppChatsTests(db: () => ClaudeAppChatsDb) {
     expect(await save(w.owner, w.bridge, ref(1), "제목", [userMsg(1), asstMsg(2, 1)])).toMatchObject({ status: "ok", saved: 0, existing: 2, orphan: 0 });
   });
 
+  // 보안 검토 P3-1: 묘비 상한 정리가 하루 안의 묘비(방금 하나씩 지운 대화의 것)를 밀어내면 그 대화의 재시도가 되살아난다 → 하루가 안 된 묘비는 상한을 넘어도 지우지 않는다.
+  // (실제 Postgres에서도 같은 시나리오가 돈다: tests/pg/claude-app-chats.test.ts)
   it(
-    "묘비 상한: 모두 지울 때 사용자 글이 1만 개를 넘으면 **가장 최근에 저장된** 1만 개만 묘비로 남기고, 옛 묘비도 합쳐 사용자당 1만 개를 넘지 않는다. 채팅 2,000개 · 10만 행도 한 번에 지운다 (정상 statement_timeout 아래)",
+    "묘비 상한: 하루가 안 된 묘비(방금 하나씩 지운 대화의 것)는 상한을 넘어도 밀어내지 않는다 — 대화 A를 지우고 사용자 글 1만 개가 넘는 채로 모두 지운 뒤 A의 묶음을 다시 보내도 A는 되살아나지 않는다. 하루 넘은 묘비만 상한으로 지운다",
+    HEAVY,
+    async () => {
+      const w = await world();
+      const a = await save(w.owner, w.bridge, ref(1), "A", [userMsg(1), asstMsg(2, 1)]);
+      const b = await save(w.owner, w.bridge, ref(2), "B", [userMsg(1)]);
+      await one("select public.delete_claude_app_chat($1, $2)", [w.owner, String(a.chat_id)]);
+      expect(await tombstoneCount(w.owner)).toBe(1);
+      await withLongStatements(async () => {
+        // 23시간 된 묘비 X(하루 안: 남는다)와 25시간 된 묘비 Y(하루 넘음: 상한 때문에 밀려난다)
+        await q(
+          `insert into public.claude_app_chat_tombstones (user_id, bridge_id, session_ref, mac_ref, created_at)
+           values ($1::uuid, $2::uuid, lpad(to_hex(7777), 64, '0'), lpad(to_hex(1), 64, '0'), now() - interval '23 hours'),
+                  ($1::uuid, $2::uuid, lpad(to_hex(7777), 64, '0'), lpad(to_hex(2), 64, '0'), now() - interval '25 hours')`,
+          [w.owner, w.bridge],
+        );
+        // B 채팅에 사용자 글 10,010개 더 (모두 지울 때 묘비로 남는 건 가장 최근 10,000개)
+        await q(
+          `insert into public.claude_app_chat_messages (user_id, chat_id, role, mac_ref, body, truncated, said_at)
+           select $1::uuid, $2::uuid, 'user', lpad(to_hex(g), 64, '0'), 'x', false, now() from generate_series(100000, 110009) g`,
+          [w.owner, String(b.chat_id)],
+        );
+        await q("analyze public.claude_app_chat_messages");
+      });
+      expect(await deleteAll(w.owner)).toEqual({ deleted: 1 });
+      expect(await chatCount(w.owner)).toBe(0);
+      // 새 묘비 10,000개 + A의 묘비 + X = 10,002 (상한 1만 개를 넘는다). Y만 하루가 넘어 밀려났다
+      expect(await tombstoneCount(w.owner)).toBe(TOMBSTONE_CAP + 2);
+      expect(await count("select 1 from public.claude_app_chat_tombstones where user_id = $1 and session_ref = $2 and mac_ref = $3", [w.owner, ref(1), ref(1)])).toBe(1);
+      expect(await count("select 1 from public.claude_app_chat_tombstones where user_id = $1 and session_ref = lpad(to_hex(7777), 64, '0') and mac_ref = lpad(to_hex(1), 64, '0')", [w.owner])).toBe(1);
+      expect(await count("select 1 from public.claude_app_chat_tombstones where user_id = $1 and session_ref = lpad(to_hex(7777), 64, '0') and mac_ref = lpad(to_hex(2), 64, '0')", [w.owner])).toBe(0);
+      // A의 묶음을 다시 보내도 되살아나지 않는다 (응답을 못 받은 Mac의 재시도)
+      expect(await save(w.owner, w.bridge, ref(1), "A", [userMsg(1), asstMsg(2, 1)])).toEqual({ status: "ok", chat_id: null, saved: 0, existing: 0, orphan: 2 });
+      expect(await chatCount(w.owner)).toBe(0);
+      expect(await messageCount(w.owner)).toBe(0);
+      expect((await events(w.owner, "claude_app_message_sent")).length).toBe(2);
+      await cleanUpHeavy(w.owner);
+    },
+  );
+
+  // 하나 지우기의 묘비 상한 정리도 같은 규칙이다: 모두 지우기가 방금 남긴 묘비(하루 안)를 뒤이은 하나 지우기가 밀어내면 그 재시도가 되살아난다.
+  it("묘비 상한: 하나 지우기도 하루가 안 된 묘비를 상한을 넘어도 지우지 않는다 — 모두 지워 묘비 1만 개를 남긴 뒤 작은 대화를 하나 지워도 앞 묘비는 그대로이고 그 재시도는 되살아나지 않는다", HEAVY, async () => {
+    const w = await world();
+    const b = await save(w.owner, w.bridge, ref(2), "B", [userMsg(1)]);
+    await withLongStatements(async () => {
+      await q(
+        `insert into public.claude_app_chat_messages (user_id, chat_id, role, mac_ref, body, truncated, said_at)
+         select $1::uuid, $2::uuid, 'user', lpad(to_hex(g), 64, '0'), 'x', false, now() from generate_series(100000, 110009) g`,
+        [w.owner, String(b.chat_id)],
+      );
+      await q("analyze public.claude_app_chat_messages");
+    });
+    expect(await deleteAll(w.owner)).toEqual({ deleted: 1 });
+    expect(await tombstoneCount(w.owner)).toBe(TOMBSTONE_CAP);
+    // 새 묘비 중 가장 오래된(ref가 가장 작은) 것: 사용자 글 100010
+    const oldestRef = `lpad(to_hex(100010), 64, '0')`;
+    expect(await count(`select 1 from public.claude_app_chat_tombstones where user_id = $1 and mac_ref = ${oldestRef}`, [w.owner])).toBe(1);
+    // 작은 대화 C를 하나 지운다: 묘비 셋이 더해져 상한을 넘지만 앞의 것은 하루가 안 됐으니 하나도 밀려나지 않는다
+    const c = await save(w.owner, w.bridge, ref(3), "C", [userMsg(1), userMsg(2), userMsg(3)]);
+    expect(await one("select public.delete_claude_app_chat($1, $2) as result", [w.owner, String(c.chat_id)])).toEqual({ result: { status: "deleted" } });
+    expect(await tombstoneCount(w.owner)).toBe(TOMBSTONE_CAP + 3);
+    expect(await count(`select 1 from public.claude_app_chat_tombstones where user_id = $1 and mac_ref = ${oldestRef}`, [w.owner])).toBe(1);
+    // 그 글의 재시도 (응답을 못 받은 Mac)는 되살아나지 않는다
+    expect(await save(w.owner, w.bridge, ref(2), "B", [userMsg(100010)])).toEqual({ status: "ok", chat_id: null, saved: 0, existing: 0, orphan: 1 });
+    await cleanUpHeavy(w.owner);
+  });
+
+  // 묘비 상한 정리 문장은 사용자별 통계가 낡으면 계획기가 바깥을 1행으로 보고 부분 질의를 행마다 다시 돌려 분 단위로 걸리던 모양이었다 (실제 Postgres 17에서 100초 넘게 재현).
+  // 이 사용자의 묘비가 방금 1만 개 쌓였는데 표 통계는 "묘비는 다른 사용자 것"이라고 말하는 상태를 만든다. 실제 Postgres 시험 연결의 statement_timeout(15초)이 느린 계획을 잡는다
+  it("묘비 상한 정리는 사용자별 통계가 낡아도 빠르다: 하나 지우기 · 모두 지우기 모두 (표 통계는 다른 사용자 것뿐이고 이 사용자는 방금 묘비 1만 개를 쌓았다)", HEAVY, async () => {
+    const w = await world();
+    const v = await world();
+    const x = await world();
+    await withLongStatements(async () => {
+      await q(
+        `insert into public.claude_app_chat_tombstones (user_id, bridge_id, session_ref, mac_ref)
+         select $1::uuid, $2::uuid, lpad(to_hex(1), 64, '0'), lpad(to_hex(g), 64, '0') from generate_series(1, ${TOMBSTONE_CAP}) g`,
+        [w.owner, w.bridge],
+      );
+      await q("analyze public.claude_app_chat_tombstones");
+      // V: 통계 뒤에 쌓인 묘비 1만 개 (이틀 전)
+      await q(
+        `insert into public.claude_app_chat_tombstones (user_id, bridge_id, session_ref, mac_ref, created_at)
+         select $1::uuid, $2::uuid, lpad(to_hex(9999), 64, '0'), lpad(to_hex(g), 64, '0'), now() - interval '2 days' from generate_series(1, ${TOMBSTONE_CAP}) g`,
+        [v.owner, v.bridge],
+      );
+      // X: 사용자 글 20,010개짜리 채팅 하나 (모두 지울 때 묘비 1만 개가 같은 호출 안에서 쌓인 뒤 상한 정리가 돈다)
+      const chat = await save(x.owner, x.bridge, ref(5), "X", [userMsg(1)]);
+      await q(
+        `insert into public.claude_app_chat_messages (user_id, chat_id, role, mac_ref, body, truncated, said_at)
+         select $1::uuid, $2::uuid, 'user', lpad(to_hex(g), 64, '0'), 'x', false, now() from generate_series(100000, 120009) g`,
+        [x.owner, String(chat.chat_id)],
+      );
+      await q("analyze public.claude_app_chat_messages");
+    });
+    const small = await save(v.owner, v.bridge, ref(1), "작은 대화", [userMsg(1)]);
+    let started = Date.now();
+    expect(await one("select public.delete_claude_app_chat($1, $2) as result", [v.owner, String(small.chat_id)])).toEqual({ result: { status: "deleted" } });
+    expect(Date.now() - started).toBeLessThan(20_000);
+    // 하루 넘은 묘비는 상한 때문에 밀려난다 (새 묘비 하나가 더해졌으니 1만 개를 유지)
+    expect(await tombstoneCount(v.owner)).toBe(TOMBSTONE_CAP);
+    started = Date.now();
+    expect(await deleteAll(x.owner)).toEqual({ deleted: 1 });
+    expect(Date.now() - started).toBeLessThan(20_000);
+    expect(await tombstoneCount(x.owner)).toBe(TOMBSTONE_CAP);
+    for (const owner of [w.owner, v.owner, x.owner]) await q("delete from public.claude_app_chat_tombstones where user_id = $1", [owner]);
+    await cleanUpHeavy(x.owner);
+  });
+
+  // 보안 검토 P3-2: 함수 안에서 statement_timeout을 바꾸는 방법(function SET · 본문의 set local)은 이미 시작된 바깥 문장의 시간 제한을 바꾸지 못한다 (실제 Postgres 17에서 확인: 1초로 줬는데 3초 돌았다).
+  // 그래서 함수가 채팅을 100개씩 지우며 사이사이에 자기 시간 제한(p_max_seconds, 기본 60초)을 보고, 넘으면 SQLSTATE 57014로 멈춘다 → 호출 전체가 롤백된다 (사용자별 잠금을 오래 쥐지 않는다).
+  it("관찰: 함수에 붙인 SET statement_timeout은 그 함수를 부른 문장의 시간 제한을 바꾸지 못한다 (타이머는 바깥 문장이 시작될 때 이미 잡혔다) — 그래서 delete_all_claude_app_chats는 SET 절 대신 자기 시간 제한을 본다", async () => {
+    await q("create function pg_temp.d3vs_sleep() returns int language plpgsql set statement_timeout = '100ms' as $$ begin perform pg_sleep(0.6); return 1; end $$");
+    const started = Date.now();
+    expect(await one("select pg_temp.d3vs_sleep() as r")).toEqual({ r: 1 });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(500);
+  });
+
+  it("delete_all_claude_app_chats(p_user_id, p_max_seconds): 시간 제한을 넘기면 57014로 멈추고 아무것도 바꾸지 않는다 (채팅 · 행 · 묘비 · 지표 그대로). 제한 안이거나 한 번에 끝나면 지운다. 범위 밖 값은 22023", async () => {
+    const w = await world();
+    const made = await save(w.owner, w.bridge, ref(1), "제목", [userMsg(1), asstMsg(2, 1)]);
+    // 빈 채팅 150개를 더한다 (100개씩 지우므로 두 번째 판이 필요하다)
+    await q(`insert into public.claude_app_chats (user_id, bridge_id, session_ref) select $1::uuid, $2::uuid, lpad(to_hex(g + 8000000), 64, '0') from generate_series(1, 150) g`, [w.owner, w.bridge]);
+    expect(await chatCount(w.owner)).toBe(151);
+    // 제한 0초: 첫 판(100개)을 지우고 아직 남았는데 시간이 넘었으니 멈춘다 → 전부 롤백
+    await expect(one("select public.delete_all_claude_app_chats($1, 0)", [w.owner])).rejects.toMatchObject({ code: "57014" });
+    expect(await chatCount(w.owner)).toBe(151);
+    expect(await messageCount(w.owner)).toBe(2);
+    expect(await tombstoneCount(w.owner)).toBe(0);
+    expect(await events(w.owner, "claude_app_chats_deleted_all")).toEqual([]);
+    expect((await rows(String(made.chat_id))).length).toBe(2);
+    // 한 판에 끝나는 크기(100개 이하)는 제한 0초여도 끝난다 (더 할 일이 없으면 시간을 묻지 않는다)
+    await q("delete from public.claude_app_chats where user_id = $1 and id <> $2", [w.owner, String(made.chat_id)]);
+    expect(await one("select public.delete_all_claude_app_chats($1, 0) as result", [w.owner]).then((r) => r.result)).toEqual({ deleted: 1 });
+    // 기본(60초) · 큰 제한 안에서는 여러 판도 끝까지 지운다
+    await q(`insert into public.claude_app_chats (user_id, bridge_id, session_ref) select $1::uuid, $2::uuid, lpad(to_hex(g + 8000000), 64, '0') from generate_series(1, 250) g`, [w.owner, w.bridge]);
+    expect(await deleteAll(w.owner)).toEqual({ deleted: 250 });
+    expect(await chatCount(w.owner)).toBe(0);
+    // 범위 밖 · null
+    for (const bad of ["-1", "601", "null"]) {
+      await expect(one(`select public.delete_all_claude_app_chats($1, ${bad})`, [w.owner]), bad).rejects.toMatchObject({ code: "22023" });
+    }
+  });
+
+  it(
+    "묘비 상한: 모두 지울 때 사용자 글이 1만 개를 넘으면 **가장 최근에 저장된** 1만 개만 묘비로 남기고, 옛 묘비도 합쳐 사용자당 1만 개를 넘지 않는다. 채팅 2,000개 · 10만 행도 한 번에 지운다 (함수의 자체 시간 제한 안에서)",
     HEAVY,
     async () => {
       const w = await world();
@@ -716,8 +873,8 @@ export function claudeAppChatsTests(db: () => ClaudeAppChatsDb) {
       expect(await chatCount(w.owner)).toBe(chats);
       expect(await messageCount(w.owner)).toBe(total);
       expect(await tombstoneCount(w.owner)).toBe(5);
-      // 정상 statement_timeout 아래에서 한 번에 (실제 Postgres 시험 연결은 15초)
-      expect(await deleteAll(w.owner)).toEqual({ deleted: chats });
+      // 한 번에 지운다. 시간 제한은 함수의 자체 제한(60초, 넘으면 57014)이 지킨다 — 시험 연결의 15초 statement_timeout은 부하가 큰 실행에서 정상인 지우기(2–3초)도 자르므로 풀어 둔다
+      expect(await withLongStatements(() => deleteAll(w.owner))).toEqual({ deleted: chats });
       expect(await chatCount(w.owner)).toBe(0);
       expect(await messageCount(w.owner)).toBe(0);
       expect(await tombstoneCount(w.owner)).toBe(TOMBSTONE_CAP);
@@ -727,16 +884,13 @@ export function claudeAppChatsTests(db: () => ClaudeAppChatsDb) {
       ).toBe(TOMBSTONE_CAP);
       expect(await count("select 1 from public.claude_app_chat_tombstones where user_id = $1 and session_ref = lpad(to_hex(7777), 64, '0')", [w.owner])).toBe(0);
       expect((await events(w.owner, "claude_app_chats_deleted_all")).map((e) => e.props)).toEqual([{ deleted: chats }]);
-      // 지운 10만 행의 죽은 튜플을 바로 치운다: 자동 vacuum이 뒤 시험 한복판에서 돌며 통계 · 계획을 흔들지 않게 한다 (같은 표를 쓰는 다음 시험이 10만 행을 다시 채우고 지운다)
-      await withLongStatements(async () => {
-        for (const table of ["claude_app_chat_messages", "claude_app_chats", "claude_app_chat_tombstones"]) await q(`vacuum (analyze) public.${table}`);
-      });
       // 다른 사용자는 그대로
       expect(await chatCount(other.owner)).toBe(1);
       expect((await rows(String(otherChat.chat_id))).length).toBe(1);
       // 가장 최근 글의 재시도는 막히고, 상한 밖의 가장 오래된 글은 막히지 않는다 (재시도는 몇 분 안의 일이다)
       expect(await save(w.owner, w.bridge, ref(chats + 5_000_000), null, [userMsg(total, { mac_ref: macOf(total) })])).toEqual({ status: "ok", chat_id: null, saved: 0, existing: 0, orphan: 1 });
       expect(await save(w.owner, w.bridge, ref(1 + 5_000_000), null, [userMsg(1, { mac_ref: macOf(1) })])).toMatchObject({ status: "ok", saved: 1 });
+      await cleanUpHeavy(w.owner);
     },
   );
 

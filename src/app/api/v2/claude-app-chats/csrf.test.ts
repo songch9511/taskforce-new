@@ -21,7 +21,7 @@ const CROSS_SITE: Record<string, string>[] = [{ "sec-fetch-site": "cross-site" }
 const claims = () => vi.fn().mockResolvedValue({ data: { claims: { sub: USER, email: "me@example.test", user_metadata: {} } }, error: null });
 const put = (headers: Record<string, string>) =>
   new Request("https://api.example.test/api/v2/claude-app-chats", { method: "PUT", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(BODY) });
-const delAll = (headers: Record<string, string>) => new Request("https://api.example.test/api/v2/claude-app-chats", { method: "DELETE", headers });
+const delAll = (headers: Record<string, string>, query = "?all=true") => new Request(`https://api.example.test/api/v2/claude-app-chats${query}`, { method: "DELETE", headers });
 const del = (headers: Record<string, string>) => new Request(`https://api.example.test/api/v2/claude-app-chats/${CHAT}`, { method: "DELETE", headers });
 const status = (headers: Record<string, string>) => new Request("https://api.example.test/api/v2/claude-app-chats/status", { method: "GET", headers });
 const ctx = { params: Promise.resolve({ id: CHAT }) };
@@ -106,6 +106,14 @@ describe("DELETE claude-app-chats/{id}: 쿠키 CSRF · 인증", () => {
 describe("DELETE claude-app-chats (모두 지우기): 쿠키 CSRF · 인증", () => {
   it("다른 사이트에서 온 쿠키 쓰기는 로그인하지 않은 것으로 본다 (401, 삭제 0 · 속도 제한 0 · DB 클라이언트도 부르지 않는다)", async () => {
     for (const headers of CROSS_SITE) expect((await DELETE_ALL(delAll(headers))).status, JSON.stringify(headers)).toBe(401);
+    expect(mocks.admin).not.toHaveBeenCalled();
+    expect(mocks.rpc).not.toHaveBeenCalled();
+  });
+
+  it("다른 사이트의 쿠키 쓰기는 ?all=true가 없어도 400이 아니라 401이다 (인증이 먼저). 같은 출처인데 마커가 없으면 400이고 DB는 부르지 않는다", async () => {
+    for (const headers of CROSS_SITE) expect((await DELETE_ALL(delAll(headers, ""))).status, JSON.stringify(headers)).toBe(401);
+    expect((await DELETE_ALL(delAll({ "sec-fetch-site": "same-origin" }, ""))).status).toBe(400);
+    expect((await DELETE_ALL(delAll({ authorization: "Bearer token-123" }, "?all=false"))).status).toBe(400);
     expect(mocks.admin).not.toHaveBeenCalled();
     expect(mocks.rpc).not.toHaveBeenCalled();
   });
