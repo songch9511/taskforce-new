@@ -163,6 +163,15 @@ struct SessionViewSnapshotTests {
         [say("u1", "Audit every string in the app", user: true, ago: 700)]
         + (0..<61).map { tool("s\($0)", $0.isMultiple(of: 3) ? "Grep" : "Read", file: $0.isMultiple(of: 3) ? nil : "Localizable-\($0).strings", ago: 690 - Double($0) * 8) }
 
+    /// 답 뒤에 단계가 이어진다 (복사 아이콘은 답 바로 밑, "Worked for"는 턴의 끝)
+    private static let stepsAfterAnswerTurns: [ClaudeAppTurn] = [
+        say("u1", "Update the trial copy and double check the glossary", user: true, ago: 300),
+        tool("t1", "Read", file: "pricing.mdx", ago: 290),
+        say("a1", "The trial copy now says **3 days**. I'm checking the Korean strings next.", ago: 120),
+        tool("t2", "Read", file: "ko.json", ago: 60),
+        tool("t3", "Grep", ago: 40),
+    ]
+
     private static let agentTurns: [ClaudeAppTurn] = [
         say("g1", "Three strings still use 평가판 instead of 체험. They are in ko.json lines 41, 88 and 120.", ago: 60),
         tool("g2", "Read", file: "ko.json", ago: 50),
@@ -203,6 +212,8 @@ struct SessionViewSnapshotTests {
                 presentation.pane.expand()
                 presentation.pane.select("b2")
             }, tail: .output(.agent(agentTurns, hasEarlier: false))),
+            // 답 뒤에 단계가 이어지면 복사 아이콘은 답 바로 밑(마우스가 답 위에 있는 모습), "Worked for"는 턴의 끝
+            Scene(name: "12-copy-under-answer", turns: stepsAfterAnswerTurns, prepare: { presentation, _, _ in presentation.steps.hoveredFooter = "footer-a1" }),
         ]
     }
 

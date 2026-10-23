@@ -169,6 +169,14 @@ public struct BackgroundTaskList: Equatable, Sendable, CustomStringConvertible, 
         }
     }
 
+    /// 이름을 부른 일 가운데 아직 도는 일만 `now`에 멈춘 것으로 한다 (스냅샷과 달리 부르지 않은 일은 그대로)
+    public mutating func stopRunning(_ ids: Set<String>, now: Date) {
+        for index in tasks.indices where tasks[index].status == .running && ids.contains(tasks[index].id) {
+            tasks[index].status = .stopped
+            tasks[index].endedAt = now
+        }
+    }
+
     private mutating func bound() {
         while tasks.count > Self.maxTasks {
             if let finished = tasks.firstIndex(where: { $0.status != .running }) { tasks.remove(at: finished) } else { tasks.removeFirst() }

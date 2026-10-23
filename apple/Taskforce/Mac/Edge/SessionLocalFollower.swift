@@ -31,6 +31,8 @@ final class SessionLocalFollower {
     func tick(now: TimeInterval) async {
         guard lookup.shouldLook(now: now, shown: isShown(), hasTarget: target != nil, key: taskKey()) else { return }
         let found = await find()
+        // 찾는 동안 세션이 바뀌어 이 일이 취소됐다면 그 결과는 이 세션의 것이 아니다 (A의 늦은 결과가 B 패널에 연결되지 않게): 아무것도 바꾸지 않는다
+        guard !Task.isCancelled else { return }
         lookup.record(found: found != nil, now: now)
         guard found != target else { return }
         target = found

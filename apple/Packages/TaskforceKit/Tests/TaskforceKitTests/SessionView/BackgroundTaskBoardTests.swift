@@ -71,6 +71,29 @@ struct BackgroundTaskBoardTests {
         #expect(board.version == version + 1, "바뀐 것이 없으면 판이 바뀐 것이 아니다")
     }
 
+    /// 재검토: 거둬지는 spawn이 시작한 일만 멈춘다 (다른 일 · 이미 끝난 일 · 없는 일 · 다른 세션은 그대로, 없는 id로 일을 지어내지 않는다)
+    @Test func stoppingNamedTasksTouchesOnlyThoseThatAreStillRunningInThatSession() {
+        let board = BackgroundTaskBoard()
+        board.apply(.started(taskID: "mine", toolUseID: nil, kind: .command, name: nil, at: at), session: "s1")
+        board.apply(.started(taskID: "mine-done", toolUseID: nil, kind: .command, name: nil, at: at), session: "s1")
+        board.apply(.finished(taskID: "mine-done", kind: .command, status: .done, exitCode: 0, at: at.addingTimeInterval(3)), session: "s1")
+        board.apply(.started(taskID: "other", toolUseID: nil, kind: .command, name: nil, at: at), session: "s1")
+        board.apply(.started(taskID: "mine", toolUseID: nil, kind: .command, name: nil, at: at), session: "s2")
+        let version = board.version
+        board.stopRunning(ids: ["mine", "mine-done", "never-seen"], session: "s1", now: at.addingTimeInterval(30))
+        let list = board.tasks(session: "s1").tasks
+        #expect(list.first { $0.id == "mine" }?.status == .stopped && list.first { $0.id == "mine" }?.endedAt == at.addingTimeInterval(30))
+        #expect(list.first { $0.id == "mine-done" }?.status == .done, "끝난 일은 그대로")
+        #expect(list.first { $0.id == "other" }?.status == .running, "이름을 부르지 않은 일은 그대로")
+        #expect(!list.contains { $0.id == "never-seen" }, "없는 id로 일을 만들지 않는다")
+        #expect(board.tasks(session: "s2").tasks.first?.status == .running, "다른 세션은 건드리지 않는다")
+        #expect(board.version == version + 1)
+        board.stopRunning(ids: ["mine"], session: "s1", now: at.addingTimeInterval(60))
+        #expect(board.version == version + 1, "바뀐 것이 없으면 판이 바뀐 것이 아니다")
+        board.stopRunning(ids: ["mine"], session: "unknown-session", now: at)
+        #expect(board.sessionCount == 2, "모르는 세션에 칸을 만들지 않는다")
+    }
+
     @Test func clearAllDropsEveryTasksListAndTheVersionRisesOnlyWhenSomethingWasThere() {
         let board = BackgroundTaskBoard()
         board.clearAll()

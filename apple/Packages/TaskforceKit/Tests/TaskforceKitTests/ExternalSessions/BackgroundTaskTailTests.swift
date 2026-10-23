@@ -534,6 +534,47 @@ extension ExternalSessionSuites {
             }
         }
 
+        /// 재검토(두 검토): 커서는 파일의 정체(만든 시각)도 안다. 같은 길의 다른 파일(지우고 다시 만듦)이면 크기가 같아도 · 더 커도 통째로 다시 읽는다
+        private func replaceFile(at path: String, with text: String) throws {
+            try FileManager.default.removeItem(atPath: path)
+            usleep(30_000)
+            try Data(text.utf8).write(to: URL(fileURLWithPath: path))
+        }
+
+        @Test func aCommandFileReplacedByAnotherOfTheSameSizeIsReadAgainInFull() throws {
+            try withHome { home in
+                let path = try output(home, "first\nsecond\n")
+                let reader = tail(home)
+                guard case .replace(.output(.text(let before, _)), let saved?) = update(reader) else { record("처음 읽기"); return }
+                #expect(before == "first\nsecond")
+                try replaceFile(at: path, with: "other\nsecond\n")
+                guard case .replace(.output(.text(let after, _)), let next?) = update(reader, since: saved) else { record("다른 파일이면 통째로 다시 읽는다 (같은 크기라도)"); return }
+                #expect(after == "other\nsecond" && next != saved)
+                #expect(update(reader, since: next) == .unchanged, "바뀐 파일을 읽은 뒤에는 다시 그대로다")
+            }
+        }
+
+        @Test func anAgentFileReplacedByAnotherIsReadAgainInFullWhateverItsSize() throws {
+            try withHome { home in
+                let agent = "a02862466294fcd8e"
+                let one = agentLine("assistant", blocks: [["type": "text", "text": "old 1"]])
+                let two = agentLine("assistant", blocks: [["type": "text", "text": "old 2"]])
+                let path = try writeAgent(home, [one, two])
+                let reader = tail(home)
+                guard case .replace(.output(.agent(let before, _)), let saved?) = update(reader, task: agent, kind: .agent) else { record("처음 읽기"); return }
+                #expect(before.map(\.kind) == [.assistant("old 1"), .assistant("old 2")])
+                // 같은 크기의 다른 파일
+                try replaceFile(at: path, with: [one.replacingOccurrences(of: "old 1", with: "new 1"), two.replacingOccurrences(of: "old 2", with: "new 2")].joined(separator: "\n") + "\n")
+                guard case .replace(.output(.agent(let same, _)), let sameCursor?) = update(reader, since: saved, task: agent, kind: .agent) else { record("같은 크기여도 다른 파일이면 통째로 읽는다"); return }
+                #expect(same.map(\.kind) == [.assistant("new 1"), .assistant("new 2")])
+                // 더 큰 다른 파일: 옛 자리에서 이어 읽으면 엉뚱한 곳을 읽는다
+                let bigger = (0..<6).map { agentLine("assistant", blocks: [["type": "text", "text": "fresh \($0)"]]) }
+                try replaceFile(at: path, with: bigger.joined(separator: "\n") + "\n")
+                guard case .replace(.output(.agent(let grown, _)), _) = update(reader, since: sameCursor, task: agent, kind: .agent) else { record("더 큰 다른 파일도 통째로 읽는다 (이어 읽지 않는다)"); return }
+                #expect(grown.map(\.kind) == (0..<6).map { .assistant("fresh \($0)") })
+            }
+        }
+
         @Test func aMissingOrUnreadableTargetIsAlwaysReportedAsItIsAndKeepsNoCursor() throws {
             try withHome { home in
                 #expect(update(tail(home)) == .replace(.missing, nil))

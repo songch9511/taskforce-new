@@ -37,11 +37,14 @@ enum SessionMarkdownRender {
     }
 }
 
-/// 같은 글을 다시 해석하지 않는다 (화면은 글이 그대로여도 몇 번씩 다시 그려진다: 1초 시계 · 스크롤 · 호버). 해석은 순수 함수라 원문이 열쇠다. 메모리에만, `capacity`개까지 (오래된 것부터 버린다). 계정이 떠나면 비운다
+/// 같은 글을 다시 해석하지 않는다 (화면은 글이 그대로여도 몇 번씩 다시 그려진다: 1초 시계 · 스크롤 · 호버). 해석은 순수 함수라 원문이 열쇠다. 메모리에만, `capacity`개까지 (오래된 것부터 버린다).
+/// 아주 큰 글(`maxSourceBytes` 넘음)은 판에 두지 않고 그때그때 해석한다 (열쇠 · 결과가 메모리를 크게 잡지 않게). 계정이 떠나면 비운다
 @MainActor
 final class SessionMarkdownCache {
     static let shared = SessionMarkdownCache()
     static let capacity = 128
+    /// 이 크기(UTF-8 바이트)를 넘는 원문은 판에 두지 않는다
+    static let maxSourceBytes = 64 << 10
 
     private var parsed: [String: [SafeMarkdown.Block]] = [:]
     private var order: [String] = []
@@ -49,6 +52,10 @@ final class SessionMarkdownCache {
     private(set) var parses = 0
 
     func blocks(for source: String) -> [SafeMarkdown.Block] {
+        guard source.utf8.count <= Self.maxSourceBytes else {
+            parses += 1
+            return SafeMarkdown.parse(source)
+        }
         if let hit = parsed[source] { return hit }
         parses += 1
         let blocks = SafeMarkdown.parse(source)

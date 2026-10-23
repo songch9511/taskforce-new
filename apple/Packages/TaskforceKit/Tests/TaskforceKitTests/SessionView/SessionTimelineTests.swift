@@ -104,23 +104,48 @@ struct SessionTimelineTests {
         #expect(entries.last == .footer(SessionFooter(id: "footer-r", workedFor: 252, copyText: "Final **answer**")), "줄은 마지막 답 바로 밑이다")
     }
 
-    /// 리뷰 P3: 복사할 글은 턴의 **마지막 답**이다. 답 뒤에 이벤트 줄 · 단계가 붙어도 복사가 사라지지 않는다 (줄은 턴의 끝에 있다)
-    @Test func anEventRowAfterTheAnswerDoesNotSuppressTheCopy() {
+    /// 리뷰 P3 + 결정(코디네이터): 복사할 글은 턴의 **마지막 답**이다. 답 뒤에 이벤트 줄 · 단계가 붙으면 복사 아이콘은 **그 답 바로 밑**에 서고(복사만),
+    /// "Worked for"는 턴의 끝에 따로 선다 (시간만). 답이 턴의 끝이면 한 줄에 둘 다 (v2 그림)
+    @Test func anEventRowAfterTheAnswerKeepsTheCopyUnderTheAnswerAndTheTimeAtTheEnd() {
         let entries = SessionTimeline.build([user("u", 0), answer("r", 60, text: "The **answer**"), event("e", 61)], state: .finished)
-        #expect(footers(entries) == [SessionFooter(id: "footer-r", workedFor: 61, copyText: "The **answer**")])
-        #expect(entries.last == .footer(SessionFooter(id: "footer-r", workedFor: 61, copyText: "The **answer**")), "줄은 턴의 끝이다")
+        #expect(entries == [
+            .item("u"), .item("r"), .footer(SessionFooter(id: "footer-r", workedFor: nil, copyText: "The **answer**")),
+            .item("e"), .footer(SessionFooter(id: "footer-e", workedFor: 61, copyText: nil)),
+        ])
     }
 
-    @Test func stepsAfterTheAnswerDoNotSuppressTheCopyEither() {
+    @Test func stepsAfterTheAnswerKeepTheCopyUnderTheAnswerAndTheTimeAfterTheSteps() throws {
         let entries = SessionTimeline.build([user("u", 0), answer("r", 30, text: "done"), step("a", "Read", 40), step("b", "Grep", 41)], state: .finished)
-        #expect(footers(entries).map(\.copyText) == ["done"])
+        try #require(entries.count == 5, "줄: 말 · 답 · 복사 · 단계 · 시간")
+        #expect(entries[0] == .item("u") && entries[1] == .item("r"))
+        #expect(entries[2] == .footer(SessionFooter(id: "footer-r", workedFor: nil, copyText: "done")), "복사는 답 바로 밑")
+        #expect(runs(entries).first?.stepIDs == ["a", "b"])
+        #expect(entries[4] == .footer(SessionFooter(id: "footer-b", workedFor: 41, copyText: nil)), "시간은 턴의 끝")
     }
 
-    @Test func theCopyIsTheLastAnswerOfTheTurnNotTheLastRow() {
+    @Test func theCopyIsTheLastAnswerOfTheTurnNotTheLastRowAndSitsUnderIt() {
         let items = [user("u", 0), answer("m1", 5, text: "first"), event("e1", 6), answer("m2", 20, text: "second"), event("e2", 21), event("e3", 22)]
-        #expect(footers(SessionTimeline.build(items, state: .finished)).map(\.copyText) == ["second"])
+        let entries = SessionTimeline.build(items, state: .finished)
+        #expect(footers(entries).compactMap(\.copyText) == ["second"])
+        let index = entries.firstIndex(of: .item("m2")) ?? entries.count
+        #expect(entries.dropFirst(index + 1).first == .footer(SessionFooter(id: "footer-m2", workedFor: nil, copyText: "second")), "복사는 마지막 답 바로 밑")
+        #expect(entries.last == .footer(SessionFooter(id: "footer-e3", workedFor: 22, copyText: nil)))
         let blankLast = [user("u", 0), answer("m1", 5, text: "first"), answer("m2", 20, text: "  \n"), event("e", 21)]
-        #expect(footers(SessionTimeline.build(blankLast, state: .finished)).first?.copyText == nil, "마지막 답이 비었으면 앞의 답을 대신 복사하지 않는다")
+        #expect(footers(SessionTimeline.build(blankLast, state: .finished)).compactMap(\.copyText).isEmpty, "마지막 답이 비었으면 앞의 답을 대신 복사하지 않는다")
+    }
+
+    @Test func aTurnWhoseAnswerIsNotLastAndUnderTenSecondsHasOnlyTheCopyUnderTheAnswer() {
+        let entries = SessionTimeline.build([user("u", 0), answer("r", 3, text: "quick"), event("e", 4)], state: .finished)
+        #expect(footers(entries) == [SessionFooter(id: "footer-r", workedFor: nil, copyText: "quick")], "10초 미만이면 시간 줄은 없다")
+    }
+
+    @Test func everyFooterIdOfAConversationIsUniqueSoOnlyTheHoveredAnswerRevealsItsCopy() {
+        let items = [
+            user("u1", 0), answer("r1", 20, text: "one"), event("e1", 21), user("u2", 100), step("a", "Read", 110), answer("r2", 130, text: "two"), step("b", "Grep", 140),
+            user("u3", 200), answer("r3", 230, text: "three"),
+        ]
+        let ids = footers(SessionTimeline.build(items, state: .finished)).map(\.id)
+        #expect(Set(ids).count == ids.count && ids.contains("footer-r1") && ids.contains("footer-r2") && ids.contains("footer-r3"))
     }
 
     @Test func aTurnWithOnlyAnEventAfterTheAskHasNoCopy() {
@@ -152,10 +177,10 @@ struct SessionTimelineTests {
     }
 
     @Test func theCopyTextBelongsToTheLastAnswerEvenWhenAStepFollowsIt() {
-        // 마지막 답 뒤에 단계가 더 있다 (v1은 복사를 버렸다: 리뷰 P3): 줄은 턴의 끝에 서고, 복사와 이름은 그 답의 것이다. 시간은 턴 전체다
+        // 마지막 답 뒤에 단계가 더 있다 (v1은 복사를 버렸다: 리뷰 P3): 복사는 그 답 바로 밑(복사만), 시간은 턴의 끝(시간만, 턴 전체)이다
         let entries = SessionTimeline.build([user("u", 0), answer("r", 20), step("a", "Bash", 40)], state: .finished)
-        #expect(footers(entries) == [SessionFooter(id: "footer-r", workedFor: 40, copyText: "answer r")])
-        #expect(entries.last == .footer(SessionFooter(id: "footer-r", workedFor: 40, copyText: "answer r")))
+        #expect(footers(entries) == [SessionFooter(id: "footer-r", workedFor: nil, copyText: "answer r"), SessionFooter(id: "footer-a", workedFor: 40, copyText: nil)])
+        #expect(entries.last == .footer(SessionFooter(id: "footer-a", workedFor: 40, copyText: nil)))
     }
 
     @Test func everyTurnOfAConversationHasItsOwnLine() {

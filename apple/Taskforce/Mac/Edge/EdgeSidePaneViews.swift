@@ -361,7 +361,7 @@ struct SidePaneTail: View {
             if let turn = byID[id], case .assistant(let text) = turn.kind { SessionMarkdownView(source: turn.truncated ? text + "…" : text) }
         })
         .padding(.horizontal, TFSpace.sm)
-        if running, let started = task.startedAt { SessionClockView(clock: SessionClock(id: "clock-\(task.id)", since: started)).padding(.horizontal, TFSpace.sm) }
+        if running, let started = task.startedAt { SessionClockView(clock: SessionClock(id: "clock-\(task.id)", since: started), state: steps).padding(.horizontal, TFSpace.sm) }
     }
 }
 #endif

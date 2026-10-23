@@ -125,12 +125,21 @@ public enum SessionTimeline {
                 entries.append(.steps(run))
                 pending = []
             }
+            // 복사할 글 = 턴의 **마지막 답** (비면 복사는 없다: 앞의 답을 대신 복사하지 않는다)
+            let copyAnswer = turn.last(where: { $0.role == .assistant }).flatMap { answer in
+                answer.text.map { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } == true ? answer : nil
+            }
+            let answerEndsTheTurn = copyAnswer != nil && copyAnswer?.id == turn.last?.id
             for item in turn {
                 if item.role == .step {
                     pending.append(item)
                 } else {
                     flush()
                     entries.append(.item(item.id))
+                    // 답 뒤에 단계 · 이벤트 줄이 이어지면 복사 아이콘은 그 답 바로 밑에 선다 (복사만). 시간은 턴의 끝에 따로 선다. 도는 턴에는 줄이 없다
+                    if !running, !answerEndsTheTurn, let answer = copyAnswer, answer.id == item.id, let text = answer.text {
+                        entries.append(.footer(SessionFooter(id: "footer-\(answer.id)", workedFor: nil, copyText: text)))
+                    }
                 }
             }
             flush()
@@ -146,15 +155,12 @@ public enum SessionTimeline {
             }
             let elapsed = SessionTime.elapsed(from: start, to: turn.compactMap(\.time).max())
             let workedFor = elapsed.flatMap { $0 >= SessionTime.hideBelow ? $0 : nil }
-            // 복사할 글 = 턴의 **마지막 답** (답 뒤에 이벤트 줄 · 단계가 붙어도 사라지지 않는다). 줄은 턴의 끝에 서고, 이름은 복사를 가진 답을 따른다 (그 답 위의 호버가 줄을 드러낸다)
-            var copy: String?
-            var owner = last
-            if let answer = turn.last(where: { $0.role == .assistant }), let text = answer.text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                copy = text
-                owner = answer
-            }
-            if workedFor != nil || copy != nil {
-                entries.append(.footer(SessionFooter(id: "footer-\(owner.id)", workedFor: workedFor, copyText: copy)))
+            if answerEndsTheTurn, let answer = copyAnswer {
+                // 답이 턴의 끝: 한 줄에 시간과 복사 (v2 그림)
+                entries.append(.footer(SessionFooter(id: "footer-\(answer.id)", workedFor: workedFor, copyText: answer.text)))
+            } else if workedFor != nil {
+                // 답 뒤에 단계 · 이벤트가 있거나 답이 없다: 시간만 턴의 끝에 (복사는 있으면 답 바로 밑에 이미 섰다)
+                entries.append(.footer(SessionFooter(id: "footer-\(last.id)", workedFor: workedFor, copyText: nil)))
             }
         }
         return entries

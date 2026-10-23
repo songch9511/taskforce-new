@@ -48,6 +48,22 @@ public final class BackgroundTaskBoard: @unchecked Sendable, CustomStringConvert
         }
     }
 
+    /// 이름을 부른 일 가운데 **아직 도는 일만** 그 시각에 멈춘 것으로 한다: 거둬지는 spawn이 시작한 일이다. 다른 일 · 이미 끝난 일 · 없는 일 · 다른 세션은 그대로이고,
+    /// 모르는 세션이나 없는 id로 칸을 만들지 않는다
+    public func stopRunning(ids: Set<String>, session: String, now: Date = Date()) {
+        guard let key = Self.key(session), !ids.isEmpty else { return }
+        lock.withLock {
+            guard var list = lists[key] else { return }
+            let before = list
+            list.stopRunning(ids, now: now)
+            guard list != before else { return }
+            lists[key] = list
+            recency.removeAll { $0 == key }
+            recency.append(key)
+            _version += 1
+        }
+    }
+
     public func tasks(session: String) -> BackgroundTaskList {
         guard let key = Self.key(session) else { return BackgroundTaskList() }
         return lock.withLock { lists[key] ?? BackgroundTaskList() }

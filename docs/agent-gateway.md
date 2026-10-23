@@ -617,7 +617,7 @@ Claude 세션 보기(20-3)와 Taskforce 세션 패널, Assistant 창의 대화 �
 
 - 도는 중: "Working · m:ss"(1시간부터 h:mm:ss) 라이브 줄. 끝난 한 번의 마지막 답 밑: "Worked for {42s | 4m 12s | 1h 8m}". **벽시계 시간이고 승인 기다린 시간을 포함한다.** 10초 미만이거나 시작을 모르면 숨긴다. 한 번의 시작 = 사용자 글의 시각, 끝 = 그 한 번 항목의 가장 늦은 시각.
 - Taskforce 패널은 대화(서버 턴)에 이 Mac 기록의 단계를 시각으로 섞는다. 단계는 **사용자 글마다 그 글의 시각 − 5초부터 다음 글의 시각 − 5초 앞까지의 창**에 넣고(서버와 이 Mac의 시계가 5초까지 어긋나도 받아 준다. 모든 창보다 앞선 단계는 버린다. 단계 시각은 그 창의 첫 항목보다 앞서지 않게 맞춘다), 창 안에서는 시각순이고 같은 시각이면 사용자 < 단계 < 답이다(첫 번째 글뿐 아니라 뒤의 모든 턴에 같은 규칙).
-- 답 밑 줄(복사 · "Worked for")은 한 번의 **마지막 `assistant` 항목**을 기준으로 한다. 답 뒤에 단계나 이벤트 줄("Opened in Terminal" 등)이 와도 복사 줄은 사라지지 않고, 줄의 자리는 그 한 번의 끝이다. 답이 없으면 복사는 없고 "Worked for"(10초 이상)만 있을 수 있다.
+- 답 밑 줄(복사 · "Worked for")은 한 번의 **마지막 `assistant` 항목**을 기준으로 한다. 답이 그 한 번의 끝이면 한 줄에 둘 다 선다(v2 그림). **답 뒤에 단계나 이벤트 줄("Opened in Terminal" 등)이 이어지면 복사 아이콘은 그 답 바로 밑에 따로 서고(복사만), "Worked for"는 한 번의 끝에 따로 선다(시간만, 10초 이상)** (결정: 복사 아이콘이 답에서 떨어지지 않게). 답이 없거나 비었으면 복사는 없고 "Worked for"만 있을 수 있다. 도는 한 번에는 줄이 없다.
 
 ### 21-3. 복사 (`SessionCopyFeedback` · `SessionCopyButton`)
 
@@ -625,7 +625,7 @@ Claude 세션 보기(20-3)와 Taskforce 세션 패널, Assistant 창의 대화 �
 
 ### 21-4. 안전한 마크다운 (`SafeMarkdown` · `SessionMarkdownRender`)
 
-- 직접 만든 파서가 **코드 블록**(` ``` ` · `~~~`, 언어 이름은 20자 이하 `[A-Za-z0-9_+#.-]`만, 색칠 없음, 긴 블록은 Show all / Show less) · **인라인 코드** · **목록**(깊이 2 · 번호) · **굵게** · 제목(굵기만)만 만든다. 링크 · 이미지 · 표 · HTML · 인용은 **쓴 그대로 글자**다. `AttributedString`을 직접 쌓아 링크 속성을 만들 길 자체가 없다(`link == nil`을 시험이 고정). 인라인 해석은 한 문단 8 KiB로 자르고 굵게는 겹치지 않는다(닫는 백틱 짝은 길이별로 한 번 훑어 두고 찾아 O(n)이다: 안 닫히는 백틱이 많아도 제곱으로 느려지지 않는다). Apple의 마크다운 해석기는 쓰지 않는다. 화면은 같은 원문을 다시 해석하지 않는다(`SessionMarkdownCache`: 원문이 열쇠, 128개, 계정이 떠나면 비운다). 사용자 말풍선 안에서는 글 폭에 맞춘다(`messageHugsText`).
+- 직접 만든 파서가 **코드 블록**(` ``` ` · `~~~`, 언어 이름은 20자 이하 `[A-Za-z0-9_+#.-]`만, 색칠 없음, 긴 블록은 Show all / Show less) · **인라인 코드** · **목록**(깊이 2 · 번호) · **굵게** · 제목(굵기만)만 만든다. 링크 · 이미지 · 표 · HTML · 인용은 **쓴 그대로 글자**다. `AttributedString`을 직접 쌓아 링크 속성을 만들 길 자체가 없다(`link == nil`을 시험이 고정). 인라인 해석은 한 문단 8 KiB로 자르고 굵게는 겹치지 않는다(닫는 백틱 짝은 길이별로 한 번 훑어 두고 찾아 O(n)이다: 안 닫히는 백틱이 많아도 제곱으로 느려지지 않는다). Apple의 마크다운 해석기는 쓰지 않는다. 화면은 같은 원문을 다시 해석하지 않는다(`SessionMarkdownCache`: 원문이 열쇠, 128개, 64 KiB를 넘는 글은 두지 않고 그때그때 해석한다, 계정이 떠나면 비운다). 사용자 말풍선 안에서는 글 폭에 맞춘다(`messageHugsText`).
 
 ### 21-5. 백그라운드 일 · 사이드 탭
 
@@ -635,15 +635,26 @@ Claude 세션 보기(20-3)와 Taskforce 세션 패널, Assistant 창의 대화 �
 - **Claude 패널의 원천** = 기록: 시작 = 결과 줄의 `toolUseResult.backgroundTaskId`(백그라운드 Bash) · `agentId` + `isAsync`(백그라운드 에이전트), 끝 = 끝 알림(`origin.kind == "task-notification"`인 사용자 줄, 또는 턴 중 끼어든 `commandMode == "task-notification"`인 `queued_command`)에서 아이디 · 상태 · 끝낸 코드 · 시각만(`BackgroundTaskText`, 요약의 명령 글은 읽지 않는다). `outputFile` · `stdout`은 선언하지 않는다. 이름은 모델이 쓴 `description`만(명령 글은 쓰지 않는다). 읽는 쪽이 줄 단위로 `ClaudeAppTranscriptSignals`(실패 id · 일 사건)를 만들고 `ClaudeAppConversation`이 목록에 합친다.
 - **Taskforce 패널의 원천** = 어댑터의 스트림: `ClaudeStreamParser`가 `task_started` · `task_progress` · `task_updated` · `task_notification` · `background_tasks_changed`를 `ClaudeTaskStreamEvent`로 읽고(id는 `[A-Za-z0-9_-]{1,64}`, 설명 400자까지, 명령 글은 선언하지 않는다), `ClaudeEventMapper`가 **이 Mac에만 쓰는** `ClaudeMapperAction.backgroundTask`로 바꿔 `ClaudeCodeProcess`가 `BackgroundTaskBoard`(세션마다, 32세션 LRU)에 적는다. 서버로 보내지 않고 새 이벤트 종류도 없다. 이름은 직전 `tool_use`의 `input.description`과 맞을 때만 쓰고(에이전트도 같다: 스트림의 설명 글만으로는 이름이 되지 않는다), 전경 일(`is_backgrounded == false`)은 무시한다. 모르는 알림 상태는 Stopped. 기존 진행(progress) 의미는 그대로다(started · notification · 값 없음만 진행으로 센다). 세션을 잊으면 판에서도 지운다.
   - **실측(Claude Code 2.1.308, 일회용 세션 1회)**: ⒜ 명령 출력 파일의 뿌리는 `$TMPDIR`와 상관없이 `/private/tmp/claude-<uid>` 하나다(`BackgroundTaskTail`의 기본 `temporaryRoot`가 맞다). ⒝ `background_tasks_changed`는 바뀐 일만이 아니라 **지금 도는 모든 일의 전체 스냅샷**이다(그래서 `.snapshot`이 목록에 없는 도는 일을 Stopped로 보는 것이 맞다). CLI는 첫 `result` 뒤에도 task 줄을 계속 낸다(`bg-two-tasks-2.1.308.jsonl`에 실측 줄을 정리해 두었다).
-  - **턴이 끝난 뒤의 일**: 첫 `result` 이후 `ClaudeEventMapper`는 진행(progress) 등 다른 의미는 만들지 않고 task 줄만 이 Mac 전용 `backgroundTask`로 계속 옮긴다(자체 점검 실패나 닫기로 끝난 것은 그대로 무시). 프로세스를 거둘 때(`ClaudeCodeProcess.finish`) 아직 도는 일은 그 시각에 Stopped가 된다(`.snapshot(runningTaskIDs: [])`). 끝을 확인하지 못한 종료(다른 경로가 판단하는 경우)에는 하지 않는다.
-- **출력 꼬리 읽기** = `BackgroundTaskTail`(보안 검토 대상, 이 한 타입에 모음). 경로는 기록이 아니라 (세션 id · 일 id · 작업 폴더)로 만든다. 일 id `[A-Za-z0-9_-]{1,64}` · 세션 id 소문자 UUID가 아니면 파일 시스템을 만지기 전에 거절한다. 길 `/private/tmp → claude-<uid> → 프로젝트 → 세션 → tasks → <일 id>.output`의 모든 폴더는 `lstat` 폴더 · 이 uid · `realpath` 같음 · **그룹/모두에게 쓰기 권한이 없음**(`mode & 022 == 0`, 확인과 읽기 사이에 다른 사용자가 이름을 바꿔치기할 수 없는 폴더만. 임시 폴더 자신만 sticky라 예외), 파일은 이 uid의 일반 파일, 읽기는 `ExternalSessionFileSystem.read`(`O_NOFOLLOW` · `O_NONBLOCK` · fd 소유자 · `F_GETPATH` 일치). 에이전트 일의 출력은 기호 링크를 따라가지 않고 `~/.claude/projects/<프로젝트>/<세션>/subagents/agent-<일 id>.jsonl`을 직접 읽는다(선언한 필드만 해석, 어시스턴트 줄만, agentId · sessionId가 맞아야). 상한: 명령 출력은 끝 16 KiB(Show earlier로 ×4씩 **256 KiB까지**), 에이전트 기록은 끝 2 MiB 창에서 마지막 200개(줄 1 MiB · 글 32 KiB). **이어 읽기**(`update`): 파일 크기가 그대로면 읽지 않고(`unchanged`), 에이전트는 마지막으로 읽은 줄의 끝에서부터 새로 붙은 **완성된 줄**만 읽어 덧붙인다(`append`; 줄었거나 창보다 많이 붙었거나 길을 믿을 수 없게 되면 통째로 `replace`). 화면의 꼬리 모델은 읽기를 한 번에 하나씩만 하고(겹쳐 읽지 않는다) 마지막으로 부탁한 창의 결과만 남긴다. 색 코드 · 제어 글자 · 눈에 안 보이는 서식 글자를 지운다. 메모리에만 두고 로그를 남기지 않는다(값의 `description`은 내용을 찍지 않는다).
+  - **턴이 끝난 뒤의 일**: 첫 `result` 이후 `ClaudeEventMapper`는 진행(progress) 등 다른 의미는 만들지 않고 task 줄만 이 Mac 전용 `backgroundTask`로 계속 옮긴다(자체 점검 실패나 닫기로 끝난 것은 그대로 무시). 프로세스를 거둘 때(`ClaudeCodeProcess.finish`) **그 spawn이 시작하거나 끝낸 일**(spawn마다 id를 모은다) 가운데 아직 도는 일만 그 시각에 Stopped가 된다(`BackgroundTaskBoard.stopRunning`: 이 spawn이 시작하지 않은 일 · 이미 끝난 일 · 다른 세션은 그대로이고 없는 id로 칸을 만들지 않는다). 끝을 확인하지 못한 종료(다른 경로가 판단하는 경우)에는 하지 않는다.
+- **출력 꼬리 읽기** = `BackgroundTaskTail`(보안 검토 대상, 이 한 타입에 모음). 경로는 기록이 아니라 (세션 id · 일 id · 작업 폴더)로 만든다. 일 id `[A-Za-z0-9_-]{1,64}` · 세션 id 소문자 UUID가 아니면 파일 시스템을 만지기 전에 거절한다. 길 `/private/tmp → claude-<uid> → 프로젝트 → 세션 → tasks → <일 id>.output`의 모든 폴더는 `lstat` 폴더 · 이 uid · `realpath` 같음 · **그룹/모두에게 쓰기 권한이 없음**(`mode & 022 == 0`, 확인과 읽기 사이에 다른 사용자가 이름을 바꿔치기할 수 없는 폴더만. 임시 폴더 자신만 sticky라 예외), 파일은 이 uid의 일반 파일, 읽기는 `ExternalSessionFileSystem.read`(`O_NOFOLLOW` · `O_NONBLOCK` · fd 소유자 · `F_GETPATH` 일치). 에이전트 일의 출력은 기호 링크를 따라가지 않고 `~/.claude/projects/<프로젝트>/<세션>/subagents/agent-<일 id>.jsonl`을 직접 읽는다(선언한 필드만 해석, 어시스턴트 줄만, agentId · sessionId가 맞아야). 상한: 명령 출력은 끝 16 KiB(Show earlier로 ×4씩 **256 KiB까지**), 에이전트 기록은 끝 2 MiB 창에서 마지막 200개(줄 1 MiB · 글 32 KiB). **이어 읽기**(`update`): 파일 크기가 그대로면 읽지 않고(`unchanged`), 에이전트는 마지막으로 읽은 줄의 끝에서부터 새로 붙은 **완성된 줄**만 읽어 덧붙인다(`append`; 줄었거나 창보다 많이 붙었거나 길을 믿을 수 없게 되면 통째로 `replace`). 커서는 읽은 파일의 정체(만든 시각)도 알아서, 같은 길에 지우고 다시 만든 다른 파일이면 크기와 상관없이 통째로 다시 읽는다(명령 · 에이전트 모두). 화면의 꼬리 모델은 읽기를 한 번에 하나씩만 하고(겹쳐 읽지 않는다) 마지막으로 부탁한 창의 결과만 남긴다. 색 코드 · 제어 글자 · 눈에 안 보이는 서식 글자를 지운다. 메모리에만 두고 로그를 남기지 않는다(값의 `description`은 내용을 찍지 않는다).
 - **화면(Mac)**: 사이드 탭은 패널 바깥 모서리에 붙은 전체 높이 띠(36pt) / 펼침(256pt)이고, **패널 창을 왼쪽으로 넓혀서**(`SidePaneLayout.windowFrame`: 오른쪽 모서리 · 위 · 높이 그대로) 만든다. 화면 왼쪽에 여유가 36보다 작으면 띠를 패널 틀 안으로 자르고(`cut`), 256보다 작으면 펼침이 패널 위를 덮는다(`overlay`). 목록 → 일을 누르면 출력 꼬리(Back), 도는 일은 1초마다 다시 읽고 끝난 일은 한 번만 읽는다. Esc 순서: 꼬리 → 목록 → 접기 → 패널(`SessionSidePaneModel.escape`). 움직임은 `TFMotion` 토큰이고 손쉬운 사용의 동작 줄이기를 따른다.
   - **창과 내용은 같은 호출에서 맞춘다**: 옆줄 모델(`tasks` · `room` · `expanded` · `openedAt` · `closedAt`)이 바뀌는 바로 그 호출에서 창 폭을 정한다(`onWindowChange` → 패널의 `fit()`; 한 호출 안의 여러 변경은 한 번만 알린다). 다음 실행 루프를 기다리지 않는다. 패널 내용은 창의 오른쪽(레일 쪽)에 붙여 두므로 창이 따라오는 한 박자에도 380 패널이 쏠리지 않는다. 폭은 움직이지 않는다: 띠 ↔ 펼침은 안쪽 내용의 크로스페이드이고, 나타남/사라짐만 불투명도로 한다(폭 애니메이션 없음).
   - 펼친 목록의 1초 시계는 도는 일이 있을 때만 돈다(`SidePaneClock`): 끝난 줄의 글은 지금 시각에 기대지 않는다.
-  - 접근성: 묶음 머리와 띠는 이름에 더해 값으로 "Collapsed"/"Expanded"를 말한다(실패한 줄은 이름에 "Failed"). 시계 줄은 이름 "Working"뿐이고(초마다 읽히지 않는다) 시작할 때 한 번만 알린다.
+  - 접근성: 묶음 머리와 띠는 이름에 더해 값으로 "Collapsed"/"Expanded"를 말한다(실패한 줄은 이름에 "Failed"). 시계 줄은 이름 "Working"뿐이고(초마다 읽히지 않는다) 시작할 때 한 번만 알린다: 알렸는지는 **시계 id**로 `SessionStepsState`가 기억해(세션을 바꾸면 비운다) 줄이 다시 만들어져도 되풀이하지 않는다.
+  - **"Expanded"/"Collapsed"는 플랫폼 말이다**: macOS의 SwiftUI에는 펼침 · 접힘을 말하는 접근성 상태(속성)가 없다(`AccessibilityTraits`에 없고 `isExpanded`는 `DisclosureGroup` · `Section` · 표의 바인딩뿐이다. 이 줄들은 `DisclosureGroup`이 아니다). 그래서 VoiceOver가 쓰는 표준 낱말 둘을 접근성 **값**으로 쓴다(코디네이터 승인: 플랫폼 문구). 승인 문구 표(접근성):
+
+    | 어디 | 이름 | 값 |
+    |---|---|---|
+    | 묶음 머리 | "{n} steps" | Collapsed · Expanded |
+    | 눌러 펴는 줄 | 줄 글 (실패하면 ", Failed" 덧붙임) | Collapsed · Expanded |
+    | 옆줄 띠 | "Background tasks, {n} running" 따위(`BackgroundTaskList.accessibleName`) | Collapsed |
+    | 펼친 옆줄 | "Background tasks" | Expanded |
+    | 시계 줄 | "Working" | (없음) |
+
+    이 표의 새 낱말은 "Expanded" · "Collapsed" 둘이다 (DZ README의 문구 표에도 같은 두 낱말을 올려야 한다: 이 저장소 밖이다).
   - 같은 대화면 타임라인(묶기 · 일한 시간 · 복사 줄)을 다시 만들지 않는다(`SessionTimelineMemo`: 입력의 같음으로 가른다, 세션이 바뀌면 비운다).
 - **스크롤**: 사용자가 위로 올렸으면 새 내용이 와도 맨 아래로 끌지 않는다(`SessionScrollPin`: 내용 · 뷰 크기가 바뀌어도 의도를 지킨다). 다른 세션을 열면 "붙어 있음"으로 돌아간다.
-- **이 Mac의 기록 찾기(Taskforce 패널)** = `LocalTranscriptLookup`(순수 규칙) + `SessionLocalFollower`: 기록이 아직 없는 세션(새 세션 · 쉬는 세션)도 첫 메시지를 보내면 단계가 붙도록 **영영 멈추지 않는다**. 찾는 간격은 실패할 때마다 1 → 2 → 4 → 8 → 15 → 30초로 늘고, 패널이 숨어 있는 동안은 찾지도 세지도 않으며, 다시 보이면 곧바로 한 번 찾고 위치를 확인한다. 찾은 뒤에는 세션의 작업 상태가 바뀔 때 한 번씩만 다시 확인한다(새 턴에서 어댑터가 Claude 세션을 다시 묶을 수 있다). 값이 바뀌었거나 사라졌으면 대화 연결을 바꾼다.
+- **이 Mac의 기록 찾기(Taskforce 패널)** = `LocalTranscriptLookup`(순수 규칙) + `SessionLocalFollower`: 기록이 아직 없는 세션(새 세션 · 쉬는 세션)도 첫 메시지를 보내면 단계가 붙도록 **영영 멈추지 않는다**. 찾는 간격은 실패할 때마다 1 → 2 → 4 → 8 → 15 → 30초로 늘고, 패널이 숨어 있는 동안은 찾지도 세지도 않으며, 다시 보이면 곧바로 한 번 찾고 위치를 확인한다. 찾은 뒤에는 세션의 작업 상태가 바뀔 때 한 번씩만 다시 확인한다(새 턴에서 어댑터가 Claude 세션을 다시 묶을 수 있다). 값이 바뀌었거나 사라졌으면 대화 연결을 바꾼다. **세션이 바뀌어 취소된 뒤에 끝난 찾기는 아무것도 바꾸지 않는다**(`tick`이 `find()` 뒤에 `Task.isCancelled`를 보고 돌아간다: A의 늦은 결과가 B 패널의 연결이 되지 않는다). 연결을 쥐는 쪽도 한 번 더 막는다: `EdgeSessionPanelPresentation.adoptLocal`은 **지금 보는 세션(`sessionKey`)의 것일 때만** 받는다.
 
 ### 21-6. 알려진 한계 · 후속
 

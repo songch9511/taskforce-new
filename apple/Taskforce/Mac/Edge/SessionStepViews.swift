@@ -32,6 +32,11 @@ final class SessionStepsState {
     /// 읽어 둔 본문을 이만큼까지만 둔다 (오래된 것부터 버린다)
     static let maxDetails = 64
     @ObservationIgnored private var detailOrder: [String] = []
+    /// 시작 알림을 낸 시계 줄의 id (턴마다 하나): 줄이 다시 만들어져도(스크롤 · 다시 그림) 같은 시계는 되풀이해 알리지 않는다. 세션을 바꾸면 비운다
+    @ObservationIgnored private var announcedClocks: Set<String> = []
+
+    /// 이 시계를 처음 알리는가 (처음이면 true: 알렸다고 적는다). VoiceOver가 같은 "Working"을 줄이 다시 만들어질 때마다 읽지 않게 한다
+    func announceClock(_ id: String) -> Bool { announcedClocks.insert(id).inserted }
 
     func isOpen(_ run: SessionStepRun) -> Bool { chosen[run.id] ?? run.isLive }
 
@@ -78,6 +83,7 @@ final class SessionStepsState {
         openSteps = []
         details = [:]
         detailOrder = []
+        announcedClocks = []
         hoveredFooter = nil
     }
 
@@ -209,10 +215,11 @@ struct SessionFooterView: View {
     }
 }
 
-/// 도는 턴의 시계 줄 (E6): "Working · m:ss"가 초마다 올라간다 (말뿐: 아이콘 · 스피너 · 색 없음). 접근성은 초마다 읽지 않고 "Working"만이고 시작할 때 한 번 알린다 (끝은 밑줄의 "Worked for"가 알린다)
+/// 도는 턴의 시계 줄 (E6): "Working · m:ss"가 초마다 올라간다 (말뿐: 아이콘 · 스피너 · 색 없음). 접근성은 초마다 읽지 않고 "Working"만이고 시작할 때 한 번 알린다 (끝은 밑줄의 "Worked for"가 알린다).
+/// 알렸는지는 뷰가 아니라 **시계 id**로 `SessionStepsState`가 기억한다: 줄이 다시 만들어져도(스크롤로 사라졌다 돌아옴) 같은 시계를 되풀이해 알리지 않는다
 struct SessionClockView: View {
     let clock: SessionClock
-    @State private var announced = false
+    let state: SessionStepsState
 
     var body: some View {
         TimelineView(.periodic(from: clock.since, by: 1)) { context in
@@ -227,8 +234,7 @@ struct SessionClockView: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(SessionViewCopy.working)
         .onAppear {
-            guard !announced else { return }
-            announced = true
+            guard state.announceClock(clock.id) else { return }
             AccessibilityNotification.Announcement(SessionViewCopy.working).post()
         }
     }

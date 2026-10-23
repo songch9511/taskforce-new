@@ -44,7 +44,7 @@ struct SessionEntriesView<Item: View>: View {
             item(id)
                 .padding(.top, gap)
                 .onHover { inside in
-                    // 이 답의 줄(턴의 끝에 있다: 답 뒤에 이벤트 줄 · 단계가 붙어도 같은 이름이다)이 있으면 답 위 호버가 줄의 복사 아이콘을 드러낸다
+                    // 이 답의 줄이 있으면 답 위 호버가 줄의 복사 아이콘을 드러낸다 (줄은 답 바로 밑에 선다: 답이 턴의 끝이 아니면 복사만 있는 줄이고, 시간은 턴의 끝에 따로 선다)
                     let footer = "footer-\(id)"
                     guard footerIDs.contains(footer) else { return }
                     if inside { state.hoveredFooter = footer } else if state.hoveredFooter == footer { state.hoveredFooter = nil }
@@ -63,7 +63,7 @@ struct SessionEntriesView<Item: View>: View {
             }
             .padding(.top, gap)
         case .clock(let clock):
-            SessionClockView(clock: clock)
+            SessionClockView(clock: clock, state: state)
                 .padding(.top, gap)
         }
     }

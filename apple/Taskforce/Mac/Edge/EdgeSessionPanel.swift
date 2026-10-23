@@ -53,6 +53,13 @@ final class EdgeSessionPanelPresentation {
         if shown { conversation?.start() }
     }
 
+    /// 찾은 이 Mac의 기록 위치를 받는다: **지금 보는 세션(`key`)의 것일 때만**. 세션이 바뀐 뒤에 늦게 온 앞 세션의 결과는 버린다 (다른 세션의 기록이 이 패널에 보이지 않게)
+    func adoptLocal(_ target: AgentLocalTranscriptTarget?, forSession key: String, make: (String, String?) -> ClaudeAppConversation) {
+        guard sessionKey == key else { return }
+        localTarget = target
+        attachLocal(target.map { make($0.providerSessionID, $0.cwd) })
+    }
+
     /// 패널이 보이는 동안만 기록의 꼬리를 읽는다
     func followLocal() {
         if shown { local?.start() } else { local?.stop() }
@@ -170,10 +177,7 @@ struct SessionPanelView: View {
         let follower = SessionLocalFollower(
             find: { await runtime.localTranscriptTarget(sessionID) }, isShown: { presentation.shown },
             taskKey: { shell.openSessionItem?.lastTaskState.map { "\($0)" } },
-            onChange: { target in
-                presentation.localTarget = target
-                presentation.attachLocal(target.map { shell.makeConversation($0.providerSessionID, $0.cwd) })
-            }
+            onChange: { target in presentation.adoptLocal(target, forSession: key, make: shell.makeConversation) }
         )
         let clock = ContinuousClock()
         let started = clock.now

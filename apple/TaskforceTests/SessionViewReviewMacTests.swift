@@ -461,7 +461,7 @@ struct SessionViewReviewMacTests {
 
     @Test func theTailModelAppendsOnlyNewAgentLinesAndHandsTheCursorBackOnTheNextRead() async {
         let first = agentTurn("t1", "one"), second = agentTurn("t2", "two"), third = agentTurn("t3", "three")
-        let c1 = BackgroundTaskTail.Cursor(size: 10, position: 10), c2 = BackgroundTaskTail.Cursor(size: 20, position: 20), c3 = BackgroundTaskTail.Cursor(size: 30, position: 30)
+        let c1 = BackgroundTaskTail.Cursor(size: 10, position: 10, created: t0), c2 = BackgroundTaskTail.Cursor(size: 20, position: 20, created: t0), c3 = BackgroundTaskTail.Cursor(size: 30, position: 30, created: t0)
         let seen = Box<[BackgroundTaskTail.Cursor?]>([])
         let step = Count()
         let tail = BackgroundTaskTailModel(taskID: "a", update: { _, cursor in
@@ -488,7 +488,7 @@ struct SessionViewReviewMacTests {
         let turns = (1...5).map { agentTurn("t\($0)", "line \($0)") }
         let seen = Box<[BackgroundTaskTail.Cursor?]>([])
         let step = Count()
-        let cursor = BackgroundTaskTail.Cursor(size: 1, position: 1)
+        let cursor = BackgroundTaskTail.Cursor(size: 1, position: 1, created: t0)
         let tail = BackgroundTaskTailModel(taskID: "a", limits: BackgroundTaskTail.Limits(maxTurns: 3), update: { _, since in
             seen.value.append(since)
             switch step.hit() {
@@ -566,5 +566,114 @@ struct SessionViewReviewMacTests {
         let running = list([started("a")]).ordered[0]
         let done = finished.ordered[0]
         #expect(SidePaneClock.ticks(running) && !SidePaneClock.ticks(done), "꼬리의 머리도 도는 일만 초를 센다")
+    }
+
+    // MARK: 재검토: 늦게 끝난 기록 찾기는 다른 세션의 것이 된다 (보안 P3-B)
+
+    /// 열어 두는 문 (찾기를 붙잡는다)
+    final class LookupGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+        private var open = false
+        var waiting: Int { lock.withLock { waiters.count } }
+
+        func wait() async {
+            await withCheckedContinuation { continuation in
+                lock.lock()
+                if open {
+                    lock.unlock()
+                    continuation.resume()
+                } else {
+                    waiters.append(continuation)
+                    lock.unlock()
+                }
+            }
+        }
+
+        func release() {
+            lock.lock()
+            open = true
+            let all = waiters
+            waiters = []
+            lock.unlock()
+            for waiter in all { waiter.resume() }
+        }
+    }
+
+    @Test func aLookupThatFinishesAfterItsTaskWasCancelledChangesNothing() async {
+        let gate = LookupGate()
+        let changes = Box<[String?]>([])
+        let follower = SessionLocalFollower(find: { await gate.wait(); return target("pA") }, isShown: { true }, taskKey: { "running" }, onChange: { changes.value.append($0?.providerSessionID) })
+        let ticking = Task { @MainActor in await follower.tick(now: 0) }
+        #expect(await eventually { gate.waiting == 1 }, "A의 찾기가 붙잡혀 있다")
+        ticking.cancel()
+        gate.release()
+        await ticking.value
+        #expect(changes.value.isEmpty && follower.target == nil, "세션이 바뀌어 취소된 뒤에 끝난 찾기는 아무것도 바꾸지 않는다: \(changes.value)")
+    }
+
+    private func conversation(_ id: String, _ cwd: String?) -> ClaudeAppConversation {
+        ClaudeAppConversation(sessionID: id, cwd: cwd, source: SessionViewSnapshotTests.SampleSource(turns: []))
+    }
+
+    @Test func aLateLookupResultOfAnEarlierSessionIsNotAdoptedByTheSessionNowShown() {
+        let presentation = EdgeSessionPanelPresentation()
+        presentation.beginSession("session-a")
+        presentation.beginSession("session-b")
+        var made: [String] = []
+        presentation.adoptLocal(target("pA"), forSession: "session-a") { id, cwd in made.append(id); return conversation(id, cwd) }
+        #expect(presentation.localTarget == nil && presentation.local == nil && made.isEmpty, "A의 늦은 결과를 B 패널이 받으면 안 된다")
+        presentation.adoptLocal(target("pB"), forSession: "session-b") { id, cwd in made.append(id); return conversation(id, cwd) }
+        #expect(presentation.localTarget?.providerSessionID == "pB" && presentation.local != nil && made == ["pB"], "지금 보는 세션의 결과는 받는다")
+        presentation.adoptLocal(nil, forSession: "session-b") { id, cwd in conversation(id, cwd) }
+        #expect(presentation.localTarget == nil && presentation.local == nil, "기록이 사라졌다는 알림도 지금 세션 것이면 받는다")
+    }
+
+    @Test func switchingSessionsWhileTheFirstLookupIsPendingLeavesTheSecondPanelWithoutTheFirstTranscript() async {
+        let presentation = EdgeSessionPanelPresentation()
+        presentation.beginSession("session-a")
+        let gate = LookupGate()
+        let follower = SessionLocalFollower(
+            find: { await gate.wait(); return target("pA") }, isShown: { true }, taskKey: { "running" },
+            onChange: { found in presentation.adoptLocal(found, forSession: "session-a") { id, cwd in conversation(id, cwd) } }
+        )
+        let ticking = Task { @MainActor in await follower.tick(now: 0) }
+        #expect(await eventually { gate.waiting == 1 })
+        // 세션이 바뀐다: 뷰의 `.task(id:)`가 앞 일을 취소하고 B를 연다
+        ticking.cancel()
+        presentation.beginSession("session-b")
+        gate.release()
+        await ticking.value
+        #expect(presentation.localTarget == nil && presentation.local == nil && presentation.sessionKey == "session-b", "B 패널은 A의 기록을 보이지 않는다")
+    }
+
+    // MARK: 재검토: 시계 알림은 시계 id로 한 번
+
+    @Test func aClockIsAnnouncedOnceByItsIdEvenWhenItsRowIsRecreatedAndAgainAfterTheSessionChanges() {
+        let state = SessionStepsState()
+        #expect(state.announceClock("clock-u1"), "처음엔 알린다")
+        #expect(!state.announceClock("clock-u1"), "같은 시계는 줄이 다시 만들어져도 알리지 않는다")
+        #expect(state.announceClock("clock-u2"), "다른 턴의 시계는 알린다")
+        #expect(!state.announceClock("clock-u2"))
+        state.reset()
+        #expect(state.announceClock("clock-u1"), "다른 세션을 열면 처음부터")
+    }
+
+    // MARK: 재검토: 아주 큰 글은 해석 판에 두지 않는다
+
+    @Test func aSourceOverSixtyFourKilobytesIsParsedEachTimeAndNeverKept() {
+        let cache = SessionMarkdownCache()
+        let huge = String(repeating: "word ", count: 14_000)
+        #expect(huge.utf8.count > 64 << 10)
+        _ = cache.blocks(for: huge)
+        _ = cache.blocks(for: huge)
+        #expect(cache.parses == 2, "64 KiB를 넘는 글은 판에 두지 않는다 (메모리 상한)")
+        _ = cache.blocks(for: "ok")
+        _ = cache.blocks(for: "ok")
+        #expect(cache.parses == 3, "작은 글은 그대로 판에 둔다")
+        let edge = String(repeating: "a", count: 64 << 10)
+        _ = cache.blocks(for: edge)
+        _ = cache.blocks(for: edge)
+        #expect(cache.parses == 4, "정확히 64 KiB는 둔다")
     }
 }

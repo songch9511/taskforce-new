@@ -14,6 +14,7 @@ import Foundation
 ///   프로젝트 디렉터리는 작업 폴더로 짐작하고, 모르거나 맞지 않으면 `claude-<uid>`(또는 `projects`) 아래 **디렉터리 이름만** 나열해(상한 `maxListed`) 그 세션 폴더가 있는 것을 고른다.
 /// - **크기 상한**: 명령 출력은 파일 끝 `window`바이트(기본 16 KiB, "Show earlier"로 넓혀도 256 KiB), 에이전트 기록은 끝 2 MiB 창 안의 완성된 줄(한 줄 1 MiB, 글 한 칸 32 KiB)에서 마지막 200개. 큰 파일을 끝까지 읽지 않는다.
 /// - **이어 읽기**(`update`): 파일 크기가 그대로면 내용을 읽지 않는다. 에이전트는 마지막으로 읽은 줄의 끝에서부터 새로 붙은 완성된 줄만 읽는다 (줄었거나 창보다 많이 붙었으면 통째로).
+///   커서는 파일의 정체(만든 시각)도 안다: 같은 길의 다른 파일이면 크기와 상관없이 통째로 다시 읽는다 (명령 · 에이전트 모두).
 /// - 평문으로만 다룬다: 색 코드(ANSI) · 제어 글자 · 눈에 보이지 않는 서식 글자를 지운다. 메모리에만 두고 **로그를 남기지 않는다**: 이 타입에는 로그 자리가 없고 값의 `description`은 글 · 경로 · id를 찍지 않는다.
 public struct BackgroundTaskTail: Sendable, CustomStringConvertible, CustomDebugStringConvertible {
     public struct Limits: Equatable, Sendable {
@@ -72,6 +73,8 @@ public struct BackgroundTaskTail: Sendable, CustomStringConvertible, CustomDebug
         var size: Int64
         /// 명령: 읽은 창 크기. 에이전트: 다음에 읽을 자리 (완성된 줄의 끝)
         var position: Int64
+        /// 읽은 파일의 정체: 만든 시각. 같은 길에 지우고 다시 만든 다른 파일이면 다르다 (크기가 같거나 더 커도 옛 자리에서 이어 읽지 않는다)
+        var created: Date
     }
 
     /// 이어 읽은 결과: 그대로이거나, 화면의 것을 통째로 바꾸거나(`replace`), 에이전트의 새 줄만 덧붙인다 (`append`). 믿을 수 없게 된 길은 커서 없이 `replace`다
@@ -107,7 +110,7 @@ public struct BackgroundTaskTail: Sendable, CustomStringConvertible, CustomDebug
         case .agent:
             switch agentFile(sessionID: sessionID, cwd: cwd, agentID: taskID) {
             case .failed(let result): return result
-            case .file(let path, let entry): return agentWindow(path: path, size: max(0, entry.size), sessionID: sessionID, agentID: taskID).result
+            case .file(let path, let entry): return agentWindow(path: path, entry: entry, sessionID: sessionID, agentID: taskID).result
             }
         case .command, .other:
             switch commandFile(sessionID: sessionID, cwd: cwd, taskID: taskID) {
@@ -125,7 +128,7 @@ public struct BackgroundTaskTail: Sendable, CustomStringConvertible, CustomDebug
         case .agent:
             switch agentFile(sessionID: sessionID, cwd: cwd, agentID: taskID) {
             case .failed(let result): return .replace(result, nil)
-            case .file(let path, let entry): return updateAgent(path: path, size: max(0, entry.size), sessionID: sessionID, agentID: taskID, since: cursor)
+            case .file(let path, let entry): return updateAgent(path: path, entry: entry, sessionID: sessionID, agentID: taskID, since: cursor)
             }
         case .command, .other:
             switch commandFile(sessionID: sessionID, cwd: cwd, taskID: taskID) {
@@ -133,10 +136,10 @@ public struct BackgroundTaskTail: Sendable, CustomStringConvertible, CustomDebug
             case .file(let path, let entry):
                 let size = max(0, entry.size)
                 let bytes = wanted(window)
-                if let cursor, cursor.size == size, cursor.position == Int64(bytes) { return .unchanged }
+                if let cursor, cursor.size == size, cursor.position == Int64(bytes), cursor.created == entry.created { return .unchanged }
                 let result = commandTail(path: path, size: size, wanted: bytes)
                 guard case .output = result else { return .replace(result, nil) }
-                return .replace(result, Cursor(size: size, position: Int64(bytes)))
+                return .replace(result, Cursor(size: size, position: Int64(bytes), created: entry.created))
             }
         }
     }
@@ -286,18 +289,21 @@ public struct BackgroundTaskTail: Sendable, CustomStringConvertible, CustomDebug
     }
 
     /// 끝 창(`windowBytes`)의 완성된 줄에서 읽은 에이전트의 말 · 단계 + 다음 이어 읽기 자리 (창 안의 마지막 완성된 줄의 끝)
-    private func agentWindow(path: String, size: Int64, sessionID: String, agentID: String) -> (result: Result, cursor: Cursor?) {
-        guard size > 0 else { return (.output(.agent([], hasEarlier: false)), Cursor(size: 0, position: 0)) }
+    private func agentWindow(path: String, entry: ExternalSessionFileSystem.Entry, sessionID: String, agentID: String) -> (result: Result, cursor: Cursor?) {
+        let size = max(0, entry.size)
+        guard size > 0 else { return (.output(.agent([], hasEarlier: false)), Cursor(size: 0, position: 0, created: entry.created)) }
         let length = Int(min(Int64(limits.windowBytes), size))
         let offset = size - Int64(length)
         guard let data = fileSystem.read(path, offset, length) else { return (.unreadable, nil) }
         let (turns, dropped) = agentTurns(in: data, start: offset, startsAtLine: offset == 0, sessionID: sessionID, agentID: agentID)
         let consumed = data.lastIndex(of: 0x0A).map { $0 - data.startIndex + 1 } ?? 0
-        return (.output(.agent(turns, hasEarlier: offset > 0 || dropped)), Cursor(size: size, position: offset + Int64(consumed)))
+        return (.output(.agent(turns, hasEarlier: offset > 0 || dropped)), Cursor(size: size, position: offset + Int64(consumed), created: entry.created))
     }
 
-    private func updateAgent(path: String, size: Int64, sessionID: String, agentID: String, since cursor: Cursor?) -> Update {
-        if let cursor {
+    private func updateAgent(path: String, entry: ExternalSessionFileSystem.Entry, sessionID: String, agentID: String, since cursor: Cursor?) -> Update {
+        let size = max(0, entry.size)
+        // 다른 파일(같은 길에 지우고 다시 만듦)이면 옛 자리에서 이어 읽지 않고 통째로 읽는다
+        if let cursor, cursor.created == entry.created {
             if size == cursor.size { return .unchanged }
             // 붙었다 (줄었거나 창보다 많이 붙은 것은 아래에서 통째로): 마지막으로 읽은 줄의 끝에서부터 새로 붙은 부분만
             if size > cursor.size, cursor.position <= size, size - cursor.position <= Int64(limits.windowBytes) {
@@ -307,10 +313,10 @@ public struct BackgroundTaskTail: Sendable, CustomStringConvertible, CustomDebug
                 guard let last = data.lastIndex(of: 0x0A) else { return .unchanged }
                 let consumed = last - data.startIndex + 1
                 let (turns, _) = agentTurns(in: Data(data.prefix(consumed)), start: cursor.position, startsAtLine: true, sessionID: sessionID, agentID: agentID)
-                return .append(turns, Cursor(size: size, position: cursor.position + Int64(consumed)))
+                return .append(turns, Cursor(size: size, position: cursor.position + Int64(consumed), created: entry.created))
             }
         }
-        let window = agentWindow(path: path, size: size, sessionID: sessionID, agentID: agentID)
+        let window = agentWindow(path: path, entry: entry, sessionID: sessionID, agentID: agentID)
         return .replace(window.result, window.cursor)
     }
 
