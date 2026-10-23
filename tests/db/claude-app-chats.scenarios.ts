@@ -504,6 +504,242 @@ export function claudeAppChatsTests(db: () => ClaudeAppChatsDb) {
     await expect(one("select public.delete_claude_app_chat(null, $1)", [randomUUID()])).rejects.toMatchObject({ code: "22023" });
   });
 
+  // ───────────────────────── 모두 지우기 (OA D3v-s, 계약 27장): delete_all_claude_app_chats ─────────────────────────
+
+  const deleteAll = (owner: string) => one("select public.delete_all_claude_app_chats($1) as result", [owner]).then((r) => r.result);
+  const tombstoneCount = (owner: string) => count("select 1 from public.claude_app_chat_tombstones where user_id = $1", [owner]);
+
+  it("delete_all_claude_app_chats: 호출한 사용자의 채팅 · 메시지를 모두 지우고 {deleted: 채팅 수}를 돌려준다 — Mac이 둘이어도 bridge가 해제됐어도 지우고, 다른 사용자의 것은 그대로다", async () => {
+    const alice = await world();
+    const bob = await world();
+    const second = await bridge(alice.owner);
+    const a1 = await save(alice.owner, alice.bridge, ref(1), "첫째", [userMsg(1), asstMsg(2, 1, { tool_names: ["Read"] })]);
+    await save(alice.owner, alice.bridge, ref(2), "둘째", [userMsg(1), userMsg(3), asstMsg(4, 3)]);
+    await save(alice.owner, second, ref(1), "다른 Mac", [userMsg(1)]);
+    const b1 = await save(bob.owner, bob.bridge, ref(1), "밥 하나", [userMsg(1), asstMsg(2, 1)]);
+    const b2 = await save(bob.owner, bob.bridge, ref(2), "밥 둘", [userMsg(1)]);
+    // bridge가 해제된 뒤에도 사용자는 자기 대화를 지울 수 있다 (사용자의 기록이다)
+    await q("update public.bridges set status = 'revoked', revoked_at = now() where id = $1", [alice.bridge]);
+    expect(await chatCount(alice.owner)).toBe(3);
+    expect(await messageCount(alice.owner)).toBe(6);
+
+    expect(await deleteAll(alice.owner)).toEqual({ deleted: 3 });
+    expect(await chatCount(alice.owner)).toBe(0);
+    expect(await messageCount(alice.owner)).toBe(0);
+    expect(await count("select 1 from public.claude_app_chat_messages where chat_id = $1", [String(a1.chat_id)])).toBe(0);
+    // 다른 사용자: 채팅 · 행 · 묘비 · 지표 모두 그대로다
+    expect(await chatCount(bob.owner)).toBe(2);
+    expect(await messageCount(bob.owner)).toBe(3);
+    expect((await rows(String(b1.chat_id))).map((r) => r.mac_ref)).toEqual([ref(1), ref(2)]);
+    expect((await rows(String(b2.chat_id))).length).toBe(1);
+    expect(await tombstoneCount(bob.owner)).toBe(0);
+    expect(await events(bob.owner, "claude_app_chats_deleted_all")).toEqual([]);
+    // RLS 눈으로 본 결과: 앱 역할로 읽으면 앨리스는 0, 밥은 자기 것 둘 그대로다 (남의 것은 어느 쪽에도 보이지 않는다)
+    await db().asUser(alice.owner, async () => {
+      expect(await count("select 1 from public.claude_app_chats")).toBe(0);
+      expect(await count("select 1 from public.claude_app_chat_messages")).toBe(0);
+    });
+    await db().asUser(bob.owner, async () => {
+      expect(await count("select 1 from public.claude_app_chats")).toBe(2);
+      expect(await count("select 1 from public.claude_app_chat_messages")).toBe(3);
+    });
+    // 두 번째 호출은 지울 것이 없다
+    expect(await deleteAll(alice.owner)).toEqual({ deleted: 0 });
+    // 지우면 사용자별 한도도 비워진다
+    expect(await chargedBytes(alice.owner)).toBe(0);
+    // 같은 사용자가 새 글을 보내면 새 채팅이 생긴다 (해제된 bridge 말고 새로 등록한 Mac으로)
+    const fresh = await bridge(alice.owner);
+    expect(await save(alice.owner, fresh, ref(1), "새 채팅", [userMsg(50)])).toMatchObject({ status: "ok", saved: 1 });
+  });
+
+  it("delete_all_claude_app_chats: 지울 것이 없으면 {deleted: 0}이고 묘비도 지표도 남기지 않는다. 채팅이 없는 사용자 · 없는 사용자 id도 같다. null은 22023", async () => {
+    const w = await world();
+    const other = await world();
+    await save(other.owner, other.bridge, ref(1), null, [userMsg(1)]);
+    expect(await deleteAll(w.owner)).toEqual({ deleted: 0 });
+    expect(await deleteAll(randomUUID())).toEqual({ deleted: 0 });
+    expect(await tombstoneCount(w.owner)).toBe(0);
+    expect(await events(w.owner, "claude_app_chats_deleted_all")).toEqual([]);
+    expect(await chatCount(other.owner)).toBe(1);
+    await expect(one("select public.delete_all_claude_app_chats(null)")).rejects.toMatchObject({ code: "22023" });
+    expect(await chatCount(other.owner)).toBe(1);
+  });
+
+  it("DT10: delete_all_claude_app_chats는 service role만 부른다 (앱 · 익명은 실행 권한 없음), invoker + search_path 빈 값 — 앱 권한으로 부르면 거절되고 아무것도 지워지지 않는다", async () => {
+    const fn = "delete_all_claude_app_chats(uuid)";
+    for (const role of ["anon", "authenticated"]) {
+      expect(await one("select has_function_privilege($1, $2, 'EXECUTE') as run", [role, `public.${fn}`]), role).toEqual({ run: false });
+    }
+    expect(await one("select has_function_privilege('service_role', $1, 'EXECUTE') as run", [`public.${fn}`])).toEqual({ run: true });
+    expect(await one("select proconfig, prosecdef as definer from pg_proc where oid = $1::regprocedure", [`public.${fn}`])).toEqual({ proconfig: ['search_path=""'], definer: false });
+    const alice = await world();
+    const bob = await world();
+    await save(alice.owner, alice.bridge, ref(1), null, [userMsg(1)]);
+    await save(bob.owner, bob.bridge, ref(1), null, [userMsg(1)]);
+    // 자기 id로도, 남의 id로도 앱 역할은 부르지 못한다
+    await db().asUser(alice.owner, async () => {
+      await expect(q("select public.delete_all_claude_app_chats($1)", [alice.owner])).rejects.toMatchObject({ code: "42501" });
+      await expect(q("select public.delete_all_claude_app_chats($1)", [bob.owner])).rejects.toMatchObject({ code: "42501" });
+    });
+    await q("set role anon");
+    try {
+      await expect(q("select public.delete_all_claude_app_chats($1)", [alice.owner])).rejects.toMatchObject({ code: "42501" });
+    } finally {
+      await q("reset role");
+    }
+    expect(await chatCount(alice.owner)).toBe(1);
+    expect(await chatCount(bob.owner)).toBe(1);
+  });
+
+  it("묘비: 모두 지울 때 그 사용자의 **사용자 글 mac_ref만** (bridge, session_ref)별로 남기고, 지운 대화의 재시도는 orphan이다 — 저장도 지표도 되살아나지 않는다. 새 글(새 ref)은 새 채팅을 만든다", async () => {
+    const alice = await world();
+    const bob = await world();
+    const second = await bridge(alice.owner);
+    const batch1 = [userMsg(1), asstMsg(2, 1, { tool_names: ["Read"] })];
+    const batch2 = [userMsg(3), asstMsg(4, 3), userMsg(5)];
+    const batch3 = [userMsg(6)];
+    const first = await save(alice.owner, alice.bridge, ref(1), "첫째", batch1);
+    await save(alice.owner, alice.bridge, ref(2), "둘째", batch2);
+    await save(alice.owner, second, ref(1), "다른 Mac", batch3);
+    await save(bob.owner, bob.bridge, ref(1), "밥", [userMsg(1)]);
+    const sentBefore = (await events(alice.owner, "claude_app_message_sent")).length;
+    expect(sentBefore).toBe(4);
+    // 해제된 bridge의 대화에도 묘비가 남는다 (bridge 행이 있으므로 복합 외래키를 만족한다)
+    await q("update public.bridges set status = 'revoked', revoked_at = now() where id = $1", [second]);
+    expect(await deleteAll(alice.owner)).toEqual({ deleted: 3 });
+    // 묘비 = 사용자 글의 (bridge, session_ref, mac_ref)뿐 (답 글 ref · 글 · 제목 없음)
+    const key = (r: Record<string, unknown>) => `${r.bridge_id}|${r.session_ref}|${r.mac_ref}`;
+    expect((await q("select bridge_id, session_ref, mac_ref from public.claude_app_chat_tombstones where user_id = $1", [alice.owner])).map(key).sort()).toEqual(
+      [
+        { bridge_id: alice.bridge, session_ref: ref(1), mac_ref: ref(1) },
+        { bridge_id: alice.bridge, session_ref: ref(2), mac_ref: ref(3) },
+        { bridge_id: alice.bridge, session_ref: ref(2), mac_ref: ref(5) },
+        { bridge_id: second, session_ref: ref(1), mac_ref: ref(6) },
+      ]
+        .map(key)
+        .sort(),
+    );
+    expect(JSON.stringify(await q("select * from public.claude_app_chat_tombstones where user_id = $1", [alice.owner]))).not.toMatch(/보낸 글|답 글|첫째|둘째|Read/);
+    expect(await tombstoneCount(bob.owner)).toBe(0);
+    // 응답을 못 받은 Mac이 같은 묶음을 다시 보낸다: 채팅 · 행 · 지표 0, 사용자 글과 답 글 모두 orphan
+    expect(await save(alice.owner, alice.bridge, ref(1), "첫째", batch1)).toEqual({ status: "ok", chat_id: null, saved: 0, existing: 0, orphan: 2 });
+    expect(await save(alice.owner, alice.bridge, ref(2), "둘째", batch2)).toEqual({ status: "ok", chat_id: null, saved: 0, existing: 0, orphan: 3 });
+    expect(await chatCount(alice.owner)).toBe(0);
+    expect(await messageCount(alice.owner)).toBe(0);
+    expect((await events(alice.owner, "claude_app_message_sent")).length).toBe(sentBefore);
+    // 늦게 온 답 글만 있는 묶음도 대화를 되살리지 못한다
+    expect(await save(alice.owner, alice.bridge, ref(1), "첫째", [asstMsg(7, 1)])).toEqual({ status: "ok", chat_id: null, saved: 0, existing: 0, orphan: 1 });
+    // 새로 보낸 글(새 ref)은 새 채팅이다. 같은 세션에서도 옛 묶음의 재시도는 여전히 막힌다
+    const fresh = await save(alice.owner, alice.bridge, ref(1), "첫째", [userMsg(20), asstMsg(21, 20)]);
+    expect(fresh).toMatchObject({ status: "ok", saved: 2 });
+    expect(fresh.chat_id).not.toBe(first.chat_id);
+    expect(await save(alice.owner, alice.bridge, ref(1), "첫째", batch1)).toEqual({ status: "ok", chat_id: fresh.chat_id, saved: 0, existing: 0, orphan: 2 });
+    expect((await rows(String(fresh.chat_id))).map((r) => r.mac_ref)).toEqual([ref(20), ref(21)]);
+    expect((await events(alice.owner, "claude_app_message_sent")).length).toBe(sentBefore + 1);
+    // 다른 사용자의 같은 ref는 막지 않는다
+    expect(await save(bob.owner, bob.bridge, ref(9), "밥", [userMsg(1)])).toMatchObject({ status: "ok", saved: 1 });
+  });
+
+  it("claude_app_chats_deleted_all: 지운 채팅이 있을 때 한 번, props는 {deleted: 채팅 수}뿐이다 (글 · 제목 · id 0). 채팅마다 claude_app_chat_deleted를 남기지 않는다", async () => {
+    const w = await world();
+    const other = await world();
+    for (let n = 1; n <= 3; n++) await save(w.owner, w.bridge, ref(n), `비밀 제목 ${n}`, [userMsg(1, { body: "비밀 글" }), asstMsg(2, 1, { body: "비밀 답" })]);
+    await save(other.owner, other.bridge, ref(1), null, [userMsg(1)]);
+    expect(await events(w.owner, "claude_app_chats_deleted_all")).toEqual([]);
+    expect(await deleteAll(w.owner)).toEqual({ deleted: 3 });
+    expect(await events(w.owner, "claude_app_chats_deleted_all")).toEqual([{ props: { deleted: 3 } }]);
+    expect(await events(w.owner, "claude_app_chat_deleted")).toEqual([]);
+    expect(JSON.stringify(await q("select props from public.metric_events where user_id = $1 and type like 'claude_app%'", [w.owner]))).not.toMatch(/비밀|0{10}/);
+    // 지울 것이 없는 호출은 지표를 더하지 않는다
+    expect(await deleteAll(w.owner)).toEqual({ deleted: 0 });
+    expect(await events(w.owner, "claude_app_chats_deleted_all")).toHaveLength(1);
+    expect(await events(other.owner, "claude_app_chats_deleted_all")).toEqual([]);
+    // 하나씩 지우는 길은 그대로 claude_app_chat_deleted다 (props 없음)
+    const single = await save(w.owner, w.bridge, ref(9), null, [userMsg(30)]);
+    await one("select public.delete_claude_app_chat($1, $2)", [w.owner, String(single.chat_id)]);
+    expect(await events(w.owner, "claude_app_chat_deleted")).toEqual([{ props: {} }]);
+    expect(await events(w.owner, "claude_app_chats_deleted_all")).toHaveLength(1);
+  });
+
+  it("delete_all_claude_app_chats는 한 트랜잭션이다: 바깥 트랜잭션이 롤백되면 채팅 · 행 · 묘비 · 지표가 모두 그대로다 (일부만 지워진 상태가 없다)", async () => {
+    const w = await world();
+    for (let n = 1; n <= 3; n++) await save(w.owner, w.bridge, ref(n), "제목", [userMsg(1), asstMsg(2, 1)]);
+    await q("begin");
+    try {
+      expect(await deleteAll(w.owner)).toEqual({ deleted: 3 });
+      expect(await chatCount(w.owner)).toBe(0);
+    } finally {
+      await q("rollback");
+    }
+    expect(await chatCount(w.owner)).toBe(3);
+    expect(await messageCount(w.owner)).toBe(6);
+    expect(await tombstoneCount(w.owner)).toBe(0);
+    expect(await events(w.owner, "claude_app_chats_deleted_all")).toEqual([]);
+    // 롤백되었으니 재시도는 되살아난 것이 아니라 그대로 existing이다
+    expect(await save(w.owner, w.bridge, ref(1), "제목", [userMsg(1), asstMsg(2, 1)])).toMatchObject({ status: "ok", saved: 0, existing: 2, orphan: 0 });
+  });
+
+  it(
+    "묘비 상한: 모두 지울 때 사용자 글이 1만 개를 넘으면 **가장 최근에 저장된** 1만 개만 묘비로 남기고, 옛 묘비도 합쳐 사용자당 1만 개를 넘지 않는다. 채팅 2,000개 · 10만 행도 한 번에 지운다 (정상 statement_timeout 아래)",
+    HEAVY,
+    async () => {
+      const w = await world();
+      const other = await world();
+      const otherChat = await save(other.owner, other.bridge, ref(1), null, [userMsg(1)]);
+      const chats = 2000;
+      const perChat = 51;
+      const total = chats * perChat; // 102,000 (행 몫 포함 52,326,000 < 50 MiB)
+      // 사용자 글 n(1..total, 클수록 최근)의 mac_ref = ref(BASE - n): 최근 글일수록 ref가 **작다**. 묘비가 ref 순서로 골라지면(= 가장 최근이 아니라) 아래 단언이 틀어진다 (HMAC ref는 저장 순서와 무관하다)
+      const BASE = 1_000_000;
+      const macOf = (n: number) => ref(BASE - n);
+      await withLongStatements(async () => {
+        // 옛 묘비 다섯 (이틀 전): 모두 지울 때 상한 때문에 밀려나야 한다
+        await q(
+          `insert into public.claude_app_chat_tombstones (user_id, bridge_id, session_ref, mac_ref, created_at)
+           select $1::uuid, $2::uuid, lpad(to_hex(7777), 64, '0'), lpad(to_hex(g), 64, '0'), now() - interval '2 days' from generate_series(1, 5) g`,
+          [w.owner, w.bridge],
+        );
+        await q(`insert into public.claude_app_chats (user_id, bridge_id, session_ref) select $1::uuid, $2::uuid, lpad(to_hex(k + 5000000), 64, '0') from generate_series(1, ${chats}) k`, [w.owner, w.bridge]);
+        // 사용자 글 n = 1..102,000 (저장 순서 = n, 클수록 최근)
+        await q(
+          `insert into public.claude_app_chat_messages (user_id, chat_id, role, mac_ref, body, truncated, said_at, created_at)
+           select $1::uuid, c.id, 'user', lpad(to_hex(${BASE} - g.n), 64, '0'), 'x', false, now(), timestamp with time zone '2026-01-01 00:00:00+00' + g.n * interval '1 second'
+             from (select k, (k - 1) * ${perChat} + j as n from generate_series(1, ${chats}) k, generate_series(1, ${perChat}) j) g
+             join public.claude_app_chats c on c.user_id = $1::uuid and c.session_ref = lpad(to_hex(g.k + 5000000), 64, '0')
+            order by g.n`,
+          [w.owner],
+        );
+        // 운영에서는 자동 analyze가 통계를 채운다. 방금 SQL로 채운 표는 통계가 없어 계획기가 표를 작다고 보고 지우기의 cascade 조회를 순차 스캔으로 짠다 (실제 Postgres에서 3초 → 29초)
+        await q("analyze public.claude_app_chats");
+        await q("analyze public.claude_app_chat_messages");
+      });
+      expect(await chatCount(w.owner)).toBe(chats);
+      expect(await messageCount(w.owner)).toBe(total);
+      expect(await tombstoneCount(w.owner)).toBe(5);
+      // 정상 statement_timeout 아래에서 한 번에 (실제 Postgres 시험 연결은 15초)
+      expect(await deleteAll(w.owner)).toEqual({ deleted: chats });
+      expect(await chatCount(w.owner)).toBe(0);
+      expect(await messageCount(w.owner)).toBe(0);
+      expect(await tombstoneCount(w.owner)).toBe(TOMBSTONE_CAP);
+      // 남은 묘비 = 가장 최근에 저장된 사용자 글 1만 개 (n = 92,001..102,000). 옛 묘비 다섯은 밀려났다
+      expect(
+        await count(`select 1 from public.claude_app_chat_tombstones t where t.user_id = $1 and t.mac_ref in (select lpad(to_hex(${BASE} - n), 64, '0') from generate_series(${total - TOMBSTONE_CAP + 1}, ${total}) n)`, [w.owner]),
+      ).toBe(TOMBSTONE_CAP);
+      expect(await count("select 1 from public.claude_app_chat_tombstones where user_id = $1 and session_ref = lpad(to_hex(7777), 64, '0')", [w.owner])).toBe(0);
+      expect((await events(w.owner, "claude_app_chats_deleted_all")).map((e) => e.props)).toEqual([{ deleted: chats }]);
+      // 지운 10만 행의 죽은 튜플을 바로 치운다: 자동 vacuum이 뒤 시험 한복판에서 돌며 통계 · 계획을 흔들지 않게 한다 (같은 표를 쓰는 다음 시험이 10만 행을 다시 채우고 지운다)
+      await withLongStatements(async () => {
+        for (const table of ["claude_app_chat_messages", "claude_app_chats", "claude_app_chat_tombstones"]) await q(`vacuum (analyze) public.${table}`);
+      });
+      // 다른 사용자는 그대로
+      expect(await chatCount(other.owner)).toBe(1);
+      expect((await rows(String(otherChat.chat_id))).length).toBe(1);
+      // 가장 최근 글의 재시도는 막히고, 상한 밖의 가장 오래된 글은 막히지 않는다 (재시도는 몇 분 안의 일이다)
+      expect(await save(w.owner, w.bridge, ref(chats + 5_000_000), null, [userMsg(total, { mac_ref: macOf(total) })])).toEqual({ status: "ok", chat_id: null, saved: 0, existing: 0, orphan: 1 });
+      expect(await save(w.owner, w.bridge, ref(1 + 5_000_000), null, [userMsg(1, { mac_ref: macOf(1) })])).toMatchObject({ status: "ok", saved: 1 });
+    },
+  );
+
   // ───────────────────────── 사용자별 한도 (보안 검토 P2-1) ─────────────────────────
 
   it("사용자별 한도 · 본문: 저장된 (본문 + 행마다 512바이트) 합계가 50 MiB(경계 포함)를 넘기는 묶음은 quota_exceeded이고 아무것도 쓰지 않는다. 재시도 · 다른 사용자 · 지운 뒤는 영향 없다", HEAVY, async () => {
@@ -559,6 +795,8 @@ export function claudeAppChatsTests(db: () => ClaudeAppChatsDb) {
       const chatId = String(made.chat_id);
       // 1바이트 답 글 102,198개 (각 513바이트) + 사용자 글(524): 한도까지 702바이트가 남는다. 본문만 세면 100 KB도 안 된다
       await fillBytes(w.owner, chatId, ref(1), 102_198, 1);
+      // 운영에서는 자동 analyze가 통계를 채운다. SQL로 막 채운 표는 통계가 없거나 낡아서 아래 지우기의 cascade 조회(행마다 둘)를 순차 스캔으로 짜 부하에서 시간 제한(240초)을 넘길 수 있다
+      await q("analyze public.claude_app_chat_messages");
       const filled = await chargedBytes(w.owner);
       expect(QUOTA_BYTES - filled).toBe(702);
       const bodyOnly = Number((await one("select sum(octet_length(body))::bigint as n from public.claude_app_chat_messages where user_id = $1", [w.owner])).n);
@@ -569,8 +807,15 @@ export function claudeAppChatsTests(db: () => ClaudeAppChatsDb) {
       expect(QUOTA_BYTES - (await chargedBytes(w.owner))).toBe(189);
       expect(await save(w.owner, w.bridge, ref(1), null, [asstMsg(3, 1, { body: "y" })])).toEqual({ status: "quota_exceeded" });
       expect(await messageCount(w.owner)).toBe(102_200);
-      // 지우면 다시 쓸 수 있다
-      expect(await one("select public.delete_claude_app_chat($1, $2) as result", [w.owner, chatId])).toEqual({ result: { status: "deleted" } });
+      // 지우면 다시 쓸 수 있다. 이 채팅은 사용자 글 하나에 답 글 10만 개가 매달린 극단적으로 치우친 모양이다 (실제는 사용자 글 하나에 답 글 40개 이하).
+      // 지우기의 cascade 조회(reply_to = $1)는 SPI가 저장한 계획이라 처음 다섯 번을 맞춤 계획으로 짜고 그 평균 비용을 일반 계획 비용과 견주는데, 첫 번째가 부모(10만 행 순차 스캔)라 평균이 부풀어
+      // 일반 계획(사용자 인덱스 + 필터: 행마다 10만 행 훑기)이 뽑히는 판이 있다 (실제 Postgres에서 자동 vacuum · analyze의 계획 무효화 시점에 따라 어쩌다 240초를 넘겼다). 이 시험은 맞춤 계획으로 고정한다
+      await q("set plan_cache_mode = force_custom_plan");
+      try {
+        expect(await one("select public.delete_claude_app_chat($1, $2) as result", [w.owner, chatId])).toEqual({ result: { status: "deleted" } });
+      } finally {
+        await q("reset plan_cache_mode");
+      }
       expect(await messageCount(w.owner)).toBe(0);
       expect(await save(w.owner, w.bridge, ref(1), null, [userMsg(40), asstMsg(41, 40, { body: "z" })])).toMatchObject({ status: "ok", saved: 2 });
     });
@@ -810,7 +1055,7 @@ export function claudeAppChatsTests(db: () => ClaudeAppChatsDb) {
        where not tg.tgisinternal and c.relname in ('claude_app_chats', 'claude_app_chat_messages') order by 1, 2`,
     );
     expect(triggers).toEqual([{ t: "claude_app_chats", name: "claude_app_chats_set_updated_at" }]);
-    for (const fn of ["save_claude_app_chat", "delete_claude_app_chat"]) {
+    for (const fn of ["save_claude_app_chat", "delete_claude_app_chat", "delete_all_claude_app_chats"]) {
       const def = String((await one("select pg_get_functiondef(p.oid) as def from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = $1", [fn])).def);
       expect(def, fn).not.toMatch(/bridge_commands|agent_tasks|agent_sessions|conversations|conversation_messages|start_agent_turn|execution_|pg_notify|net\.http/i);
     }

@@ -2264,6 +2264,13 @@ export const claudeAppChatStatusResponseSchema = z.strictObject({
 export type ClaudeAppChatStatusResponse = z.infer<typeof claudeAppChatStatusResponseSchema>;
 
 /**
+ * DELETE /api/v2/claude-app-chats — 사용자의 저장된 대화를 **모두** 지운다 (D3v-s, 계약 27장). 요청 본문 없음(있어도 읽지 않는다). 한 트랜잭션이라 일부만 지워지는 상태가 없다.
+ * deleted = 지운 채팅 수 (메시지는 함께 지워진다). 0이면 이미 비어 있었다 (404가 아니다). SQL 함수 delete_all_claude_app_chats의 결과도 같은 모양이다
+ */
+export const claudeAppChatsDeleteAllResponseSchema = z.strictObject({ deleted: z.number().int().min(0) });
+export type ClaudeAppChatsDeleteAllResponse = z.infer<typeof claudeAppChatsDeleteAllResponseSchema>;
+
+/**
  * POST /api/v2/external-sessions/claude-app-sent — 보내기 결과 지표 claude_app_message_sent (글 0, 저장 플래그와 무관). 코드만이다.
  * received의 uploaded: false = Mac이 올리기를 포기했다(10분 재시도 끝에 버림) → 저장이 켜져 있어도 이 지표로 센다 (저장 함수가 못 센 받은 글). 생략 · true는 저장이 켜져 있으면 세지 않는다
  */
