@@ -65,7 +65,8 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     init(
         launcher: LauncherModel, chat: ChatRuntime? = nil, review: ReviewDesk? = nil, summary: ReturnSummaryStore? = nil,
         assistantWindows: Bool = EdgeSurfaces.assistantWindowsForThisRun, positionStore: AssistantWindowPositionStore? = nil,
-        injectedExternalSessions: ExternalSessionsStore? = nil, injectedDesktop: ClaudeAppRuntime.Made? = nil, injectedSavedChats: SavedChatsStore? = nil
+        injectedExternalSessions: ExternalSessionsStore? = nil, injectedDesktop: ClaudeAppRuntime.Made? = nil, injectedSavedChats: SavedChatsStore? = nil,
+        injectedAttach: ExternalSessionAttachModel? = nil
     ) {
         self.launcher = launcher
         self.chat = chat
@@ -103,10 +104,12 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         }
         // 저장된 대화 (OA D3v-m): 목록과 같은 게이트 (새 Issues 화면 ∧ BridgeFlag ∧ 서비스 · 계정 경계). 읽기 전용이라 중계 게이트와 상관없다
         let savedChats = injectedSavedChats ?? SavedChatsRuntime.make(services: launcher.services, scope: chat?.scope, issueScreens: chat?.issues != nil)
+        // 이어받기 "Resume here" (OA 외부 세션 PR2m): 목록과 같은 게이트 + 서버가 열었을 때만 (`ExternalSessionAttachModel.gate`)
+        let attach = injectedAttach ?? ExternalSessionAttachRuntime.make(services: launcher.services, scope: chat?.scope, externalSessions: externalSessions, targets: chat?.targets)
         shell = EdgeShellModel(
             reduceMotion: Self.systemReduceMotion, pinStore: pinStore, contexts: chat?.contexts, review: review, summary: summary, chatsEnabled: chat != nil,
             windowsEnabled: windows, issues: chat?.issues, externalSessions: externalSessions, desktopSessions: desktop?.sessions,
-            railDone: chat?.issues != nil ? doneStores.rail : nil, claudeAppOpened: desktop?.opened, desktopChat: desktop?.chat, savedChats: savedChats
+            railDone: chat?.issues != nil ? doneStores.rail : nil, claudeAppOpened: desktop?.opened, desktopChat: desktop?.chat, savedChats: savedChats, attach: attach
         )
         // 세션 보기가 이 Mac에 두는 것(열어 본 시각 저장본 · 일 목록 판)은 계정과 함께 간다 (보안 P3-1): 로그인이 바뀔 때 셸이, 계정이 기기를 떠날 때(로그아웃 · 세션 만료 · 계정 삭제) 계정 경계가 비운다
         let backgroundSessions = BackgroundTaskAccount(openStore: doneStores.backgroundOpen, board: chat?.backgroundBoard ?? .shared)

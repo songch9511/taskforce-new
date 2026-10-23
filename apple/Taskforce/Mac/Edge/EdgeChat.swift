@@ -49,6 +49,8 @@ final class ChatRuntime {
     /// 이 Taskforce 세션이 **이 Mac에서** 돌아 어댑터가 묶은 Claude 세션 id · 세션 cwd (세션 보기의 도구 단계 · 일 목록을 이 Mac의 기록에서 읽는다). 이 Mac이 모르는 세션이면 nil (단계는 후속의 서버 저장 뒤에).
     /// 시험 · 견본은 가짜로 바꾼다
     var localTranscriptTarget: @MainActor (UUID) async -> AgentLocalTranscriptTarget? = { id in await BridgeHost.shared?.activeRuntime?.localTranscriptTarget(forAgentSession: id) }
+    /// 이어받은 Taskforce 세션의 턴이 "다른 곳에서 쥐고 있어" 막힌 이유 (이 Mac의 런타임 메모리, OA 외부 세션 PR2m 계약 S16): 세션 패널의 머리 아래 상태 줄이 읽는다. 막히지 않았으면 nil. 시험 · 견본은 가짜로 바꾼다
+    var attachedHold: @MainActor (UUID) async -> ExternalWriterVerdict? = { id in await BridgeHost.shared?.activeRuntime?.attachedHold(forAgentSession: id) }
     /// 어댑터가 읽은 `task_*` 줄로 만든 백그라운드 일 목록 (이 Mac 안에서만). 실제 앱은 어댑터와 같은 공유 판이다
     var backgroundBoard: BackgroundTaskBoard = .shared
     /// 보내기 전에 작업 폴더를 묻는 시스템 폴더 창 (OA D4a2-05). 시험은 가짜 패널로 바꾼다 (실제 `NSOpenPanel`을 열지 않는다)

@@ -938,3 +938,58 @@ Mac Settings › Account의 "Delete all saved chats"와 iPhone 목록의 "Delete
 - 앞쪽 읽기(40개)와 대화 목록(20개)은 새 항목이 읽는 사이 생기면 겹칠 수 있어 이미 있는 것은 더하지 않는다(위 쪽이 한 칸 밀리는 것은 다음 열기에 맞춰진다).
 - 보기 상태(닫힘 · 기록 못 읽음 · 열림)를 세션 입력창에 알리는 일은 이제 모델이 한다(`EdgeShellModel.pushDesktopChatView` + 관찰): 화면 밖 호스트에서는 SwiftUI `.onChange`가 늦거나 오지 않아 `ClaudeAppChatMacTests`의 세션 전환 시험이 흔들렸다. 패널의 `.onChange`는 입력창 객체가 새로 만들어진 경우를 위해 그대로 두었고(같은 규칙 `EdgeShellModel.chatViewState`, 같은 값을 다시 알릴 뿐이라 해가 없다) 이 PR 밖 동작은 바뀌지 않는다.
 - 저장된 대화 줄에는 첫 글 미리보기가 없다(서버에 칸이 없다, DZ 열린 질문 4): 제목이 없는 줄은 "Untitled" + 시각 · 기기 이름뿐이다.
+
+## 25. 닫힌 Claude Code 세션 이어받기 "Resume here" — Mac (OA 외부 세션 PR2m, 계약 `handoffs/oa-external-sessions-contract.md` 6 · 8.3 · 12.3 · 16–21장, DZ `oa-external-sessions-dz` 시트 DZ-2 · 3 · 4 · 7 · 8)
+
+이 Mac에서 **닫힌** Claude Code 세션(터미널에서 시작했거나 Claude 데스크톱에서 끝난 것)을 사용자가 Sessions › On this Mac에서 "Resume here"로 Taskforce 세션으로 이어받는다. 서버 쪽(18장)과 짝이다. **서버 플래그 `AGENT_ATTACH_EXISTING_ENABLED`는 꺼진 채다**: 이 PR이 합쳐져도 사용자에게는 Resume here가 보이지 않는다(25-2). 켜기 전에는 Opus 보안 검토와 처리방침 9.4 문장이 먼저다. 지금 열려 있는 데스크톱 세션은 이어받지 않고 대화한다(23장, 계약 21장): 같은 Claude 세션에 쓰는 쪽이 둘이 되는 길이 없다.
+
+### 25-1. 흐름
+1. 줄: 이 Mac이 "쉬는"(`available`, 아무도 쥐지 않음) 세션에 **호버 · 포커스에서** "Resume here" 단추(DZ-2). 데스크톱 줄은 "Open in Claude"가 VoiceOver 추가 동작으로 남는다(보이는 단추는 하나).
+2. 누르면 줄 밑에 제자리 확인(DZ-3): "Resume this session in Taskforce?" / "Don't open it in Claude while Taskforce is working." / **Resume here** · Cancel(Cancel이 먼저 포커스, `ConfirmRow`에 `note` 칸만 더했다). 누르는 것만으로는 아무 일도 없다 — 서버도 런타임도 부르지 않는다.
+3. 확인 → `BridgeRuntime.prepareAttach`(그 순간 다시 판정: 정규 UUID · 폴더 규칙 · 겹침 · Claude Code 설치 · 버전 ≥ 2.1.257 · adapter 범위 · 로그인 · **쥔 곳 없음**) → 계획(`AttachPlan`: 로컬 id · 폴더 · 불투명 ref · bridge · nonce · 시각)을 **메모리에만** 낸다. 쓰는 것은 아무것도 없다.
+4. 서버 `POST /api/v2/agent-sessions/attach`(18-2; 본문은 로컬 id + 가상 루트뿐) → 서버가 적은 세션 행을 이 Mac이 RLS로 읽는다(`agent_sessions.id · connection_id · external_session_id`: 응답의 `session`에는 외부 id가 없어 따로 읽는다) → `BridgeRuntime.commitAttach`.
+5. 성공하면 그 세션 패널이 열린다(DZ-7: 첫 메시지 전). 목록을 다시 훑어 그 줄은 "In Taskforce"가 되어 Taskforce 절로 간다.
+6. 실패하면 줄 밑 확인이 그대로 남고 회색 한 줄(DZ-4)이 단추 밑에 선다: 닫고 다시 누르면 서버가 같은 행을 돌려주어(멱등, 18-3) 끝낸다. 핀만 꽂히고 멈춘 경우도 같다.
+
+문구는 **새 말이 계약 17장이 승인한 둘(확인 제목 · 설명 S14)뿐**이다. 거절 줄은 모두 이미 승인된 말을 재사용한다(`ExternalSessionAttachCopy.note(for:)`): 다른 곳이 쥠 → "Close it in Claude first"(데스크톱) · "Close the terminal session first"(터미널) · "Running elsewhere"(백그라운드 · 모름 · 이미 다른 Taskforce 세션이 쥠) / 판정 실패 → "Couldn't check" / 폴더 → "Folder isn't allowed" / id 모양 → "Unreadable" / 버전 → "Update Claude Code" / 준비 안 됨 → "Not connected" / 서버 → "Session didn't start". 지표 `session_attach_refused`는 25-6.
+
+### 25-2. 게이트 (보이는 조건)
+Resume here와 확인은 **새 Issues 화면 ∧ `BridgeFlag` ∧ 로그인 ∧ 서버가 이어받기를 열었음 ∧ 이 Mac의 Claude Code 대상 행이 ready**일 때만 있다(`ExternalSessionAttachModel.gate`: `unavailable` / `notReady(word)` / `ready`).
+- 서버가 열었는지는 **빈 본문으로 attach route에 한 번 묻는다**(`APIClient.agentAttachAvailability`): 서버의 검사 순서(18-2: 플래그 404 → 인증 → 베타 명단 404 → 본문 400)에 기대어 **400 = 열림**(이 사용자에게), **404 = 닫힘**, 그 밖(401 · 429 · 5xx · 네트워크)은 모름 — 모르면 닫힌 것으로 둔다. 한 시간에 한 번 묻고(모르면 1분 뒤 다시) Sessions를 열 때만 본다. 이 질문은 한도를 쓰지 않는다(본문 검사가 속도 제한보다 앞이다, 18-2). **서버에 읽기 전용 상태 route(GET)가 있으면 더 깔끔하다 — 후속 제안.**
+- 대상 행이 ready가 아니면(이 Mac에 Claude Code 연결이 없음 · Offline · Sign in needed · Unsupported) 쉬는 줄의 상태 말이 그 단어로 바뀌고 단추는 없다(8.2-8).
+- 이 PR의 시험은 모두 가짜 서버로 돈다(`ExternalSessionAttachServer` 함수 묶음) — 실제 서버에는 아무것도 하지 않는다. 견본 하네스(`-TFEdgeSnapshot…`)에는 이어받기 모델이 없어 Resume here가 보이지 않는다.
+
+### 25-3. 계약 20장 필수 조건 6개: 어디서 어떻게 지키나
+| # | 조건 | 구현 |
+|---|---|---|
+| 1 | `state.json`(`providerSessionID` · `bound=true` · `origin=attached`) 쓰기와 `pin(session:to:)`는 **로컬 Resume here 확인에서만** | 쓰는 함수는 `ClaudeSessionState.writeAttached` · `WorkspaceRegistry.attachPin` · adapter `bindAttached` 셋이고, 부르는 곳은 `BridgeRuntime.commitAttach`(+ 그 안)뿐이다. `commitAttach`는 `prepareAttach`가 낸 **한 번만 받는 계획**(`pendingAttaches`, 수명 300초)이 있어야 일하고, 부르는 곳은 `ExternalSessionAttachModel.confirm`(= 사용자가 누른 확인)뿐이다. 명령 · 푸시 · 이벤트 길에서 이 이름들이 나오지 않는다는 것을 **원본 검사 시험**(`ExternalSessionAttachSourceScanTests`)이 고정한다. 새 세션 시작 길도 이어받은 폴더에서는 거절한다(`ClaudeCodeProcess.startTurn`: `origin == .attached`면 외부 id 없는 시작을 던진다) |
+| 2 | Claude id는 **로컬 훑기의 정규 소문자 UUID**. 서버 답의 `external_session_id` · `workspace_ref`와 이 Mac의 연결이 맞는지 확인, 하나라도 다르면 거절하고 핀하지 않음 | `commitAttach`: `server.externalSessionID == plan.sessionID ∧ server.workspaceRef == plan.workspaceRef ∧ server.connectionID == 이 Mac의 연결`(후자 둘은 서버 행 RLS 읽기 + 대상 목록, `ExternalSessionAttachLive`). id 모양은 훑기 규칙(`isCanonicalUUID`) · 준비 · 클라이언트 요청 검증(`AgentAttachShape`) · 상태 쓰기 네 곳에서 따로 강제한다 |
+| 3 | 묶인 상태 폴더를 **다른 id로 덮지 않음** | `writeAttached`: 이미 묶인 · 아직 안 묶인 · 읽을 수 없는 · 다른 버전 · Taskforce가 시작한 상태는 쓰지 않는다(같은 id 반복만 멱등, 첫 시각 유지). `attachPin`: 다른 폴더에 핀이 있거나 ref가 다른 세션 것이면 거절. `bindAttached`: 같은 Claude id를 다른 Taskforce 세션 폴더가 이미 쥐고 있으면 거절 |
+| 4 | `requireBound` · registry `authorize`가 **모든 길**(턴 · 답 · 닫기 · 터미널)에서 적용, transcript 경로 대체 없음 | `ClaudeCodeProcess.requireBound`가 `startTurn` · `deliverAnswer` · `closeRequest` 모두에서 불린다(`clearExternalWriter`도 서버가 준 id ≠ 묶인 id면 띄우지 않는다). 터미널 · 기록 읽기(`BridgeRuntime+Terminal`)는 registry가 승인한(`authorize`) 핀 폴더만 `cwd`로 쓰고 기록 경로를 따로 만들지 않는다 |
+| 5 | **턴마다** 외부 writer 검사(ES-10) | `ClaudeCodeProcess.clearExternalWriter`가 이어받은 세션의 턴 · 답 · 닫기 **모든 spawn 직전에** `LiveExternalWriterCheck`를 돌린다(25-4). 쥔 곳이 있거나 · 모르거나 · 검사 길이 없으면 던진다(fail-closed) |
+| 6 | 이어받은 시각(로컬 핀 시각) **이전에 서버가 만든 명령은 거절** | `BridgeRuntime.commandPostdatesAttach`가 `runMessage`에서 명령의 `serverCreatedAt`(서버 시각을 원장의 `clockOffsetMS`로 이 Mac 시각으로 옮김, 오차 2초 허용)을 `state.json`의 `attached_at`과 비교한다. 서버 시각을 모르면 거절한다. 이유 코드 `command_before_attach` |
+
+덧붙임(P3): 이어받기 속도 제한(10분 30번)과 flag-off 404 정렬은 서버(18-2)에 이미 있고 Mac은 건드리지 않는다. `runAnswer`는 6번 검사를 하지 않는다(답은 이미 열린 턴에 대한 것이다 — 이어받기 전에 쌓인 답이 있을 수 없다).
+
+### 25-4. 턴마다의 외부 writer 검사 (ES-10)
+CLI는 같은 id를 `-p --resume`으로 둘이 동시에 돌려도 막지 않는다(19장 실측). 그래서 이어받은 세션은 **띄울 때마다** 본다(`LiveExternalWriterCheck`, `Bridge/ExternalSessions/ExternalWriterCheck.swift`):
+- 먼저 id가 정규 UUID · 폴더가 평범한 절대 경로 · 프로젝트 디렉터리 이름이 확인 가능한지 본다(아니면 `unknown` = 막음). 기록 파일 **하나의 `lstat`**(일반 파일 · 내 uid)만 읽는다: 기록 본문 · 자격 파일은 열지 않는다.
+- `~/.claude/sessions/<pid>.json` 등록 파일(허용 목록 이름만) · argv의 `--resume <id>` · 같은 cwd의 등록 안 된 `claude` · 기록이 60초 안에 쓰임(목록과 같은 `ExternalSessionHold` 규칙)을 그 세션 하나에 돌린다. 쥔 곳은 Claude 앱 · 터미널 · 백그라운드 · 모름으로 가른다.
+- **우리 자신은 외부로 세지 않는다**: 이 adapter가 띄운 살아 있는 모든 프로세스의 pid는 `ownPIDs`이고, 기록이 우리 마지막 활동(+3초) 안에 쓰였으면 우리 쓰기다. 이 검사는 `launch`가 등록까지 await 없이 가야 한다는 불변식을 위해 **세션이 비었는지 보기 전에** 한다.
+- 막히면 그 이유(`ExternalWriterVerdict`)를 이 Mac의 메모리에 기억하고(`externalHolds`) 세션 패널이 머리 아래 상태 줄로 보인다(DZ-8): "Running in Claude" · "Running in Terminal" · "Running elsewhere" · "Couldn't check". 대화에는 기존 "Session didn't start" 한 줄이 따로 선다(이 PR이 만든 말이 아니다). 다음 턴이 통과하면 지워진다. 끝난 세션에는 상태 말이 없다.
+
+### 25-5. 이어받은 세션의 resume 인자 (실측 R1–R9, ES-11 = A · ES-12 = B · ES-12b = A)
+- cwd = **원래 폴더**(핀한 폴더): 새 줄이 원래 기록 파일에 붙는다(갈래 파일 없음, `session_bound` 없음). Taskforce가 만드는 빈 개인 cwd는 이어받은 세션에는 만들지 않는다.
+- `--setting-sources ""` + `--system-prompt-snapshot off`: 사용자 · 프로젝트 설정 파일이 Taskforce의 승인 규칙과 섞이지 않는다. **CLAUDE.md는 Taskforce가 읽어(기존 지침 읽기, 한도 안) `--append-system-prompt-file`로 넘긴다**(CLI가 읽지 않으니). 프롬프트의 "다른 비어 있는 폴더" 문장은 "Your shell starts in the workspace folder."로 바뀐다.
+- `--restricted`는 쓰지 않는다(메시지 소켓이 없어진다). 훅 게이트(PreToolUse) · 승인 정책 · 경로 lease는 그대로다.
+- 터미널 열기(`Open in Terminal`)는 이어받은 세션이면 같은 원래 폴더에서 연다.
+
+### 25-6. 로그 · 지표 · 개인정보
+- 로그는 코드뿐: `attach_refused {reason}`(reason = `running_elsewhere` · `unreadable` · `folder` · `version` · `not_ready` · `server`) · `claude_external_writer {holder}` · `claude_external_writer_unchecked`. 제목 · 글 · Claude id · 폴더 경로는 남기지 않는다(시험이 로그를 grep 0으로 본다). 서버에는 로컬 id와 가상 루트만 간다(18장).
+- **`session_attach_refused` · `external_sessions_shown` 지표는 이 PR에 없다**: `metric_events` 종류 검사와 `contract.ts`(서버 마이그레이션 · 앱 insert 정책)가 필요해 이 PR의 범위 밖이다. 거절 이유 코드(`ExternalSessionAttachCopy.detail`)는 이미 계약 10장의 `detail` 말로 맞춰 두었다. 서버 PR이 종류를 더하면(18-3: 앞 목록 + `session_attached` 유지) 한 줄로 이을 수 있다.
+
+### 25-7. 시험 · 알려진 한계
+- Kit: `ExternalSessionAttachStateTests`(쓰기 규칙) · `ExternalSessionAttachLaunchTests` · `ExternalWriterCheckTests` · `WorkspaceRegistryAttachTests` · `ClaudeAttachAdapterTests`(FakeClaudeCode로 인자 · 검사 · 기억) · `ClaudeAttachRuntimeTests`(런타임 + 가짜 서버: 준비 → 서버 → 확정 · 거절 · 시간 · 명령 시각) · `ExternalSessionAttachSourceScanTests` · `ExternalSessionAttachModelTests` · `…RulesTests` · `…LiveTests` · `…BoundIDsTests` · `ExternalSessionAttachEndpointsTests`. Mac: `EdgeAttachSessionsTests`와 환경 변수 `TEST_RUNNER_TF_ATTACH_SHOTS=<폴더>`가 있을 때만 도는 촬영 시험 `AttachSnapshotTests`(라이트 · 다크, DZ-2 · 3 · 4 · 7 · 8 상태). 실제 `claude` 시험 `ClaudeRealAttachProbeTests`는 `TF_REAL_CLAUDE_PROBE_DIR=~/tf-attach-probe-*`(새 일회용 폴더)가 있을 때만 돌고 일회용 세션을 직접 만들어 쓴다 — 사용자의 실제 세션은 읽지도 말하지도 않는다.
+- 손 변이(변이 시험): 조건마다 코드를 일부러 깨 붉게 되는지 보았다(작성자 노트 `handoffs/oa-external-sessions-attach-mac-mutations.json`).
+- **확인하지 못한 것**: 서버 플래그를 켠 실제 서버와의 연결(가짜 서버만), 운영 DB RLS 읽기(`agent_sessions` 한 행), Claude 데스크톱 앱이 쥔 세션의 실제 막힘(가짜 등록 파일로만), 앱을 다시 띄운 직후 1분 안에 "방금 쓰임"이 우리 쓰기를 외부로 오인하는 일(우리 마지막 활동 기억 `lastEnded`가 메모리뿐이라 그 1분은 "Running elsewhere"로 막힐 수 있다 — 안전한 쪽으로 틀린다), 포인터 · 키보드 · VoiceOver 실사용.
+- 후속 제안: 서버 읽기 전용 이어받기 상태 route(GET), 응답 `session`에 외부 세션 id(지금은 RLS로 따로 읽는다), `session_attach_refused` · `external_sessions_shown` 지표(마이그레이션 + `contract.ts`).

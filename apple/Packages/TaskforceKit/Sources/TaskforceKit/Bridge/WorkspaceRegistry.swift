@@ -109,6 +109,58 @@ public final class WorkspaceRegistry: @unchecked Sendable {
         }
     }
 
+    // MARK: 이어받기 (OA 외부 세션 PR2m, 계약 6.1-3 · 4 · 20장 2 · 3)
+
+    /// `attachPin`의 결과
+    public enum AttachPinResult: Equatable, Sendable {
+        /// 새로 꽂았다. `ref`는 그 폴더의 불투명 id다 (서버에 보낸 값과 다를 수 있다: 이미 등록된 폴더는 자기 id를 지킨다 — 부른 쪽이 비교해 다르면 거절한다)
+        case pinned(ref: String)
+        /// 이 세션이 이미 같은 폴더에 핀이 있다 (아무것도 쓰지 않았다)
+        case samePin(ref: String)
+        /// 이 세션이 이미 다른 폴더에 핀이 있다 (옮기지 않았다: 20장 3의 덮어쓰기 없음)
+        case pinnedElsewhere
+        /// 그 id가 이미 다른 폴더의 것이다
+        case refTaken
+        /// 규칙을 통과하지 못한 폴더 · 프로젝트 폴더와 겹침 · 불투명 id 모양이 아님 · 쓰지 못함
+        case rejected
+    }
+
+    /// 이어받으려는 폴더의 realpath와 **서버에 보낼 불투명 id** (쓰지 않고 정한다): 이미 등록된 폴더는 자기 id, 아니면 새 후보다. 서버가 아직 모르는 id를 먼저 등록하면
+    /// 어느 표도 가리키지 않아 다음 쓰기가 지워 버리므로(`collect`), 핀은 서버 응답이 맞은 **뒤에** `attachPin`으로 이 id를 꽂는다.
+    /// 규칙(`WorkspaceFolderRules`)을 통과하지 못하거나 어떤 프로젝트의 지금 폴더와 겹치는 폴더면 nil (계약 13.13)
+    public func proposedRef(forPath path: String) -> (path: String, ref: String)? {
+        guard case .success(let real) = rules.validate(path), !overlapsOtherProjects(real, scope: nil) else { return nil }
+        let existing = read { tables in tables.refs.first(where: { $0.value == real })?.key }
+        return (real, existing ?? Self.refPrefix + UUID().uuidString.lowercased())
+    }
+
+    /// 이어받은 세션에 폴더 핀을 꽂는다 — **로컬 Resume here 확인만 부른다.** `pin(session:to:)`와 달리 결과를 말하고, 이미 다른 폴더에 핀이 있으면 `pinnedElsewhere`로 알린다(덮지 않는다).
+    /// 폴더에 이미 id가 있으면 그 id를 쓰고(`pinned(ref:)`에 담아 돌려준다), 없으면 `preferred`(서버에 보낸 id)를 쓴다. 불투명 id 모양이 아니거나 다른 폴더의 id면 쓰지 않는다
+    public func attachPin(session sessionID: String, to path: String, ref preferred: String) -> AttachPinResult {
+        guard Self.isOpaqueRef(preferred), case .success(let real) = rules.validate(path) else { return .rejected }
+        var outcome = AttachPinResult.rejected
+        do {
+            try write(rejectingWhen: { Self.overlaps(real, among: Self.projectFolders(in: $0)) }) { tables in
+                let key = Self.key(sessionID)
+                if let pinned = tables.sessions[key] {
+                    outcome = tables.refs[pinned] == real ? .samePin(ref: pinned) : .pinnedElsewhere
+                    return
+                }
+                if let owner = tables.refs[preferred], owner != real {
+                    outcome = .refTaken
+                    return
+                }
+                let ref = tables.refs.first(where: { $0.value == real })?.key ?? preferred
+                tables.refs[ref] = real
+                tables.sessions[key] = ref
+                outcome = .pinned(ref: ref)
+            }
+        } catch {
+            return .rejected
+        }
+        return outcome
+    }
+
     // MARK: 대화 (Ungrouped)
 
     /// Ungrouped 대화가 보내기 전에 고른 폴더. 없으면 nil

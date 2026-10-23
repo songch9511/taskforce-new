@@ -247,16 +247,19 @@ public struct ConfirmRow: View {
     let detail: String?
     let confirmLabel: String
     let busy: Bool
+    let note: String?
     let onConfirm: () -> Void
     let onCancel: () -> Void
     @FocusState private var cancelFocused: Bool
 
-    public init(_ title: String, detail: String? = nil, confirmLabel: String, busy: Bool = false,
+    /// - note: 단추 밑의 회색 한 줄 (직전 시도가 거절된 이유, 빨강 없음 — 예: "Close it in Claude first"). 없으면 줄이 없다
+    public init(_ title: String, detail: String? = nil, confirmLabel: String, busy: Bool = false, note: String? = nil,
                 onConfirm: @escaping () -> Void, onCancel: @escaping () -> Void) {
         self.title = title
         self.detail = detail
         self.confirmLabel = confirmLabel
         self.busy = busy
+        self.note = note
         self.onConfirm = onConfirm
         self.onCancel = onCancel
     }
@@ -285,6 +288,12 @@ public struct ConfirmRow: View {
                 if busy {
                     ProgressView().controlSize(.small)
                 }
+            }
+            if let note {
+                Text(note)
+                    .font(TFFont.meta)
+                    .foregroundStyle(TFColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(TFSpace.md)

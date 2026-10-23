@@ -358,6 +358,7 @@ final class IssueSampleGateway: ChatGateway, IssueScreensGateway, TaskforceReque
     private var _sources = 2
     private var _slackLeads = false
     private var _hidesConversations = false
+    private var _hasNoMessages = false
     private var _deletesConversations = false
     private var _conversationFailure: Error?
     private var _sessionReads = 0
@@ -400,6 +401,12 @@ final class IssueSampleGateway: ChatGateway, IssueScreensGateway, TaskforceReque
     var hidesConversationsFromList: Bool {
         get { lock.withLock { _hidesConversations } }
         set { lock.withLock { _hidesConversations = newValue } }
+    }
+
+    /// 세션 대화에 아직 메시지가 없다 (스냅샷: 이어받은 세션 패널의 첫 메시지 전, OA 외부 세션 PR2m DZ-7)
+    var hasNoMessages: Bool {
+        get { lock.withLock { _hasNoMessages } }
+        set { lock.withLock { _hasNoMessages = newValue } }
     }
 
     /// 대화 행을 id로 읽으면 없다 (시험: 다른 곳에서 지운 대화)
@@ -584,6 +591,7 @@ final class IssueSampleGateway: ChatGateway, IssueScreensGateway, TaskforceReque
 
     func messages(conversationID: UUID) async throws -> [ChatMessage] {
         try await gate(reads)
+        if hasNoMessages { return [] }
         return IssueSnapshotData.messages(conversationID: conversationID)
     }
 

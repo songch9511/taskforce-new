@@ -46,7 +46,13 @@ extension BridgeRuntime {
     /// 터미널 열기와 달리 지금 돌고 있어도 준다 (읽기만 한다)
     public func localTranscriptTarget(forAgentSession sessionID: UUID) async -> AgentLocalTranscriptTarget? {
         guard let (task, adapter) = await newestTask(ofSession: sessionID), let terminal = await adapter.terminalSession(task.agentSessionID) else { return nil }
-        return AgentLocalTranscriptTarget(providerSessionID: terminal.providerSessionID, cwd: terminal.sessionCwd)
+        var cwd = terminal.sessionCwd
+        // 이어받은 세션은 빈 세션 cwd가 없다: 기록은 원래 작업 폴더의 프로젝트 디렉터리에 있다 (등록부가 지금도 인정하는 핀 폴더, ES-11 · 15b)
+        if let attachable = adapter as? any AttachableSessionAdapter, await attachable.isAttached(agentSession: task.agentSessionID) {
+            guard let folder = await workspaces?.workspace(forSession: task.agentSessionID, adapter: task.adapter) else { return nil }
+            cwd = folder
+        }
+        return AgentLocalTranscriptTarget(providerSessionID: terminal.providerSessionID, cwd: cwd)
     }
 
     /// Resume here의 프로세스 검사에 쓰는 Claude 세션 id (D4a2-07): 이 Mac의 세션 폴더 상태가 묶은 id만. 상태가 없으면 nil (검사기는 "못 찾음"으로 답한다)
@@ -69,7 +75,10 @@ extension BridgeRuntime {
               await resolver.authorize(workspaceRef: folder, session: task.agentSessionID, adapter: task.adapter) else { return nil }
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: folder, isDirectory: &isDirectory), isDirectory.boolValue else { return nil }
-        return AgentTerminalTarget(providerSessionID: terminal.providerSessionID, folder: folder, executableRealPath: terminal.executableRealPath, sessionCwd: terminal.sessionCwd)
+        // 이어받은 세션: 터미널도 원래 작업 폴더에서 이어받는다 (기록이 그 폴더의 프로젝트 디렉터리에 있다). `authorize`가 이 폴더가 이 세션의 핀임을 이미 확인했다
+        var sessionCwd = terminal.sessionCwd
+        if let attachable = adapter as? any AttachableSessionAdapter, await attachable.isAttached(agentSession: task.agentSessionID) { sessionCwd = folder }
+        return AgentTerminalTarget(providerSessionID: terminal.providerSessionID, folder: folder, executableRealPath: terminal.executableRealPath, sessionCwd: sessionCwd)
     }
 }
 #endif

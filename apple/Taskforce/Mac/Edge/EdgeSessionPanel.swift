@@ -20,6 +20,8 @@ final class EdgeSessionPanelPresentation {
     private(set) var local: ClaudeAppConversation?
     /// 그 기록을 가리키는 값 (Claude 세션 id · 세션 cwd): 일의 출력 꼬리도 이것으로 읽는다
     var localTarget: AgentLocalTranscriptTarget?
+    /// 이어받은 세션의 턴이 "다른 곳에서 쥐고 있어" 막힌 이유 (이 Mac의 런타임이 기억한다, 계약 S16): 머리 아래 상태 줄이 그 말("Running in Claude" …)을 보인다. 막히지 않았으면 nil
+    var hold: ExternalWriterVerdict?
     /// 위로 올려 읽는 중이 아니다 (맨 아래를 따라간다)
     var scrollPinned = true
     /// 본문이 다시 계산돼도 대화 · 단계가 그대로면 타임라인을 다시 만들지 않는다
@@ -39,6 +41,7 @@ final class EdgeSessionPanelPresentation {
         guard key != sessionKey else { return }
         sessionKey = key
         scrollPinned = true
+        hold = nil
         steps.reset()
         timeline.reset()
         pane.attach(session: key)
@@ -188,6 +191,9 @@ struct SessionPanelView: View {
         while !Task.isCancelled {
             let elapsed = clock.now - started
             await follower.tick(now: Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18)
+            // 이어받은 세션이 다른 곳에서 쥐어 막혔으면 머리 아래 상태 줄이 그 이유를 말한다 (이 Mac의 런타임 메모리만 읽는다)
+            let hold = await runtime.attachedHold(sessionID)
+            if hold != presentation.hold, presentation.sessionKey == key { presentation.hold = hold }
             let board = runtime.backgroundBoard
             let local = presentation.local?.backgroundTasks
             if presentation.shown, board.version != lastBoardVersion || local != lastLocal {
@@ -210,7 +216,7 @@ struct SessionPanelView: View {
         let number = session.currentIssueID.flatMap { shell.issues?.numbers.number(for: $0) }
         return PanelHeader(
             title: Self.title(for: session, number: number), agent: session.agent, pill: pill(for: session),
-            status: Self.statusLine(for: session, stop: runtime.stop.presentation(session: session)), dimmed: session.isClosed
+            status: Self.statusLine(for: session, stop: runtime.stop.presentation(session: session), hold: presentation.hold), dimmed: session.isClosed
         )
     }
 
@@ -237,6 +243,12 @@ struct SessionPanelView: View {
     static func statusLine(for session: AgentSessionItem, stop: AgentStopRules.Presentation) -> String? {
         if let line = stop.line { return line.text }
         return statusLine(for: session)
+    }
+
+    /// 이어받은 세션의 턴이 다른 곳에서 쥐어 막혔으면 그 이유가 상태 줄이다 (계약 S16, DZ-8: 대화에는 기존 "Session didn't start" 한 줄 + 머리 아래 "Running in Claude"). 끝난 세션은 상태 말이 없다
+    static func statusLine(for session: AgentSessionItem, stop: AgentStopRules.Presentation, hold: ExternalWriterVerdict?) -> String? {
+        if let hold, !session.isClosed { return ExternalSessionAttachCopy.holdLine(for: hold) }
+        return statusLine(for: session, stop: stop)
     }
 
     /// 입력 영역: 읽은 대화 행이 있어야(= 대상을 알아야) 보낸다. 모르는 동안은 비활성 + 접근성 이유. 닫힌 세션 · 대화가 없는 세션은 읽기만

@@ -144,7 +144,8 @@ struct EdgeExternalSessionsTests {
     func make(
         gated: Bool = true, store: Bool = true, signedIn: Bool = true, sessions: IssueSampleGateway.SessionScenario = .none,
         desktop: ClaudeAppSessionsModel? = nil, railDone: (any RailDoneStore)? = nil, opened: ClaudeAppOpenedMetric? = nil,
-        scope givenScope: AccountScope? = nil, time: EdgeShellModelTests.ManualTime? = nil, desktopChat: ClaudeAppChatService? = nil, savedChats: SavedChatsStore? = nil
+        scope givenScope: AccountScope? = nil, time: EdgeShellModelTests.ManualTime? = nil, desktopChat: ClaudeAppChatService? = nil, savedChats: SavedChatsStore? = nil,
+        attach: ExternalSessionAttachModel? = nil
     ) -> Rig {
         let counter = Counter()
         let gate = ScanGate()
@@ -161,7 +162,7 @@ struct EdgeExternalSessionsTests {
         let shell = EdgeShellModel(
             schedule: schedule, clock: time?.clock ?? { Date() }, contexts: contexts, chatsEnabled: true, windowsEnabled: true,
             issues: gated ? issues : nil, externalSessions: store ? external : nil, desktopSessions: desktop, railDone: railDone, claudeAppOpened: opened, desktopChat: desktopChat,
-            savedChats: savedChats
+            savedChats: savedChats, attach: attach
         )
         let app = FakeClaudeApp()
         shell.claudeApp = app

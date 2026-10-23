@@ -28,7 +28,8 @@ final class FakeClaude: @unchecked Sendable {
     /// - `socket`: 소켓 답 · 읽기 예산. 기본은 넉넉한 시험 값, 소켓 시간 초과 길을 보는 시험은 `ClaudeTest.productionSocket` (18장)
     init(
         decider: ScriptedDecider = ScriptedDecider(), environment extra: [String: String] = [:], hooks: ClaudeCodeTestHooks = ClaudeCodeTestHooks(), attach: Bool = true,
-        timing: ClaudeCodeTiming = .ci, linked: Bool = false, keeper: String? = nil, socket budgets: (response: TimeInterval, read: TimeInterval) = ClaudeTest.socketBudgets
+        timing: ClaudeCodeTiming = .ci, linked: Bool = false, keeper: String? = nil, socket budgets: (response: TimeInterval, read: TimeInterval) = ClaudeTest.socketBudgets,
+        externalWriters: (any ExternalWriterChecking)? = nil
     ) throws {
         self.decider = decider
         claude = box.home.appending(path: ".local/bin/claude")
@@ -56,7 +57,8 @@ final class FakeClaude: @unchecked Sendable {
         self.timing = timing
         process = ClaudeCodeProcess(
             sessionsRoot: box.sessionsRoot, hookServer: server, helpers: helpers, locator: ClaudeCodeLocator(candidates: [claude.path], confinedTo: box.root.path),
-            environment: environment, managedSettingsPath: box.root.appending(path: "managed-settings.json").path, timing: timing, log: log, testHooks: hooks, backgroundTasks: board
+            environment: environment, managedSettingsPath: box.root.appending(path: "managed-settings.json").path, timing: timing, log: log, testHooks: hooks, backgroundTasks: board,
+            externalWriters: externalWriters
         )
         if attach { process.attach(AgentRuntimeServices(decideTool: decider.function)) }
     }

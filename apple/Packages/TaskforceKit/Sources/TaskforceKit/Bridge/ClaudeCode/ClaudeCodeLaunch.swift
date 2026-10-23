@@ -54,11 +54,16 @@ public enum ClaudeCodePrompts {
     /// 첫 턴 · 다음 턴 · 답 · 닫기 모두 같은 글이다 (spawn마다 0600 파일로 준다: `--append-system-prompt-file`. 인자에 글을 싣지 않는다).
     /// 경로에 제어(Cc) · 서식(Cf) · 줄(Zl) · 문단(Zp) 구분 글자가 있으면 싣지 않는다: 폴더 이름으로 프롬프트에 글을 끼워 넣을 수 없게 한다.
     /// 첫 줄은 늘 한 줄이고, 지침 블록은 빈 줄 뒤에 온다. 블록 표지의 `tag`는 spawn마다 무작위라(`ClaudeProjectInstructions.newTag`) 파일 글이 닫는 표지를 흉내 낼 수 없다
-    public static func v2(workspace: String, instructions: ClaudeProjectInstructions = ClaudeProjectInstructions(), tag: String = ClaudeProjectInstructions.newTag()) -> String {
+    public static func v2(
+        workspace: String, instructions: ClaudeProjectInstructions = ClaudeProjectInstructions(), tag: String = ClaudeProjectInstructions.newTag(), shellInWorkspace: Bool = false
+    ) -> String {
         guard ClaudeProjectInstructions.isPlain(path: workspace) else { return askUser }
+        // shellInWorkspace: 이어받은 세션 — 셸이 작업 폴더에서 시작한다 (cwd = 원래 폴더). 다른 세션의 첫 줄은 그대로다
+        let shell = shellInWorkspace
+            ? " Your shell starts in the workspace folder."
+            : " Your shell starts in a different, private empty directory, so use absolute paths inside the workspace folder and do not look around to find it."
         let head = askUser + " The user's chosen workspace folder for this session is: \(workspace) (absolute path)."
-            + " When the user says \"this folder\", \"here\" or \"the project\", they mean that folder."
-            + " Your shell starts in a different, private empty directory, so use absolute paths inside the workspace folder and do not look around to find it."
+            + " When the user says \"this folder\", \"here\" or \"the project\", they mean that folder." + shell
         return instructions.isEmpty ? head : ([head, projectIntro] + projectBlocks(instructions, tag: tag)).joined(separator: "\n\n")
     }
 
@@ -143,13 +148,22 @@ public enum ClaudeCodeLaunch {
 
     /// 첫 턴 · resume 인자 (13.2 :482, Q6: `--model` 생략 · 예산 상한).
     /// 시작 프롬프트는 글이 아니라 **파일 경로**로 준다(`--append-system-prompt-file`, 2.1.306 `-p`에서 실제 확인): macOS `ps`는 setuid root라
-    /// 어느 로컬 계정 · EDR이든 인자를 읽는다 — 작업 폴더 경로 · 프로젝트 지침 글이 인자에 있으면 안 된다 (검토 보안 P2)
-    public static func arguments(access: AgentAccess, workspace: String, settings: String, mcp: String, promptFile: String, session: SessionArgument) -> [String] {
+    /// 어느 로컬 계정 · EDR이든 인자를 읽는다 — 작업 폴더 경로 · 프로젝트 지침 글이 인자에 있으면 안 된다 (검토 보안 P2).
+    /// - attached: **이어받은 세션의 resume만** (OA 외부 세션 PR2m, 계약 ES-12 B · ES-12b · 19장): cwd가 사용자의 원래 폴더라 `--setting-sources project`가 그 저장소의 훅 · `env` · `apiKeyHelper`를
+    ///   읽게 되므로 **빈 sources**(인자 둘: `--setting-sources` `""`)로 저장소 · 사용자 설정이 하나도 들어오지 않게 하고(R2: `--settings`의 훅은 모든 도구에 불린다),
+    ///   기록된 시스템 프롬프트를 다시 쓰지 않게 `--system-prompt-snapshot off`로 `--append-system-prompt-file`이 먹게 한다. 나머지 인자는 그대로다.
+    ///   `--restricted`는 쓰지 않는다 (로컬 세션 간 메시지 소켓을 없앤다, R). 새 세션에는 이 갈래가 없다 (이어받은 세션이 아니다)
+    public static func arguments(
+        access: AgentAccess, workspace: String, settings: String, mcp: String, promptFile: String, session: SessionArgument, attached: Bool = false
+    ) -> [String] {
+        var isolated = false
+        if attached, case .resume = session { isolated = true }
         var arguments = [
             "-p", "--output-format", "stream-json", "--verbose", "--include-hook-events", "--max-budget-usd", ClaudeCodeSupport.maxBudgetUSD,
             "--tools", ClaudeCodeSupport.tools(for: access).joined(separator: ","), "--strict-mcp-config", "--mcp-config", mcp, "--add-dir", workspace,
-            "--settings", settings, "--setting-sources", "project", "--permission-mode", "manual", "--append-system-prompt-file", promptFile,
+            "--settings", settings, "--setting-sources", isolated ? "" : "project", "--permission-mode", "manual", "--append-system-prompt-file", promptFile,
         ]
+        if isolated { arguments += ["--system-prompt-snapshot", "off"] }
         switch session {
         case .new(let id): arguments += ["--session-id", id]
         case .resume(let id): arguments += ["--resume", id]

@@ -37,6 +37,8 @@ public struct ExternalSessionLineContent: Equatable, Sendable {
     public enum Action: Equatable, Sendable {
         /// 쉬는 데스크톱 줄: 그 세션을 Claude 데스크톱 앱에서 연다 (`claude --desktop --resume <id>`, 실패하면 앱만 앞으로). Claude 앱이 이미 쥔 줄(Running in Claude): 앱만 앞으로 (CLI는 "open in another terminal"로 거절한다, 실측 2026-10-22)
         case openInClaude
+        /// 아무 곳에서도 열려 있지 않은 줄(Idle): 그 세션을 Taskforce 세션으로 이어받는다 (OA 외부 세션 PR2m: 서버가 이어받기를 열었고 이 Mac의 대상이 ready일 때만)
+        case resumeHere
     }
 
     public var title: String
@@ -46,6 +48,8 @@ public struct ExternalSessionLineContent: Equatable, Sendable {
     /// 상태 말 뒤에 오는 조각 (이유 · 시각 · 출처), `·`로 이어 쓴다
     public var detail: [String]
     public var action: Action?
+    /// 눈에 보이는 버튼(`action`) 말고 VoiceOver 동작으로만 남는 동작 (Resume here가 보일 때 쉬는 데스크톱 줄의 Open in Claude)
+    public var extraActions: [Action] = []
     /// 방금 누른 동작이 아직 도는 중이다: 버튼 글자가 `ExternalSessionCopy.opening`이 되고 줄을 그리는 쪽이 버튼을 비활성으로 보인다 (`actionTitle`)
     public var isBusy = false
 
@@ -66,8 +70,16 @@ public struct ExternalSessionLineContent: Equatable, Sendable {
     /// "{제목} — {둘째 줄}"
     public var accessibilityName: String { "\(title) — \(metaText)" }
 
-    /// 오른쪽 버튼의 글자: 여는 동안은 "Opening…"(비활성), 그 밖에는 "Open in Claude"
-    public var actionTitle: String { isBusy ? ExternalSessionCopy.opening : ExternalSessionCopy.openInClaude }
+    /// 오른쪽 버튼의 글자: Resume here는 "Resume here", Open in Claude는 여는 동안 "Opening…"(비활성) 그 밖에는 "Open in Claude"
+    public var actionTitle: String { title(of: action ?? .openInClaude) }
+
+    /// 한 동작의 글자 (VoiceOver 동작 이름도 이것이다)
+    public func title(of action: Action) -> String {
+        switch action {
+        case .resumeHere: ExternalSessionAttachCopy.resumeHere
+        case .openInClaude: isBusy ? ExternalSessionCopy.opening : ExternalSessionCopy.openInClaude
+        }
+    }
 }
 
 public enum ExternalSessionLineText {

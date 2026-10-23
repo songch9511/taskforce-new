@@ -690,6 +690,33 @@ public struct AgentResumeResponse: Decodable, Sendable, Hashable {
     }
 }
 
+// MARK: - 외부 세션 이어받기 (OA 외부 세션 PR2m, 서버 PR2s: `POST /api/v2/agent-sessions/attach`)
+
+/// 이어받기 응답 `{ status, conversation_id, workspace_ref, session }` (서버 `attachAgentSessionResponseSchema`). 201 `created` · 200 `existing`(같은 Claude id가 이미 묶여 있다, 멱등).
+/// `workspace_ref`는 **서버에 저장된 값**이다: `existing`은 다른 기기의 옛 값을 돌려줄 수 있어 앱이 보낸 값과 같은지 확인한다 (`AttachServerFacts`). 응답의 `session`에는 외부 세션 id가 없다 —
+/// 그 값은 이 Mac이 RLS로 그 행을 읽어 대조한다
+public struct AttachAgentSessionResponse: Decodable, Sendable, Hashable {
+    public enum Status: String, Decodable, Sendable { case created, existing }
+
+    public let status: Status
+    public let conversationID: UUID
+    public let workspaceRef: String
+    public let session: AgentSessionRow
+
+    enum CodingKeys: String, CodingKey {
+        case status, session
+        case conversationID = "conversation_id"
+        case workspaceRef = "workspace_ref"
+    }
+
+    public init(status: Status, conversationID: UUID, workspaceRef: String, session: AgentSessionRow) {
+        self.status = status
+        self.conversationID = conversationID
+        self.workspaceRef = workspaceRef
+        self.session = session
+    }
+}
+
 // MARK: - 대상 목록 (계약 4.5 · OD-20)
 
 /// 에이전트 대상의 상태. `unreachable`(heartbeat 90초 넘음)과 `sign_in_needed`(D1d는 내지 않는다, D2a에서 온다)를 모두 읽는다
