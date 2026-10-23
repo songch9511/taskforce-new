@@ -170,20 +170,22 @@ struct SubagentTreePaneTests {
         await settle(hosting)
         let before = scrollView.contentView.bounds.origin.y
         #expect(before > 100)
+        // 1pt까지는 반올림이다(CI의 1배율 화면에서 반 pt가 한 픽셀 = 1pt로 맞춰진다). 줄 하나가 밀리면 수십 pt가 움직인다
+        let drift: CGFloat = 1
         // 갱신 1: 열 개가 끝나 순서가 바뀐다 · 갱신 2: 새 자식 다섯 · 갱신 3: 하나가 실패한다
         var updated = family(children: 50)
         for index in 0..<10 { updated.apply(.finished(taskID: "c\(index)", kind: .agent, status: .done, exitCode: nil, at: at(100 + TimeInterval(index)))) }
         pane.tasks = updated
         await settle(hosting)
-        #expect(abs(scrollView.contentView.bounds.origin.y - before) < 1, "순서가 바뀌어도 스크롤 자리는 그대로: \(scrollView.contentView.bounds.origin.y) / \(before)")
+        #expect(abs(scrollView.contentView.bounds.origin.y - before) <= drift, "순서가 바뀌어도 스크롤 자리는 그대로: \(scrollView.contentView.bounds.origin.y) / \(before)")
         for index in 50..<55 { updated.apply(child(index), now: at(120)) }
         pane.tasks = updated
         await settle(hosting)
-        #expect(abs(scrollView.contentView.bounds.origin.y - before) < 1)
+        #expect(abs(scrollView.contentView.bounds.origin.y - before) <= drift, "새 자식이 와도 스크롤 자리는 그대로: \(scrollView.contentView.bounds.origin.y) / \(before)")
         updated.apply(.finished(taskID: "c30", kind: .agent, status: .failed, exitCode: nil, at: at(130)))
         pane.tasks = updated
         await settle(hosting)
-        #expect(abs(scrollView.contentView.bounds.origin.y - before) < 1)
+        #expect(abs(scrollView.contentView.bounds.origin.y - before) <= drift, "실패해도 스크롤 자리는 그대로: \(scrollView.contentView.bounds.origin.y) / \(before)")
         #expect(pane.treeRows.count == 56)
     }
 
