@@ -257,6 +257,17 @@ final class ExternalSessionsEnvironment: @unchecked Sendable {
         return await existing.scanner.recheck(id: id)
     }
 
+    /// 데스크톱 세션과의 대화를 서버에 저장할 때 쓰는 이 세션의 표시 (OA PR-D3, 계약 25.2): 이 Mac의 bridge id · 세션 UUID의 HMAC ref(`external_sessions`와 같은 열쇠) · 제목 · ref 열쇠.
+    /// bridge가 아직 없거나 열쇠를 둘 수 없으면 nil (올리지 않는다). Claude 세션 id · 경로는 이 값에 없다
+    func chatIdentity(sessionID: String, title: String?) async -> ClaudeAppChatIdentity? {
+        guard let context = await context(), let runtime = context.runtime, let bridge = await runtime.localBridgeID(),
+              let key = try? FileExternalSessionKeyStore(directory: context.paths.partitionDirectory).loadOrCreate() else { return nil }
+        return ClaudeAppChatIdentity(
+            context: ClaudeAppChatContext(bridgeID: bridge, sessionRef: key.ref(forSessionID: sessionID), title: title.flatMap(ExternalSessionRules.sanitizedTitle)),
+            ref: { key.chatRef($0) }
+        )
+    }
+
     /// 지금의 계정 · bridge (로그아웃 · 다른 계정이면 nil 또는 다른 값)
     func currentOrigin() async -> ExternalSessionOrigin? {
         guard let context = await context() else { return nil }
@@ -284,15 +295,23 @@ final class ExternalSessionsEnvironment: @unchecked Sendable {
         if let existing = lock.withLock({ scanner }), existing.partition == id { return existing.scanner }
         // 열쇠를 두지 못하면 목록을 내지 않는다 (id 없이 서버로 보낼 수 없다)
         guard let key = try? FileExternalSessionKeyStore(directory: context.paths.partitionDirectory).loadOrCreate() else { return nil }
-        let sessionsRoot = context.paths.sessionsRoot
-        let configuration = ExternalSessionScanner.Configuration(
-            claudeDirectory: home + "/.claude", folderRules: ExternalSessionFolderRules.lexical(home: home, protectedRoots: context.paths.protectedRoots),
-            protectedRoots: context.paths.protectedRoots, taskforceSessionIDs: { Self.taskforceSessionIDs(sessionsRoot: sessionsRoot) },
+        let configuration = Self.scannerConfiguration(
+            home: home, protectedRoots: context.paths.protectedRoots, sessionsRoot: context.paths.sessionsRoot,
             installedCLIVersion: { [weak self] in self?.lock.withLock { self?.currentVersion } }
         )
         let made = ExternalSessionScanner(configuration: configuration, key: key)
         lock.withLock { scanner = (id, made) }
         return made
+    }
+
+    /// "On this Mac" 훑기의 설정. **우리 중계 `claude`(데스크톱 세션과 대화, PR-D3)의 pid는 목록에서 뺀다**: 이 실행이 지금 띄운 중계 pid(`ClaudeAppRelayPIDs.shared`)를 읽는다 (OA PR-D3 검토 P3-16: 시험이 이 연결을 본다)
+    static func scannerConfiguration(
+        home: String, protectedRoots: [String], sessionsRoot: URL, installedCLIVersion: @escaping @Sendable () -> String?
+    ) -> ExternalSessionScanner.Configuration {
+        ExternalSessionScanner.Configuration(
+            claudeDirectory: home + "/.claude", folderRules: ExternalSessionFolderRules.lexical(home: home, protectedRoots: protectedRoots), protectedRoots: protectedRoots,
+            taskforceSessionIDs: { taskforceSessionIDs(sessionsRoot: sessionsRoot) }, ownPIDs: { ClaudeAppRelayPIDs.shared.current }, installedCLIVersion: installedCLIVersion
+        )
     }
 
     /// Taskforce가 띄운 세션의 Claude id (세션 폴더의 `state.json`): 목록에서 뺀다
@@ -352,23 +371,40 @@ enum ClaudeAppRuntime {
     struct Made {
         let sessions: ClaudeAppSessionsModel
         let opened: ClaudeAppOpenedMetric
+        /// 데스크톱 세션과 대화하는 흐름 (OA PR-D3): `ClaudeAppRelayGate`가 꺼진 빌드(Release)에는 없다
+        let chat: ClaudeAppChatService?
+
+        init(sessions: ClaudeAppSessionsModel, opened: ClaudeAppOpenedMetric, chat: ClaudeAppChatService? = nil) {
+            self.sessions = sessions
+            self.opened = opened
+            self.chat = chat
+        }
     }
 
     /// - home: 시험은 임시 홈을 넘긴다. 실제 앱은 사용자의 홈 (`~/.claude`는 읽기만 한다)
     /// - done: 안 연 끝남 표시의 저장소. 기본값이 없다 — 실제 앱은 `AppRuntime`이 만든 영속 저장소를 넘기고(`ChatRuntime.doneStores`), 어디선가 메모리 저장소로 이어지지 않게 부르는 쪽이 늘 정한다
+    /// - chatEnabled: 데스크톱 세션과 대화하는 기능의 게이트 (`ClaudeAppRelayGate`: Debug · 내부 배포 빌드만 켜짐). 시험은 값으로 넘겨 Release 갈래를 본다
     static func make(
-        services: AppServices?, scope: AccountScope?, externalSessions: ExternalSessionsStore?, home: String = NSHomeDirectory(), done: any ClaudeAppDoneStore
+        services: AppServices?, scope: AccountScope?, externalSessions: ExternalSessionsStore?, home: String = NSHomeDirectory(), done: any ClaudeAppDoneStore,
+        chatEnabled: Bool = ClaudeAppChatRuntime.enabledForThisRun
     ) -> Made? {
         guard externalSessions != nil, let services, let scope else { return nil }
         let log = BridgeOSLog()
         let agents = ClaudeAgentsLister.live(locator: .standard(home: home), log: log)
-        let poller = ClaudeAppStatusPoller(sessionsDirectory: home + "/.claude/sessions", agents: { await agents.list() }, log: log)
+        // 중계(PR-D3)는 레일 폴러보다 먼저 만든다: 폴러가 중계의 pid를 뺀다 (중계 `claude`는 `sdk-cli`라 레일에 오르지 않지만, 정체를 아는 값은 모두 같은 곳에서 뺀다)
+        let relay = chatEnabled ? ClaudeAppChatRuntime.makeRelay(home: home, log: log) : nil
+        let poller = makePoller(home: home, agents: { await agents.list() }, log: log)
         let sessions = ClaudeAppSessionsModel(poll: { await poller.poll() }, scope: scope, done: done)
         let api = services.api
         let opened = ClaudeAppOpenedMetric(send: { (try? await api.claudeAppSessionOpened()) != nil }, scope: scope, log: log)
-        return Made(sessions: sessions, opened: opened)
+        let chat = relay.map { ClaudeAppChatRuntime.makeService(relay: $0, api: api, scope: scope, desktop: sessions, externalSessions: externalSessions, home: home, log: log) }
+        return Made(sessions: sessions, opened: opened, chat: chat)
     }
 
+    /// 레일의 폴러. **우리 중계 `claude`의 pid는 데스크톱 세션에서 뺀다** (`ClaudeAppRelayPIDs.shared`): 이 연결을 시험이 본다 (OA PR-D3 검토 P3-16)
+    static func makePoller(home: String, agents: @escaping @Sendable () async -> [ClaudeAgentsItem]?, log: any BridgeLogSink) -> ClaudeAppStatusPoller {
+        ClaudeAppStatusPoller(sessionsDirectory: home + "/.claude/sessions", ownPIDs: { ClaudeAppRelayPIDs.shared.current }, agents: agents, log: log)
+    }
 }
 
 /// 안 연 끝남 표시의 두 저장소 (계약 23장): 레일 링(Taskforce 세션 · 이슈)과 Claude 데스크톱 링. `ChatRuntime`이 들고 셸 컨트롤러가 그대로 쓴다.

@@ -43,6 +43,26 @@ targets:
     supportedDestinations: [macOS]
     sources:
       - path: Taskforce
+        excludes:
+          # 데스크톱 세션과 대화하는 중계 mod (OA PR-D3k): 아래 세 파일만 폴더 모양 그대로 번들에 넣는다 (`tests/`의 mod 시험은 번들에 넣지 않는다)
+          - "Resources/tf-relay/**"
+      # 번들 `Contents/Resources/tf-relay/{.claude-plugin/plugin.json, hooks/hooks.json, hooks/register.js}`: 서명된 번들 안 읽기 전용 경로. `claude --plugin-dir`는 이 경로만 쓰고,
+      # 띄우기 전에 Kit(`ClaudeAppRelayMod`)이 파일 셋과 SHA-256을 상수와 맞춰 본다 (파일을 고치면 그 상수도 함께 고친다)
+      - path: Taskforce/Resources/tf-relay/.claude-plugin/plugin.json
+        buildPhase:
+          copyFiles:
+            destination: resources
+            subpath: tf-relay/.claude-plugin
+      - path: Taskforce/Resources/tf-relay/hooks/hooks.json
+        buildPhase:
+          copyFiles:
+            destination: resources
+            subpath: tf-relay/hooks
+      - path: Taskforce/Resources/tf-relay/hooks/register.js
+        buildPhase:
+          copyFiles:
+            destination: resources
+            subpath: tf-relay/hooks
     dependencies:
       - package: TaskforceKit
         product: TaskforceKit
