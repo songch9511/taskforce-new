@@ -126,6 +126,8 @@ enum SettingsWindowConfirm: Hashable {
     case removeFolder(UUID)
     /// Connections › Macs: 그 Mac 지우기 (6.4)
     case removeMac(UUID)
+    /// Account › Saved chats: 저장된 대화 모두 지우기 (OA D3v-m, 계약 27장 Q-D3v2)
+    case deleteAllSavedChats
 }
 
 /// 창의 상세 · 확인 상태. 탭은 `settings.tab`에 저장되고(마지막 탭을 기억), 상세 · 확인은 창 밖에서 열면 지운다.
@@ -151,6 +153,8 @@ final class SettingsWindowModel {
     }
     /// 위 셸이 바뀔 때마다 오른다: 창이 그려진 뒤에 셸이 생겨도 목록이 다시 그려진다 (셸 자체는 약한 참조라 관찰하지 않는다)
     private(set) var panelKeysShellVersion = 0
+    /// Account › Saved chats가 읽고 지우는 저장소 (OA D3v-m): Edge 셸 컨트롤러가 만들어질 때 스스로 올린다 (Sessions의 절과 같은 저장소). 셸이 없거나 목록 게이트가 꺼져 있으면 nil이라 절이 없다
+    var savedChats: SavedChatsStore?
 
     /// 창 제목: 연 상세, 없으면 탭 이름 (그 탭의 상세만)
     func title(on tab: SettingsWindowTab) -> String {
@@ -218,6 +222,14 @@ final class SettingsWindowModel {
     func accountChanged(to userID: UUID?) {
         guard plan.owner != nil, plan.owner != userID else { return }
         plan.invalidate()
+    }
+
+    /// 확인 줄의 Delete all · 실패 줄의 Try again (OA D3v-m): 서버에 한 번 보낸다. 지우는 동안 확인 줄이 바쁘고, 끝나면 확인 줄을 닫는다 (남았으면 실패 줄이, 다 지워졌으면 줄이 없다)
+    func deleteAllSavedChats() async {
+        guard let store = savedChats, store.deleteAllState != .deleting else { return }
+        confirming = .deleteAllSavedChats
+        await store.deleteAllChats()
+        confirming = nil
     }
 
     /// 대화 · 기억 상태에 붙는다: 계정이 떠나면 열린 기억 상세를 닫는다 (다른 계정의 기억 id로 상세가 남지 않게)
@@ -389,6 +401,8 @@ enum SettingsWindowSection: String, CaseIterable, Identifiable {
     case macsNotice
     /// Account › Plan & usage (OA 결제 PR-C): 플랜 · 환불 · Lifetime의 OpenRouter 키. Notice 하나는 이 절 맨 위에 선다
     case planAndUsage
+    /// Account › Saved chats (OA D3v-m): 저장된 데스크톱 대화 모두 지우기. 저장소가 있을 때만 주제 목록에 오르고, 저장된 대화가 없으면 그리지 않는다 (`sections(_:macsNotice:savedChats:)`)
+    case savedChats
     /// Execution › Spending outside Taskforce (DS ExternalCosts): 다른 곳에서 내는 비용 (Claude Code 한 줄)
     case externalCosts
     case runWithAI
@@ -409,6 +423,7 @@ enum SettingsWindowSection: String, CaseIterable, Identifiable {
         case .yourAgents: AgentSettingsCopy.sectionTitle
         case .runWithAI: "Run with AI"
         case .planAndUsage: PlanCopy.sectionTitle
+        case .savedChats: SavedChatsCopy.title
         case .externalCosts: PlanCopy.spendingTitle
         case .notifications: "Notifications"
         case .launcher: "Launcher"
@@ -426,9 +441,11 @@ enum SettingsWindowAccess: Equatable {
 extension SettingsWindowTab {
     /// 탭의 주제, 위에서부터. 아직 연결되지 않은 것(`SettingsWindowHidden`)은 넣지 않는다.
     /// `macsNotice`: 이 계정의 Mac이 10대라 Connections 탭 맨 위에 Notice 하나가 선다 (README "at most one Notice")
-    func sections(_ access: SettingsWindowAccess, macsNotice: Bool = false) -> [SettingsWindowSection] {
+    /// `savedChats`: 이 셸에 저장된 대화 저장소가 있다 (Account에 Saved chats 주제가 선다. 저장된 대화가 없으면 그 주제는 아무것도 그리지 않는다)
+    func sections(_ access: SettingsWindowAccess, macsNotice: Bool = false, savedChats: Bool = false) -> [SettingsWindowSection] {
         switch (self, access) {
-        case (.account, .signedIn): [.profile, .signIn, .planAndUsage, .remembered, .deleteAccount, .about, .legal]
+        case (.account, .signedIn):
+            [.profile, .signIn, .planAndUsage, .remembered] + (savedChats ? [.savedChats] : []) + [.deleteAccount, .about, .legal]
         // 로그아웃: 로그인 화면, 그 아래 About · 링크는 그대로 (읽는 중이면 로그인 자리에 진행 표시)
         case (.account, _): [.signIn, .about, .legal]
         case (.connections, .signedIn): (macsNotice ? [.macsNotice] : []) + [.aiProcessing, .sources, .moreServices, .yourAgents]
