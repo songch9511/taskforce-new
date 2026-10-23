@@ -34,6 +34,25 @@ struct SessionTimelineTests {
         entries.compactMap { if case .clock(let clock) = $0 { clock } else { nil } }.first
     }
 
+    /// 끝난 턴의 줄들 (사용자 결정 2026-10-23): 일한 시간은 답 **바로 위**, 복사는 답 **바로 밑**, 답 없는 턴의 시간은 턴의 끝
+    private func worked(_ answerID: String, _ seconds: TimeInterval) -> SessionFooter {
+        SessionFooter(id: "worked-\(answerID)", workedFor: seconds, copyText: nil, aboveAnswer: true)
+    }
+    private func copyLine(_ answerID: String, _ text: String? = nil) -> SessionFooter { SessionFooter(id: "footer-\(answerID)", workedFor: nil, copyText: text ?? "answer \(answerID)") }
+    private func endLine(_ lastID: String, _ seconds: TimeInterval) -> SessionFooter { SessionFooter(id: "footer-\(lastID)", workedFor: seconds, copyText: nil) }
+
+    /// 줄들의 모양 (순서 확인용): 항목 id · "steps:a,b" · "worked:<줄 id>" (답 위 시간) · "copy:<줄 id>" (답 밑 복사) · "end:<줄 id>" (턴 끝 시간) · "clock"
+    private func shape(_ entries: [SessionEntry]) -> [String] {
+        entries.map {
+            switch $0 {
+            case .item(let id): id
+            case .steps(let run): "steps:" + run.stepIDs.joined(separator: ",")
+            case .footer(let footer): footer.aboveAnswer ? "worked:\(footer.id)" : (footer.copyText != nil ? "copy:\(footer.id)" : "end:\(footer.id)")
+            case .clock: "clock"
+            }
+        }
+    }
+
     // MARK: 묶기 (E3)
 
     @Test func threeConsecutiveStepsStayAsLinesAndFourBecomeOneGroup() {
@@ -97,46 +116,53 @@ struct SessionTimelineTests {
 
     // MARK: 답 밑 줄 (E5)
 
-    @Test func theLastAnswerOfAFinishedTurnGetsTheWorkedTimeAndItsCopyText() {
+    /// 사용자 결정(2026-10-23): 끝난 턴은 단계 · 이벤트 줄(묶음) → "Worked for …"(시간만) → 마지막 답 → 복사 아이콘(답 바로 밑)이다.
+    /// 마지막 답 뒤에 이어진 단계는 시간 줄 앞으로 올라온다 (단계끼리의 순서는 그대로)
+    @Test func theWorkedTimeSitsAboveTheLastAnswerAndItsCopyUnderIt() {
         let items = [user("u", 0), step("a"), answer("m", 4, text: "I'll read first."), step("b"), answer("r", 252, text: "Final **answer**")]
         let entries = SessionTimeline.build(items, state: .finished)
-        #expect(footers(entries) == [SessionFooter(id: "footer-r", workedFor: 252, copyText: "Final **answer**")])
-        #expect(entries.last == .footer(SessionFooter(id: "footer-r", workedFor: 252, copyText: "Final **answer**")), "줄은 마지막 답 바로 밑이다")
+        #expect(shape(entries) == ["u", "steps:a", "m", "steps:b", "worked:worked-r", "r", "copy:footer-r"])
+        #expect(footers(entries) == [worked("r", 252), copyLine("r", "Final **answer**")])
     }
 
-    /// 리뷰 P3 + 결정(코디네이터): 복사할 글은 턴의 **마지막 답**이다. 답 뒤에 이벤트 줄 · 단계가 붙으면 복사 아이콘은 **그 답 바로 밑**에 서고(복사만),
-    /// "Worked for"는 턴의 끝에 따로 선다 (시간만). 답이 턴의 끝이면 한 줄에 둘 다 (v2 그림)
-    @Test func anEventRowAfterTheAnswerKeepsTheCopyUnderTheAnswerAndTheTimeAtTheEnd() {
-        let entries = SessionTimeline.build([user("u", 0), answer("r", 60, text: "The **answer**"), event("e", 61)], state: .finished)
-        #expect(entries == [
-            .item("u"), .item("r"), .footer(SessionFooter(id: "footer-r", workedFor: nil, copyText: "The **answer**")),
-            .item("e"), .footer(SessionFooter(id: "footer-e", workedFor: 61, copyText: nil)),
-        ])
-    }
-
-    @Test func stepsAfterTheAnswerKeepTheCopyUnderTheAnswerAndTheTimeAfterTheSteps() throws {
+    @Test func stepsAfterTheAnswerMoveUpBeforeTheTimeLineKeepingTheirOrder() {
         let entries = SessionTimeline.build([user("u", 0), answer("r", 30, text: "done"), step("a", "Read", 40), step("b", "Grep", 41)], state: .finished)
-        try #require(entries.count == 5, "줄: 말 · 답 · 복사 · 단계 · 시간")
-        #expect(entries[0] == .item("u") && entries[1] == .item("r"))
-        #expect(entries[2] == .footer(SessionFooter(id: "footer-r", workedFor: nil, copyText: "done")), "복사는 답 바로 밑")
-        #expect(runs(entries).first?.stepIDs == ["a", "b"])
-        #expect(entries[4] == .footer(SessionFooter(id: "footer-b", workedFor: 41, copyText: nil)), "시간은 턴의 끝")
+        #expect(shape(entries) == ["u", "steps:a,b", "worked:worked-r", "r", "copy:footer-r"])
+        #expect(footers(entries) == [worked("r", 41), copyLine("r", "done")], "시간은 턴 전체 (가장 늦은 항목까지)")
+    }
+
+    @Test func stepsAfterTheAnswerJoinTheStepsBeforeItInOneFoldedGroup() {
+        let entries = SessionTimeline.build([user("u", 0), step("a"), step("b"), step("c"), answer("r", 30), step("d")], state: .finished)
+        #expect(runs(entries).count == 1 && first(runs(entries)).stepIDs == ["a", "b", "c", "d"] && first(runs(entries)).isGroup, "이어 붙은 단계는 한 묶음이다")
+        #expect(shape(entries) == ["u", "steps:a,b,c,d", "worked:worked-r", "r", "copy:footer-r"])
+    }
+
+    @Test func anEventRowAfterTheAnswerKeepsItsPlaceAfterTheCopy() {
+        let entries = SessionTimeline.build([user("u", 0), answer("r", 60, text: "The **answer**"), event("e", 61)], state: .finished)
+        #expect(shape(entries) == ["u", "worked:worked-r", "r", "copy:footer-r", "e"], "이벤트 줄은 시간순 그대로 답 · 복사 뒤에")
+        #expect(footers(entries) == [worked("r", 61), copyLine("r", "The **answer**")])
+    }
+
+    @Test func stepsAndEventsAfterTheAnswerOnlyTheStepsMoveUp() {
+        let entries = SessionTimeline.build([user("u", 0), answer("r", 60), event("e", 61), step("s", "Bash", 62)], state: .finished)
+        #expect(shape(entries) == ["u", "steps:s", "worked:worked-r", "r", "copy:footer-r", "e"])
     }
 
     @Test func theCopyIsTheLastAnswerOfTheTurnNotTheLastRowAndSitsUnderIt() {
         let items = [user("u", 0), answer("m1", 5, text: "first"), event("e1", 6), answer("m2", 20, text: "second"), event("e2", 21), event("e3", 22)]
         let entries = SessionTimeline.build(items, state: .finished)
-        #expect(footers(entries).compactMap(\.copyText) == ["second"])
-        let index = entries.firstIndex(of: .item("m2")) ?? entries.count
-        #expect(entries.dropFirst(index + 1).first == .footer(SessionFooter(id: "footer-m2", workedFor: nil, copyText: "second")), "복사는 마지막 답 바로 밑")
-        #expect(entries.last == .footer(SessionFooter(id: "footer-e3", workedFor: 22, copyText: nil)))
+        #expect(shape(entries) == ["u", "m1", "e1", "worked:worked-m2", "m2", "copy:footer-m2", "e2", "e3"], "시간은 마지막 답 바로 위, 복사는 바로 밑")
+        #expect(footers(entries) == [worked("m2", 22), copyLine("m2", "second")])
         let blankLast = [user("u", 0), answer("m1", 5, text: "first"), answer("m2", 20, text: "  \n"), event("e", 21)]
-        #expect(footers(SessionTimeline.build(blankLast, state: .finished)).compactMap(\.copyText).isEmpty, "마지막 답이 비었으면 앞의 답을 대신 복사하지 않는다")
+        let blank = SessionTimeline.build(blankLast, state: .finished)
+        #expect(footers(blank).compactMap(\.copyText).isEmpty, "마지막 답이 비었으면 앞의 답을 대신 복사하지 않는다")
+        #expect(shape(blank) == ["u", "m1", "m2", "e", "end:footer-e"], "답이 없는 턴처럼 시간은 턴의 끝")
     }
 
-    @Test func aTurnWhoseAnswerIsNotLastAndUnderTenSecondsHasOnlyTheCopyUnderTheAnswer() {
-        let entries = SessionTimeline.build([user("u", 0), answer("r", 3, text: "quick"), event("e", 4)], state: .finished)
-        #expect(footers(entries) == [SessionFooter(id: "footer-r", workedFor: nil, copyText: "quick")], "10초 미만이면 시간 줄은 없다")
+    @Test func underTenSecondsThereIsNoTimeLineButStepsStillMoveAboveTheAnswer() {
+        let entries = SessionTimeline.build([user("u", 0), answer("r", 3, text: "quick"), step("s", "Read", 4)], state: .finished)
+        #expect(shape(entries) == ["u", "steps:s", "r", "copy:footer-r"], "10초 미만이면 시간 줄이 없다 (자리는 그대로 안정적이다)")
+        #expect(footers(entries) == [copyLine("r", "quick")])
     }
 
     @Test func everyFooterIdOfAConversationIsUniqueSoOnlyTheHoveredAnswerRevealsItsCopy() {
@@ -146,6 +172,7 @@ struct SessionTimelineTests {
         ]
         let ids = footers(SessionTimeline.build(items, state: .finished)).map(\.id)
         #expect(Set(ids).count == ids.count && ids.contains("footer-r1") && ids.contains("footer-r2") && ids.contains("footer-r3"))
+        #expect(ids.contains("worked-r1") && ids.contains("worked-r2") && ids.contains("worked-r3"))
     }
 
     @Test func aTurnWithOnlyAnEventAfterTheAskHasNoCopy() {
@@ -154,16 +181,16 @@ struct SessionTimelineTests {
 
     @Test func aTurnUnderTenSecondsKeepsTheCopyAndDropsTheTime() {
         let entries = SessionTimeline.build([user("u", 0), answer("r", 9)], state: .finished)
-        #expect(footers(entries) == [SessionFooter(id: "footer-r", workedFor: nil, copyText: "answer r")])
+        #expect(footers(entries) == [copyLine("r")])
         let ten = SessionTimeline.build([user("u", 0), answer("r", 10)], state: .finished)
-        #expect(footers(ten).first?.workedFor == 10)
+        #expect(footers(ten) == [worked("r", 10), copyLine("r")], "10초부터 시간 줄이 답 위에 선다")
     }
 
     @Test func aTurnWithoutTimestampsHasNoTimeButStillCopies() {
         let entries = SessionTimeline.build([user("u", nil), answer("r", nil)], state: .finished)
-        #expect(footers(entries) == [SessionFooter(id: "footer-r", workedFor: nil, copyText: "answer r")])
+        #expect(footers(entries) == [copyLine("r")])
         let halfKnown = SessionTimeline.build([user("u", 0), answer("r", nil)], state: .finished)
-        #expect(footers(halfKnown).first?.workedFor == nil)
+        #expect(footers(halfKnown) == [copyLine("r")], "끝을 모르면 시간 줄이 없다")
     }
 
     @Test func aTurnWithNeitherAnAnswerNorATimeHasNoLine() {
@@ -173,23 +200,26 @@ struct SessionTimelineTests {
 
     @Test func aFinishedTurnWithoutAnAnswerButLongEnoughStillSaysHowLongItWorked() {
         let entries = SessionTimeline.build([user("u", 0), step("a", "Read", 20)], state: .finished)
-        #expect(footers(entries) == [SessionFooter(id: "footer-a", workedFor: 20, copyText: nil)])
+        #expect(footers(entries) == [endLine("a", 20)])
+        #expect(shape(entries) == ["u", "steps:a", "end:footer-a"], "답이 없는 턴의 시간은 턴의 끝 (그대로)")
     }
 
     @Test func theCopyTextBelongsToTheLastAnswerEvenWhenAStepFollowsIt() {
-        // 마지막 답 뒤에 단계가 더 있다 (v1은 복사를 버렸다: 리뷰 P3): 복사는 그 답 바로 밑(복사만), 시간은 턴의 끝(시간만, 턴 전체)이다
+        // 마지막 답 뒤에 단계가 더 있다 (v1은 복사를 버렸다: 리뷰 P3): 단계는 시간 줄 앞으로 올라오고, 복사는 그 답 바로 밑이다
         let entries = SessionTimeline.build([user("u", 0), answer("r", 20), step("a", "Bash", 40)], state: .finished)
-        #expect(footers(entries) == [SessionFooter(id: "footer-r", workedFor: nil, copyText: "answer r"), SessionFooter(id: "footer-a", workedFor: 40, copyText: nil)])
-        #expect(entries.last == .footer(SessionFooter(id: "footer-a", workedFor: 40, copyText: nil)))
+        #expect(footers(entries) == [worked("r", 40), copyLine("r")])
+        #expect(shape(entries) == ["u", "steps:a", "worked:worked-r", "r", "copy:footer-r"])
+        #expect(entries.last == .footer(copyLine("r")), "복사 아이콘이 턴의 끝이다")
     }
 
     @Test func everyTurnOfAConversationHasItsOwnLine() {
         let items = [user("u1", 0), answer("r1", 18), user("u2", 100), step("a"), answer("r2", 163), user("u3", 400), answer("r3", 405)]
-        let found = footers(SessionTimeline.build(items, state: .finished))
-        #expect(found == [
-            SessionFooter(id: "footer-r1", workedFor: 18, copyText: "answer r1"),
-            SessionFooter(id: "footer-r2", workedFor: 63, copyText: "answer r2"),
-            SessionFooter(id: "footer-r3", workedFor: nil, copyText: "answer r3"),
+        let entries = SessionTimeline.build(items, state: .finished)
+        #expect(footers(entries) == [worked("r1", 18), copyLine("r1"), worked("r2", 63), copyLine("r2"), copyLine("r3")])
+        #expect(shape(entries) == [
+            "u1", "worked:worked-r1", "r1", "copy:footer-r1",
+            "u2", "steps:a", "worked:worked-r2", "r2", "copy:footer-r2",
+            "u3", "r3", "copy:footer-r3",
         ])
     }
 
@@ -201,13 +231,13 @@ struct SessionTimelineTests {
 
     @Test func aTurnWithoutItsUserMessageHasNoStartSoNoTime() {
         let entries = SessionTimeline.build([answer("r", 500)], state: .finished)
-        #expect(footers(entries) == [SessionFooter(id: "footer-r", workedFor: nil, copyText: "answer r")])
+        #expect(footers(entries) == [copyLine("r")])
     }
 
     @Test func anAnswerWithNoTextGetsNoCopyText() {
         let blank = Item(id: "r", role: .assistant, time: t0.addingTimeInterval(30), text: "  \n ")
         let entries = SessionTimeline.build([user("u", 0), blank], state: .finished)
-        #expect(footers(entries) == [SessionFooter(id: "footer-r", workedFor: 30, copyText: nil)])
+        #expect(footers(entries) == [endLine("r", 30)], "비었으면 답이 없는 것처럼 시간은 턴의 끝")
     }
 
     // MARK: 도는 중 시계 (E6)
@@ -217,7 +247,14 @@ struct SessionTimelineTests {
         let entries = SessionTimeline.build(items, state: .running)
         #expect(clock(entries) == SessionClock(id: "clock-u2", since: t0.addingTimeInterval(100)))
         #expect(entries.last == .clock(SessionClock(id: "clock-u2", since: t0.addingTimeInterval(100))))
-        #expect(footers(entries).map(\.id) == ["footer-r1"], "끝난 앞 턴만 줄을 가진다")
+        #expect(footers(entries).map(\.id) == ["worked-r1", "footer-r1"], "끝난 앞 턴만 줄을 가진다")
+        #expect(shape(entries) == ["u1", "worked:worked-r1", "r1", "copy:footer-r1", "u2", "steps:a", "m", "clock"], "도는 턴은 순서를 바꾸지 않고 시계가 늘 끝이다")
+    }
+
+    @Test func aRunningTurnKeepsTheStepsAfterItsAnswerWhereTheyAre() {
+        let items = [user("u", 0), answer("r", 30), step("s", "Read", 40)]
+        let entries = SessionTimeline.build(items, state: .running)
+        #expect(shape(entries) == ["u", "r", "steps:s", "clock"], "도는 동안은 단계를 올리지 않고 줄도 없다")
     }
 
     @Test func theClockIsAbsentWhenTheStartIsUnknown() {
@@ -258,6 +295,20 @@ struct SessionTimelineTests {
             }
         }
         #expect(seen == items.map(\.id))
+    }
+
+    @Test func everyItemStillAppearsExactlyOnceWhenStepsAfterTheAnswerMoveUp() {
+        let items = [user("u", 0), step("a"), answer("r", 30), step("b"), event("ev"), step("c"), user("u2", 100), answer("r2", 110)]
+        var seen: [String] = []
+        for entry in SessionTimeline.build(items, state: .finished) {
+            switch entry {
+            case .item(let id): seen.append(id)
+            case .steps(let run): seen += run.stepIDs
+            case .footer, .clock: break
+            }
+        }
+        #expect(seen == ["u", "a", "b", "c", "r", "ev", "u2", "r2"], "단계는 시간 줄 앞으로, 이벤트는 제자리, 단계끼리 · 턴끼리 순서는 그대로")
+        #expect(Set(seen) == Set(items.map(\.id)) && seen.count == items.count)
     }
 }
 #endif

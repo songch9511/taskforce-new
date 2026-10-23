@@ -30,6 +30,9 @@ const USER_TABLES = [
   "bridge_commands",
   "bridges",
   "claims",
+  "claude_app_chat_messages",
+  "claude_app_chat_tombstones",
+  "claude_app_chats",
   "connection_requests",
   "connections",
   "context_members",
@@ -225,6 +228,26 @@ async function seed(userId: string, tokenHex: string) {
   const bridgeId = await one(`insert into public.bridges (user_id, device_ref) values ($1, $2) returning id`, [userId, `device-${userId}`]);
   // 외부 세션 목록(20261203000000): 제목은 bridge(복합 외래키)와 계정이 함께 지운다
   await db.query(`select public.report_external_sessions($1, $2, $3::jsonb)`, [userId, bridgeId, JSON.stringify([{ id: '0'.repeat(64), title: '제목', state: 'available', last_activity_at: '2026-10-21T09:00:00Z' }])]);
+  // Claude 데스크톱 대화(20261207000000): 보낸 글 · 답 글 · 도구 이름은 bridge(복합 외래키)와 계정이 함께 지운다. 사용자가 직접 지울 때까지 보관하므로 정리 함수는 없다
+  await db.query(`select public.save_claude_app_chat($1, $2, $3, '제목', $4::jsonb)`, [
+    userId,
+    bridgeId,
+    '1'.repeat(64),
+    JSON.stringify([
+      { mac_ref: '2'.repeat(64), role: 'user', body: '보낸 글', truncated: false, said_at: '2026-10-22T09:00:00Z' },
+      { mac_ref: '3'.repeat(64), role: 'assistant', reply_to_ref: '2'.repeat(64), body: '답 글', truncated: false, said_at: '2026-10-22T09:00:05Z', tool_names: ['Read', 'Edit'] },
+    ]),
+  ]);
+  // 지운 대화의 묘비(불투명 ref뿐): 둘째 대화를 만들었다가 지우면 사용자 글의 ref가 남는다. 계정이 함께 지운다
+  const goneChat = (
+    await db.query<{ r: { chat_id: string } }>(`select public.save_claude_app_chat($1, $2, $3, null, $4::jsonb) as r`, [
+      userId,
+      bridgeId,
+      '4'.repeat(64),
+      JSON.stringify([{ mac_ref: '5'.repeat(64), role: 'user', body: '지울 글', truncated: false, said_at: '2026-10-22T09:01:00Z' }]),
+    ])
+  ).rows[0].r.chat_id;
+  await db.query(`select public.delete_claude_app_chat($1, $2)`, [userId, goneChat]);
   const agentConnectionId = await one(`insert into public.agent_connections (user_id, adapter, bridge_id) values ($1, 'agent:claude-code', $2) returning id`, [userId, bridgeId]);
   const agentSessionId = await one(
     `insert into public.agent_sessions (user_id, connection_id, external_session_id, workspace_ref, bound_action_id) values ($1, $2, 'ext-1', 'ws-1', $3) returning id`,

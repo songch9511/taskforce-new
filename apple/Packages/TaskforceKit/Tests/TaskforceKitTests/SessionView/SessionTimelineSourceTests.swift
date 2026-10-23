@@ -199,7 +199,11 @@ struct SessionTimelineSourceTests {
         let data = SessionTimelineSource.chat([chat(1, user: true, 0), chat(2, user: false, 90)], steps: [turn("a", .tool(name: "Read", description: nil), 5)])
         #expect(data.items.map(\.time) == [at(0), at(5), at(90)])
         let entries = SessionTimeline.build(data.items, state: .finished)
-        #expect(entries.compactMap { if case .footer(let f) = $0 { f } else { nil } } == [SessionFooter(id: "footer-\(id(2))", workedFor: 90, copyText: "answer 2")])
+        #expect(
+            entries.compactMap { if case .footer(let f) = $0 { f } else { nil } }
+                == [SessionFooter(id: "worked-\(id(2))", workedFor: 90, copyText: nil, aboveAnswer: true), SessionFooter(id: "footer-\(id(2))", workedFor: nil, copyText: "answer 2")],
+            "일한 시간은 답 바로 위, 복사는 바로 밑"
+        )
     }
 }
 #endif

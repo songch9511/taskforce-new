@@ -69,7 +69,8 @@ public enum TFColor {
     public static let bgTooltip = color(.bgTooltip)
     /// 엣지 패널 면 (반투명 + 블러)
     public static let bgPanel = color(.bgPanel)
-    /// 레일의 실행 중 호 (레일에서만, 늘 움직임)
+    /// 레일의 실행 중 호 (blue-350 `#86ABED`, 늘 움직임). 검정(bezel) 위 9.1:1. brand accent blue-400 `#6A8CC7`(`fill/accent` · `border/accent`)과 다른 값이다.
+    /// 패널 위에서는 `statusActivityPanel`
     public static let statusActivity = color(.statusActivity)
     /// 비활성 단계 점 · 꺼진 토글 트랙 (3:1 경계)
     public static let statusStepInactive = color(.statusStepInactive)
@@ -84,8 +85,17 @@ public enum TFColor {
     // OA U3 (DS 2026-10-16 변경 기록 "Review additions"): 세션이 당신을 기다리는 링과 방금 끝난 링. DS `tokens.json`의 `needs-you` · `done`이 기준이고 두 모드가 같다 (색 세트 `status/needs-you` · `status/done`)
     /// Needs-you 링 (orange-300 `#EBAA7E`). 획만 — 원반 없음. 검정(bezel) 위 10.6:1
     public static let needsYou = color(.statusNeedsYou)
-    /// Done 링 (green-300 `#9CE73A`, 3초). 획만 — 원반 없음. 검정(bezel) 위 13.9:1. 일의 상태 표시(StatusMark Done)는 늘 잉크다
+    /// Done 링 (teal-300 `#77E2C2`, 3초). 획만 — 원반 없음. 검정(bezel) 위 13.4:1. 일의 상태 표시(StatusMark Done)는 늘 잉크다
     public static let done = color(.statusDone)
+
+    // 레일 상태 색 C · Spaced (사용자 승인 2026-10-22): 패널(흰 · graphite) 위 12px 링용 값. 검은 레일은 두 모드 모두 위 `needsYou` · `done` · `statusActivity`를 쓴다.
+    // 라이트는 레일 값과 같은 색상을 흰 패널에서 3:1(3.3:1)을 넘기도록 어둡게, 다크는 레일 값 그대로다 (`ActivityRing`의 `ground == .light`만 읽는다)
+    /// 패널 위 Needs-you 링 (라이트 `#BD7F55` · 다크 orange-300 `#EBAA7E`)
+    public static let needsYouPanel = color(.statusNeedsYouPanel)
+    /// 패널 위 Done 링 (라이트 `#2A9E81` · 다크 teal-300 `#77E2C2`)
+    public static let donePanel = color(.statusDonePanel)
+    /// 패널 위 실행 중 호 (라이트 `#6A8ECD` · 다크 blue-350 `#86ABED`)
+    public static let statusActivityPanel = color(.statusActivityPanel)
 
     /// 색 토큰 이름. 모든 토큰은 여기를 거친다 (TaskforceUITests가 모든 이름의 색 세트 · Light/Dark 값을 확인한다).
     enum Name: String, CaseIterable {
@@ -129,6 +139,9 @@ public enum TFColor {
         case statusStepInactive = "status/step-inactive"
         case statusNeedsYou = "status/needs-you"
         case statusDone = "status/done"
+        case statusNeedsYouPanel = "status/needs-you-panel"
+        case statusDonePanel = "status/done-panel"
+        case statusActivityPanel = "status/activity-panel"
         case bezelBase = "bezel/base"
         case bezelInk = "bezel/ink"
         case bezelInkSecondary = "bezel/ink-secondary"

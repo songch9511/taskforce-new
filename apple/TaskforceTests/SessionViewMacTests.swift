@@ -212,6 +212,14 @@ struct SessionViewMacTests {
         #expect(E.gap(before: item, at: 0) == 0 && E.gap(before: footer, at: 0) == 0, "첫 항목 위는 0")
         #expect(E.gap(before: item, at: 1) == TFSpace.md && E.gap(before: .steps(run("g", steps: 2)), at: 3) == TFSpace.md)
         #expect(E.gap(before: footer, at: 2) == TFSpace.xs && E.gap(before: clock, at: 5) == TFSpace.xs, "답 밑 줄 · 시계는 바로 밑 4")
+        // 사용자 결정(2026-10-23): "Worked for"는 답 위에 선다
+        let above = SessionEntry.footer(SessionFooter(id: "w", workedFor: 30, copyText: nil, aboveAnswer: true))
+        let turnEnd = SessionEntry.footer(SessionFooter(id: "e", workedFor: 30, copyText: nil))
+        #expect(E.gap(before: above, at: 2) == TFSpace.md, "답 위 시간 줄은 앞 블록과 12 떨어진다")
+        #expect(E.gap(before: turnEnd, at: 2) == TFSpace.xs, "답 없는 턴의 끝 시간 줄은 바로 밑 4 (그대로)")
+        #expect(E.gap(before: item, at: 3, previous: above) == TFSpace.xs, "시간 줄 바로 뒤의 답은 시간 줄에 4로 붙는다")
+        #expect(E.gap(before: item, at: 3, previous: turnEnd) == TFSpace.md && E.gap(before: item, at: 3, previous: footer) == TFSpace.md, "다른 줄 뒤의 말은 블록 사이 12")
+        #expect(E.gap(before: item, at: 3, previous: item) == TFSpace.md && E.gap(before: item, at: 0, previous: above) == 0)
     }
 
     // MARK: 옆줄의 자리 (E11)

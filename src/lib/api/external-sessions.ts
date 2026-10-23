@@ -55,8 +55,8 @@ async function readCappedText(request: Request, maxBytes: number): Promise<strin
   return new TextDecoder().decode(merged);
 }
 
-/** parseBody와 같은 오류 모양으로 상한을 지켜 읽는다 (오류 문구는 요청 값을 담지 않는다) */
-async function parseCappedBody<T extends z.ZodType>(request: Request, schema: T, maxBytes: number): Promise<{ data: z.infer<T> } | { error: Response }> {
+/** parseBody와 같은 오류 모양으로 상한을 지켜 읽는다 (오류 문구는 요청 값을 담지 않는다). 대화 저장 route(claude-app-chats.ts)도 쓴다 */
+export async function parseCappedBody<T extends z.ZodType>(request: Request, schema: T, maxBytes: number): Promise<{ data: z.infer<T> } | { error: Response }> {
   const text = await readCappedText(request, maxBytes);
   if (text === null) return { error: errorResponse(400, "invalid_request", "본문이 너무 큽니다.") };
   let body: unknown;

@@ -53,16 +53,20 @@ public struct SessionStepRun: Equatable, Identifiable, Sendable {
     public var isLive: Bool
 }
 
-/// 턴의 끝 줄: 일한 시간(왼쪽, 10초 미만 · 시각 없음이면 nil) + 복사할 글(마지막 답, 없으면 nil)
+/// 끝난 턴의 줄: 일한 시간(10초 미만 · 시각 없음이면 nil) 또는 복사할 글(마지막 답)이다.
+/// 답이 있으면 시간 줄(`aboveAnswer`)은 그 답 **바로 위**에, 복사 줄은 답 **바로 밑**에 따로 선다. 답이 없는 턴의 시간 줄은 턴의 끝에 선다
 public struct SessionFooter: Equatable, Identifiable, Sendable {
     public var id: String
     public var workedFor: TimeInterval?
     public var copyText: String?
+    /// 시간 줄이 답 바로 위에 선다 (아니면 복사 줄이거나 답 없는 턴의 끝 줄이다)
+    public var aboveAnswer: Bool
 
-    public init(id: String, workedFor: TimeInterval?, copyText: String?) {
+    public init(id: String, workedFor: TimeInterval?, copyText: String?, aboveAnswer: Bool = false) {
         self.id = id
         self.workedFor = workedFor
         self.copyText = copyText
+        self.aboveAnswer = aboveAnswer
     }
 }
 
@@ -110,11 +114,42 @@ public enum SessionTimeline {
                 turns[turns.count - 1].append(item)
             }
         }
+        /// 턴 안에서 놓을 것: 항목 아니면 줄
+        enum Piece {
+            case item(SessionTimelineItem)
+            case footer(SessionFooter)
+        }
         var entries: [SessionEntry] = []
         for (index, turn) in turns.enumerated() {
+            guard let head = turn.first, let last = turn.last else { continue }
             let isLast = index == turns.count - 1
             let running = isLast && state == .running
             let first = entries.count
+            let start = head.role == .user ? head.time : nil
+            // 일한 시간: 끝난 턴만 (도는 턴은 시계가 센다). 10초 미만 · 시각을 모르면 없다
+            let elapsed = SessionTime.elapsed(from: start, to: turn.compactMap(\.time).max())
+            let workedFor = running ? nil : elapsed.flatMap { $0 >= SessionTime.hideBelow ? $0 : nil }
+            // 복사할 글 = 턴의 **마지막 답** (비면 복사는 없다: 앞의 답을 대신 복사하지 않는다)
+            let answerIndex = turn.lastIndex(where: { $0.role == .assistant })
+            let copyAnswer = answerIndex.flatMap { index in
+                turn[index].text.map { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } == true ? turn[index] : nil
+            }
+            var pieces: [Piece] = []
+            if !running, let answer = copyAnswer, let answerIndex {
+                // 끝난 턴 (사용자 결정 2026-10-23): 단계 · 이벤트 줄 → "Worked for …"(시간만) → 마지막 답 → 복사 아이콘(답 바로 밑).
+                // 마지막 답 뒤에 이어진 단계는 시간 줄 앞으로 올라온다 (단계끼리의 순서는 그대로). 답 뒤의 이벤트 줄은 시간순 그대로 복사 뒤에 선다
+                let after = turn[(answerIndex + 1)...]
+                pieces += turn[..<answerIndex].map(Piece.item)
+                pieces += after.filter { $0.role == .step }.map(Piece.item)
+                if let workedFor { pieces.append(.footer(SessionFooter(id: "worked-\(answer.id)", workedFor: workedFor, copyText: nil, aboveAnswer: true))) }
+                pieces.append(.item(answer))
+                pieces.append(.footer(SessionFooter(id: "footer-\(answer.id)", workedFor: nil, copyText: answer.text)))
+                pieces += after.filter { $0.role != .step }.map(Piece.item)
+            } else {
+                // 도는 턴(시계가 끝에 선다) 또는 답이 없는 턴(시간은 턴의 끝에)
+                pieces = turn.map(Piece.item)
+                if let workedFor { pieces.append(.footer(SessionFooter(id: "footer-\(last.id)", workedFor: workedFor, copyText: nil))) }
+            }
             var pending: [SessionTimelineItem] = []
             func flush() {
                 guard let head = pending.first else { return }
@@ -125,42 +160,27 @@ public enum SessionTimeline {
                 entries.append(.steps(run))
                 pending = []
             }
-            // 복사할 글 = 턴의 **마지막 답** (비면 복사는 없다: 앞의 답을 대신 복사하지 않는다)
-            let copyAnswer = turn.last(where: { $0.role == .assistant }).flatMap { answer in
-                answer.text.map { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } == true ? answer : nil
-            }
-            let answerEndsTheTurn = copyAnswer != nil && copyAnswer?.id == turn.last?.id
-            for item in turn {
-                if item.role == .step {
-                    pending.append(item)
-                } else {
-                    flush()
-                    entries.append(.item(item.id))
-                    // 답 뒤에 단계 · 이벤트 줄이 이어지면 복사 아이콘은 그 답 바로 밑에 선다 (복사만). 시간은 턴의 끝에 따로 선다. 도는 턴에는 줄이 없다
-                    if !running, !answerEndsTheTurn, let answer = copyAnswer, answer.id == item.id, let text = answer.text {
-                        entries.append(.footer(SessionFooter(id: "footer-\(answer.id)", workedFor: nil, copyText: text)))
+            for piece in pieces {
+                switch piece {
+                case .item(let item):
+                    if item.role == .step {
+                        pending.append(item)
+                    } else {
+                        flush()
+                        entries.append(.item(item.id))
                     }
+                case .footer(let footer):
+                    flush()
+                    entries.append(.footer(footer))
                 }
             }
             flush()
-            if running, let lastRun = entries[first...].lastIndex(where: { if case .steps = $0 { true } else { false } }), case .steps(var run) = entries[lastRun] {
-                run.isLive = true
-                entries[lastRun] = .steps(run)
-            }
-            guard let head = turn.first, let last = turn.last else { continue }
-            let start = head.role == .user ? head.time : nil
             if running {
+                if let lastRun = entries[first...].lastIndex(where: { if case .steps = $0 { true } else { false } }), case .steps(var run) = entries[lastRun] {
+                    run.isLive = true
+                    entries[lastRun] = .steps(run)
+                }
                 if let start { entries.append(.clock(SessionClock(id: "clock-\(head.id)", since: start))) }
-                continue
-            }
-            let elapsed = SessionTime.elapsed(from: start, to: turn.compactMap(\.time).max())
-            let workedFor = elapsed.flatMap { $0 >= SessionTime.hideBelow ? $0 : nil }
-            if answerEndsTheTurn, let answer = copyAnswer {
-                // 답이 턴의 끝: 한 줄에 시간과 복사 (v2 그림)
-                entries.append(.footer(SessionFooter(id: "footer-\(answer.id)", workedFor: workedFor, copyText: answer.text)))
-            } else if workedFor != nil {
-                // 답 뒤에 단계 · 이벤트가 있거나 답이 없다: 시간만 턴의 끝에 (복사는 있으면 답 바로 밑에 이미 섰다)
-                entries.append(.footer(SessionFooter(id: "footer-\(last.id)", workedFor: workedFor, copyText: nil)))
             }
         }
         return entries

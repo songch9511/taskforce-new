@@ -31,7 +31,7 @@ export type AgentEventSpec = {
 
 const sql = (fn: string): EventSource => ({ kind: "sql", fn });
 
-/** OA 지표 type 19개 (CHECK 블록 v3, 20261123000000_agent_path_leases.sql + 외부 세션 2개: 20261203000000_external_sessions_list.sql · 20261204000000_agent_session_attach.sql). 1–11 · 17이 에이전트 대화, 12–16이 프로젝트 · 이슈 정리, 18이 외부 세션 목록, 19가 외부 세션 이어받기 */
+/** OA 지표 type 21개 (CHECK 블록 v3, 20261123000000_agent_path_leases.sql + 외부 세션 2개: 20261203000000_external_sessions_list.sql · 20261204000000_agent_session_attach.sql + Claude 데스크톱 대화 저장 2개: 20261207000000_claude_app_chats.sql). 1–11 · 17이 에이전트 대화, 12–16이 프로젝트 · 이슈 정리, 18이 외부 세션 목록, 19가 외부 세션 이어받기, 20 · 21이 Claude 데스크톱 대화 저장 */
 export const AGENT_EVENTS: readonly AgentEventSpec[] = [
   // 전달 시작마다: 사용자가 보낸 순간이 아니라 대기열 · 재전달 · Mac 복귀 때도 생긴다 (리텐션 활동이 아니다, Q5)
   { type: "agent_message_sent", sources: [sql("start_agent_turn")], dims: [], activity: false },
@@ -67,6 +67,11 @@ export const AGENT_EVENTS: readonly AgentEventSpec[] = [
   { type: "session_attached", sources: [sql("attach_agent_session")], dims: [], activity: true },
   // 사용자가 Claude 데스크톱 세션 보기(레일 링 · Sessions의 줄)를 연 날 (하루 한 번, OA PR-D2). 앱이 POST /api/v2/external-sessions/claude-app-opened로 알리고 route가 서버 권한으로 남긴다. 종류만 (props 0)이라 dims가 없다
   { type: "claude_app_session_opened", sources: [{ kind: "ts", file: "src/lib/api/external-sessions.ts" }], dims: [], activity: true },
+  // Taskforce에서 Claude 데스크톱 세션으로 보낸 글 (OA PR-D3s, 계약 25.6): 사용자 글 하나당 하나. 저장이 켜져 있으면 save_claude_app_chat이 **새로 저장된 사용자 글마다** 같은 트랜잭션에서 남기고({result:"received"}),
+  // 저장이 꺼져 있거나 못 보낸 글(not_sent + 이유 코드)은 Mac이 POST /api/v2/external-sessions/claude-app-sent로 알리고 route가 서버 권한으로 남긴다. props는 결과 코드뿐이다 (글 · 제목 · id 0)
+  { type: "claude_app_message_sent", sources: [sql("save_claude_app_chat"), { kind: "ts", file: "src/lib/api/claude-app-chats.ts" }], dims: ["result", "reason"], activity: true },
+  // 사용자가 저장된 Claude 데스크톱 대화를 지웠을 때: delete_claude_app_chat이 지우는 트랜잭션에서 남긴다 (props 없음)
+  { type: "claude_app_chat_deleted", sources: [sql("delete_claude_app_chat")], dims: [], activity: true },
 ];
 
 // ─── 결제 · 키 이벤트 등록부 (OA 결제 PR-A, 20261129000000) ───

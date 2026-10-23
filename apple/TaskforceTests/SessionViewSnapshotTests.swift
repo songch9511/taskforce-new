@@ -163,7 +163,7 @@ struct SessionViewSnapshotTests {
         [say("u1", "Audit every string in the app", user: true, ago: 700)]
         + (0..<61).map { tool("s\($0)", $0.isMultiple(of: 3) ? "Grep" : "Read", file: $0.isMultiple(of: 3) ? nil : "Localizable-\($0).strings", ago: 690 - Double($0) * 8) }
 
-    /// 답 뒤에 단계가 이어진다 (복사 아이콘은 답 바로 밑, "Worked for"는 턴의 끝)
+    /// 답 뒤에 단계가 이어진다 (끝난 턴: 단계가 시간 줄 앞으로 올라오고, "Worked for"는 답 바로 위, 복사 아이콘은 답 바로 밑)
     private static let stepsAfterAnswerTurns: [ClaudeAppTurn] = [
         say("u1", "Update the trial copy and double check the glossary", user: true, ago: 300),
         tool("t1", "Read", file: "pricing.mdx", ago: 290),
@@ -212,7 +212,7 @@ struct SessionViewSnapshotTests {
                 presentation.pane.expand()
                 presentation.pane.select("b2")
             }, tail: .output(.agent(agentTurns, hasEarlier: false))),
-            // 답 뒤에 단계가 이어지면 복사 아이콘은 답 바로 밑(마우스가 답 위에 있는 모습), "Worked for"는 턴의 끝
+            // 답 뒤에 단계가 이어져도 단계 → "Worked for" → 답 → 복사 아이콘 순서 (마우스가 답 위에 있는 모습)
             Scene(name: "12-copy-under-answer", turns: stepsAfterAnswerTurns, prepare: { presentation, _, _ in presentation.steps.hoveredFooter = "footer-a1" }),
         ]
     }

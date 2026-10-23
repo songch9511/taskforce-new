@@ -35,10 +35,15 @@ const SUPABASE_DEFAULT_GRANTS = `
   alter default privileges in schema public grant execute on functions to anon, authenticated, service_role;
 `;
 
-/** Supabase 흉내 + 모든 마이그레이션 (적용 순서대로). PGlite와 실제 Postgres(tests/pg)가 같은 SQL을 적용한다 */
-export async function supabaseSchemaScripts(): Promise<string[]> {
-  const files = (await readdir(MIGRATIONS_DIR)).filter((f) => f.endsWith(".sql")).sort();
-  const migrations = await Promise.all(files.map((file) => readFile(path.join(MIGRATIONS_DIR, file), "utf8")));
+/**
+ * Supabase 흉내 + 모든 마이그레이션 (적용 순서대로). PGlite와 실제 Postgres(tests/pg)가 같은 SQL을 적용한다.
+ * PR-D3s의 20261207은 20261206(PR-D2)이 먼저 적용돼야 한다(적용 순서 가드). `without`은 그 이름의 마이그레이션을 뺀다 (적용 순서 가드 시험이 쓴다).
+ */
+export async function supabaseSchemaScripts(options: { without?: readonly string[] } = {}): Promise<string[]> {
+  const without = new Set(options.without ?? []);
+  const files = (await readdir(MIGRATIONS_DIR)).filter((f) => f.endsWith(".sql"));
+  const entries = await Promise.all(files.map(async (file) => ({ name: file, sql: await readFile(path.join(MIGRATIONS_DIR, file), "utf8") })));
+  const migrations = entries.filter((entry) => !without.has(entry.name)).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)).map((entry) => entry.sql);
   return [SUPABASE_STUB, SUPABASE_DEFAULT_GRANTS, ...migrations];
 }
 
