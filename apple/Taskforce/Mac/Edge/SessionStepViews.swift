@@ -38,6 +38,61 @@ final class SessionStepsState {
     /// 이 시계를 처음 알리는가 (처음이면 true: 알렸다고 적는다). VoiceOver가 같은 "Working"을 줄이 다시 만들어질 때마다 읽지 않게 한다
     func announceClock(_ id: String) -> Bool { announcedClocks.insert(id).inserted }
 
+    // MARK: 그리는 창
+    // 본문은 즉시 쌓기라 긴 대화를 한꺼번에 그리면 첫 배치가 줄 수에 비례해 몇 초씩 걸린다. 처음엔 가장 새 `SessionTimeline.renderWindow`(150)줄만 그리고, 위의 "Show earlier"가 150줄씩 더 편다.
+
+    /// 창이 바뀐 횟수 (읽어 두면 폈을 때 본문이 다시 그려진다)
+    private(set) var windowRevision = 0
+    /// 읽어 둔 줄을 모두 폈다 (그 뒤로는 창이 없다: 앞 쪽 기록을 읽어 앞에 붙은 줄도 그대로 보인다)
+    private(set) var showsAllEntries = false
+    /// 지금 그리는 첫 줄의 id. **새 줄이 붙어도 이 자리를 지킨다**: 가장 새 150줄을 매번 새로 정하면 위의 줄이 하나씩 사라져 위로 거슬러 읽는 글이 밀린다 (대화 상태가 위쪽 줄을 안 버리는 것과 같은 까닭).
+    /// 이 줄이 대화에서 사라지면(대화가 오래된 줄을 버렸다) 다시 가장 새 150줄로 정한다
+    @ObservationIgnored private var windowCutID: String?
+    /// 폈을 때 스크롤을 붙잡을 줄: 펴기 전의 첫 줄 (패널이 `onChange`에서 한 번 가져간다)
+    @ObservationIgnored private var pendingScrollAnchor: String?
+
+    /// 그릴 첫 줄의 자리 (0이면 전부). 본문을 계산하는 동안 불러도 된다 (관찰하지 않는 기억만 바꾼다)
+    func windowStart(in entries: [SessionEntry]) -> Int {
+        _ = windowRevision
+        if showsAllEntries { return 0 }
+        if let id = windowCutID, let at = entries.firstIndex(where: { $0.id == id }) { return at }
+        let start = SessionTimeline.windowStart(entries, limit: SessionTimeline.renderWindow)
+        // 처음부터 창에 다 드는 대화도 첫 줄에 붙들어 둔다: 길어져도 앞이 잘리지 않는다
+        windowCutID = entries.indices.contains(start) ? entries[start].id : nil
+        return start
+    }
+
+    /// "Show earlier": 창을 150줄 앞으로 넓힌다 (덩어리 첫 줄로 맞춘다). 처음까지 닿으면 전부 편다. 펴기 전의 첫 줄을 스크롤이 붙잡도록 적어 둔다
+    func revealEarlier(in entries: [SessionEntry]) {
+        let current = windowStart(in: entries)
+        guard current > 0, entries.indices.contains(current) else {
+            revealAll()
+            return
+        }
+        pendingScrollAnchor = entries[current].id
+        let start = SessionTimeline.unitStart(entries, atOrBefore: current - SessionTimeline.renderWindow)
+        if start > 0 {
+            windowCutID = entries[start].id
+        } else {
+            showsAllEntries = true
+            windowCutID = nil
+        }
+        windowRevision += 1
+    }
+
+    /// 읽어 둔 줄을 모두 편다 (앞 쪽 기록을 읽기 직전에도: 읽어서 앞에 붙은 줄이 창 밖에 숨지 않게)
+    func revealAll() {
+        showsAllEntries = true
+        windowCutID = nil
+        windowRevision += 1
+    }
+
+    /// 폈을 때 붙잡을 줄 (한 번만 돌려준다)
+    func takeScrollAnchor() -> String? {
+        defer { pendingScrollAnchor = nil }
+        return pendingScrollAnchor
+    }
+
     func isOpen(_ run: SessionStepRun) -> Bool { chosen[run.id] ?? run.isLive }
 
     func toggle(_ run: SessionStepRun) {
@@ -85,6 +140,10 @@ final class SessionStepsState {
         detailOrder = []
         announcedClocks = []
         hoveredFooter = nil
+        showsAllEntries = false
+        windowCutID = nil
+        pendingScrollAnchor = nil
+        windowRevision = 0
     }
 
     private func remember(_ id: String) {

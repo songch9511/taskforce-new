@@ -50,8 +50,11 @@ final class SessionMarkdownCache {
     private var order: [String] = []
     /// 해석한 횟수 (시험이 센다)
     private(set) var parses = 0
+    /// 글 줄이 이 판을 찾은 횟수 = 마크다운 줄의 본문이 계산된 횟수 (시험이 센다: 가라앉은 화면은 늘지 않는다)
+    private(set) var lookups = 0
 
     func blocks(for source: String) -> [SafeMarkdown.Block] {
+        lookups += 1
         guard source.utf8.count <= Self.maxSourceBytes else {
             parses += 1
             return SafeMarkdown.parse(source)
@@ -137,16 +140,42 @@ struct SessionCodeBlockView: View {
     /// 긴 것을 열 줄로 접나. 출력 꼬리는 옆줄이 스크롤하므로 접지 않는다
     var collapses = true
     @State private var expanded = false
-    @State private var naturalHeight: CGFloat = 0
 
     static let collapsedHeight: CGFloat = 180
     static let fadeHeight: CGFloat = 36
+    /// 접지 않고 보이는 가장 긴 줄 수: mono 12 · 줄 높이 약 18 → 180에서 아래 여백 12를 뺀 안에 드는 줄 수 (`SessionPanelHangTests`가 실제로 그린 높이와 맞는지 잰다)
+    static let maxRows = 9
+    /// 한 줄에 들어가는 글자 수의 어림 (패널 폭 380 · 코드 면 안쪽 324 ÷ mono 한 글자 7.2 = 45보다 크게 잡는다):
+    /// 긴 한 줄이 줄바꿈으로 여러 줄을 차지하는 것을 세되, 어림이 모자라 접지 못하는 쪽(조금 더 길게 보임)이 접을 것을 안 접는 쪽보다 낫다
+    static let charsPerRow = 48
 
-    /// 접어야 하나: 본문의 원래 높이가 접은 높이를 넘는다
-    static func isLong(naturalHeight: CGFloat) -> Bool { naturalHeight > collapsedHeight + 1 }
+    /// 접어야 하나 — **그리기 전에 글만 보고** 정한다. 그린 뒤의 높이로 정하면 줄이 처음엔 전체 높이로 서고 그다음 접히면서 높이가 두 번 바뀌어,
+    /// 게으른 쌓기 · 맨 아래에 붙은 스크롤 · 창 높이 맞춤이 그 변화를 되먹임으로 따라가며 끝없이 다시 배치했다 (#187 핫픽스). 줄 수는 글에서 정해지므로 몇 번을 그려도 같다
+    static func isLong(text: String) -> Bool {
+        var rows = 0
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            rows += max(1, (line.count + charsPerRow - 1) / charsPerRow)
+            if rows > maxRows { return true }
+        }
+        return false
+    }
+
+    /// 접힌 동안 그리는 글: 보이는 열 줄 남짓만이다. 나머지는 180에서 잘려 보이지 않는데, 즉시 쌓기에서는 긴 블록 수백 줄을 한꺼번에 배치하는 비용이 줄을 그릴 때마다 든다 (열 때 몇 배).
+    /// 잘라낸 뒤에도 보이는 쪽은 그대로다 (긴 줄의 보이지 않는 뒷부분도 자른다). 복사는 늘 전체 `text`
+    static func visibleText(_ text: String) -> String {
+        let keep = maxRows + 2
+        var lines: [Substring] = []
+        var rows = 0
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            lines.append(line.prefix(charsPerRow * keep))
+            rows += max(1, (line.count + charsPerRow - 1) / charsPerRow)
+            if rows >= keep { break }
+        }
+        return lines.joined(separator: "\n")
+    }
 
     var body: some View {
-        let long = collapses && Self.isLong(naturalHeight: naturalHeight)
+        let long = collapses && Self.isLong(text: text)
         let collapsed = long && !expanded
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 0) {
@@ -159,7 +188,7 @@ struct SessionCodeBlockView: View {
             }
             .padding(EdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 4))
             .frame(height: 28)
-            Text(text)
+            Text(collapsed ? Self.visibleText(text) : text)
                 .font(TFFont.mono)
                 .lineSpacing(3.5)
                 .foregroundStyle(TFColor.textPrimary)
@@ -167,7 +196,6 @@ struct SessionCodeBlockView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(EdgeInsets(top: 0, leading: 12, bottom: 12, trailing: 12))
-                .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { naturalHeight = $0 }
                 .frame(maxHeight: collapsed ? Self.collapsedHeight : nil, alignment: .top)
                 .clipped()
                 .mask {

@@ -103,6 +103,43 @@ public enum SessionTimeline {
     public static let groupThreshold = 4
     /// 열린 묶음 안에서 보이는 최근 줄 수 (앞은 Show all 뒤에 있다)
     public static let visibleRecent = 6
+    /// 한꺼번에 그리는 줄(entry)의 수: 본문이 즉시 쌓기라 처음 배치가 줄 수에 비례한다. 처음엔 가장 새 이만큼만, "Show earlier"를 한 번 누를 때마다 이만큼씩 더 (#187 핫픽스)
+    public static let renderWindow = 150
+
+    /// 이 자리가 한 덩어리(말 · 단계 묶음 · 답과 그 위 "Worked for" · 답 밑 복사 줄)의 **첫 줄**인가. 창이 여기서 시작해도 덩어리가 둘로 쪼개지지 않는다.
+    /// 첫 줄이 될 수 없는 것: 답 밑 복사 줄 · 턴 끝 시간 줄(앞 덩어리의 꼬리), 답 위 "Worked for" 줄 바로 뒤의 답(그 줄과 한 덩어리), 도는 시계(턴의 꼬리). 단계 묶음은 줄 하나라 어디서나 통째다
+    public static func startsUnit(_ entries: [SessionEntry], at index: Int) -> Bool {
+        guard entries.indices.contains(index) else { return false }
+        switch entries[index] {
+        case .steps: return true
+        case .footer(let footer): return footer.aboveAnswer
+        case .clock: return false
+        case .item:
+            if index > 0, case .footer(let footer) = entries[index - 1], footer.aboveAnswer { return false }
+            return true
+        }
+    }
+
+    /// 가장 새 `limit`개만 그릴 때의 첫 줄 자리: `entries.count - limit`에서 시작하되 덩어리 한가운데면 **뒤로**(더 새 쪽으로) 밀어 첫 줄이 되는 자리까지 간다 (그려지는 줄은 `limit`개를 넘지 않는다).
+    /// 줄이 `limit` 이하면 0
+    public static func windowStart(_ entries: [SessionEntry], limit: Int) -> Int {
+        guard limit > 0, entries.count > limit else { return 0 }
+        let cut = entries.count - limit
+        for index in cut..<entries.count where startsUnit(entries, at: index) { return index }
+        // 끝까지 첫 줄이 될 자리가 없다 (마지막 덩어리가 한 줄 남짓): 앞쪽으로 물러난다 (한도보다 조금 더 그린다)
+        return unitStart(entries, atOrBefore: cut)
+    }
+
+    /// `index` 이하에서 가장 가까운 덩어리의 첫 줄 자리 ("Show earlier"가 창을 앞으로 넓힐 때: 덩어리를 쪼개지 않으려고 앞쪽으로 맞춘다). 범위 밖은 끝 · 처음으로 맞추고, 없으면 0
+    public static func unitStart(_ entries: [SessionEntry], atOrBefore index: Int) -> Int {
+        guard !entries.isEmpty else { return 0 }
+        var current = min(max(index, 0), entries.count - 1)
+        while current > 0 {
+            if startsUnit(entries, at: current) { return current }
+            current -= 1
+        }
+        return 0
+    }
 
     /// 턴 = 사용자의 말 하나부터 다음 사용자의 말 직전까지 (첫 사용자의 말 앞의 줄은 시작을 모르는 한 턴)
     public static func build(_ items: [SessionTimelineItem], state: SessionRunState) -> [SessionEntry] {

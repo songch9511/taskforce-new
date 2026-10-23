@@ -91,6 +91,11 @@ enum EdgePanelMotion {
         }
         window.invalidateShadow()
     }
+
+    /// 1pt보다 작은 차이는 같은 틀이다: 두 세션 패널의 `fit()`이 쓴다. 안에서 재는 높이가 소수점만 흔들려도 창을 다시 맞추지(움직이지) 않는다 (#187 핫픽스: 흔들리는 높이가 창 맞춤을 되먹임으로 부르지 않게)
+    static func isSameFrame(_ a: NSRect, _ b: NSRect) -> Bool {
+        abs(a.minX - b.minX) < 1 && abs(a.minY - b.minY) < 1 && abs(a.width - b.width) < 1 && abs(a.height - b.height) < 1
+    }
 }
 
 /// 패널 창이 SwiftUI에 넘기는 값: 본문 높이(창 높이를 맞춘다) · 나타남(크기 .975 → 1)

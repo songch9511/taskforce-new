@@ -136,6 +136,8 @@ struct SessionPanelView: View {
                     }
                     .defaultScrollAnchor(.bottom)
                     .scrollIndicators(.automatic)
+                    // "Show earlier"로 창을 넓힌 뒤 펴기 전의 첫 줄을 위에 붙잡는다 (`SessionEntriesView`)
+                    .environment(\.sessionScrollToEntry, SessionScrollTo { id in proxy.scrollTo(id, anchor: .top) })
                     // 붙어 있던 동안만 새 글을 따라 내려간다: 위로 올려 읽는 중이면 끌어내리지 않는다 (시계 틱은 스크롤을 건드리지 않는다). 새 글로 내용이 늘어난 것은 사용자가 올린 것이 아니다
                     .onScrollGeometryChange(for: SessionScrollSnapshot.self) { geometry in
                         SessionScrollSnapshot(visibleMaxY: geometry.visibleRect.maxY, contentHeight: geometry.contentSize.height, visibleHeight: geometry.visibleRect.height)
@@ -599,7 +601,7 @@ final class EdgeSessionPanelController {
 
     /// 내용 높이 · 이슈 패널 자리가 바뀌면 위를 맞춘 채로 맞춘다. 이슈 패널이 세로 가운데로 다시 갈 때 같은 움직임으로 따라간다 (세션 패널 자신은 가운데로 서지 않는다: 이슈 패널의 위에 맞춘다)
     func fit() {
-        guard panel.isVisible, presentation.shown, let target = targetFrame(), target != panel.frame else { return }
+        guard panel.isVisible, presentation.shown, let target = targetFrame(), !EdgePanelMotion.isSameFrame(target, panel.frame) else { return }
         let extra = presentation.pane.windowExtra
         if extra != appliedExtra {
             // 옆줄이 나타나거나 사라지거나 접힘 ↔ 펼침: 창 틀은 움직이지 않고 바로 맞춘다 (안의 두 겹이 크로스페이드한다)
