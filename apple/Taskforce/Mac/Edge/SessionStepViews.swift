@@ -51,18 +51,30 @@ final class SessionStepsState {
     @ObservationIgnored private var pendingScrollAnchor: String?
     /// 지난번 계산 때 맨 아래에 붙어 있었나 (위로 올려 읽다가 다시 붙는 순간을 알아보려고)
     @ObservationIgnored private var wasPinned = true
+    /// 지난번 계산 때 본 창의 횟수 (`windowRevision`과 다르면 이번이 "폄 바로 뒤의 계산"이다)
+    @ObservationIgnored private var seenRevision = 0
+    /// 지난번 계산 때 마지막 줄의 id (달라졌으면 새 줄이 붙은 것이다)
+    @ObservationIgnored private var lastEntryID: String?
 
     /// 그릴 첫 줄의 자리 (0이면 전부). 본문을 계산하는 동안 불러도 된다 (관찰하지 않는 기억만 바꾼다).
     /// - pinned: 읽는 사람이 맨 아래에 붙어 있다. 붙어 있는 동안은 창이 한도 안에 머문다: (1) 위로 올려 읽다가 **다시 붙으면** 창을 처음(가장 새 150줄)으로 돌리고,
-    ///   (2) 붙은 채 대화가 길어져 그리는 줄이 한도의 두 배를 넘으면 다시 가장 새 150줄로 정한다 (reset 직후 일부만 읽혀 첫 줄에 붙들린 경우도 이것이 푼다).
-    ///   위로 올려 읽는 중(붙지 않음)에는 첫 줄 자리를 지킨다
+    ///   (2) 붙은 채 **새 줄이 붙어** 그리는 줄이 한도의 두 배를 넘으면 다시 가장 새 150줄로 정한다 (reset 직후 일부만 읽혀 첫 줄에 붙들린 경우도 이것이 푼다).
+    ///   위로 올려 읽는 중(붙지 않음)에는 첫 줄 자리를 지킨다.
+    ///   **폄 바로 뒤의 계산에서는 둘 다 하지 않는다**: 펴면 내용이 위로 늘어나는 한순간이 "맨 아래"로 보일 수 있고, 사용자는 방금 위의 글을 읽으려고 폈다.
+    ///   (2)는 새 줄이 붙은 계산에서만 한다: 두 번 펴서 300줄을 넘긴 창을, 새 줄 없이 되풀이되는 "붙음" 계산이 접어 버리지 않는다
     func windowStart(in entries: [SessionEntry], pinned: Bool = true) -> Int {
         _ = windowRevision
-        defer { wasPinned = pinned }
-        if pinned {
+        let justRevealed = seenRevision != windowRevision
+        let appended = entries.last?.id != lastEntryID
+        defer {
+            wasPinned = pinned
+            seenRevision = windowRevision
+            lastEntryID = entries.last?.id
+        }
+        if pinned, !justRevealed {
             if !wasPinned {
                 windowCutID = nil
-            } else if let at = cutIndex(in: entries), entries.count - at > 2 * SessionTimeline.renderWindow {
+            } else if appended, let at = cutIndex(in: entries), entries.count - at > 2 * SessionTimeline.renderWindow {
                 windowCutID = nil
             }
         }
@@ -150,6 +162,8 @@ final class SessionStepsState {
         pendingScrollAnchor = nil
         wasPinned = true
         windowRevision = 0
+        seenRevision = 0
+        lastEntryID = nil
     }
 
     private func remember(_ id: String) {

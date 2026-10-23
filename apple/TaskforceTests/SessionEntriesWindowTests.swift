@@ -349,6 +349,48 @@ struct SessionEntriesWindowTests {
         #expect(state.windowStart(in: entries, pinned: true) == newest, "붙어 있는 동안은 그대로다")
     }
 
+    @Test func aRevealIsNotUndoneByAPinnedEvaluationThatSawNoNewEntries() {
+        // 330줄: 처음 150줄 + 두 번 펴면 330줄을 다 그린다 (한도의 두 배, 300줄을 넘는다). 크기 규칙은 "붙은 채 새 줄이 붙을 때"만 창을 접는다
+        let entries = Built(plain(110)).entries
+        #expect(entries.count == 330)
+        let state = SessionStepsState()
+        let newest = state.windowStart(in: entries, pinned: true)
+        #expect(newest > 0)
+        state.revealEarlier(in: entries)
+        let once = state.windowStart(in: entries, pinned: true)
+        #expect(once < newest && once > 0, "한 번 폈다: \(newest) → \(once)")
+        state.revealEarlier(in: entries)
+        #expect(state.windowStart(in: entries, pinned: true) == 0, "두 번 펴고 붙음이 보인 계산 바로 뒤에도 편 창이 그대로다 (300줄을 넘어도)")
+        #expect(state.windowStart(in: entries, pinned: true) == 0, "새 줄이 붙지 않았으면 붙어 있는 계산을 되풀이해도 창이 그대로다")
+        #expect(state.windowStart(in: entries, pinned: true) == 0)
+        // 붙어 있는 채 새 줄이 붙으면 그때는 한도 안으로 돌아온다 (크기 규칙은 그대로 산다)
+        let more = Built(plain(112)).entries
+        let grown = state.windowStart(in: more, pinned: true)
+        #expect(more.count - grown <= SessionTimeline.renderWindow, "붙은 채 새 줄이 붙으면 가장 새 150줄: \(more.count - grown)줄")
+    }
+
+    @Test func aNewEntryThatArrivesTogetherWithARevealDoesNotFoldTheRevealedWindowBack() {
+        let base = Built(plain(110)).entries
+        let more = Built(plain(111)).entries
+        let state = SessionStepsState()
+        _ = state.windowStart(in: base, pinned: true)
+        state.revealEarlier(in: base)
+        _ = state.windowStart(in: base, pinned: true)
+        state.revealEarlier(in: base)
+        #expect(state.windowStart(in: more, pinned: true) == 0, "편 직후의 계산에 새 줄이 겹쳐도 방금 편 창을 접지 않는다")
+    }
+
+    @Test func aReaderWhoLooksPinnedInTheEvaluationRightAfterARevealKeepsTheRevealedWindow() {
+        // 펴자마자 레이아웃 사이의 한 순간이 "맨 아래"로 보일 수 있다: 사용자가 맨 아래로 돌아온 것이 아니다
+        let entries = Built(plain(100)).entries
+        let state = SessionStepsState()
+        let newest = state.windowStart(in: entries, pinned: false)
+        state.revealEarlier(in: entries)
+        #expect(state.windowStart(in: entries, pinned: true) == 0, "편 바로 뒤 계산이 붙음으로 보여도 창을 돌리지 않는다")
+        #expect(state.windowStart(in: entries, pinned: false) == 0)
+        #expect(state.windowStart(in: entries, pinned: true) == newest, "그 뒤 위로 올려 읽다가 진짜로 다시 붙으면 처음으로 돌아온다")
+    }
+
     @Test func aPageLoadNeverDrawsTheOlderEntriesItBringsUntilShowEarlierIsPressedAgain() {
         let newer = Built(plain(120))
         let older = plain(100, prefix: "old-", from: t0.addingTimeInterval(-100_000))
@@ -452,19 +494,15 @@ struct SessionEntriesWindowTests {
         func entries() -> [SessionEntry] { SessionTimeline.build(SessionTimelineSource.claude(conversation.turns).items, state: .running) }
         typealias Moment = (revision: Int, turns: Int, start: Int)
         func moment() -> Moment { (steps.windowRevision, conversation.turns.count, steps.peekWindowStart(in: entries())) }
-        /// 한 번 누른다: 맨 위로 올려(위로 올려 읽는 중이라야 누른다) 단추 자리를 누른다. 아무 일도 없었으면 (부하가 큰 기계에서 앞선 배치가 덜 끝났을 때) 한 번 더, 세 번까지
+        /// 한 번 누른다: 맨 위로 올려(위로 올려 읽는 중이라야 한다) 단추 자리를 누른다. 다시 시도하지 않는다 — 한 번에 안 되면 시험이 빨개야 한다
         func press() async -> (before: Moment, after: Moment) {
             let before = moment()
-            for _ in 0..<3 {
-                scroll(scrollView, toFraction: 0)
-                await waitUntilStable { "\(Int(scrollView.contentView.bounds.origin.y))|\(Int(scrollView.documentView?.frame.height ?? 0))" }
-                guard !conversation.pinnedToBottom else { continue }
-                // 머리 아래 본문 맨 위 가운데: 본문 위 여백 4 + 단추 줄의 가운데
-                click(claude.panel, hosting, at: CGPoint(x: hosting.bounds.midX, y: claude.presentation.headHeight + 14))
-                await waitUntilStable { "\(steps.windowRevision)|\(conversation.turns.count)|\(Int(claude.presentation.bodyHeight))" }
-                let after = moment()
-                if after.revision != before.revision || after.turns != before.turns { return (before, after) }
-            }
+            scroll(scrollView, toFraction: 0)
+            await waitUntilStable { "\(Int(scrollView.contentView.bounds.origin.y))|\(Int(scrollView.documentView?.frame.height ?? 0))" }
+            #expect(!conversation.pinnedToBottom, "맨 위로 올렸으면 맨 아래에 붙어 있지 않다")
+            // 머리 아래 본문 맨 위 가운데: 본문 위 여백 4 + 단추 줄의 가운데
+            click(claude.panel, hosting, at: CGPoint(x: hosting.bounds.midX, y: claude.presentation.headHeight + 14))
+            await waitUntilStable { "\(steps.windowRevision)|\(conversation.turns.count)|\(Int(claude.presentation.bodyHeight))" }
             return (before, moment())
         }
         #expect(steps.windowRevision == 0 && conversation.hasEarlier)
@@ -482,6 +520,19 @@ struct SessionEntriesWindowTests {
         #expect(load.after.revision == load.before.revision && load.after.start > 0, "읽어 앞에 붙은 줄은 창 밖에 남는다 (한꺼번에 그리지 않는다): 시작 \(load.after.start)")
         let reveal = await press()
         #expect(reveal.after.revision == reveal.before.revision + 1 && reveal.after.start == 0, "붙은 줄은 다시 누르면 편다: 시작 \(reveal.before.start) → \(reveal.after.start)")
+    }
+
+    @Test func theClaudePanelsAssistantTextIsAsWideAsTheCodeBlockWidthItIsFoldedBy() async throws {
+        try requireScreenForHostedViews()
+        let built = Built(plain(3))
+        let probe = Probe()
+        let (window, _) = host(Harness(built: built, state: SessionStepsState(), probe: probe))
+        defer { window.close() }
+        await waitUntilStable { probe.events }
+        let frame = try #require(probe.frames["a0"], "답 한 줄이 그려졌다")
+        // 패널 본문(380 − 양옆 16)에서 Claude의 말은 전폭이다: 접을지를 정하는 폭이 실제 폭과 같다
+        #expect(abs(frame.width - ClaudeAppTurnView.assistantBlockWidth) < 1, "실제 폭 \(frame.width) · 접기에 쓰는 폭 \(ClaudeAppTurnView.assistantBlockWidth)")
+        #expect(ClaudeAppTurnView.assistantBlockWidth == SessionCodeBlockView.panelBlockWidth)
     }
 
     // MARK: 첫 배치의 비용 (센 값으로)
