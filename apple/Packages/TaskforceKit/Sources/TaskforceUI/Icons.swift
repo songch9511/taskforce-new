@@ -53,6 +53,8 @@ public enum TFIcon: String, CaseIterable, Sendable {
     case laptop = "laptop"
     /// 레일 첫 캡슐의 Sessions 버튼 (OA PR-D2, DZ 승인 2026-10-22, Lucide 1.48.0 `layers`): Taskforce 세션과 이 Mac의 Claude 세션을 모두 한 곳에서 보는 입구
     case sessions = "layers"
+    /// 세션 보기의 복사 (OA 세션 보기 V1, DZ 승인 2026-10-22, Lucide `copy`): 답 밑 오른쪽(마우스를 올리거나 포커스가 있을 때) · 코드 블록 머리(늘 보임)
+    case copy = "copy"
 
     // OA U2: 프로젝트 아이콘 풀 12종 (서버 `PROJECT_ICON_POOL`, DS ProjectIcon). 풀 밖 이름은 `project`(folder)
     case rocket = "rocket"

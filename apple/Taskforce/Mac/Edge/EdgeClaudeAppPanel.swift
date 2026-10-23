@@ -15,8 +15,49 @@ final class EdgeClaudeAppPanelPresentation {
     var bodyHeight: CGFloat = 0
     var footerHeight: CGFloat = 0
     var shown = false
+    /// 패널 왼쪽 바깥에 붙는 옆줄 (세션이 돌리는 백그라운드 일, 세션 보기 V1). 창을 왼쪽으로 넓히는 폭도 이것이 정한다
+    let pane: SessionSidePaneModel
+    /// 단계 묶음 · 줄의 보이는 상태
+    let steps = SessionStepsState()
+    /// 본문이 다시 계산돼도 대화가 그대로면 타임라인을 다시 만들지 않는다
+    @ObservationIgnored let timeline = SessionTimelineMemo<ClaudeTimelineInput, ClaudeTimeline>()
+
+    init(backgroundOpen: any BackgroundTaskOpenStore = InMemoryBackgroundTaskOpenStore()) {
+        pane = SessionSidePaneModel(store: backgroundOpen)
+    }
 
     var contentHeight: CGFloat { headHeight + bodyHeight + footerHeight }
+
+    /// 지금 보는 세션 (같으면 아무 일도 없다)
+    private(set) var sessionKey: String?
+
+    /// 다른 세션을 연다: 옆줄이 그 세션의 것으로 바뀌고, 열어 둔 줄 · 읽은 본문은 비운다 (줄 id는 세션 안에서만 겹치지 않는다)
+    func beginSession(_ key: String) {
+        guard key != sessionKey else { return }
+        sessionKey = key
+        steps.reset()
+        timeline.reset()
+        pane.attach(session: key)
+    }
+}
+
+/// Claude 패널 타임라인의 입력 (같으면 같은 타임라인)
+struct ClaudeTimelineInput: Equatable {
+    var turns: [ClaudeAppTurn]
+    var state: SessionRunState
+}
+
+/// Claude 패널의 타임라인: 줄 · 단계 · 글 찾기표
+struct ClaudeTimeline {
+    let data: SessionTimelineData
+    let entries: [SessionEntry]
+    let turns: [String: ClaudeAppTurn]
+
+    init(_ input: ClaudeTimelineInput) {
+        data = SessionTimelineSource.claude(input.turns)
+        entries = SessionTimeline.build(data.items, state: input.state)
+        turns = Dictionary(input.turns.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    }
 }
 
 /// Claude 세션 패널 (DS PanelHeader 세션 변형 · 본문 · 띠): 폭 380, 모서리 18, `panel` 재료, 높이는 내용에 맞춰 320–520.
@@ -39,26 +80,22 @@ struct ClaudeAppSessionPanelView: View {
     }
 
     /// 맨 아래에서 이만큼(pt) 안이면 "맨 아래에 붙어 있다"로 본다
-    static let pinnedSlack: CGFloat = 24
+    static let pinnedSlack: CGFloat = SessionScrollPin.slack
 
     var body: some View {
         let scale = TFMotion.panelTransform(shown: presentation.shown, reduceMotion: shell.reduceMotion).scale
-        Group {
-            if let id = shell.desktopPanelID, let conversation = shell.desktopConversation {
-                content(id, conversation)
-            } else {
-                Color.clear
+        // 옆줄(백그라운드 일)이 있으면 패널의 왼쪽 바깥에 붙는다: 같은 창 · 같은 위 · 같은 높이 (`SessionPanelFrame`)
+        SessionPanelFrame(pane: presentation.pane, reduceMotion: shell.reduceMotion) { width in
+            Group {
+                if let id = shell.desktopPanelID, let conversation = shell.desktopConversation {
+                    content(id, conversation)
+                } else {
+                    Color.clear
+                }
             }
+            .frame(width: width)
+            .frame(maxHeight: .infinity, alignment: .top)
         }
-        .frame(width: EdgePanelMetrics.width)
-        .frame(maxHeight: .infinity, alignment: .top)
-        .background {
-            ZStack {
-                RoundedRectangle(cornerRadius: EdgePanelMetrics.radius, style: .continuous).fill(.ultraThinMaterial)
-                RoundedRectangle(cornerRadius: EdgePanelMetrics.radius, style: .continuous).fill(TFColor.bgPanel)
-            }
-        }
-        .clipShape(RoundedRectangle(cornerRadius: EdgePanelMetrics.radius, style: .continuous))
         .scaleEffect(scale, anchor: .topTrailing)
         .animation(TFMotion.move(TFMotion.panelMove, reduceMotion: shell.reduceMotion), value: presentation.shown)
         .accessibilityElement(children: .contain)
@@ -77,25 +114,40 @@ struct ClaudeAppSessionPanelView: View {
             GeometryReader { viewport in
                 ScrollViewReader { proxy in
                     ScrollView {
-                        transcript(id, conversation)
-                            .padding(EdgeInsets(top: TFSpace.xs, leading: TFSpace.md, bottom: TFSpace.sm, trailing: TFSpace.md))
+                        transcript(id, conversation, status: status, closed: closed)
+                            .padding(EdgeInsets(top: TFSpace.xs, leading: TFSpace.lg, bottom: TFSpace.sm, trailing: TFSpace.lg))
                             .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { presentation.bodyHeight = $0 }
                             .frame(maxWidth: .infinity, minHeight: viewport.size.height, alignment: .top)
                     }
                     .defaultScrollAnchor(.bottom)
                     .scrollIndicators(.automatic)
-                    // 맨 아래에 붙어 있는지 대화 상태에 알린다: 위로 거슬러 읽는 중에는 라이브 줄이 붙어도 위쪽 줄을 버리지 않는다 (`ClaudeAppConversation.pinnedToBottom`)
-                    .onScrollGeometryChange(for: Bool.self) { geometry in
-                        geometry.visibleRect.maxY >= geometry.contentSize.height - Self.pinnedSlack
-                    } action: { _, pinned in
-                        conversation.pinnedToBottom = pinned
+                    // 맨 아래에 붙어 있는지 대화 상태에 알린다: 위로 거슬러 읽는 중에는 라이브 줄이 붙어도 위쪽 줄을 버리지 않는다 (`ClaudeAppConversation.pinnedToBottom`).
+                    // 새 글로 내용이 늘어난 것은 사용자가 올린 것이 아니다 (`SessionScrollPin`): 붙어 있던 동안만 새 글을 따라 내려가고, 위로 올려 읽는 중이면 끌어내리지 않는다
+                    .onScrollGeometryChange(for: SessionScrollSnapshot.self) { geometry in
+                        SessionScrollSnapshot(visibleMaxY: geometry.visibleRect.maxY, contentHeight: geometry.contentSize.height, visibleHeight: geometry.visibleRect.height)
+                    } action: { old, new in
+                        conversation.pinnedToBottom = SessionScrollPin.next(pinned: conversation.pinnedToBottom, old: old, new: new)
                     }
-                    .onChange(of: TailSignature(last: conversation.turns.last?.id, phase: conversation.phase)) { proxy.scrollTo(Anchor.bottom, anchor: .bottom) }
+                    .onChange(of: TailSignature(last: conversation.turns.last?.id, phase: conversation.phase)) {
+                        if SessionScrollPin.shouldFollowNewContent(pinned: conversation.pinnedToBottom) { proxy.scrollTo(Anchor.bottom, anchor: .bottom) }
+                    }
                 }
             }
             footer(id, band: band)
                 .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { presentation.footerHeight = $0 }
         }
+        // 옆줄(백그라운드 일): 이 세션의 일 목록을 먹이고, 닫힌 세션이면 돌던 일을 멈춘 것으로 하고, 꼬리 읽기는 이 세션의 이 Mac 기록 · 임시 폴더에서
+        .task(id: id) {
+            presentation.beginSession(id)
+            presentation.pane.makeTail = { [weak shell] task in
+                let cwd = shell?.desktop?.session(id: id)?.cwd ?? shell?.desktopRow(id)?.folderPath
+                return (shell?.makeBackgroundTail ?? EdgeShellModel.liveBackgroundTail)(id, cwd, task)
+            }
+            presentation.pane.tasks = conversation.backgroundTasks
+            presentation.pane.setClosed(closed)
+        }
+        .onChange(of: conversation.backgroundTasks) { _, tasks in presentation.pane.tasks = tasks }
+        .onChange(of: closed) { _, closed in presentation.pane.setClosed(closed) }
     }
 
     // MARK: 머리
@@ -118,7 +170,7 @@ struct ClaudeAppSessionPanelView: View {
     // MARK: 본문
 
     @ViewBuilder
-    private func transcript(_ id: String, _ conversation: ClaudeAppConversation) -> some View {
+    private func transcript(_ id: String, _ conversation: ClaudeAppConversation, status: ClaudeAppLiveStatus?, closed: Bool) -> some View {
         switch conversation.phase {
         case .loading:
             Color.clear.frame(height: 0)
@@ -127,7 +179,11 @@ struct ClaudeAppSessionPanelView: View {
                 Button(ClaudeAppCopy.tryAgain) { conversation.retry() }.buttonStyle(TFButtonStyle(.secondary, size: .md))
             }
         case .ready:
-            VStack(alignment: .leading, spacing: TFSpace.md) {
+            // 단계 묶기 · 일한 시간 · 답 밑 줄(복사) · 도는 중 시계: 두 패널이 같은 순수 규칙(`SessionTimeline`)을 쓴다
+            let input = ClaudeTimelineInput(turns: conversation.turns, state: SessionTimelineSource.runState(status, closed: closed))
+            let timeline = presentation.timeline.value(for: input) { ClaudeTimeline(input) }
+            let turns = timeline.turns
+            VStack(alignment: .leading, spacing: 0) {
                 if conversation.hasEarlier {
                     HStack {
                         Spacer(minLength: 0)
@@ -135,10 +191,18 @@ struct ClaudeAppSessionPanelView: View {
                             .disabled(conversation.loadingEarlier)
                         Spacer(minLength: 0)
                     }
+                    .padding(.bottom, TFSpace.md)
                 }
-                ForEach(conversation.turns) { turn in
-                    ClaudeAppTurnView(turn: turn)
-                }
+                SessionEntriesView(
+                    entries: timeline.entries, steps: timeline.data.steps, state: presentation.steps,
+                    loadDetail: { stepID in
+                        guard let turn = turns[stepID] else { return nil }
+                        return await conversation.detail(of: turn)
+                    },
+                    item: { itemID in
+                        if let turn = turns[itemID] { ClaudeAppTurnView(turn: turn) }
+                    }
+                )
                 Color.clear.frame(height: 1).id(Anchor.bottom)
             }
         }
@@ -168,7 +232,8 @@ struct ClaudeAppTurnView: View {
         case .user(let text), .peer(let text, _):
             Message(isUser: true) { MessageText(Self.shown(text, truncated: turn.truncated)) }
         case .assistant(let text):
-            Message(isUser: false) { MessageText(Self.shown(text, truncated: turn.truncated)) }
+            // 안전한 부분만 그린다 (코드 블록 · 인라인 코드 · 목록 · 굵게): 링크 · 표 · 이미지 · HTML은 쓴 그대로 글자다
+            Message(isUser: false) { SessionMarkdownView(source: Self.shown(text, truncated: turn.truncated)) }
         case .tool(let name, let description):
             EventLine(Self.toolLine(name: name, description: description))
         }
@@ -192,14 +257,18 @@ struct ClaudeAppTurnView: View {
 final class EdgeClaudeAppPanelController {
     let shell: EdgeShellModel
     let panel: EdgeKeyPanel
-    let presentation = EdgeClaudeAppPanelPresentation()
+    let presentation: EdgeClaudeAppPanelPresentation
     private let hosting: NSHostingView<ClaudeAppSessionPanelView>
     private var generation = 0
+    /// 창을 옆줄만큼 왼쪽으로 넓힌 폭의 마지막 값: 바뀌면 움직이지 않고 바로 맞춘다 (옆줄은 두 겹이 처음부터 최종 크기로 놓이고 크로스페이드만)
+    private var appliedExtra: CGFloat = 0
     /// 메인 패널 창의 마지막으로 정해진 자리 (보이는 동안만). Sessions 옆에 설 때 그 왼쪽에 놓는다
     var mainPanelFrame: () -> NSRect? = { nil }
 
-    init(shell: EdgeShellModel) {
+    /// - backgroundOpen: 백그라운드 일 옆줄의 "열어 본 시각" 저장소 (실제 앱은 영속, 시험 호스트 · 견본은 메모리)
+    init(shell: EdgeShellModel, backgroundOpen: any BackgroundTaskOpenStore = InMemoryBackgroundTaskOpenStore()) {
         self.shell = shell
+        presentation = EdgeClaudeAppPanelPresentation(backgroundOpen: backgroundOpen)
         panel = EdgeKeyPanel(
             contentRect: NSRect(x: 0, y: 0, width: EdgePanelMetrics.width, height: EdgePanelMetrics.minHeight),
             styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView], backing: .buffered, defer: false
@@ -218,6 +287,11 @@ final class EdgeClaudeAppPanelController {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient, .ignoresCycle]
         panel.contentView = hosting
         panel.setAccessibilityLabel(AgentMarkKind.claudeCode.accessibilityName)
+        // Esc: 옆줄이 열려 있으면 꼬리 → 목록 → 접힘을 먼저 (그다음 패널)
+        let presentation = presentation
+        shell.onEscapeDesktopPane = { presentation.pane.escape() }
+        // 옆줄이 바뀌면 창 틀을 그 자리에서 맞춘다 (관찰의 한 박자를 기다리지 않는다: 내용이 낡은 창에 잘리지 않게)
+        presentation.pane.onWindowChange = { [weak self] in self?.fit() }
     }
 
     var isVisible: Bool { panel.isVisible }
@@ -235,7 +309,8 @@ final class EdgeClaudeAppPanelController {
 
     /// 지금 자리. Sessions 옆이면 메인 패널 왼쪽 (메인 패널 창이 아직 없으면 nil), 레일 옆 한 패널이면 다른 레일 패널처럼 레일 중심선에 세로 가운데로
     /// (OA PR-D2, 사용자 결정 2026-10-22: 보이는 화면 안으로 같은 규칙. `-TFEdgeSnapshotTopPlacement`만 옛 위 맞춤)
-    func targetFrame() -> NSRect? {
+    /// 옆줄을 뺀 패널 자신의 자리 (폭 380)
+    func panelFrame() -> NSRect? {
         if standalone {
             guard let screen = EdgeRailPanelController.screen else { return nil }
             guard EdgePanelMetrics.centersRailPanels else {
@@ -249,11 +324,22 @@ final class EdgeClaudeAppPanelController {
         return EdgeSessionPanelController.frame(issuePanel: main, height: height())
     }
 
+    /// 창의 자리: 패널 자리에 옆줄(띠 36 · 펼침 256)을 더해 왼쪽으로 넓힌다 — 오른쪽(레일 쪽) · 위 · 높이는 패널과 같다 (DZ v2 E11).
+    /// 화면 왼쪽 여유(`visibleFrame`)를 모델에 알려 모자라면 옆줄이 패널 틀 안으로 들어가게 한다
+    func targetFrame() -> NSRect? {
+        guard let base = panelFrame() else { return nil }
+        let visibleMinX = EdgeRailPanelController.screen?.visibleFrame.minX ?? base.minX - 10_000
+        let room = base.minX - visibleMinX
+        if presentation.pane.room != room { presentation.pane.room = room }
+        return SidePaneLayout.windowFrame(panel: base, outside: presentation.pane.windowExtra)
+    }
+
     /// 열었으면 true (자리를 못 정하면 false)
     @discardableResult
     func show() -> Bool {
         hosting.layoutSubtreeIfNeeded()
         guard let target = targetFrame() else { return false }
+        appliedExtra = presentation.pane.windowExtra
         generation += 1
         if !panel.isVisible {
             panel.alphaValue = 0
@@ -299,7 +385,15 @@ final class EdgeClaudeAppPanelController {
     /// 내용 높이 · 메인 패널 자리가 바뀌면 위를 맞춘 채로 맞춘다 (메인 패널이 세로 가운데로 다시 갈 때 같은 움직임으로 따라간다)
     func fit() {
         guard panel.isVisible, presentation.shown, let target = targetFrame(), target != panel.frame else { return }
-        EdgePanelMotion.move(panel, to: target, reduceMotion: shell.reduceMotion)
+        let extra = presentation.pane.windowExtra
+        if extra != appliedExtra {
+            // 옆줄이 나타나거나 사라지거나 접힘 ↔ 펼침: 창 틀은 움직이지 않고 바로 맞춘다 (안의 두 겹이 크로스페이드한다). 그림자는 새 모양을 따른다
+            appliedExtra = extra
+            panel.setFrame(target, display: true)
+            panel.invalidateShadow()
+        } else {
+            EdgePanelMotion.move(panel, to: target, reduceMotion: shell.reduceMotion)
+        }
     }
 }
 #endif

@@ -40,6 +40,8 @@ struct AssistantWindowView: View {
     let reduceMotion: Bool
     var actions = AssistantWindowActions()
     private var chat: ChatStore { runtime.chat }
+    /// 마우스가 올라 있는 답 (그 답 밑 줄의 복사 아이콘이 나타난다): 줄 id
+    @State private var hoveredFooter: String?
 
     /// 머리의 작업 폴더 (없으면 nil). 런타임의 다시 읽기 신호(`folderRecheck`)를 따라 다시 그려진다: 이 Mac의 폴더 등록부는 관찰되지 않는다 (bridge가 다른 스레드에서 세션 핀을 쓴다)
     private var folderLine: AgentWorkspaceFolderLine? { runtime.folderLine(for: model) }
@@ -239,9 +241,7 @@ struct AssistantWindowView: View {
                         Button(ChatCopy.tryAgain) { chat.retryUnavailable() }.buttonStyle(TFButtonStyle(.secondary))
                     }
                 }
-                ForEach(chat.turns(for: model.conversationID)) { turn in
-                    AssistantTurnView(turn: turn, runtime: runtime, actions: agentActions, onRetry: { cmid in Task { await chat.retry(cmid, in: model.conversationID) } })
-                }
+                turnList
                 // Stop 뒤의 말 (OA D4a-14): 대화 끝에 이벤트 줄 모양 한 줄 (이 창에서만 보이는 로컬 줄, 서버가 취소 요청을 지우면 사라진다)
                 if let line = model.stopLineText { EventLine(line) }
                 // 폴더 메뉴의 "New chat in another folder…"가 폴더를 적지 못했다: 이 대화에 조용한 한 줄 (승인된 글만, 다른 대화로 가면 사라진다)
@@ -249,6 +249,36 @@ struct AssistantWindowView: View {
                 Color.clear.frame(height: 1).id(AssistantBodyAnchor.bottom)
             }
             .padding(.top, TFSpace.xs)
+        }
+    }
+
+    /// 대화의 글들 + 각 턴의 마지막 답 밑 복사 아이콘 (세션 보기 V1, DZ 승인: 대화 창에도 Copy — 한 부품 · 같은 규칙). 단계 · 일한 시간은 이 창에 없다 (복사만).
+    /// 복사 아이콘은 그 답 위에 마우스가 있거나 포커스가 있을 때만 보인다
+    @ViewBuilder
+    private var turnList: some View {
+        let turns = chat.turns(for: model.conversationID)
+        let entries = SessionTimeline.build(SessionTimelineSource.chat(turns, steps: []).items, state: .finished)
+        let byID = Dictionary(turns.map { ($0.id.uuidString, $0) }, uniquingKeysWith: { first, _ in first })
+        ForEach(entries) { entry in
+            switch entry {
+            case .item(let id):
+                if let turn = byID[id] {
+                    AssistantTurnView(turn: turn, runtime: runtime, actions: agentActions, onRetry: { cmid in Task { await chat.retry(cmid, in: model.conversationID) } })
+                        .onHover { inside in
+                            if inside { hoveredFooter = "footer-\(id)" } else if hoveredFooter == "footer-\(id)" { hoveredFooter = nil }
+                        }
+                }
+            case .footer(let footer):
+                if footer.copyText != nil {
+                    // 답 바로 밑 4 (본문의 블록 간격 12를 줄인다)
+                    SessionFooterView(footer: footer, revealed: hoveredFooter == footer.id, showsTime: false) { inside in
+                        if inside { hoveredFooter = footer.id } else if hoveredFooter == footer.id { hoveredFooter = nil }
+                    }
+                    .padding(.top, -(TFSpace.md - TFSpace.xs))
+                }
+            case .steps, .clock:
+                EmptyView()
+            }
         }
     }
 

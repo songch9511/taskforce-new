@@ -18,6 +18,21 @@ public struct AgentTerminalTarget: Sendable, Equatable {
     }
 }
 
+/// 세션 보기가 이 Mac의 Claude Code 기록을 읽는 데 필요한 두 값 (세션 보기 V1): Claude 세션 id · 그 세션을 띄운 세션 cwd. 이 Mac의 세션 폴더 상태에서만 온다
+/// (서버가 준 `external_session_id`는 쓰지 않는다). 글 · 경로를 찍지 않는다
+public struct AgentLocalTranscriptTarget: Sendable, Equatable, CustomStringConvertible, CustomDebugStringConvertible {
+    public var providerSessionID: String
+    public var cwd: String
+
+    public init(providerSessionID: String, cwd: String) {
+        self.providerSessionID = providerSessionID
+        self.cwd = cwd
+    }
+
+    public var description: String { "AgentLocalTranscriptTarget()" }
+    public var debugDescription: String { description }
+}
+
 extension BridgeRuntime {
     /// 그 Taskforce 세션의 가장 새 task와 그 adapter (이 Mac이 모르는 세션이면 nil)
     private func newestTask(ofSession sessionID: UUID) async -> (task: BridgeTaskRecord, adapter: any AgentProcess)? {
@@ -25,6 +40,13 @@ extension BridgeRuntime {
         // `allTasks`는 최근 것부터
         guard let task = ((try? await ledger.allTasks()) ?? []).first(where: { $0.agentSessionID.lowercased() == wanted }), let adapter = adapters[task.adapter] else { return nil }
         return (task, adapter)
+    }
+
+    /// 세션 보기(Taskforce 패널)가 이 Mac의 Claude Code 기록을 읽을 값: 그 세션이 **이 Mac에서** 돌아 adapter 상태가 묶었을 때만 (다른 Mac의 세션 · 첫 턴 전이면 nil: 단계는 그 Mac에서만 보인다).
+    /// 터미널 열기와 달리 지금 돌고 있어도 준다 (읽기만 한다)
+    public func localTranscriptTarget(forAgentSession sessionID: UUID) async -> AgentLocalTranscriptTarget? {
+        guard let (task, adapter) = await newestTask(ofSession: sessionID), let terminal = await adapter.terminalSession(task.agentSessionID) else { return nil }
+        return AgentLocalTranscriptTarget(providerSessionID: terminal.providerSessionID, cwd: terminal.sessionCwd)
     }
 
     /// Resume here의 프로세스 검사에 쓰는 Claude 세션 id (D4a2-07): 이 Mac의 세션 폴더 상태가 묶은 id만. 상태가 없으면 nil (검사기는 "못 찾음"으로 답한다)

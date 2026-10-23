@@ -15,15 +15,21 @@ public struct ExternalSessionFileSystem: Sendable {
         public var size: Int64
         public var modified: Date
         public var created: Date
+        /// 권한 비트 (`st_mode & 0o7777`). 모르면 0 (아무도 쓸 수 없다고 본다)
+        public var mode: UInt16
 
-        public init(name: String, kind: Kind, owner: UInt32, size: Int64, modified: Date, created: Date) {
+        public init(name: String, kind: Kind, owner: UInt32, size: Int64, modified: Date, created: Date, mode: UInt16 = 0) {
             self.name = name
             self.kind = kind
             self.owner = owner
             self.size = size
             self.modified = modified
             self.created = created
+            self.mode = mode
         }
+
+        /// 소유자가 아닌 쪽(그룹 · 모두)이 쓸 수 있다
+        public var othersCanWrite: Bool { mode & 0o022 != 0 }
     }
 
     public enum Listing: Equatable, Sendable {
@@ -78,7 +84,8 @@ public struct ExternalSessionFileSystem: Sendable {
             Entry(
                 name: name, kind: kind(of: info.st_mode), owner: info.st_uid, size: Int64(info.st_size),
                 modified: Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec) + TimeInterval(info.st_mtimespec.tv_nsec) / 1e9),
-                created: Date(timeIntervalSince1970: TimeInterval(info.st_birthtimespec.tv_sec) + TimeInterval(info.st_birthtimespec.tv_nsec) / 1e9)
+                created: Date(timeIntervalSince1970: TimeInterval(info.st_birthtimespec.tv_sec) + TimeInterval(info.st_birthtimespec.tv_nsec) / 1e9),
+                mode: UInt16(truncatingIfNeeded: info.st_mode & 0o7777)
             )
         }
 

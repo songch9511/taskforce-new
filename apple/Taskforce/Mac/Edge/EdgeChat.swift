@@ -46,6 +46,11 @@ final class ChatRuntime {
     var isQuestionVisible: (UUID) -> Bool = { _ in false }
     /// 인용의 원문 링크를 연다 (테스트는 가짜로 바꾼다)
     var openURL: (URL) -> Void = { NSWorkspace.shared.open($0) }
+    /// 이 Taskforce 세션이 **이 Mac에서** 돌아 어댑터가 묶은 Claude 세션 id · 세션 cwd (세션 보기의 도구 단계 · 일 목록을 이 Mac의 기록에서 읽는다). 이 Mac이 모르는 세션이면 nil (단계는 후속의 서버 저장 뒤에).
+    /// 시험 · 견본은 가짜로 바꾼다
+    var localTranscriptTarget: @MainActor (UUID) async -> AgentLocalTranscriptTarget? = { id in await BridgeHost.shared?.activeRuntime?.localTranscriptTarget(forAgentSession: id) }
+    /// 어댑터가 읽은 `task_*` 줄로 만든 백그라운드 일 목록 (이 Mac 안에서만). 실제 앱은 어댑터와 같은 공유 판이다
+    var backgroundBoard: BackgroundTaskBoard = .shared
     /// 보내기 전에 작업 폴더를 묻는 시스템 폴더 창 (OA D4a2-05). 시험은 가짜 패널로 바꾼다 (실제 `NSOpenPanel`을 열지 않는다)
     var workspacePicker: any AgentWorkspacePicking = WorkspacePicker()
     /// 지금 계정의 폴더 등록부 + 연결 확인 (bridge가 꺼져 있으면 nil: 묻지 않는다). 시험은 가짜로 바꾼다

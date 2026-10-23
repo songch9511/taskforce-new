@@ -117,7 +117,8 @@ private struct MessageHugsTextKey: EnvironmentKey {
 }
 
 extension EnvironmentValues {
-    fileprivate var messageHugsText: Bool {
+    /// 앱의 글 뷰(`SessionMarkdownView`)도 이 값을 따른다: 말풍선 안에서는 글 폭에 맞춘다
+    public var messageHugsText: Bool {
         get { self[MessageHugsTextKey.self] }
         set { self[MessageHugsTextKey.self] = newValue }
     }
@@ -378,11 +379,7 @@ public enum MessageViewFull {
     public static let title = AgentCopy.viewFull
 
     /// 보일 글: 펼쳤으면 전문, 잘렸으면 말줄임표로 끝난 글 (이미 "…"로 끝나면 더하지 않는다)
-    public static func shownText(_ turn: ChatTurn) -> String {
-        if let full = turn.fullText { return full }
-        guard turn.isTruncated, !turn.text.hasSuffix("…") else { return turn.text }
-        return turn.text + "…"
-    }
+    public static func shownText(_ turn: ChatTurn) -> String { turn.visibleText }
 
     /// 링크가 보이나: 잘렸고, 이 Mac에서 전문을 찾았고, 아직 펼치지 않았다
     public static func showsLink(_ turn: ChatTurn) -> Bool {

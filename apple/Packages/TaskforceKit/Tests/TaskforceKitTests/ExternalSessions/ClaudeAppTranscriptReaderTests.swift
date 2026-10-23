@@ -316,7 +316,7 @@ extension ExternalSessionSuites {
             }
         }
 
-        @Test func aToolRowIsOnlyTheNameAndTheDescription() throws {
+        @Test func aToolRowIsOnlyTheNameTheDescriptionAndAFileName() throws {
             try withHome { home in
                 try install("desktop-basic.jsonl", in: home)
                 guard let page = page(reader(home).open(sessionID: id, cwd: cwd)) else { return }
@@ -324,7 +324,10 @@ extension ExternalSessionSuites {
                 #expect(tools.count == 2)
                 var dump = ""
                 Swift.dump(tools, to: &dump)
-                #expect(!dump.contains("ls -la") && !dump.contains("README.md") && !dump.contains("file_path") && !dump.contains("\"command\""), "입력 칸은 하나도 담지 않는다")
+                // 세션 보기 V1(DZ v2): 줄은 "이름 · 파일 이름"이다. 파일 이름(마지막 구성요소)만 남고 경로 · 명령 · 입력 칸 이름은 하나도 담지 않는다
+                #expect(!dump.contains("ls -la") && !dump.contains("file_path") && !dump.contains("\"command\"") && !dump.contains("/Users/tester") && !dump.contains("proj/"), "경로 · 명령 · 입력 칸은 하나도 담지 않는다")
+                #expect(tools.contains { $0.target == "README.md" }, "읽은 파일은 이름만")
+                #expect(tools.filter { $0.target != nil }.count == 1, "명령 도구에는 파일 이름이 없다")
             }
         }
 

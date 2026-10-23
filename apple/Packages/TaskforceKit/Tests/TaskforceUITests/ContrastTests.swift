@@ -147,6 +147,29 @@ struct ContrastTests {
         #expect(track >= 3, "status/step-inactive on bg/elevated: \(track)")
     }
 
+    /// 레일 상태 색 C (사용자 승인 2026-10-22): 세 상태 색 모두 검은 레일(bezel/base) 위 비문자 3:1 (WCAG 1.4.11). 색 세트의 실제 값으로 계산한다
+    @Test(arguments: ["status/needs-you", "status/done", "status/activity"], appearances)
+    func statusColorsOnTheRail(_ token: String, _ dark: Bool) throws {
+        let color = try #require(TokenCatalog.resolve(token), "\(token) 색 세트가 없다")
+        let rail = try #require(TokenCatalog.resolve("bezel/base"))
+        let ratio = Contrast.ratio(dark ? color.dark : color.light, dark ? rail.dark : rail.light)
+        #expect(ratio >= 3, "\(token) on bezel/base \(dark ? "Dark" : "Light"): \(ratio)")
+    }
+
+    /// 패널 위 12px 링(`ActivityRing` `ground == .light`)용 `-panel` 토큰: 패널 면(bg/panel, 반투명, 뒤는 bg/canvas로 가정) 위 3:1,
+    /// 패널 안 채움(bg/field) 위에서도 3:1 (Sessions 줄이 채움 위에 놓여도). 라이트는 흰 패널, 다크는 graphite 패널이다
+    @Test(arguments: ["status/needs-you-panel", "status/done-panel", "status/activity-panel"], appearances)
+    func panelStatusColorsOnThePanel(_ token: String, _ dark: Bool) throws {
+        let color = try #require(TokenCatalog.resolve(token), "\(token) 색 세트가 없다")
+        let ink = dark ? color.dark : color.light
+        let panel = Contrast.composite(Contrast.shipped("bg/panel", dark: dark), over: Contrast.shipped("bg/canvas", dark: dark))
+        let field = Contrast.composite(Contrast.shipped("bg/field", dark: dark), over: panel)
+        let onPanel = Contrast.ratio(ink, panel)
+        let onField = Contrast.ratio(ink, field)
+        #expect(onPanel >= 3, "\(token) on bg/panel \(dark ? "Dark" : "Light"): \(onPanel)")
+        #expect(onField >= 3, "\(token) on bg/field over bg/panel \(dark ? "Dark" : "Light"): \(onField)")
+    }
+
     /// 계산이 맞는지: 검정/흰색 21:1, 같은 색 1:1
     @Test func ratioSanity() {
         #expect(abs(Contrast.ratio(RGBA("#000000"), RGBA("#FFFFFF")) - 21) < 0.001)
