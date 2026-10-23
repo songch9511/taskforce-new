@@ -230,6 +230,144 @@ describe("저장과 겹치는 지우기 · bridge 해제 (연결 둘)", () => {
   });
 });
 
+// 모두 지우기 (OA D3v-s, 계약 27장): delete_all_claude_app_chats는 저장 · 하나 지우기와 같은 사용자별 잠금 아래 한 트랜잭션으로 지운다.
+// 겹치는 저장은 줄을 선다 — 지우기 전에 끝난 저장은 지워지고, 지운 뒤에 온 저장은 묘비 때문에 되살리지 못하며, 고아 행(채팅 없는 메시지)이나 되살림이 남지 않는다.
+const deleteAllOn = async (client: pg.Client, w: { owner: string }) =>
+  (await client.query<{ result: { deleted: number } }>("select public.delete_all_claude_app_chats($1) as result", [w.owner])).rows[0].result;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+/** 되살림 0: 묘비에 든 사용자 글이 그 (bridge, session_ref)의 채팅에 다시 들어 있지 않다 · 채팅 없는 메시지 0 · 답 글의 사용자 글은 같은 채팅 */
+async function expectConsistent(w: { owner: string }) {
+  expect(
+    await count(
+      `select 1 from public.claude_app_chat_messages m
+         join public.claude_app_chats c on c.id = m.chat_id and c.user_id = m.user_id
+         join public.claude_app_chat_tombstones t on t.bridge_id = c.bridge_id and t.session_ref = c.session_ref and t.mac_ref = m.mac_ref
+        where m.user_id = $1 and m.role = 'user'`,
+      [w.owner],
+    ),
+    "묘비에 든 글이 되살아남",
+  ).toBe(0);
+  expect(await count("select 1 from public.claude_app_chat_messages m left join public.claude_app_chats c on c.id = m.chat_id where m.user_id = $1 and c.id is null", [w.owner]), "채팅 없는 메시지").toBe(0);
+  expect(
+    await count("select 1 from public.claude_app_chat_messages a left join public.claude_app_chat_messages u on u.id = a.reply_to and u.chat_id = a.chat_id where a.user_id = $1 and a.role = 'assistant' and u.id is null", [w.owner]),
+    "사용자 글 없는 답 글",
+  ).toBe(0);
+}
+
+describe("모두 지우기와 겹치는 저장 (연결 둘)", () => {
+  it("지우기가 먼저 잡으면: 뒤따르는 저장은 기다렸다가 — 지운 묶음의 재시도는 모두 orphan(되살리지 않음, 지표 0), 새 사용자 글이면 새 채팅 하나", async () => {
+    const w = await world();
+    const batch = [userMsg(1), asstMsg(2, 1)];
+    await saveOn(setup, w, ref(1), batch);
+    await saveOn(setup, w, ref(2), [userMsg(3)]);
+    expect(await sentEvents(w)).toBe(2);
+    await a.query("begin");
+    expect(await deleteAllOn(a, w)).toEqual({ deleted: 2 });
+    await b.query("begin");
+    const replay = saveOn(b, w, ref(1), batch);
+    await waitForLockWait();
+    await a.query("commit");
+    expect(await replay).toEqual({ status: "ok", chat_id: null, saved: 0, existing: 0, orphan: 2 });
+    await b.query("commit");
+    expect(await chats(w)).toBe(0);
+    expect(await messages(w)).toBe(0);
+    expect(await sentEvents(w)).toBe(2);
+    await expectConsistent(w);
+    // 새 글(새 ref)은 새 채팅 하나
+    expect(await saveOn(setup, w, ref(1), [userMsg(9)])).toMatchObject({ status: "ok", saved: 1 });
+    expect(await chats(w)).toBe(1);
+    expect(await sentEvents(w)).toBe(3);
+  });
+
+  it("저장이 먼저 잡고 있으면: 모두 지우기는 기다렸다가 그 저장의 새 행 · 새 채팅까지 함께 지운다 (일부만 남지 않는다). 그 뒤 같은 묶음의 재시도는 막힌다", async () => {
+    const w = await world();
+    await saveOn(setup, w, ref(1), [userMsg(1)]);
+    await a.query("begin");
+    await saveOn(a, w, ref(1), [asstMsg(2, 1), asstMsg(3, 1)]);
+    await saveOn(a, w, ref(5), [userMsg(10)]);
+    await b.query("begin");
+    const deleting = deleteAllOn(b, w);
+    await waitForLockWait();
+    await a.query("commit");
+    expect(await deleting).toEqual({ deleted: 2 });
+    await b.query("commit");
+    expect(await chats(w)).toBe(0);
+    expect(await messages(w)).toBe(0);
+    expect(await saveOn(setup, w, ref(1), [userMsg(1), asstMsg(2, 1), asstMsg(3, 1)])).toEqual({ status: "ok", chat_id: null, saved: 0, existing: 0, orphan: 3 });
+    expect(await saveOn(setup, w, ref(5), [userMsg(10)])).toEqual({ status: "ok", chat_id: null, saved: 0, existing: 0, orphan: 1 });
+    await expectConsistent(w);
+  });
+
+  it("잠금은 사용자별이다: 한 사용자의 모두 지우기가 열려 있어도 다른 사용자의 저장 · 지우기는 기다리지 않는다", async () => {
+    const w1 = await world();
+    const w2 = await world();
+    await saveOn(setup, w1, ref(1), [userMsg(1)]);
+    await saveOn(setup, w2, ref(1), [userMsg(1)]);
+    await a.query("begin");
+    expect(await deleteAllOn(a, w1)).toEqual({ deleted: 1 });
+    // 기다렸다면 statement_timeout(15초)에 걸려 실패한다
+    expect(await saveOn(b, w2, ref(2), [userMsg(2)])).toMatchObject({ status: "ok", saved: 1 });
+    expect(await deleteAllOn(b, w2)).toEqual({ deleted: 2 });
+    await a.query("commit");
+    expect(await chats(w1)).toBe(0);
+    expect(await chats(w2)).toBe(0);
+  });
+
+  it("두 모두 지우기가 겹쳐도 한 번씩 순서대로다: 먼저 온 쪽이 모두 지우고 뒤 쪽은 {deleted: 0} (지표는 한 번)", async () => {
+    const w = await world();
+    for (let n = 1; n <= 3; n++) await saveOn(setup, w, ref(n), [userMsg(1)]);
+    await a.query("begin");
+    await b.query("begin");
+    const first = await deleteAllOn(a, w);
+    const waiting = deleteAllOn(b, w);
+    await waitForLockWait();
+    await a.query("commit");
+    const second = await waiting;
+    await b.query("commit");
+    expect([first, second]).toEqual([{ deleted: 3 }, { deleted: 0 }]);
+    expect(await count("select 1 from public.metric_events where user_id = $1 and type = 'claude_app_chats_deleted_all'", [w.owner])).toBe(1);
+    expect(await count("select 1 from public.claude_app_chat_tombstones where user_id = $1", [w.owner])).toBe(3);
+  });
+
+  it("자동 commit으로 저장 서른 번과 모두 지우기 여섯 번을 동시에 던져도 (연결 둘, 세 판): 고아 행 0 · 되살림 0 — 마지막에 한 번 더 지운 뒤 보낸 글을 모두 다시 보내도 채팅 · 행이 하나도 생기지 않는다", async () => {
+    for (let round = 0; round < 3; round++) {
+      const w = await world();
+      const sent: { session: number; n: number }[] = [];
+      await Promise.all([
+        (async () => {
+          for (let n = 1; n <= 30; n++) {
+            const session = 1 + (n % 3);
+            sent.push({ session, n });
+            const result = await saveOn(a, w, ref(session), [userMsg(n)]);
+            expect(result.status).toBe("ok");
+          }
+        })(),
+        (async () => {
+          for (let i = 0; i < 6; i++) {
+            await sleep(3);
+            await deleteAllOn(b, w);
+          }
+        })(),
+      ]);
+      await expectConsistent(w);
+      // 마지막으로 모두 지운다. 지운 모든 글은 (이번 판의 앞선 지우기 + 이 지우기가) 묘비에 남겼다
+      await deleteAllOn(b, w);
+      expect(await chats(w)).toBe(0);
+      expect(await messages(w)).toBe(0);
+      const eventsBefore = await sentEvents(w);
+      for (const { session, n } of sent) {
+        expect(await saveOn(setup, w, ref(session), [userMsg(n), asstMsg(1000 + n, n)]), `${session}:${n}`).toEqual({ status: "ok", chat_id: null, saved: 0, existing: 0, orphan: 2 });
+      }
+      expect(await chats(w)).toBe(0);
+      expect(await messages(w)).toBe(0);
+      expect(await sentEvents(w)).toBe(eventsBefore);
+      await expectConsistent(w);
+      // 새 글(새 ref)은 막히지 않는다
+      expect(await saveOn(setup, w, ref(1), [userMsg(500)])).toMatchObject({ status: "ok", saved: 1 });
+    }
+  });
+});
+
 describe("사용자별 한도 · 묘비와 겹치는 요청 (연결 둘)", () => {
   /** 한도가 세는 값: 모든 행의 (본문 바이트 + 행 몫 512)의 합 */
   const charged = async (owner: string) =>
@@ -315,8 +453,8 @@ describe("사용자별 한도 · 묘비와 겹치는 요청 (연결 둘)", () =>
   });
 });
 
-describe("속도 제한 claude_app_chat · claude_app_sent · claude_app_chat_day (연결 여럿)", () => {
-  it.each(["claude_app_chat", "claude_app_sent", "claude_app_chat_day"])("%s: 연결 여덟이 동시에 열 번씩 80번을 불러도 정확히 30번만 통과한다 (사용자 · 종류별 잠금)", async (kind) => {
+describe("속도 제한 claude_app_chat · claude_app_sent · claude_app_chat_day · claude_app_chat_delete_all (연결 여럿)", () => {
+  it.each(["claude_app_chat", "claude_app_sent", "claude_app_chat_day", "claude_app_chat_delete_all"])("%s: 연결 여덟이 동시에 열 번씩 80번을 불러도 정확히 30번만 통과한다 (사용자 · 종류별 잠금)", async (kind) => {
     const owner = randomUUID();
     await q("insert into auth.users (id, email) values ($1, $2)", [owner, `${owner}@example.com`]);
     const clients = await Promise.all(Array.from({ length: 8 }, () => connect(DB_NAME)));

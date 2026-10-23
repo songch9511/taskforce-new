@@ -160,3 +160,58 @@ describe("DB: 새 종류가 받아들여진다", () => {
     expect(await take(a, "claude_app_chat_day", 3, 86_400)).toBeNull();
   });
 });
+
+// 20261208000000_claude_app_chats_delete_all (OA D3v-s, 계약 27장)이 다시 만드는 두 목록: 지표 종류 claude_app_chats_deleted_all · 속도 제한 종류 claude_app_chat_delete_all.
+// 목록 글자(= 20261207 전체 + 새 종류 하나)는 tests/db/claude-app-chats-delete-all-migration.test.ts가 고정한다. 여기서는 실제 DB가 받아들이는지 본다.
+describe("DB: 20261208의 새 종류가 받아들여진다", () => {
+  let db: PGlite;
+  beforeAll(async () => {
+    db = await createLocalSupabase();
+  }, 60_000);
+  afterAll(async () => {
+    await db?.close();
+  });
+  const user = async () => {
+    const id = randomUUID();
+    await db.query("insert into auth.users (id, email) values ($1, $2)", [id, `${id}@example.com`]);
+    return id;
+  };
+  const take = async (owner: string, kind: string, max = 3, windowSeconds = 600) =>
+    (await db.query<{ at: Date | null }>("select public.take_rate_limit($1, $2, $3, $4) as at", [owner, kind, max, windowSeconds])).rows[0].at;
+
+  it("metric_events: claude_app_chats_deleted_all가 들어가고, 20261207의 종류도 그대로 들어가며, 모르는 종류는 거절된다", async () => {
+    const owner = await user();
+    for (const type of ["claude_app_chats_deleted_all", ...NEW_TYPES, ...LIST_20261206]) await db.query("insert into public.metric_events (user_id, type) values ($1, $2)", [owner, type]);
+    await expect(db.query("insert into public.metric_events (user_id, type) values ($1, 'claude_app_chats_read')", [owner])).rejects.toMatchObject({ code: "23514" });
+  });
+
+  it("앱(authenticated)은 이 종류를 직접 남기지 못한다 (서버 함수가 남긴다)", async () => {
+    const owner = await user();
+    await asUser(db, owner, async () => {
+      await expect(db.query("insert into public.metric_events (type) values ('claude_app_chats_deleted_all')"), "claude_app_chats_deleted_all").rejects.toMatchObject({ code: expect.stringMatching(/^(42501|23514)$/) });
+    });
+  });
+
+  it("take_rate_limit: claude_app_chat_delete_all은 사용자별로 세고 저장(claude_app_chat · claude_app_chat_day)과 따로 센다 — 저장이 차도 지우기는 열려 있고, 반대도 같다. 모르는 종류는 여전히 거절한다", async () => {
+    const a = await user();
+    const b = await user();
+    for (let i = 0; i < 3; i++) expect(await take(a, "claude_app_chat_delete_all")).toBeNull();
+    const retry = await take(a, "claude_app_chat_delete_all");
+    expect(retry).toBeInstanceOf(Date);
+    expect(retry!.getTime() - Date.now()).toBeGreaterThan(9 * 60_000);
+    // 다른 사용자 · 저장 종류는 영향 없다 (그리고 반대도 같다)
+    expect(await take(b, "claude_app_chat_delete_all")).toBeNull();
+    for (const kind of ["claude_app_chat", "claude_app_chat_day", "claude_app_sent"]) for (let i = 0; i < 3; i++) expect(await take(a, kind), kind).toBeNull();
+    for (const kind of ["claude_app_chat", "claude_app_chat_day"]) expect(await take(a, kind), kind).toBeInstanceOf(Date);
+    expect(await take(b, "claude_app_chat")).toBeNull();
+    const { rows } = await db.query<{ n: number }>("select count(*)::int as n from public.rate_limit_events where user_id = $1 and kind = 'claude_app_chat_delete_all'", [a]);
+    expect(rows[0].n).toBe(3);
+    // 종류 검사가 받는다 (take_rate_limit 밖의 직접 insert도), 모르는 종류는 거절
+    await db.query("insert into public.rate_limit_events (user_id, kind) values ($1, 'claude_app_chat_delete_all')", [b]);
+    await expect(db.query("insert into public.rate_limit_events (user_id, kind) values ($1, 'claude_app_chat_delete_some')", [b])).rejects.toMatchObject({ code: "23514" });
+    await expect(take(a, "claude_app_chat_delete_some")).rejects.toThrow(/모르는 종류|rate_limit/);
+    // 앞 종류와 bridge 종류 규칙은 본문을 그대로 이어 받았다
+    for (const kind of ["ask", "connection_start", "action_create", "run_create", "bridge_register", "ai_key", "agent_attach"]) expect(await take(b, kind), kind).toBeNull();
+    await expect(take(a, "bridge_poll")).rejects.toThrow(/invalid bridge/);
+  });
+});
