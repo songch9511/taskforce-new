@@ -42,6 +42,8 @@ struct SessionEntriesView<Item: View>: View {
     @Bindable var state: SessionStepsState
     /// 앞 쪽 기록을 더 읽을 수 있나 (Claude 패널 · 옆줄 꼬리)
     var earlierPage = SessionEarlierPage()
+    /// 읽는 사람이 맨 아래에 붙어 있나 (패널의 스크롤 알림): 붙어 있는 동안은 창이 한도 안에 머문다, 위로 올려 읽는 중이면 첫 줄 자리를 지킨다
+    var pinnedToBottom = true
     @Environment(\.sessionScrollToEntry) private var scrollTo
     /// 단계 줄의 Input · Result를 읽는다 (줄 id → 본문). 읽을 수 없으면 nil
     var loadDetail: (String) async -> ClaudeAppToolDetail? = { _ in nil }
@@ -65,7 +67,7 @@ struct SessionEntriesView<Item: View>: View {
     }
 
     var body: some View {
-        let start = state.windowStart(in: entries)
+        let start = state.windowStart(in: entries, pinned: pinnedToBottom)
         let shown = Array(entries[start...])
         let footerIDs = Set(shown.compactMap { entry -> String? in if case .footer(let footer) = entry { footer.id } else { nil } })
         VStack(alignment: .leading, spacing: 0) {
@@ -82,7 +84,8 @@ struct SessionEntriesView<Item: View>: View {
         }
     }
 
-    /// 맨 위 가운데의 "Show earlier" (Claude 패널이 예전부터 쓰던 모양 그대로: 한 줄 · 아래 12). 창 밖에 읽어 둔 줄이 있으면(`hidden`) 먼저 그것을 펴고, 없으면 앞 쪽 기록을 읽는다
+    /// 맨 위 가운데의 "Show earlier" (Claude 패널이 예전부터 쓰던 모양 그대로: 한 줄 · 아래 12). 창 밖에 읽어 둔 줄이 있으면(`hidden`) 먼저 그것을 150줄 펴고, 없으면 앞 쪽 기록을 읽는다.
+    /// 읽어서 앞에 붙은 줄은 창 밖에 남는다 (한꺼번에 그리지 않는다): 다시 누르면 150줄씩 펴진다
     private func earlierControl(hidden: Bool) -> some View {
         HStack {
             Spacer(minLength: 0)
@@ -90,7 +93,6 @@ struct SessionEntriesView<Item: View>: View {
                 if hidden {
                     state.revealEarlier(in: entries)
                 } else {
-                    state.revealAll()
                     earlierPage.load()
                 }
             }

@@ -81,18 +81,23 @@ struct SessionsPanelBody: View {
 
     /// 패널이 무엇을 보이나 (순수한 판단: 시험이 단계마다 확인한다)
     struct Plan: Equatable {
-        /// 두 절이 모두 비어 패널 전체가 "No sessions"
+        /// 세 절이 모두 비어 패널 전체가 "No sessions"
         var noSessions: Bool
         var taskforce: Bool
         var mac: MacPlan
+        /// Saved chats 절 (OA D3v-m): 읽었는데 비면(서버 gate가 꺼졌거나 저장된 대화가 없다) `.absent` — 빈 상태 글이 없다
+        var saved: SavedChatsStore.SectionState = .absent
     }
 
-    /// - phase: On this Mac 목록의 단계 (목록이 없으면 nil) · taskforceRead: Taskforce 세션을 한 번이라도 읽었다. **아직 읽는 중인 절이 있으면 비었다고 하지 않는다** ("No sessions"는 두 절 모두 읽은 뒤에만)
+    /// - phase: On this Mac 목록의 단계 (목록이 없으면 nil) · taskforceRead: Taskforce 세션을 한 번이라도 읽었다. **아직 읽는 중인 절이 있으면 비었다고 하지 않는다** ("No sessions"는 모든 절을 읽은 뒤에만)
+    /// - saved: Saved chats 절의 상태 (저장소가 없으면 `.absent`). 읽는 중 · 읽기 실패의 절이 보이면 패널은 "No sessions"가 아니다
     static func plan(
-        taskforce: SessionsSection<SessionsTaskforceRow>, mac: SessionsSection<SessionsMacRow>, phase: ExternalSessionsStore.Phase?, taskforceRead: Bool
+        taskforce: SessionsSection<SessionsTaskforceRow>, mac: SessionsSection<SessionsMacRow>, phase: ExternalSessionsStore.Phase?, taskforceRead: Bool,
+        saved: SavedChatsStore.SectionState = .absent
     ) -> Plan {
         let settled = taskforceRead && (phase.map { $0 == .empty || $0 == .ready } ?? true)
-        if settled, SessionsPanelRules.isEmpty(taskforce: taskforce, mac: mac) { return Plan(noSessions: true, taskforce: false, mac: .absent) }
+        // 저장된 대화 절이 보이면(읽는 중 · 읽기 실패 · 줄) "No sessions"가 아니다. 읽었는데 비었으면(`.absent`) 다른 절이 모두 비었을 때 "No sessions" 하나다
+        if settled, saved == .absent, SessionsPanelRules.isEmpty(taskforce: taskforce, mac: mac) { return Plan(noSessions: true, taskforce: false, mac: .absent) }
         let macPlan: MacPlan
         switch phase {
         case nil, .empty?: macPlan = .absent
@@ -101,7 +106,7 @@ struct SessionsPanelBody: View {
         case .failed?: macPlan = .failed
         case .ready?: macPlan = mac.isEmpty ? .absent : .rows
         }
-        return Plan(noSessions: false, taskforce: !taskforce.isEmpty, mac: macPlan)
+        return Plan(noSessions: false, taskforce: !taskforce.isEmpty, mac: macPlan, saved: saved)
     }
 
     @ViewBuilder
@@ -111,7 +116,10 @@ struct SessionsPanelBody: View {
             shell.issues?.sessions.items ?? [], issueNumber: { shell.issues?.numbers.number(for: $0) }, now: now, expanded: taskforceExpanded
         )
         let mac = macSection(store, now: now)
-        let plan = Self.plan(taskforce: taskforce, mac: mac, phase: store?.phase, taskforceRead: shell.issues?.sessions.hasRead ?? true)
+        // 저장된 대화 (OA D3v-m): 목록과 같은 게이트. 읽었는데 비면 절이 없다
+        let savedStore = shell.savedChatsVisible ? shell.savedChats : nil
+        let saved = savedStore?.section(expanded: shell.savedChatsExpanded)
+        let plan = Self.plan(taskforce: taskforce, mac: mac, phase: store?.phase, taskforceRead: shell.issues?.sessions.hasRead ?? true, saved: saved?.state ?? .absent)
         if plan.noSessions {
             PanelEmptyState(title: SessionsPanelCopy.noSessions) {}
         } else {
@@ -125,6 +133,45 @@ struct SessionsPanelBody: View {
                     }
                 }
                 if let store { onThisMac(store, plan: plan.mac, section: mac) }
+                if let savedStore, let saved { savedChats(savedStore, section: saved, now: now) }
+            }
+        }
+    }
+
+    /// Saved chats 절 (OA D3v-m, DZ 시트 1 · 4 · 5): 세 번째 절. 처음 셋 + Show all(읽어 둔 20개), 끝의 Show earlier가 20개씩 더 읽는다. 읽는 중 · 읽기 실패는 절 안의 한 줄 (위 절은 그대로).
+    /// 읽었는데 비면 절이 머리째 없다 (빈 상태 글 없음: 서버 gate가 꺼져 읽기가 비는 경우도 같다)
+    @ViewBuilder
+    private func savedChats(_ store: SavedChatsStore, section: SavedChatsSection, now: Date) -> some View {
+        switch section.state {
+        case .absent:
+            EmptyView()
+        case .checking:
+            SessionsSectionHeader(SavedChatsCopy.title, togglesFold: false, expanded: false) {}
+            SessionsSectionNote(ExternalSessionCopy.checking)
+        case .failed:
+            SessionsSectionHeader(SavedChatsCopy.title, togglesFold: false, expanded: false) {}
+            SessionsSectionNote(SavedChatsCopy.couldNotLoad) {
+                Button(ExternalSessionCopy.tryAgain) { store.retry() }.buttonStyle(TFButtonStyle(.secondary, size: .sm))
+            }
+        case .rows:
+            SessionsSectionHeader(SavedChatsCopy.title, togglesFold: section.fold.togglesFold, expanded: section.fold.expanded) { shell.savedChatsExpanded.toggle() }
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(section.fold.visible) { row in
+                    SavedChatRowView(row, now: now, current: shell.savedChatPanelID == row.id) {
+                        shell.openSavedChat(row.id)
+                    } onDelete: {
+                        shell.openSavedChat(row.id, confirmDelete: true)
+                    }
+                }
+            }
+            if section.showsEarlier {
+                HStack {
+                    Spacer(minLength: 0)
+                    QuietLink(SessionViewCopy.showEarlier) { Task { await store.loadMore() } }
+                        .disabled(store.loadingMore)
+                    Spacer(minLength: 0)
+                }
+                .padding(.top, TFSpace.md)
             }
         }
     }

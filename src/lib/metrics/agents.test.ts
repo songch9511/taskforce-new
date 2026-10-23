@@ -27,7 +27,7 @@ describe("U1 ① 에이전트 사용", () => {
   const row = (type: string, over: Partial<AgentMetricRow> = {}): AgentMetricRow => ({ userId: "u1", type, at: T(0), props: {}, ...over });
   const find = (card: ReturnType<typeof agentUsage>, type: string) => card.types.find((t) => t.type === type)!;
 
-  it("등록부 순서로 26개 type이 모두 나오고, 수 · 사용자 수 · adapter를 센다", () => {
+  it("등록부 순서로 27개 type이 모두 나오고, 수 · 사용자 수 · adapter를 센다", () => {
     const card = agentUsage(
       [
         row("agent_message_sent", { props: { adapter: "agent:codex", access: "write" } }),
@@ -39,7 +39,7 @@ describe("U1 ① 에이전트 사용", () => {
       period,
     );
     expect(card.types.map((t) => t.type)).toEqual(AGENT_EVENTS.map((e) => e.type));
-    expect(card.types).toHaveLength(26);
+    expect(card.types).toHaveLength(27);
     expect(find(card, "agent_message_sent")).toMatchObject({ n: 4, users: 2 });
     // props가 없는 옛 행은 "(없음)"
     expect(find(card, "agent_message_sent").adapters).toEqual([
@@ -158,7 +158,7 @@ describe("U1 ① 에이전트 사용", () => {
     expect(find(card, "stop_requested").n).toBe(2);
   });
 
-  it("모르는 type은 따로 센다 (OA 전 7개와 등록부 26개는 모르는 type이 아니다)", () => {
+  it("모르는 type은 따로 센다 (OA 전 7개와 등록부 27개는 모르는 type이 아니다)", () => {
     const card = agentUsage([row("brand_new_type"), row("brand_new_type", { userId: "u2" }), row("other_new"), row("app_opened"), row("assistant_opened"), row("brand_new_type", { at: T(-86400 * 30) })], [], period);
     // 모르는 type 2개(brand_new_type · other_new), 기간 안 3건 (30일 전 brand_new_type은 기간 밖)
     expect(card.unknown).toEqual({ types: 2, events: 3 });

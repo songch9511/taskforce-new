@@ -31,7 +31,7 @@ export type AgentEventSpec = {
 
 const sql = (fn: string): EventSource => ({ kind: "sql", fn });
 
-/** OA 지표 type 26개 (CHECK 블록 v3, 20261123000000_agent_path_leases.sql + 외부 세션 2개: 20261203000000_external_sessions_list.sql · 20261204000000_agent_session_attach.sql + Claude 데스크톱 세션 보기 1개: 20261206000000_claude_app_session_metrics.sql + Claude 데스크톱 대화 저장 2개: 20261207000000_claude_app_chats.sql + 하위 에이전트 트리 4개: 20261209000000_agent_tree_metrics.sql). 1–11 · 17이 에이전트 대화, 12–16이 프로젝트 · 이슈 정리, 18이 외부 세션 목록, 19가 외부 세션 이어받기, 20이 Claude 데스크톱 세션 보기, 21 · 22가 Claude 데스크톱 대화 저장, 23–26이 하위 에이전트 트리 */
+/** OA 지표 type 27개 (CHECK 블록 v3, 20261123000000_agent_path_leases.sql + 외부 세션 2개: 20261203000000_external_sessions_list.sql · 20261204000000_agent_session_attach.sql + Claude 데스크톱 세션 보기 1개: 20261206000000_claude_app_session_metrics.sql + Claude 데스크톱 대화 저장 2개: 20261207000000_claude_app_chats.sql + 모두 지우기 1개: 20261208000000_claude_app_chats_delete_all.sql + 하위 에이전트 트리 4개: 20261209000000_agent_tree_metrics.sql). 1–11 · 17이 에이전트 대화, 12–16이 프로젝트 · 이슈 정리, 18이 외부 세션 목록, 19가 외부 세션 이어받기, 20이 Claude 데스크톱 세션 보기, 21 · 22 · 23이 Claude 데스크톱 대화 저장 · 지우기, 24–27이 하위 에이전트 트리 */
 export const AGENT_EVENTS: readonly AgentEventSpec[] = [
   // 전달 시작마다: 사용자가 보낸 순간이 아니라 대기열 · 재전달 · Mac 복귀 때도 생긴다 (리텐션 활동이 아니다, Q5)
   { type: "agent_message_sent", sources: [sql("start_agent_turn")], dims: [], activity: false },
@@ -72,6 +72,9 @@ export const AGENT_EVENTS: readonly AgentEventSpec[] = [
   { type: "claude_app_message_sent", sources: [sql("save_claude_app_chat"), { kind: "ts", file: "src/lib/api/claude-app-chats.ts" }], dims: ["result", "reason"], activity: true },
   // 사용자가 저장된 Claude 데스크톱 대화를 지웠을 때: delete_claude_app_chat이 지우는 트랜잭션에서 남긴다 (props 없음)
   { type: "claude_app_chat_deleted", sources: [sql("delete_claude_app_chat")], dims: [], activity: true },
+  // 사용자가 저장된 Claude 데스크톱 대화를 **모두** 지웠을 때(OA D3v-s): delete_all_claude_app_chats가 지운 채팅이 있을 때 같은 트랜잭션에서 한 번 남긴다. props는 {deleted: n}뿐(글 · 제목 · id 0)이라 dims가 없다.
+  // 하나씩 지우는 claude_app_chat_deleted와 섞지 않는다 (모두 지우기를 얼마나 쓰는지가 별도 신호다)
+  { type: "claude_app_chats_deleted_all", sources: [sql("delete_all_claude_app_chats")], dims: [], activity: true },
   // 하위 에이전트 트리 지표 넷 (T3s, 20261209000000). 앱이 POST /api/v2/agent-tree/*로 알리고 route가 서버 권한으로 남긴다. 열기 둘은 사용자가 한 일이라 활동이고(하루 한 번, props 0),
   // T2 둘은 모델이 정한 일이라 활동이 아니다(턴 한 번, props는 agent_task_id 하나뿐이라 dims가 없다. compute.ts SERVER_EVENTS에 있어야 한다)
   // 프로젝트 이슈 목록의 Sessions 묶음이 행 1개 이상으로 펼쳐 보인 날 (사용자별 UTC 날짜마다 한 번)

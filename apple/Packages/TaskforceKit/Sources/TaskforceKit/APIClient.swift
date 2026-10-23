@@ -424,6 +424,31 @@ public struct APIClient: Sendable {
         try await sendNoContent(.delete, "billing/openrouter-key", version: .v2)
     }
 
+    /// 저장된 Claude 데스크톱 대화 하나 지우기 (`DELETE /api/v2/claude-app-chats/{id}` → 204). 플래그 · 베타 명단과 무관하게 늘 열려 있다 (OA D3v-m, 계약 27장). 404 = 이미 없다 · 409 `busy_retry` = 같은 요청을 다시 보내도 된다
+    public func deleteClaudeAppChat(id: UUID) async throws {
+        // 주소는 비어 있지 않은 UUID 값으로만 만든다: id가 비면 `claude-app-chats/`가 되어 모두 지우기 길로 합쳐진다 (UUID는 늘 36자지만 길이를 한 번 더 막는다)
+        let idString = id.lowercased
+        guard idString.count == 36 else { throw APIError.unexpectedStatus(0) }
+        _ = try await perform(.delete, "claude-app-chats/\(idString)", body: nil, version: .v2)
+    }
+
+    /// 저장된 대화를 모두 지운다 (`DELETE /api/v2/claude-app-chats?all=true`, 서버 D3v-s의 새 길: **`all=true` 표시가 없으면 400**). 본문 없음.
+    /// 성공은 200 `{ "deleted": n }`(빈 계정도 `0`). 원자적이다: 실패하면 아무것도 지워지지 않았다 (401 · 429 `Retry-After` · 409 `busy_retry`(잠금 경합 · 시간 초과) · 500). 404는 오지 않는다.
+    /// 답 모양에는 기대지 않는다: 읽을 수 있으면 지운 수(화면에는 쓰지 않는다: 다른 기기가 저장한 것도 지워 목록과 다를 수 있다), 아니면 nil. 2xx면 성공이다
+    @discardableResult
+    public func deleteAllClaudeAppChats() async throws -> Int? {
+        let (data, _) = try await perform(.delete, "claude-app-chats", query: [URLQueryItem(name: "all", value: "true")], body: nil, version: .v2)
+        return Self.deletedCount(in: data)
+    }
+
+    /// `{ "deleted": n }`의 n (0 이상의 정수일 때만). 그 밖의 모양 · 빈 본문은 nil: 지운 수를 몰라도 지우기는 성공이다
+    static func deletedCount(in data: Data) -> Int? {
+        guard !data.isEmpty, let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let number = object["deleted"] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(), number.doubleValue == Double(number.intValue), number.intValue >= 0
+        else { return nil }
+        return number.intValue
+    }
+
     // MARK: 요청
 
     enum Method: String {

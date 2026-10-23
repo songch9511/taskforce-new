@@ -2272,6 +2272,19 @@ export const claudeAppChatStatusResponseSchema = z.strictObject({
 export type ClaudeAppChatStatusResponse = z.infer<typeof claudeAppChatStatusResponseSchema>;
 
 /**
+ * DELETE /api/v2/claude-app-chats — 사용자의 저장된 대화를 **모두** 지운다 (D3v-s, 계약 27장). 요청 본문 없음(있어도 읽지 않는다). 한 트랜잭션이라 일부만 지워지는 상태가 없다.
+ * deleted = 지운 채팅 수 (메시지는 함께 지워진다). 0이면 이미 비어 있었다 (404가 아니다). SQL 함수 delete_all_claude_app_chats의 결과도 같은 모양이다. 요청에는 아래 쿼리 표시가 반드시 있어야 한다
+ */
+export const claudeAppChatsDeleteAllResponseSchema = z.strictObject({ deleted: z.number().int().min(0) });
+/**
+ * 컬렉션 DELETE는 URL의 쿼리(`URL.search`)가 **정확히** 이 글자일 때만 지운다 (보안 검토 P2-1). 없거나 다르면(`?all=false` · 다른 칸이 더 붙은 `?all=true&x=1` · 같은 칸 두 번 · 대소문자 · 퍼센트 인코딩) 400 invalid_request.
+ * Next 기본 설정은 DELETE …/claude-app-chats/ (끝 슬래시 · 대화 하나 지우기 URL의 빈 id)를 308으로 …/claude-app-chats에 돌리고 메서드를 지키므로(쿼리도 따라간다), 이 표시가 없으면 대화 하나 지우기가 모두 지우기가 된다
+ */
+export const CLAUDE_APP_CHATS_DELETE_ALL_QUERY = "?all=true";
+export const claudeAppChatsDeleteAllQuerySchema = z.literal(CLAUDE_APP_CHATS_DELETE_ALL_QUERY);
+export type ClaudeAppChatsDeleteAllResponse = z.infer<typeof claudeAppChatsDeleteAllResponseSchema>;
+
+/**
  * POST /api/v2/external-sessions/claude-app-sent — 보내기 결과 지표 claude_app_message_sent (글 0, 저장 플래그와 무관). 코드만이다.
  * received의 uploaded: false = Mac이 올리기를 포기했다(10분 재시도 끝에 버림) → 저장이 켜져 있어도 이 지표로 센다 (저장 함수가 못 센 받은 글). 생략 · true는 저장이 켜져 있으면 세지 않는다
  */

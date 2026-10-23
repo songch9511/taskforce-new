@@ -454,6 +454,42 @@ struct ClaudeAppChatMacTests {
         func close() { panel.orderOut(nil) }
     }
 
+    // MARK: 보기 상태는 모델이 입력창에 알린다 (화면에 패널이 없어도)
+
+    @Test func theShellTellsTheSessionsComposerItsViewStateWithNoPanelOnScreen() async throws {
+        // 상태를 SwiftUI `.onChange`만이 알리던 때는 화면 밖 호스트에서 알림이 늦거나 오지 않아 흔들렸다: 모델이 직접 알린다 (패널 호스트 없음)
+        let h = try harness()
+        let r = await Sessions().rig(rows: [1, 2], live: [Sessions.live(1, .busy), Sessions.live(2, .busy)], chat: h.service)
+        let broken = TranscriptFake()
+        broken.unreadable = true
+        let fine = r.transcript
+        r.shell.makeConversation = { id, cwd in ClaudeAppConversation(sessionID: id, cwd: cwd, source: id == Sessions.id(2) ? broken : fine) }
+        r.shell.openSessions()
+        r.shell.openDesktopSession(Sessions.id(1), from: .list)
+        let one = h.service.chat(for: Sessions.id(1)), two = h.service.chat(for: Sessions.id(2))
+        #expect(await eventually { r.shell.desktopConversation?.phase == .ready }, "읽을 수 있는 세션은 대화가 읽힌다")
+        #expect(one.view == .open && one.composerShown)
+        r.shell.openDesktopSession(Sessions.id(2), from: .list)
+        #expect(await eventually { two.view == .unreadable && !two.composerShown }, "읽을 수 없는 세션에는 입력창이 없다 (보기 \(two.view))")
+        r.shell.openDesktopSession(Sessions.id(1), from: .list)
+        #expect(await eventually { one.view == .open && one.composerShown }, "돌아오면 그 세션의 입력창이 다시 열려 있다")
+        #expect(two.view == .unreadable, "다른 세션의 상태는 그대로다")
+        r.shell.dismiss()
+    }
+
+    @Test func aSessionSwitchWithTheSameViewStateTellsTheNewSessionsComposerItsStateWithNoPanelOnScreen() async throws {
+        let h = try harness()
+        let r = await Sessions().rig(rows: [1, 2], live: [Sessions.live(1, .busy), Sessions.live(2, .busy)], chat: h.service)
+        r.transcript.unreadable = true   // 두 세션 모두 기록을 못 읽는다 (`.unreadable` → `.unreadable`로 같은 채 세션만 바뀐다)
+        r.shell.openSessions()
+        r.shell.openDesktopSession(Sessions.id(1), from: .list)
+        let one = h.service.chat(for: Sessions.id(1)), two = h.service.chat(for: Sessions.id(2))
+        #expect(await eventually { one.view == .unreadable }, "첫 세션")
+        r.shell.openDesktopSession(Sessions.id(2), from: .list)
+        #expect(await eventually { two.view == .unreadable && !two.composerShown }, "상태가 같은 채 세션이 바뀌어도 새 세션의 입력창이 상태를 안다 (보기 \(two.view))")
+        r.shell.dismiss()
+    }
+
     @Test func aSessionSwitchWithTheSameViewStateStillTellsTheNewSessionsComposerItsState() async throws {
         let h = try harness()
         let r = await Sessions().rig(rows: [1, 2], live: [Sessions.live(1, .busy), Sessions.live(2, .busy)], chat: h.service)

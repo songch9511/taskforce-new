@@ -9,13 +9,15 @@
 --   subagent_question_redirected   턴(agent_task_id) 한 번       {"agent_task_id": "<uuid>"}    POST /api/v2/agent-tree/question-redirected
 --
 -- 이 파일이 하는 일 (새 표 · 함수 · 정책 · 열 0):
---   0) 적용 순서 가드: 맨 앞에서 metric_events_type_check에 20261207의 새 종류(claude_app_message_sent · claude_app_chat_deleted)와 20261206의 claude_app_session_opened가 있는지 본다.
---      없으면(= 20261207000000이 아직 적용되지 않았으면) 예외로 멈춘다. 이 파일은 그 검사를 "20261207의 목록 + 새 넷"으로 다시 만들기 때문에, 순서가 바뀌면 20261207이 나중에 검사를
---      다시 만들면서 이 넷이 조용히 빠지고 route가 23514로 실패한다.
---   1) metric_events 종류 검사: 바로 앞 목록(20261207000000_claude_app_chats.sql, claude_app_chat_deleted까지)의 전체 + 위 넷.
+--   0) 적용 순서 가드: 맨 앞에서 metric_events_type_check에 20261206의 claude_app_session_opened, 20261207의 claude_app_message_sent · claude_app_chat_deleted,
+--      20261208의 claude_app_chats_deleted_all이 모두 있는지 본다. 없으면(= 20261207000000 또는 20261208000000이 아직 적용되지 않았으면) 예외로 멈춘다.
+--      이 파일은 그 검사를 "20261208의 목록 + 새 넷"으로 다시 만들기 때문에, 순서가 바뀌면 20261207 · 20261208이 나중에 검사를 다시 만들면서 이 넷이 조용히 빠지고 route가 23514로 실패한다.
+--      20261208의 자기 가드는 20261207만 보므로 이 파일이 20261208보다 먼저 적용되는 일은 이 가드가 막는다. 순서는 20261207 → 20261208 → 20261209다.
+--   1) metric_events 종류 검사: 바로 앞 목록(20261208000000_claude_app_chats_delete_all.sql = 20261207의 목록 + claude_app_chats_deleted_all)의 전체 + 위 넷.
 --      앱 insert 정책(owner_insert_client_app_types)과 앱의 열 권한(type · action_id)은 그대로다: 앱이 이 종류를 직접 남기지 못한다.
---      (앞으로 이 검사를 다시 만드는 마이그레이션은 이 네 종류를 목록에 이어 가져야 한다 — 시험 tests/metrics/agent-event-registry.test.ts가 최신 목록을 등록부와 대조한다.)
---      (20261208000000이 같은 검사를 다시 만들어 새 종류를 더한다면, 이 파일은 그 목록을 이어 받도록 고쳐야 한다 — 이 파일을 쓸 때는 그 파일이 main에도 다른 브랜치에도 없었다.)
+--      이 파일이 다시 만드는 것은 이 지표 종류 검사 하나뿐이다: rate_limit_events_kind_check · take_rate_limit은 건드리지 않는다 (20261208의 것 그대로).
+--      **앞으로 이 검사를 다시 만드는 마이그레이션은 이 네 종류(project_sessions_opened · subagent_row_opened · subagent_turn_used · subagent_question_redirected)를 목록에 이어 가져와야 한다**
+--      — 시험 tests/metrics/agent-event-registry.test.ts가 최신 목록을 등록부와 대조하고 tests/db/agent-tree-metrics.test.ts가 이 파일 뒤의 파일이 이 넷을 담는지 본다.
 --   2) 하루 한 번 (열기 둘, UTC 날짜별 부분 unique 인덱스): 앱이 열 때마다 보내도 두 번째부터는 unique 위반(23505)으로 route가 조용히 넘긴다. 같은 날 다른 종류는 막지 않는다.
 --   3) 턴마다 한 번 (T2 둘, (user_id, props->>'agent_task_id') 부분 unique 인덱스): Mac이 턴이 끝날 때마다 알려도 같은 턴의 두 번째부터는 23505. 두 종류는 서로 막지 않는다.
 --   4) T2 둘 전용 props 검사 metric_events_subagent_turn_props: 이 두 종류의 props는 키 agent_task_id 하나뿐이고 값은 소문자 uuid 글자여야 한다.
@@ -39,14 +41,15 @@ begin
        and pg_catalog.pg_get_constraintdef(oid) like '%claude_app_session_opened%'
        and pg_catalog.pg_get_constraintdef(oid) like '%claude_app_message_sent%'
        and pg_catalog.pg_get_constraintdef(oid) like '%claude_app_chat_deleted%'
+       and pg_catalog.pg_get_constraintdef(oid) like '%claude_app_chats_deleted_all%'
   ) then
-    raise exception '20261209_agent_tree_metrics: apply 20261207000000_claude_app_chats.sql first (metric_events_type_check does not contain claude_app_session_opened, claude_app_message_sent and claude_app_chat_deleted)';
+    raise exception '20261209_agent_tree_metrics: apply 20261207000000_claude_app_chats.sql and 20261208000000_claude_app_chats_delete_all.sql first (metric_events_type_check does not contain claude_app_session_opened, claude_app_message_sent, claude_app_chat_deleted and claude_app_chats_deleted_all)';
   end if;
 end;
 $$;
 
 -- ─────────────────────────────────────────────
--- 1) 종류 검사: 20261207의 전체 목록 + 새 넷
+-- 1) 종류 검사: 20261208의 전체 목록(20261207의 목록 + claude_app_chats_deleted_all) + 새 넷
 -- ─────────────────────────────────────────────
 alter table public.metric_events drop constraint if exists metric_events_type_check;
 alter table public.metric_events add constraint metric_events_type_check
@@ -65,6 +68,7 @@ alter table public.metric_events add constraint metric_events_type_check
     'session_attached',
     'claude_app_session_opened',
     'claude_app_message_sent', 'claude_app_chat_deleted',
+    'claude_app_chats_deleted_all',
     'project_sessions_opened', 'subagent_row_opened', 'subagent_turn_used', 'subagent_question_redirected'
   ));
 

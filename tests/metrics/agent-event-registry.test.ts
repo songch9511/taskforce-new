@@ -107,16 +107,16 @@ describe("R1 가드 자체: 최신 CHECK 해석", () => {
 });
 
 describe("R1 최신 CHECK ↔ 등록부", () => {
-  it("마지막 metric_events_type_check는 OA 전 7개 ∪ 에이전트 등록부 26개 ∪ 결제 · 키 등록부 20개와 정확히 같다", () => {
+  it("마지막 metric_events_type_check는 OA 전 7개 ∪ 에이전트 등록부 27개 ∪ 결제 · 키 등록부 20개와 정확히 같다", () => {
     const registry = AGENT_EVENTS.map((spec) => spec.type);
     const billing = BILLING_EVENTS.map((spec) => spec.type);
     expect(new Set(registry).size).toBe(registry.length);
     expect(new Set(billing).size).toBe(billing.length);
-    expect(registry).toHaveLength(26);
+    expect(registry).toHaveLength(27);
     expect(billing).toHaveLength(20);
     expect(PRE_OA_TYPES).toHaveLength(7);
     // 세 묶음은 겹치지 않는다: 한 type의 집이 둘이면 카드 · 리텐션 규칙이 갈린다
-    expect(new Set([...PRE_OA_TYPES, ...registry, ...billing]).size).toBe(7 + 26 + 20);
+    expect(new Set([...PRE_OA_TYPES, ...registry, ...billing]).size).toBe(7 + 27 + 20);
     const check = latestTypeCheck();
     expect(new Set(check).size).toBe(check.length);
     expect([...check].sort()).toEqual([...PRE_OA_TYPES, ...registry, ...billing].sort());
@@ -139,8 +139,8 @@ describe("R2 등록부의 원천 함수 · 파일", () => {
     expect(text).toMatch(new RegExp(`type:\\s*["']${type}["']`));
   });
 
-  it("SQL 원천 20곳과 TS 원천 8곳(합 28곳)이 등록부에 있다. 남기는 곳 없는 type은 assistant_opened 하나", () => {
-    expect(sqlSources).toHaveLength(20);
+  it("SQL 원천 21곳과 TS 원천 8곳(합 29곳)이 등록부에 있다. 남기는 곳 없는 type은 assistant_opened 하나", () => {
+    expect(sqlSources).toHaveLength(21);
     expect(tsSources).toHaveLength(8);
     expect(AGENT_EVENTS.filter((spec) => spec.sources.length === 0).map((spec) => spec.type)).toEqual(["assistant_opened"]);
   });

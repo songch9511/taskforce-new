@@ -11,6 +11,8 @@ import {
   CLAUDE_APP_CHAT_MAX_BYTES,
   claudeAppChatSaveRequestSchema,
   claudeAppChatSaveResponseSchema,
+  claudeAppChatsDeleteAllQuerySchema,
+  claudeAppChatsDeleteAllResponseSchema,
   claudeAppSentRequestSchema,
   type ApiErrorV2ClaudeAppChatCode,
   type ClaudeAppChatErrorCode,
@@ -29,6 +31,7 @@ import { errorResponse, unauthorized } from "./respond";
 // gate: 저장 경로(status · PUT)는 CONVERSATIONS_V2_ENABLED ∧ AGENT_ADAPTER_CLAUDE_CODE_ENABLED ∧ CLAUDE_APP_CHATS_ENABLED(새, 기본 꺼짐) ∧ 베타 명단. 꺼져 있으면 인증 · DB 전에 404.
 // 보내기 결과 지표(claude-app-sent)는 저장 플래그와 무관하다 (앞의 둘 ∧ 명단).
 // **지우기(DELETE)는 gate도 베타 명단도 보지 않는다**: 저장된 데이터는 늘 지울 수 있다 (BYOK 키 DELETE와 같다 — src/app/api/v2/billing/openrouter-key/route.ts). 로그인(Bearer · 쿠키 + CSRF)은 필요하고 자기 행만 지운다.
+// 모두 지우기(DELETE /api/v2/claude-app-chats, D3v-s 계약 27장)도 같다: 늘 열려 있고, 한 SQL 함수가 사용자별 잠금 아래 한 트랜잭션으로 모두 지운다.
 // 글 · 제목 · ref · id는 로그 · 오류 응답에 담지 않는다 (이벤트 이름 · 결과 코드 · 오류 이름 · code만). 요청 값은 어느 응답에도 되돌리지 않는다.
 
 /** 본문 상한: 답 글 하나가 64 KiB라 4개가 못 들어갈 만큼이다 (status의 max_bytes). 이보다 크면 거절한다 (Content-Length가 있으면 읽기 전에, 없거나 거짓이면 읽다가 넘는 순간) */
@@ -42,6 +45,11 @@ export const CLAUDE_APP_CHAT_LIMIT: RateLimit = { max: 120, windowMs: 10 * 60_00
 export const CLAUDE_APP_CHAT_DAILY_LIMIT: RateLimit = { max: 1000, windowMs: 24 * 3600_000 };
 /** 보내기 결과 지표 속도 제한: 사용자별 10분에 120번 (종류 claude_app_sent, 저장과 따로 센다). 지표를 실제로 쓰는 호출만 센다 */
 export const CLAUDE_APP_SENT_LIMIT: RateLimit = { max: 120, windowMs: 10 * 60_000 };
+/**
+ * 모두 지우기 속도 제한: 사용자별 10분에 5번 (종류 claude_app_chat_delete_all, 20261208000000). 쓰는 사람은 한 번이면 된다(조용한 재시도 한 번을 더해도 5번이면 넉넉하다).
+ * 이 호출은 사용자별 잠금을 쥔 채 행 수에 비례해 일하므로 되풀이(새는 토큰)를 막는다. 저장(claude_app_chat)과 **따로** 센다: 저장이 가득 차도 지우기는 열려 있고 지우기가 저장 한도를 먹지 않는다
+ */
+export const CLAUDE_APP_CHATS_DELETE_ALL_LIMIT: RateLimit = { max: 5, windowMs: 10 * 60_000 };
 
 type AppUser = { user: { id: string } };
 
@@ -60,8 +68,12 @@ export type ClaudeAppChatsDeps<User extends AppUser> = {
   takeDailyLimit: (user: User) => Promise<Date | null>;
   /** 속도 제한(claude_app_sent, 10분에 120번): 지표를 쓰기 전에 부른다. 같은 모양 (한도에 찼으면 시각, 아니면 null) */
   takeSentLimit: (user: User) => Promise<Date | null>;
+  /** 속도 제한(claude_app_chat_delete_all, 10분에 5번): 모두 지우기 전에 부른다. 같은 모양 (한도에 찼으면 시각, 아니면 시도를 한 번 남기고 null) */
+  takeDeleteAllLimit: (user: User) => Promise<Date | null>;
   save: (user: User, input: ClaudeAppChatSaveRequest) => Promise<ClaudeAppChatSaveOutcome>;
   remove: (user: User, chatId: string) => Promise<"deleted" | "not_found">;
+  /** 인증된 사용자의 저장된 대화를 한 트랜잭션으로 모두 지운다 → 지운 채팅 수 (0이면 이미 비어 있었다) */
+  removeAll: (user: User) => Promise<number>;
   /** 지표 claude_app_message_sent (결과 코드뿐) */
   recordSent: (user: User, input: ClaudeAppSentRequest) => Promise<void>;
 };
@@ -79,9 +91,14 @@ function codeOf(error: unknown): string | undefined {
  * 22023(SQL 함수의 인자 모양 검사)은 zod가 이미 막았어야 할 값이다: 500이 아니라 400 invalid_request (요청 값은 되돌리지 않는다; 로그에는 이벤트 이름 · 오류 이름 · code만 — 두 검사가 어긋났다는 신호).
  * 그 밖은 500 + 이벤트 이름 · 오류 이름 · 코드만 로그
  */
-function failed(error: unknown, event: string, message: string): Response {
+function failed(error: unknown, event: string, message: string, alsoRetry: readonly string[] = []): Response {
   const code = codeOf(error);
   if (code === "55P03" || code === "40001" || code === "40P01") return errorResponse(409, "busy_retry", "잠시 뒤 다시 시도해 주세요.");
+  // 호출한 쪽이 롤백된 일로 보는 코드(모두 지우기의 시간 제한 57014): 409지만 일어났다는 기록은 남긴다 (오류 이름 · code뿐)
+  if (code !== undefined && alsoRetry.includes(code)) {
+    console.error(JSON.stringify({ event, error: error instanceof Error ? error.name : "unknown", code }));
+    return errorResponse(409, "busy_retry", "잠시 뒤 다시 시도해 주세요.");
+  }
   console.error(JSON.stringify({ event, error: error instanceof Error ? error.name : "unknown", ...(code ? { code } : {}) }));
   if (code === "22023") return errorResponse(400, "invalid_request", "잘못된 요청입니다.");
   return errorResponse(500, "internal_error", message);
@@ -173,6 +190,35 @@ export async function handleDeleteClaudeAppChat<User extends AppUser>(request: R
 }
 
 /**
+ * DELETE /api/v2/claude-app-chats?all=true: 사용자의 저장된 대화를 **모두** 지운다 (D3v-s, 계약 27장). 요청 본문은 읽지 않는다. 200 { deleted: 지운 채팅 수 } (Cache-Control no-store).
+ * 채팅 + 모든 행 + 묘비(재시도가 되살리지 못하게) + 지표 claude_app_chats_deleted_all은 SQL이 **한 트랜잭션**으로 한다: 일부만 지워진 상태가 없고, 겹친 저장은 사용자별 잠금에 줄을 선다. 이미 비어 있으면 200 { deleted: 0 }.
+ * **늘 열려 있다**: gate(CLAUDE_APP_CHATS_ENABLED · 대화 v2 · adapter)도 베타 명단도 보지 않는다 — 플래그를 끈 뒤에도 이미 저장된 데이터는 지울 수 있어야 한다 (대화마다 지우는 DELETE · BYOK 키 DELETE와 같다).
+ * 순서: 인증 401(Bearer · 쿠키 + CSRF) → 쿼리가 정확히 `?all=true`가 아니면 400 invalid_request(끝 슬래시 308 · 빈 id가 모두 지우기가 되지 않게, 속도 제한도 쓰지 않는다) → 속도 제한 429(+ Retry-After; 저장 한도와 따로 센다)
+ * → 지우기 → 200 / 409 `busy_retry`(롤백된 경합이나 시간 제한 57014: 같은 요청을 다시 보내도 된다) / 500.
+ * 사용자 id는 인증에서만 온다: 자기 행만 지운다. 로그는 이벤트 이름 · 결과 코드 · 오류 이름 · code만 (지운 수도 남기지 않는다).
+ */
+export async function handleDeleteAllClaudeAppChats<User extends AppUser>(request: Request, deps: ClaudeAppChatsDeps<User>): Promise<Response> {
+  const user = await deps.authenticate(request);
+  if (!user) return unauthorized();
+  if (!claudeAppChatsDeleteAllQuerySchema.safeParse(new URL(request.url).search).success) return errorResponse(400, "invalid_request", "모두 지우려면 ?all=true가 필요합니다.");
+  try {
+    const retryAt = await deps.takeDeleteAllLimit(user);
+    if (retryAt) {
+      console.info(JSON.stringify({ event: "claude_app_chats_delete_all", result: "rate_limited" }));
+      const response = errorResponse(429, "rate_limited", "요청이 너무 잦습니다. 잠시 뒤 다시 시도해 주세요.");
+      response.headers.set("Retry-After", String(retryAfterSeconds(retryAt, new Date())));
+      return response;
+    }
+    const body = claudeAppChatsDeleteAllResponseSchema.parse({ deleted: await deps.removeAll(user) });
+    console.info(JSON.stringify({ event: "claude_app_chats_delete_all", result: "ok" }));
+    return Response.json(body, { headers: { "Cache-Control": "no-store" } });
+  } catch (error) {
+    // 57014 = 서버의 시간 제한 또는 함수의 자체 시간 제한: 트랜잭션이 통째로 롤백됐으니 다시 보내도 된다 (다시 부르지는 않는다 — 제한을 세 번 기다리지 않는다)
+    return failed(error, "claude_app_chats_delete_all_failed", "대화를 지우지 못했습니다.", ["57014"]);
+  }
+}
+
+/**
  * POST /api/v2/external-sessions/claude-app-sent: 보내기 결과 지표 claude_app_message_sent (글 0, **저장 플래그와 무관**). 본문은 코드뿐이다 { result: received|not_sent, reason? }. 응답은 204.
  * 저장이 켜져 있으면 received는 save_claude_app_chat이 새 사용자 글마다 남기므로 여기서는 남기지 않는다 (두 번 세지 않는다). not_sent는 늘 여기서 남긴다.
  * 예외: received + uploaded:false (Mac이 올리기를 포기했다)는 저장이 켜져 있어도 여기서 센다 — 저장 함수가 못 센 받은 글이다.
@@ -207,7 +253,7 @@ const saveRpcSchema = z.union([
 ]);
 const deleteRpcSchema = z.strictObject({ status: z.enum(["deleted", "not_found"]) });
 
-async function takeKindLimit(admin: SupabaseClient, userId: string, kind: "claude_app_chat" | "claude_app_chat_day" | "claude_app_sent", limit: RateLimit): Promise<Date | null> {
+async function takeKindLimit(admin: SupabaseClient, userId: string, kind: "claude_app_chat" | "claude_app_chat_day" | "claude_app_sent" | "claude_app_chat_delete_all", limit: RateLimit): Promise<Date | null> {
   const { data } = await admin.rpc("take_rate_limit", { p_user_id: userId, p_kind: kind, p_max: limit.max, p_window_seconds: limit.windowMs / 1000 }).throwOnError();
   return data ? new Date(String(data)) : null;
 }
@@ -218,6 +264,8 @@ export const takeClaudeAppChatLimit = (admin: SupabaseClient, userId: string) =>
 export const takeClaudeAppChatDailyLimit = (admin: SupabaseClient, userId: string) => takeKindLimit(admin, userId, "claude_app_chat_day", CLAUDE_APP_CHAT_DAILY_LIMIT);
 /** 같은 모양, 보내기 결과 지표를 쓰기 전에 부른다 (종류 claude_app_sent) */
 export const takeClaudeAppSentLimit = (admin: SupabaseClient, userId: string) => takeKindLimit(admin, userId, "claude_app_sent", CLAUDE_APP_SENT_LIMIT);
+/** 같은 모양, 모두 지우기 전에 부른다 (종류 claude_app_chat_delete_all) */
+export const takeClaudeAppChatsDeleteAllLimit = (admin: SupabaseClient, userId: string) => takeKindLimit(admin, userId, "claude_app_chat_delete_all", CLAUDE_APP_CHATS_DELETE_ALL_LIMIT);
 
 export const realClaudeAppChatsDeps = (): ClaudeAppChatsDeps<ApiContext> => ({
   enabled: () => flagEnabled("CONVERSATIONS_V2_ENABLED") && flagEnabled("AGENT_ADAPTER_CLAUDE_CODE_ENABLED") && flagEnabled("CLAUDE_APP_CHATS_ENABLED"),
@@ -227,6 +275,7 @@ export const realClaudeAppChatsDeps = (): ClaudeAppChatsDeps<ApiContext> => ({
   takeLimit: ({ user }) => takeClaudeAppChatLimit(createAdminClient(), user.id),
   takeDailyLimit: ({ user }) => takeClaudeAppChatDailyLimit(createAdminClient(), user.id),
   takeSentLimit: ({ user }) => takeClaudeAppSentLimit(createAdminClient(), user.id),
+  takeDeleteAllLimit: ({ user }) => takeClaudeAppChatsDeleteAllLimit(createAdminClient(), user.id),
   // 멱등이라 롤백된 경합은 같은 호출로 다시 한다 (retryOnConflict). 소유 확인 · 직렬화 · 지표는 모두 SQL 함수 안이다
   save: async ({ user }, input) => {
     const admin = createAdminClient();
@@ -242,6 +291,11 @@ export const realClaudeAppChatsDeps = (): ClaudeAppChatsDeps<ApiContext> => ({
   remove: async ({ user }, chatId) => {
     const { data } = await retryOnConflict(async () => await createAdminClient().rpc("delete_claude_app_chat", { p_user_id: user.id, p_chat_id: chatId }).throwOnError());
     return deleteRpcSchema.parse(data).status;
+  },
+  // 롤백된 경합은 같은 호출로 다시 한다 (지우기는 멱등: 이미 지운 것은 0으로 센다). 묘비 · 지표 · 사용자별 잠금은 모두 SQL 함수 안이다
+  removeAll: async ({ user }) => {
+    const { data } = await retryOnConflict(async () => await createAdminClient().rpc("delete_all_claude_app_chats", { p_user_id: user.id }).throwOnError());
+    return claudeAppChatsDeleteAllResponseSchema.parse(data).deleted;
   },
   // 앱의 열 권한(type · props)을 넓히지 않으려고 코드를 검증한 뒤 서버 권한으로 남긴다. 사용자 id는 인증에서만 온다
   recordSent: async ({ user }, input) => {

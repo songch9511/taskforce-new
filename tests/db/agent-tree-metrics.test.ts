@@ -11,11 +11,13 @@ import { openPglite } from "./pglite-template";
 // 에이전트 트리 지표 넷 (T3s, 마이그레이션 20261209000000): 앱이 v2 route로 알리면 route가 서버 권한으로 남긴다 (claude_app_session_opened와 같은 모양).
 //   · project_sessions_opened · subagent_row_opened: 사용자 · UTC 날짜 하루 한 번 (부분 unique 인덱스), props {}
 //   · subagent_turn_used · subagent_question_redirected: 턴(agent_task_id) 한 번 (부분 unique 인덱스), props는 키 agent_task_id 하나(소문자 uuid)뿐 (전용 check)
-// 종류 검사는 바로 앞 목록(20261207000000)의 전체 + 이 넷이다. 앱 insert 정책 · 열 권한은 그대로라 앱은 이 종류를 직접 넣지 못한다.
+// 종류 검사는 바로 앞 목록(20261208000000, 20261207의 목록 + claude_app_chats_deleted_all)의 전체 + 이 넷이다. 앱 insert 정책 · 열 권한은 그대로라 앱은 이 종류를 직접 넣지 못한다.
+// 이 파일은 metric_events_type_check만 다시 만든다 (rate_limit_events_kind_check · take_rate_limit은 건드리지 않는다: 20261208의 것 그대로).
 
 const MIGRATIONS = path.resolve(__dirname, "../../supabase/migrations");
 const NEW_MIGRATION = "20261209000000_agent_tree_metrics.sql";
-const PREVIOUS_MIGRATION = "20261207000000_claude_app_chats.sql";
+const CHATS_MIGRATION = "20261207000000_claude_app_chats.sql";
+const PREVIOUS_MIGRATION = "20261208000000_claude_app_chats_delete_all.sql";
 const D2_MIGRATION = "20261206000000_claude_app_session_metrics.sql";
 
 const DAY_TYPES = ["project_sessions_opened", "subagent_row_opened"] as const;
@@ -39,6 +41,8 @@ const LIST_20261207 = [
   "claude_app_session_opened",
   "claude_app_message_sent", "claude_app_chat_deleted",
 ];
+/** 20261208000000_claude_app_chats_delete_all.sql의 목록 = 20261207의 목록 + claude_app_chats_deleted_all (바로 앞 목록) */
+const LIST_20261208 = [...LIST_20261207, "claude_app_chats_deleted_all"];
 
 const stripComments = (sql: string) => sql.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/--[^\n]*/g, " ");
 const read = (file: string) => readFileSync(path.join(MIGRATIONS, file), "utf8");
@@ -71,9 +75,9 @@ const day = (owner: string, type: string, at?: string) =>
 const turn = (owner: string, type: string, props: unknown) => db.query("insert into public.metric_events (user_id, type, props) values ($1, $2, $3::jsonb)", [owner, type, JSON.stringify(props)]);
 
 describe("metric_events: 종류 검사 (20261209000000)", () => {
-  it("앞 목록(20261207)의 모든 종류를 그대로 받고, 새 종류 넷도 받고, 모르는 종류는 거절한다", async () => {
+  it("앞 목록(20261208 = 20261207 + claude_app_chats_deleted_all)의 모든 종류를 그대로 받고, 새 종류 넷도 받고, 모르는 종류는 거절한다", async () => {
     const owner = await user();
-    for (const type of LIST_20261207) {
+    for (const type of LIST_20261208) {
       // 하루 한 번 · 턴 한 번 인덱스가 걸린 종류가 아닌 것만 한 줄씩 넣는다 (앞 종류의 인덱스 시험은 각자 파일에 있다)
       if (type === "claude_app_session_opened") continue;
       await db.query("insert into public.metric_events (user_id, type) values ($1, $2)", [owner, type]);
@@ -252,25 +256,34 @@ describe("마이그레이션 경계 (20261209000000_agent_tree_metrics)", () => 
     expect(sql).not.toMatch(/metric_events_props_shape/);
   });
 
-  it("종류 검사 = 바로 앞 마이그레이션(20261207)의 목록 전체 + 새 넷 (순서도 그대로, 중복 없음)", () => {
-    expect(typeList(PREVIOUS_MIGRATION)).toEqual(LIST_20261207);
-    expect(typeList(NEW_MIGRATION)).toEqual([...LIST_20261207, ...NEW_TYPES]);
+  it("종류 검사 = 바로 앞 마이그레이션(20261208)의 목록 전체 + 새 넷 (순서도 그대로, 중복 없음)", () => {
+    expect(typeList(CHATS_MIGRATION)).toEqual(LIST_20261207);
+    expect(typeList(PREVIOUS_MIGRATION)).toEqual(LIST_20261208);
+    expect(typeList(NEW_MIGRATION)).toEqual([...LIST_20261208, ...NEW_TYPES]);
+    expect(typeList(NEW_MIGRATION)).toHaveLength(54); // 7 + 27 + 20: OA 전 7개 + 에이전트 등록부 27개 + 결제 · 키 20개
     expect(new Set(typeList(NEW_MIGRATION)).size).toBe(typeList(NEW_MIGRATION).length);
   });
 
-  it("20261207 · 20261206 목록의 종류를 하나도 잃지 않는다", () => {
+  it("20261208 · 20261207 · 20261206 목록의 종류를 하나도 잃지 않는다", () => {
     const next = new Set(typeList(NEW_MIGRATION));
-    for (const type of typeList(PREVIOUS_MIGRATION)) expect(next.has(type), type).toBe(true);
-    for (const type of typeList(D2_MIGRATION)) expect(next.has(type), type).toBe(true);
+    for (const file of [PREVIOUS_MIGRATION, CHATS_MIGRATION, D2_MIGRATION]) for (const type of typeList(file)) expect(next.has(type), `${file} ${type}`).toBe(true);
   });
 
-  it("20261207과 20261209 사이에 종류 검사를 다시 만드는 파일이 있으면 그 목록을 이어 가져온다 (20261208 같은 파일이 새 종류를 더하면 이 파일 목록을 고친다)", () => {
+  it("20261208과 20261209 사이에 종류 검사를 다시 만드는 파일이 있으면 그 목록을 이어 가져온다 (사이에 끼는 파일이 새 종류를 더하면 이 파일 목록을 고친다)", () => {
     const between = readdirSync(MIGRATIONS).filter((name) => name.endsWith(".sql") && name > PREVIOUS_MIGRATION && name < NEW_MIGRATION);
     const mine = new Set(typeList(NEW_MIGRATION));
     for (const name of between) {
       if (!/metric_events_type_check/i.test(code(name))) continue;
       for (const type of typeList(name)) expect(mine.has(type), `${name} ${type}`).toBe(true);
     }
+  });
+
+  it("속도 제한 종류 검사 · take_rate_limit은 건드리지 않는다 (20261208의 것 그대로): 이 파일은 지표 종류 검사만 다시 만든다", () => {
+    expect(sql).not.toMatch(/rate_limit_events_kind_check|take_rate_limit|rate_limit_events/i);
+    expect(sql.match(/drop\s+constraint\s+if\s+exists\s+metric_events_type_check/gi)).toHaveLength(1);
+    expect(sql.match(/add\s+constraint\s+metric_events_type_check/gi)).toHaveLength(1);
+    // 바꾸는 표는 metric_events 하나뿐이다
+    expect([...new Set([...sql.matchAll(/alter\s+table\s+(public\.\w+)/gi)].map((m) => m[1]))]).toEqual(["public.metric_events"]);
   });
 
   it("이 파일 뒤에 종류 검사를 다시 만드는 마이그레이션은 이 넷을 이어 가져온다", () => {
@@ -298,64 +311,90 @@ describe("마이그레이션 경계 (20261209000000_agent_tree_metrics)", () => 
   });
 });
 
-// 적용 순서 가드: 이 파일은 종류 검사를 "20261207의 목록 + 넷"으로 다시 만든다. 20261207보다 먼저 적용하면 20261207이 나중에 검사를 다시 만들면서 이 넷이 조용히 빠진다
-// (운영 DB는 파일을 하나씩 적용하므로 순서를 사람이 지킨다). 그래서 맨 앞에서 20261207의 새 종류가 검사에 있는지 보고, 없으면 예외로 멈춘다.
-describe("적용 순서 가드 (20261209 → 20261207 → 20261206)", () => {
+// 적용 순서 가드: 이 파일은 종류 검사를 "20261208의 목록(= 20261207의 목록 + claude_app_chats_deleted_all) + 넷"으로 다시 만든다. 20261207 · 20261208보다 먼저 적용하면
+// 그 파일이 나중에 검사를 다시 만들면서 이 넷이 조용히 빠진다 (운영 DB는 파일을 하나씩 적용하므로 순서를 사람이 지킨다).
+// 그래서 맨 앞에서 20261206 · 20261207 · 20261208의 새 종류가 모두 검사에 있는지 보고, 없으면 예외로 멈춘다.
+describe("적용 순서 가드 (20261209 → 20261208 → 20261207 → 20261206)", () => {
   const APPLY = { timeout: 300_000 };
   const mineSql = read(NEW_MIGRATION);
   const typeCheckHas = async (target: PGlite, type: string) =>
     (await target.query<{ has: boolean }>("select pg_get_constraintdef(oid) like $1 as has from pg_constraint where conname = 'metric_events_type_check'", [`%'${type}'%`])).rows[0].has;
+  /** 이 파일이 만드는 것이 하나도 없는지 (예외로 멈춘 뒤의 DB) */
+  const nothingOfMine = async (target: PGlite) => {
+    await target.exec("rollback").catch(() => undefined);
+    expect(await typeCheckHas(target, "project_sessions_opened")).toBe(false);
+    const { rows } = await target.query<{ idx: number; cons: number }>(
+      `select (select count(*)::int from pg_indexes where tablename = 'metric_events' and (indexname like '%project_sessions%' or indexname like '%subagent%')) as idx,
+              (select count(*)::int from pg_constraint where conname = 'metric_events_subagent_turn_props') as cons`,
+    );
+    expect(rows[0]).toEqual({ idx: 0, cons: 0 });
+  };
 
-  it("맨 앞(begin · lock_timeout 바로 뒤, 어떤 DDL보다 먼저)에서 종류 검사에 20261207의 새 종류가 있는지 보고 없으면 20261207을 먼저 적용하라는 예외를 던진다", () => {
+  it("맨 앞(begin · lock_timeout 바로 뒤, 어떤 DDL보다 먼저)에서 종류 검사에 20261206 · 20261207 · 20261208의 새 종류가 있는지 보고 없으면 20261207 · 20261208을 먼저 적용하라는 예외를 던진다", () => {
     const body = code(NEW_MIGRATION);
     const afterLock = body.slice("begin;\nset local lock_timeout = '5s';".length).trimStart();
     expect(afterLock.startsWith("do $$")).toBe(true);
     const guard = afterLock.slice(0, afterLock.indexOf("$$;") + 3);
     expect(guard).toMatch(/metric_events_type_check/);
-    for (const type of ["claude_app_session_opened", "claude_app_message_sent", "claude_app_chat_deleted"]) expect(guard, type).toContain(type);
+    for (const type of ["claude_app_session_opened", "claude_app_message_sent", "claude_app_chat_deleted", "claude_app_chats_deleted_all"]) expect(guard, type).toContain(type);
     expect(guard).toMatch(/raise exception[^;]*20261207000000_claude_app_chats/);
+    expect(guard).toMatch(/raise exception[^;]*20261208000000_claude_app_chats_delete_all/);
     // 가드보다 앞에 표 · 인덱스 · 제약을 만들거나 바꾸는 문장이 없다
     const before = body.slice(0, body.indexOf(guard));
     expect(before).not.toMatch(/\b(create|alter|drop|insert|update|delete)\b/i);
   });
 
-  it("20261207 없이 20261209를 적용하면 거절되고 아무것도 남지 않는다 (실제 적용)", APPLY, async () => {
+  it("20261207도 20261208도 없는 DB(20261206까지)에 20261209를 적용하면 거절되고 아무것도 남지 않는다 (실제 적용)", APPLY, async () => {
     const empty = await openPglite();
     try {
-      for (const script of await supabaseSchemaScripts({ without: [PREVIOUS_MIGRATION, NEW_MIGRATION] })) await empty.exec(script);
+      // 20261208은 20261207이 먼저 있어야 적용되므로 20261207을 빼면 20261208도 함께 뺀다
+      for (const script of await supabaseSchemaScripts({ without: [CHATS_MIGRATION, PREVIOUS_MIGRATION, NEW_MIGRATION] })) await empty.exec(script);
       expect(await typeCheckHas(empty, "claude_app_session_opened")).toBe(true);
       expect(await typeCheckHas(empty, "claude_app_chat_deleted")).toBe(false);
       await expect(empty.exec(mineSql)).rejects.toThrow(/20261207/);
-      await empty.exec("rollback").catch(() => undefined);
-      expect(await typeCheckHas(empty, "project_sessions_opened")).toBe(false);
-      const { rows } = await empty.query<{ n: number }>("select count(*)::int as n from pg_indexes where tablename = 'metric_events' and indexname like 'metric_events_%_idx' and (indexname like '%project_sessions%' or indexname like '%subagent%')");
-      expect(rows[0].n).toBe(0);
-      const { rows: cons } = await empty.query<{ n: number }>("select count(*)::int as n from pg_constraint where conname = 'metric_events_subagent_turn_props'");
-      expect(cons[0].n).toBe(0);
+      await nothingOfMine(empty);
     } finally {
       await empty.close();
     }
   });
 
-  it("20261206 · 20261207 둘 다 없는 DB에서도 같다: 멈춘다", APPLY, async () => {
+  it("20261207은 있고 20261208이 없는 DB에 20261209를 적용하면 거절되고 아무것도 남지 않는다 (실제 적용)", APPLY, async () => {
+    const half = await openPglite();
+    try {
+      for (const script of await supabaseSchemaScripts({ without: [PREVIOUS_MIGRATION, NEW_MIGRATION] })) await half.exec(script);
+      expect(await typeCheckHas(half, "claude_app_chat_deleted")).toBe(true);
+      expect(await typeCheckHas(half, "claude_app_chats_deleted_all")).toBe(false);
+      await expect(half.exec(mineSql)).rejects.toThrow(/20261208/);
+      await nothingOfMine(half);
+      // 20261208을 적용하면 그 뒤에는 통과한다
+      await half.exec(read(PREVIOUS_MIGRATION));
+      await half.exec(mineSql);
+      expect(await typeCheckHas(half, "claude_app_chats_deleted_all")).toBe(true);
+      expect(await typeCheckHas(half, "project_sessions_opened")).toBe(true);
+    } finally {
+      await half.close();
+    }
+  });
+
+  it("20261206 · 20261207 · 20261208이 모두 없는 DB에서도 같다: 멈춘다", APPLY, async () => {
     const empty = await openPglite();
     try {
-      for (const script of await supabaseSchemaScripts({ without: [D2_MIGRATION, PREVIOUS_MIGRATION, NEW_MIGRATION] })) await empty.exec(script);
+      for (const script of await supabaseSchemaScripts({ without: [D2_MIGRATION, CHATS_MIGRATION, PREVIOUS_MIGRATION, NEW_MIGRATION] })) await empty.exec(script);
       expect(await typeCheckHas(empty, "claude_app_session_opened")).toBe(false);
-      await expect(empty.exec(mineSql)).rejects.toThrow(/20261207|claude_app/);
+      await expect(empty.exec(mineSql)).rejects.toThrow(/20261207|20261208|claude_app/);
     } finally {
       await empty.close();
     }
   });
 
-  it("20261207까지 적용한 뒤에는 통과한다 (정상 순서): 앞 종류가 모두 남고 새 넷이 더해진다", APPLY, async () => {
+  it("20261208까지 적용한 뒤에는 통과한다 (정상 순서): 앞 종류가 모두 남고 새 넷이 더해진다", APPLY, async () => {
     const fresh = await openPglite();
     try {
       for (const script of await supabaseSchemaScripts({ without: [NEW_MIGRATION] })) await fresh.exec(script);
-      expect(await typeCheckHas(fresh, "claude_app_chat_deleted")).toBe(true);
+      expect(await typeCheckHas(fresh, "claude_app_chats_deleted_all")).toBe(true);
       expect(await typeCheckHas(fresh, "project_sessions_opened")).toBe(false);
       await fresh.exec(mineSql);
-      for (const type of [...LIST_20261207, ...NEW_TYPES]) expect(await typeCheckHas(fresh, type), type).toBe(true);
+      for (const type of [...LIST_20261208, ...NEW_TYPES]) expect(await typeCheckHas(fresh, type), type).toBe(true);
     } finally {
       await fresh.close();
     }

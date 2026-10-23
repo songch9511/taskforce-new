@@ -101,7 +101,9 @@ struct EdgeSessionsTests {
 
     /// - rows: 이 Mac 목록의 줄 번호 (Claude 앱이 쥔 줄). live: 처음 폴이 주는 살아 있는 세션
     /// - chat: 데스크톱 세션과 대화하는 흐름 (OA PR-D3, 없으면 읽기 전용 그대로)
-    func rig(sessions: IssueSampleGateway.SessionScenario = .none, rows: [Int] = [], live: [ClaudeAppSession] = [], chat: ClaudeAppChatService? = nil) async -> Rig {
+    func rig(
+        sessions: IssueSampleGateway.SessionScenario = .none, rows: [Int] = [], live: [ClaudeAppSession] = [], chat: ClaudeAppChatService? = nil, savedChats: SavedChatsStore? = nil
+    ) async -> Rig {
         let script = DeskScript()
         script.sessions = live
         let scope = AccountScope(currentAccount: { SampleData.userID })
@@ -111,7 +113,7 @@ struct EdgeSessionsTests {
         let metric = ClaudeAppOpenedMetric(send: { sent.hit(); return true }, scope: scope)
         let railDone = InMemoryRailDoneStore()
         let time = EdgeShellModelTests.ManualTime()
-        let base = X().make(sessions: sessions, desktop: desktop, railDone: railDone, opened: metric, scope: scope, time: time, desktopChat: chat)
+        let base = X().make(sessions: sessions, desktop: desktop, railDone: railDone, opened: metric, scope: scope, time: time, desktopChat: chat, savedChats: savedChats)
         base.counter.set(rows.map(Self.heldRow))
         await base.store.refresh()
         await base.issues.sessions.refresh()
