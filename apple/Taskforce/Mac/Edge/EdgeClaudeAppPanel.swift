@@ -110,7 +110,7 @@ struct ClaudeAppSessionPanelView: View {
         let band = closed ? nil : status?.band
         // 데스크톱 세션과의 대화 (OA PR-D3): 게이트가 꺼진 빌드(Release)에는 없다 (nil → 읽기 전용 그대로)
         let chat = shell.desktopChat?.chat(for: id)
-        let viewState: ClaudeAppSendContext.View = closed ? .closed : (conversation.phase == .failed ? .unreadable : .open)
+        let viewState = EdgeShellModel.chatViewState(closed: closed, phase: conversation.phase)
         VStack(spacing: 0) {
             header(id, status: status, closed: closed, showsOpen: band == nil)
                 .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { presentation.headHeight = $0 }
@@ -197,6 +197,7 @@ struct ClaudeAppSessionPanelView: View {
                 SessionEntriesView(
                     entries: timeline.entries, steps: timeline.data.steps, state: presentation.steps,
                     earlierPage: SessionEarlierPage(available: conversation.hasEarlier, loading: conversation.loadingEarlier, load: { conversation.showEarlier() }),
+                    pinnedToBottom: conversation.pinnedToBottom,
                     loadDetail: { stepID in
                         guard let turn = turns[stepID] else { return nil }
                         return await conversation.detail(of: turn)
@@ -233,6 +234,9 @@ struct ClaudeAppTurnView: View {
     /// peer 줄(다른 세션이 보낸 말) 밑의 표시: "Received · via Taskforce" 또는 "From another session" (대화 흐름이 있는 빌드만)
     var peerLine: MessageDeliveryLine?
 
+    /// Claude의 말 안의 코드 블록 면의 바깥 폭: 패널 폭 − 본문 양옆 여백 (패널 본문이 `TFSpace.lg`로 감싼다)
+    static let assistantBlockWidth = EdgePanelMetrics.width - 2 * TFSpace.lg
+
     var body: some View {
         switch turn.kind {
         case .user(let text):
@@ -246,6 +250,8 @@ struct ClaudeAppTurnView: View {
         case .assistant(let text):
             // 안전한 부분만 그린다 (코드 블록 · 인라인 코드 · 목록 · 굵게): 링크 · 표 · 이미지 · HTML은 쓴 그대로 글자다
             Message(isUser: false) { SessionMarkdownView(source: Self.shown(text, truncated: turn.truncated)) }
+                // Claude의 말은 말풍선이 아니라 패널 본문 전폭이다: 코드 블록은 패널 폭 − 본문 양옆 여백만큼 선다 (접을지는 이 폭의 칸 수로 정한다)
+                .environment(\.sessionCodeBlockWidth, Self.assistantBlockWidth)
         case .tool(let name, let description):
             EventLine(Self.toolLine(name: name, description: description))
         case .boundary:

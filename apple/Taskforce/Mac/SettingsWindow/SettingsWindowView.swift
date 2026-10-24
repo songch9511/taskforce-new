@@ -94,6 +94,11 @@ struct SettingsWindowView: View {
             guard SettingsWindowSession.signedInUserID(session) != nil else { return }
             await runs.loadCredits()
         }
+        // Account › Saved chats (OA D3v-m): 이 탭이 보일 때마다 저장된 대화를 다시 읽는다 (Sessions 패널을 연 적이 없어도 "Delete all saved chats" 줄이 서려면 읽어 있어야 한다)
+        .task(id: "\(tab.rawValue)-\(access == .signedIn)") {
+            guard tab == .account, access == .signedIn else { return }
+            await model.savedChats?.refresh()
+        }
     }
 
     // MARK: 탭 줄
@@ -124,7 +129,7 @@ struct SettingsWindowView: View {
                     SettingsBackLink(title: detail.backTitle(tab: tab)) { model.back() }
                     SettingsDetailView(detail: detail)
                 } else {
-                    ForEach(tab.sections(access, macsNotice: model.agents.showsMacsNotice)) { section in
+                    ForEach(tab.sections(access, macsNotice: model.agents.showsMacsNotice, savedChats: model.savedChats != nil)) { section in
                         SettingsSectionView(section: section)
                     }
                 }
@@ -253,6 +258,7 @@ private struct SettingsSectionView: View {
         case .profile: SettingsProfileSection()
         case .signIn: SettingsSignInSection()
         case .remembered: SettingsRememberedSection()
+        case .savedChats: SettingsSavedChatsSection()
         case .deleteAccount: SettingsDeleteAccountSection()
         case .about: SettingsAboutSection()
         case .legal: SettingsLegalLinks()

@@ -6,6 +6,18 @@ import Testing
 @testable import TaskforceKit
 @testable import TaskforceUI
 
+/// 화면이 없는 환경(헤드리스 CI)에서는 창을 올려 그리는 시험을 **건너뜀**으로 남긴다: 조용히 통과시키지 않아서, 건너뛴 것이 결과에 보인다.
+/// (`Test.cancel`은 시험을 취소로 끝내고 보고서에 "skipped"로 남는다.) 환경 변수 `TF_TEST_NO_SCREEN=1`(`TEST_RUNNER_TF_TEST_NO_SCREEN=1 xcodebuild test …`)로 화면이 없는 것처럼 돌려 건너뜀이 보이는지 볼 수 있다
+@MainActor
+func requireScreenForHostedViews() throws {
+    let simulated = ProcessInfo.processInfo.environment["TF_TEST_NO_SCREEN"] == "1"
+    if simulated || EdgeRailPanelController.screen == nil {
+        // 인자가 있는 시험은 경우 하나만 취소돼 결과가 "통과"로 묶이므로, 경고도 남긴다 (실패는 아니다)
+        Issue.record("화면이 없어 창을 올려 그릴 수 없다: 이 시험(경우)은 건너뛰었다", severity: .warning)
+        try Test.cancel("화면이 없어 창을 올려 그릴 수 없다: 이 시험은 건너뛰었다")
+    }
+}
+
 /// 핫픽스 (#187 세션 보기 뒤 Mac 앱이 멈춘다): 긴 대화의 세션 패널을 열어 두면 메인 스레드가 99%에서 내려오지 않고 SwiftUI가 패널을 끝없이 다시 배치했다.
 /// 본문은 `LazyVStack`이었고, 줄의 높이가 **그려진 뒤에야** 정해졌다 (코드 블록: 처음엔 전체 높이, 그다음 180으로 접힘). 게으른 쌓기는 아직 그리지 않은 줄의 높이를 어림하므로
 /// 줄이 만들어졌다 버려질 때마다 내용 높이가 크게 흔들리고, 맨 아래에 붙은 스크롤 · 창 높이 맞춤 · 스크롤 위치 알림이 그 흔들림을 먹고 다시 배치를 부른다.
@@ -263,8 +275,8 @@ struct SessionPanelHangTests {
     // MARK: 진짜 패널
 
     /// 380 폭 패널 창에 긴 대화를 연다 (진짜 패널 · 가짜 기록 · 메모리 저장: 설치된 앱 · 이 Mac의 실제 기록을 쓰지 않는다)
-    private func openPanel(seed: UInt64, reduceMotion: Bool) async throws -> (EdgeClaudeAppPanelController, EdgeSessionsTests.Rig)? {
-        guard EdgeRailPanelController.screen != nil else { return nil }
+    private func openPanel(seed: UInt64, reduceMotion: Bool) async throws -> (EdgeClaudeAppPanelController, EdgeSessionsTests.Rig) {
+        try requireScreenForHostedViews()
         let turns = Self.transcript(seed: seed)
         let w = await EdgeSessionsTests().rig(rows: [1], live: [EdgeSessionsTests.live(1, .busy)])
         w.shell.reduceMotion = reduceMotion
@@ -283,8 +295,7 @@ struct SessionPanelHangTests {
     func openingALongSessionReportsItsBodyHeightOnlyAFewTimesAndThePanelWindowReachesItsHeightAtOnce(seed: UInt64) async throws {
         let watchdog = Watchdog(seconds: 120, label: "openingALongSessionReportsItsBodyHeightOnlyAFewTimes seed \(seed)")
         defer { watchdog.disarm() }
-        guard let opened = try await openPanel(seed: seed, reduceMotion: true) else { return }
-        let (claude, w) = opened
+        let (claude, w) = try await openPanel(seed: seed, reduceMotion: true)
         defer {
             w.shell.dismiss()
             claude.hide()
@@ -307,8 +318,7 @@ struct SessionPanelHangTests {
     func aLongSessionInTheClaudePanelSettlesInsteadOfLayingOutForever(seed: UInt64) async throws {
         let watchdog = Watchdog(seconds: 120, label: "aLongSessionInTheClaudePanelSettlesInsteadOfLayingOutForever seed \(seed)")
         defer { watchdog.disarm() }
-        guard let opened = try await openPanel(seed: seed, reduceMotion: true) else { return }
-        let (claude, w) = opened
+        let (claude, w) = try await openPanel(seed: seed, reduceMotion: true)
         defer {
             w.shell.dismiss()
             claude.hide()
@@ -402,7 +412,7 @@ struct SessionPanelHangTests {
 
     @Test(arguments: [1, 101, 201] as [UInt64])
     func theTranscriptHasTheSameHeightWhereverTheUserScrolls(seed: UInt64) async throws {
-        guard EdgeRailPanelController.screen != nil else { return }
+        try requireScreenForHostedViews()
         let watchdog = Watchdog(seconds: 120, label: "theTranscriptHasTheSameHeightWhereverTheUserScrolls seed \(seed)")
         defer { watchdog.disarm() }
         let (steps, turns, entries) = preparedBody(seed: seed)
@@ -426,7 +436,7 @@ struct SessionPanelHangTests {
 
     @Test(arguments: [1, 3] as [UInt64])
     func theTranscriptBodyInA380By520WindowSettlesAndStaysSettledWhileTheWindowHeightChanges(seed: UInt64) async throws {
-        guard EdgeRailPanelController.screen != nil else { return }
+        try requireScreenForHostedViews()
         let watchdog = Watchdog(seconds: 120, label: "theTranscriptBodyInA380By520WindowSettlesAndStaysSettledWhileTheWindowHeightChanges seed \(seed)")
         defer { watchdog.disarm() }
         let (steps, turns, entries) = preparedBody(seed: seed)
@@ -459,8 +469,8 @@ struct SessionPanelHangTests {
     }
 
     /// 줄 수로 정하는 규칙(`isLong(text:)`)이 예전에 그린 뒤 재던 규칙(본문 높이가 접은 높이 180 + 1을 넘나)과 1–16줄에서 같은 답을 낸다 (글꼴 · 줄 간격이 바뀌면 여기서 잡힌다)
-    @Test func theFoldRuleAgreesWithTheHeightTheCodeActuallyTakes() {
-        guard EdgeRailPanelController.screen != nil else { return }
+    @Test func theFoldRuleAgreesWithTheHeightTheCodeActuallyTakes() throws {
+        try requireScreenForHostedViews()
         let heights = HeightsByCount()
         let view = VStack(alignment: .leading, spacing: 0) {
             ForEach(1...16, id: \.self) { count in
@@ -487,7 +497,7 @@ struct SessionPanelHangTests {
     // MARK: 창 높이 맞춤은 1pt 아래의 변화에 움직이지 않는다
 
     @Test func thePanelWindowIgnoresAHeightChangeUnderOnePointButFollowsALargerOne() async throws {
-        guard EdgeRailPanelController.screen != nil else { return }
+        try requireScreenForHostedViews()
         let w = await EdgeSessionsTests().rig(rows: [1], live: [EdgeSessionsTests.live(1, .busy)])
         w.shell.reduceMotion = true
         let claude = EdgeClaudeAppPanelController(shell: w.shell)
@@ -518,8 +528,8 @@ struct SessionPanelHangTests {
     }
 
     /// 접힌 블록은 보이는 열 줄 남짓만 그리지만(비용), 모양은 글이 길어도 같다: 머리 28 + 180 + Show all 줄
-    @Test func aFoldedBlockLooksTheSameWhateverItsLength() {
-        guard EdgeRailPanelController.screen != nil else { return }
+    @Test func aFoldedBlockLooksTheSameWhateverItsLength() throws {
+        try requireScreenForHostedViews()
         let heights = HeightsByCount()
         let view = VStack(alignment: .leading, spacing: 0) {
             ForEach([12, 40, 300], id: \.self) { count in
@@ -535,8 +545,65 @@ struct SessionPanelHangTests {
         #expect(Set(values).count == 1 && (values.first ?? 0) > SessionCodeBlockView.collapsedHeight, "접힌 블록의 높이: \(values)")
     }
 
-    @Test func aLongCodeBlockHasItsFinalHeightFromTheVeryFirstLayout() {
-        guard EdgeRailPanelController.screen != nil else { return }
+    @MainActor
+    private final class HeightsByName {
+        var values: [String: CGFloat] = [:]
+    }
+
+    /// 줄 수 모델(`rows(of:columns:)`)이 실제로 그려진 줄 수와 맞는다: 영어 · 한국어 · 섞인 줄을, 패널(380: 코드 면 348)과 옆줄(코드 면 224)의 폭으로.
+    /// 모델은 영어 쪽에서 실제보다 적게 세어도 되고(못 접는 쪽이 접을 것을 안 접는 쪽보다 낫다) 많이 세면 안 된다. 한국어는 두 칸으로 세어 같다
+    @Test func theRowModelAgreesWithTheRowsTheTextReallyTakesAtThePanelAndSidePaneWidths() throws {
+        try requireScreenForHostedViews()
+        let samples: [(name: String, text: String)] = [
+            ("en 40", String(repeating: "x", count: 40)), ("en 44", String(repeating: "x", count: 44)), ("en 48", String(repeating: "x", count: 48)),
+            ("en 60", String(repeating: "x", count: 60)), ("en 100", String(repeating: "x", count: 100)), ("en 140", String(repeating: "x", count: 140)),
+            ("ko 12", String(repeating: "가", count: 12)), ("ko 24", String(repeating: "가", count: 24)), ("ko 27", String(repeating: "가", count: 27)),
+            ("ko 28", String(repeating: "가", count: 28)), ("ko 48", String(repeating: "가", count: 48)), ("ko 100", String(repeating: "가", count: 100)),
+            ("mixed", String(repeating: "문자열 value=1, ", count: 8)),
+        ]
+        let widths: [(name: String, block: CGFloat)] = [("panel", SessionCodeBlockView.panelBlockWidth), ("side pane", 224)]
+        let heights = HeightsByName()
+        let view = VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(widths.enumerated()), id: \.offset) { _, width in
+                ForEach(Array(samples.enumerated()), id: \.offset) { _, sample in
+                    SessionCodeBlockView(label: "x", text: sample.text, collapses: false)
+                        .environment(\.sessionCodeBlockWidth, width.block)
+                        .frame(width: width.block)
+                        .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { heights.values["\(width.name)|\(sample.name)"] = $0 }
+                }
+            }
+        }
+        let (window, _) = host(view, width: 380, height: 2_000)
+        defer { window.close() }
+        RunLoop.current.run(until: Date().addingTimeInterval(0.8))
+        var table: [String] = []
+        for width in widths {
+            let columns = SessionCodeBlockView.columns(forBlockWidth: width.block)
+            for sample in samples {
+                let key = "\(width.name)|\(sample.name)"
+                guard let height = heights.values[key] else {
+                    Issue.record("\(key): 높이를 못 쟀다")
+                    continue
+                }
+                // 머리 28 · 아래 여백 12가 든 면: 한 줄 27, 한 줄 늘 때마다 약 18.4
+                let real = Int(((height - 28) - 8.5) / 18.45 + 0.5)
+                let model = SessionCodeBlockView.rows(of: sample.text, columns: columns)
+                table.append("\(key): real \(real) model \(model)")
+                if sample.name.hasPrefix("en") {
+                    #expect(model <= real && real - model <= 1, "\(key): 영어는 실제보다 많이 세지 않고 한 줄 넘게 적게 세지도 않는다 (실제 \(real) · 모델 \(model))")
+                } else {
+                    #expect(abs(real - model) <= 1, "\(key): 한국어 · 섞인 글은 실제와 한 줄 안쪽 (실제 \(real) · 모델 \(model))")
+                }
+                if sample.name == "ko 48" && width.name == "panel" {
+                    #expect(real == 2 && model == 2, "한국어 48자는 380 폭에서 실제로 두 줄이고 모델도 두 줄이다 (실제 \(real) · 모델 \(model))")
+                }
+            }
+        }
+        print("HANGSTAT row model vs real rows: \(table)")
+    }
+
+    @Test func aLongCodeBlockHasItsFinalHeightFromTheVeryFirstLayout() throws {
+        try requireScreenForHostedViews()
         let probe = BodyProbe()
         let view = SessionCodeBlockView(label: "json", text: Self.code(lines: 40, tag: "x"))
             .frame(width: 348)
