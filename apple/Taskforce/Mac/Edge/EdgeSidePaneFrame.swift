@@ -83,7 +83,7 @@ struct SessionPanelFrame<Panel: View>: View {
         SidePaneSurface(overlaying: overlaying) {
             ZStack {
                 if pane.expanded {
-                    SidePaneBody(model: pane)
+                    SidePaneBody(model: pane, reduceMotion: reduceMotion)
                         .transition(.modifier(active: SidePaneAppear(progress: 0, reduceMotion: reduceMotion), identity: SidePaneAppear(progress: 1, reduceMotion: reduceMotion)))
                 } else {
                     SidePaneStrip(model: pane)

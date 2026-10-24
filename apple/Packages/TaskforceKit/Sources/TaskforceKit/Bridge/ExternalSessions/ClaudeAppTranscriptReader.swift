@@ -21,6 +21,7 @@ import Foundation
 /// 도구 줄은 이름과 `description`과 **파일 이름**(`file_path` · `notebook_path`의 마지막 성분: 경로 · 명령 · 검색어는 읽지 않는다)뿐이다. 입력 · 결과 본문은 펼칠 때(`detail`) 그 줄을 다시 읽어서 16 KiB까지만 준다 (결과는 그 줄 뒤로 총량 16 MiB 안에서 찾는다: 그보다 먼 결과는 못 찾는다).
 /// 세션 보기 V1(DZ oa-session-view-dz v2)이 더한 것: ① 결과 줄의 `tool_result.is_error`(불리언)와 `tool_use_id` → 실패한 도구 id ② 백그라운드 일의 시작 줄(`toolUseResult`의 `backgroundTaskId` · `agentId`+`isAsync`)과 끝 알림 줄
 /// (`origin.kind == "task-notification"` 또는 `queued_command`의 `commandMode == "task-notification"`) → 아이디 · 상태 · 끝낸 코드 · 시각뿐 (`BackgroundTaskText`). 이 둘은 대화 줄이 아니라 **그 번에 읽은 신호**(`ClaudeAppTranscriptCursor.signals`)로만 나간다.
+/// ③ (에이전트 트리 T1) 도구 결과의 끝 사실(`ClaudeAppToolOutcome`): 오류로 끝난 결과, 그리고 에이전트가 끝나 돌려준 결과(`toolUseResult.agentId`가 있고 `isAsync`가 아닌 것) → 도구 호출 id · 실패 여부 · 그 줄의 시각뿐. 하위 에이전트의 상태를 메타의 `toolUseId`와 짝지을 때 쓴다 (비동기 시작 줄은 끝이 아니다).
 /// 오류 글 · 명령 · 출력 · 알림 요약 · 에이전트 프롬프트는 선언하지 않아 값으로 남지 않는다. 사용자가 친 글 · 어시스턴트의 글에 알림 모양이 있어도 신호가 아니다 (출처 표시가 있는 줄만).
 /// 메모리에만 둔다 (디스크 캐시 0). 글 · 경로 · id를 로그에 남기지 않는다: `claude_app_transcript {result}` 코드 하나뿐.
 /// 안전: 5.1과 같다 — `O_NOFOLLOW` · 이 uid · 일반 파일 (`ExternalSessionFileSystem.read`), 프로젝트 디렉터리 · 기록 파일 모두 기호 링크 아님.
@@ -271,6 +272,7 @@ public struct ClaudeAppTranscriptReader: Sendable {
         mutating func collect(_ parsed: Parsed) {
             for id in parsed.failedToolIDs where failedSeen.insert(id).inserted { signals.failedToolIDs.append(id) }
             signals.background += parsed.background
+            signals.toolOutcomes += parsed.toolOutcomes
             if let mode = parsed.permissionMode { permissionMode = mode }
         }
     }
@@ -280,6 +282,7 @@ public struct ClaudeAppTranscriptReader: Sendable {
         var turns: [ClaudeAppTurn] = []
         var failedToolIDs: [String] = []
         var background: [BackgroundTaskEvent] = []
+        var toolOutcomes: [ClaudeAppToolOutcome] = []
         var permissionMode: String?
     }
 
@@ -621,8 +624,15 @@ public struct ClaudeAppTranscriptReader: Sendable {
                     user(blocks.filter { $0.type == "text" }.compactMap(\.text).joined(separator: "\n"))
                     // 결과 줄에서는 신호만: 오류로 끝난 도구 호출의 id (불리언 하나) · 백그라운드 일의 시작
                     let results = blocks.filter { $0.type == "tool_result" }.compactMap { block in block.toolUseID.flatMap { BackgroundTaskText.isValidToolUseID($0) ? ($0, block.isError == true) : nil } }
-                    for (toolID, failed) in results where failed { signals.failedToolIDs.append(toolID) }
+                    for (toolID, failed) in results where failed {
+                        signals.failedToolIDs.append(toolID)
+                        signals.toolOutcomes.append(ClaudeAppToolOutcome(toolUseID: toolID, failed: true, at: time))
+                    }
                     if let started = record.toolUseResult.flatMap({ Self.backgroundStart($0, toolUseID: results.first?.0, at: time) }) { signals.background.append(started) }
+                    // 에이전트가 끝나 돌려준 결과(`agentId`가 있고 비동기 시작이 아니다): 하위 에이전트의 끝 사실. 비동기 시작 줄(`isAsync == true`)은 끝이 아니다
+                    if let first = results.first, !first.1, let result = record.toolUseResult, let agent = result.agentID, BackgroundTaskText.isValidTaskID(agent), result.isAsync != true {
+                        signals.toolOutcomes.append(ClaudeAppToolOutcome(toolUseID: first.0, failed: false, at: time))
+                    }
                 }
             }
         case "assistant":

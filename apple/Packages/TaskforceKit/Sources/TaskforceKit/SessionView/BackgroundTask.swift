@@ -47,11 +47,12 @@ public enum BackgroundTaskStatus: Equatable, Sendable {
 
 /// 일의 사건. 기록(시작 · 끝 줄)과 스트림(`task_*` 줄)이 같은 값으로 목록을 채운다. 같은 사건이 되풀이돼도 결과는 같다
 public enum BackgroundTaskEvent: Equatable, Sendable {
-    /// 시작. `name`은 모델이 쓴 description만 (모르면 nil: 기록은 도구 줄의 description을 `toolUseID`로 나중에 찾는다)
-    case started(taskID: String, toolUseID: String?, kind: BackgroundTaskKind, name: String?, at: Date?)
+    /// 시작. `name`은 모델이 쓴 description만 (모르면 nil: 기록은 도구 줄의 description을 `toolUseID`로 나중에 찾는다).
+    /// `parentID`는 provider가 준 부모 일 id만 (nil = 세션 바로 아래 또는 모름), `depth`는 provider의 `spawn_depth`(0–16), `foreground`는 앞에서 도는 일(스냅샷이 멈추지 않는다)
+    case started(taskID: String, toolUseID: String?, kind: BackgroundTaskKind, name: String?, at: Date?, parentID: String? = nil, depth: Int? = nil, foreground: Bool = false)
     /// 끝 (`done` · `failed` · `stopped`). 종류를 모르면 nil
     case finished(taskID: String, kind: BackgroundTaskKind?, status: BackgroundTaskStatus, exitCode: Int?, at: Date?)
-    /// 지금 도는 일의 목록 (`background_tasks_changed`): 도는 줄 알았는데 없으면 끝내지 못한 일이다
+    /// 지금 도는 **백그라운드** 일의 목록 (`background_tasks_changed`): 도는 줄 알았는데 없으면 끝내지 못한 일이다 (앞에서 도는 일은 제외)
     case snapshot(runningTaskIDs: [String])
 }
 
@@ -64,9 +65,19 @@ public struct BackgroundTask: Identifiable, Equatable, Sendable, CustomStringCon
     public var startedAt: Date?
     public var endedAt: Date?
     public var toolUseID: String?
+    /// provider가 준 부모 일 id (하위 에이전트 트리). nil = 세션 바로 아래이거나 모름: 이름 · 시각 · 폴더로 짐작해 채우지 않는다
+    public var parentID: String?
+    /// provider의 `spawn_depth` (0–16). 모르면 nil
+    public var depth: Int?
+    /// 앞에서 돈 일이다: `background_tasks_changed`는 백그라운드 일만 싣기 때문에 스냅샷에 없다고 멈추지 않는다. 끝 알림 · `task_updated` · 프로세스 거두기로만 끝난다
+    public var foreground: Bool
+    /// 상태를 모른다: 기록에 에이전트의 메타만 있고 본 기록에서 도는지 끝났는지 알 길이 없다 (깊이 2 이상 · 짝지을 수 없는 에이전트; `status`는 `.stopped` 자리값이다 — 읽지 않는다).
+    /// 화면은 상태 낱말을 붙이지 않고(빈칸이 곧 "모름"), 띠 상태 · 보이기 · 접근성 개수에 넣지 않는다. 진짜 끝 사건이 오면 그 끝이 상태가 된다
+    public var statusUnknown: Bool
 
     public init(
-        id: String, kind: BackgroundTaskKind, name: String?, status: BackgroundTaskStatus = .running, exitCode: Int? = nil, startedAt: Date? = nil, endedAt: Date? = nil, toolUseID: String? = nil
+        id: String, kind: BackgroundTaskKind, name: String?, status: BackgroundTaskStatus = .running, exitCode: Int? = nil, startedAt: Date? = nil, endedAt: Date? = nil, toolUseID: String? = nil,
+        parentID: String? = nil, depth: Int? = nil, foreground: Bool = false, statusUnknown: Bool = false
     ) {
         self.id = id
         self.kind = kind
@@ -76,6 +87,10 @@ public struct BackgroundTask: Identifiable, Equatable, Sendable, CustomStringCon
         self.startedAt = startedAt
         self.endedAt = endedAt
         self.toolUseID = toolUseID
+        self.parentID = parentID
+        self.depth = depth
+        self.foreground = foreground
+        self.statusUnknown = statusUnknown
     }
 
     /// 줄의 제목: 모델이 쓴 이름, 없으면 도구 이름
@@ -89,6 +104,8 @@ public struct BackgroundTask: Identifiable, Equatable, Sendable, CustomStringCon
 
     /// 줄의 둘째 줄: "종류 · 상태 · 시간" ("Command · Failed · Exit code 3 · 12s"). 시작을 모르면 시간은 없다
     public func meta(now: Date) -> String {
+        // 상태를 모르는 줄은 상태 낱말 · 시간이 없다 (빈칸이 곧 "모름")
+        if statusUnknown { return kind.word }
         var parts = [kind.word, status.word]
         if status == .failed, let exitCode { parts.append(SessionViewCopy.exitCode(exitCode)) }
         switch status {
@@ -100,8 +117,8 @@ public struct BackgroundTask: Identifiable, Equatable, Sendable, CustomStringCon
         return parts.joined(separator: " · ")
     }
 
-    /// 접근성 이름: "{종류}, {이름}, {상태}" (시계는 초마다 읽히지 않는다)
-    public func accessibleName(now: Date) -> String { "\(kind.word), \(title), \(status.word)" }
+    /// 접근성 이름: "{종류}, {이름}, {상태}" (시계는 초마다 읽히지 않는다). 상태를 모르는 줄은 상태가 없다
+    public func accessibleName(now: Date) -> String { statusUnknown ? "\(kind.word), \(title)" : "\(kind.word), \(title), \(status.word)" }
 
     /// 이름 · 아이디 · 명령을 찍지 않는다
     public var description: String { "BackgroundTask()" }
@@ -125,21 +142,31 @@ public struct BackgroundTaskList: Equatable, Sendable, CustomStringConvertible, 
     /// - now: 끝 시각을 모르는 끝(시각 없는 끝 · 스냅샷에서 사라짐)의 끝 시각: 그 사건을 받은 때 끝난 것이다 (끝 시각이 없으면 "막 끝난 일은 열어 보기 전까지 남는다" 규칙이 거짓이 된다). 시험은 값을 준다
     public mutating func apply(_ event: BackgroundTaskEvent, now: Date = Date()) {
         switch event {
-        case .started(let id, let toolUseID, let kind, let name, let at):
+        case .started(let id, let toolUseID, let kind, let name, let at, let parentID, let depth, let foreground):
             if let index = index(of: id) {
-                // 끝 줄을 먼저 읽고 시작 줄을 나중에 읽었다 (앞 쪽 읽기): 상태는 그대로, 아는 것만 채운다
+                // 끝 줄을 먼저 읽고 시작 줄을 나중에 읽었다 (앞 쪽 읽기) · 스냅샷이 시작 줄보다 먼저 왔다: 상태는 그대로, 아는 것만 채운다 (부모 · 깊이도 비어 있을 때만: 아는 부모를 바꾸지 않는다)
                 if kind != .other || tasks[index].kind == .other { tasks[index].kind = kind }
                 if tasks[index].startedAt == nil { tasks[index].startedAt = at }
                 if tasks[index].name == nil { tasks[index].name = Self.cleaned(name) }
                 if tasks[index].toolUseID == nil { tasks[index].toolUseID = toolUseID }
+                if tasks[index].depth == nil { tasks[index].depth = depth }
+                fillParent(at: index, parentID)
             } else {
-                tasks.append(BackgroundTask(id: id, kind: kind, name: Self.cleaned(name), startedAt: at, toolUseID: toolUseID))
+                tasks.append(BackgroundTask(id: id, kind: kind, name: Self.cleaned(name), startedAt: at, toolUseID: toolUseID, parentID: parentID, depth: depth, foreground: foreground))
                 bound()
             }
         case .finished(let id, let kind, let status, let exitCode, let at):
             guard status != .running else { return }
             if let index = index(of: id) {
                 if tasks[index].kind == .other, let kind { tasks[index].kind = kind }
+                if tasks[index].statusUnknown {
+                    // 상태를 몰랐던 일에 진짜 끝 사건이 왔다: 그 끝이 상태다
+                    tasks[index].statusUnknown = false
+                    tasks[index].status = status
+                    tasks[index].exitCode = exitCode
+                    tasks[index].endedAt = at ?? now
+                    return
+                }
                 switch tasks[index].status {
                 case .running:
                     tasks[index].status = status
@@ -161,8 +188,9 @@ public struct BackgroundTaskList: Equatable, Sendable, CustomStringConvertible, 
                 bound()
             }
         case .snapshot(let running):
+            // `background_tasks_changed`는 **백그라운드 일만** 싣는다: 앞에서 돈 일(`foreground`)은 스냅샷에 없어도 멈추지 않는다 (끝 알림 · `task_updated` · 프로세스 거두기로만 끝난다)
             let alive = Set(running)
-            for index in tasks.indices where tasks[index].status == .running && !alive.contains(tasks[index].id) {
+            for index in tasks.indices where tasks[index].status == .running && !tasks[index].foreground && !alive.contains(tasks[index].id) {
                 tasks[index].status = .stopped
                 tasks[index].endedAt = now
             }
@@ -175,6 +203,12 @@ public struct BackgroundTaskList: Equatable, Sendable, CustomStringConvertible, 
             tasks[index].status = .stopped
             tasks[index].endedAt = now
         }
+    }
+
+    /// 비어 있는 부모를 채운다 (아는 부모는 바꾸지 않는다). 단 **깊이 1(세션 바로 아래)로 말한 일에는 채우지 않는다**: provider가 부모 없음이라고 한 일에 다른 원천이 부모를 붙이지 않는다 (깊이를 모르거나 2 이상일 때만)
+    private mutating func fillParent(at index: Int, _ parent: String?) {
+        guard tasks[index].parentID == nil, let parent, (tasks[index].depth ?? 2) >= 2 else { return }
+        tasks[index].parentID = parent
     }
 
     private mutating func bound() {
@@ -195,10 +229,76 @@ public struct BackgroundTaskList: Equatable, Sendable, CustomStringConvertible, 
     public func merged(with other: BackgroundTaskList) -> BackgroundTaskList {
         var copy = self
         for task in other.tasks {
-            copy.apply(.started(taskID: task.id, toolUseID: task.toolUseID, kind: task.kind, name: task.name, at: task.startedAt))
-            if task.status != .running { copy.apply(.finished(taskID: task.id, kind: task.kind, status: task.status, exitCode: task.exitCode, at: task.endedAt)) }
+            let isNew = copy.index(of: task.id) == nil
+            copy.apply(.started(taskID: task.id, toolUseID: task.toolUseID, kind: task.kind, name: task.name, at: task.startedAt, parentID: task.parentID, depth: task.depth, foreground: task.foreground))
+            if task.statusUnknown {
+                // 상태를 모르는 일은 도는 일을 멈추지 못한다 (판이 이긴다). 이쪽에만 있는 일은 상태 없이(끝 시각 없이) 그대로 더한다
+                if isNew, let index = copy.index(of: task.id) {
+                    copy.tasks[index].status = .stopped
+                    copy.tasks[index].statusUnknown = true
+                }
+            } else if task.status != .running {
+                copy.apply(.finished(taskID: task.id, kind: task.kind, status: task.status, exitCode: task.exitCode, at: task.endedAt))
+            }
         }
         return copy
+    }
+
+    /// 기록의 하위 에이전트 메타(`subagents/agent-<id>.meta.json`)를 겹친다. 메타는 **상태를 정하지 않는다**:
+    /// - 이미 아는 일(본 기록의 시작 줄 · 스트림): 상태 · 시각은 그대로 두고 **비어 있는 부모 · 깊이 · 이름 · 종류만** 채운다 (아는 부모를 바꾸지 않고, 깊이 1로 말한 일에는 부모를 채우지 않는다).
+    /// - 깊이 1 전경 에이전트(부모 칸이 없는 메타): 메타의 `toolUseId`와 같은 id의 호출 · 결과를 본 기록에서 본 것(`calls`)으로 상태를 정한다. 결과가 있으면 끝난 것(Failed/Done, 시각은 결과 줄의 시각),
+    ///   호출만 봤고 결과가 없으면 Running, 둘 다 못 봤으면(읽은 창 밖의 옛 에이전트) 모른다.
+    /// - 상태를 모르는 에이전트(깊이 2 이상 · 짝지을 수 없는 것): **부모가 목록에 있을 때만** 그 아래에 상태 없이(`statusUnknown`) 더한다 (부모 사슬이 이어지면 손자도). 부모가 없으면 줄을 만들지 않는다.
+    /// 이미 256개면 더하지 않는다 (메타 때문에 아는 일을 밀어내지 않는다). 같은 값을 되풀이해 겹쳐도 같다. 원본은 그대로
+    public func adding(subagents metas: [SubagentMeta], calls: [String: AgentCallRecord] = [:]) -> BackgroundTaskList {
+        var copy = self
+        var fresh: [BackgroundTask] = []
+        var undecided: [SubagentMeta] = []
+        for meta in metas {
+            if let index = copy.index(of: meta.id) {
+                if copy.tasks[index].depth == nil { copy.tasks[index].depth = meta.depth }
+                copy.fillParent(at: index, meta.parentID)
+                if copy.tasks[index].name == nil { copy.tasks[index].name = Self.cleaned(meta.name) }
+                if copy.tasks[index].kind == .other { copy.tasks[index].kind = .agent }
+            } else if !fresh.contains(where: { $0.id == meta.id }), !undecided.contains(where: { $0.id == meta.id }) {
+                if let paired = Self.paired(meta, calls: calls) {
+                    if copy.tasks.count + fresh.count < Self.maxTasks { fresh.append(paired) }
+                } else {
+                    undecided.append(meta)
+                }
+            }
+        }
+        // 상태를 모르는 에이전트: 부모가 (아는 일이든 방금 더한 일이든) 목록에 있을 때만. 부모 사슬이 이어지는 동안 되풀이한다
+        var progress = true
+        while progress, !undecided.isEmpty {
+            progress = false
+            var rest: [SubagentMeta] = []
+            for meta in undecided {
+                if let parent = meta.parentID, copy.index(of: parent) != nil || fresh.contains(where: { $0.id == parent }), copy.tasks.count + fresh.count < Self.maxTasks {
+                    fresh.append(BackgroundTask(id: meta.id, kind: .agent, name: Self.cleaned(meta.name), status: .stopped, parentID: parent, depth: meta.depth, statusUnknown: true))
+                    progress = true
+                } else {
+                    rest.append(meta)
+                }
+            }
+            undecided = rest
+        }
+        // 메타는 가장 새 것부터 온다. 시각이 없는 형제는 나중에 더한 것이 먼저 서므로, 새것이 먼저 서게 거꾸로 더한다
+        copy.tasks.append(contentsOf: fresh.reversed())
+        return copy
+    }
+
+    /// 깊이 1 전경 에이전트의 상태를 본 기록의 호출 · 결과로 정한다. 정할 수 없으면 nil
+    private static func paired(_ meta: SubagentMeta, calls: [String: AgentCallRecord]) -> BackgroundTask? {
+        guard meta.parentID == nil, (meta.depth ?? 1) == 1, let tool = meta.toolUseID, let record = calls[tool] else { return nil }
+        var task = BackgroundTask(id: meta.id, kind: .agent, name: cleaned(meta.name), startedAt: record.startedAt, toolUseID: tool, parentID: nil, depth: 1, foreground: true)
+        if let outcome = record.outcome {
+            task.status = outcome.failed ? .failed : .done
+            task.endedAt = outcome.at
+        } else if !record.called {
+            return nil
+        }
+        return task
     }
 
     /// 세션이 닫혔다: 아직 도는 일은 끝내지 못한 일이다 (Stopped). 원본은 그대로
@@ -232,10 +332,12 @@ public struct BackgroundTaskList: Equatable, Sendable, CustomStringConvertible, 
 
     /// 띠 · 옆줄 머리의 상태 한 단어: 도는 일이 있으면 Running, 아니면 Failed → Stopped → Done. 일이 없으면 nil
     public var stripStatus: BackgroundTaskStatus? {
-        guard !tasks.isEmpty else { return nil }
-        if tasks.contains(where: { $0.status == .running }) { return .running }
-        if tasks.contains(where: { $0.status == .failed }) { return .failed }
-        if tasks.contains(where: { $0.status == .stopped }) { return .stopped }
+        // 상태를 모르는 줄은 띠의 상태에 들지 않는다 (Stopped로 세지 않는다)
+        let known = tasks.filter { !$0.statusUnknown }
+        guard !known.isEmpty else { return nil }
+        if known.contains(where: { $0.status == .running }) { return .running }
+        if known.contains(where: { $0.status == .failed }) { return .failed }
+        if known.contains(where: { $0.status == .stopped }) { return .stopped }
         return .done
     }
 
@@ -252,7 +354,9 @@ public struct BackgroundTaskList: Equatable, Sendable, CustomStringConvertible, 
 
 /// 띠가 있나 (DZ v2 E7 · 열린 질문 7): 도는 일이 있거나, 막 끝난 일을 사용자가 아직 열어 보지 않았다. 열어 본 시각은 세션마다 이 Mac에 둔다
 public enum BackgroundTaskVisibility {
-    public static func isVisible(tasks: [BackgroundTask], openedAt: Date?) -> Bool {
+    public static func isVisible(tasks all: [BackgroundTask], openedAt: Date?) -> Bool {
+        // 상태를 모르는 줄은 띠를 만들지 않는다 (메타만 있는 에이전트 때문에 평범한 세션에 띠가 생기지 않는다)
+        let tasks = all.filter { !$0.statusUnknown }
         guard !tasks.isEmpty else { return false }
         if tasks.contains(where: { $0.status == .running }) { return true }
         guard let openedAt else { return true }

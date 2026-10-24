@@ -16,6 +16,9 @@ final class ClaudeAppTranscriptScript: ClaudeAppTranscriptSource, @unchecked Sen
     private var gate: CheckedContinuation<Void, Never>?
     private var holdEarlier = false
     private var _earlierCursors: [ClaudeAppTranscriptCursor] = []
+    private var subagentListings: [SubagentListing] = []
+    private var _subagentCalls = 0
+    private var _subagentSinces: [SubagentCursor?] = []
 
     /// "Show earlier"가 받은 커서들 (상한에서 앞 줄을 버렸을 때 그 자리를 가리키는지 본다)
     var earlierCursors: [ClaudeAppTranscriptCursor] { lock.withLock { _earlierCursors } }
@@ -24,6 +27,12 @@ final class ClaudeAppTranscriptScript: ClaudeAppTranscriptSource, @unchecked Sen
     var newerCalls: Int { lock.withLock { _newerCalls } }
     /// 읽기가 한 번이라도 메인 스레드에서 불렸다 (파일 읽기는 메인 밖이어야 한다)
     var calledOnMain: Bool { lock.withLock { _onMain } }
+
+    /// 하위 에이전트 메타 훑기가 줄줄이 줄 답 (다 쓰면 마지막 답이 "그대로"다: 한 번도 못 받았으면 폴더 없음)
+    func queueSubagents(_ listing: SubagentListing...) { lock.withLock { subagentListings += listing } }
+    var subagentCalls: Int { lock.withLock { _subagentCalls } }
+    /// 훑을 때마다 받은 "마지막으로 본 폴더의 바뀐 시각"
+    var subagentSinces: [SubagentCursor?] { lock.withLock { _subagentSinces } }
 
     func queueOpen(_ load: ClaudeAppTranscriptLoad...) { lock.withLock { opens += load } }
     func queueEarlier(_ load: ClaudeAppTranscriptLoad...) { lock.withLock { earliers += load } }
@@ -51,6 +60,16 @@ final class ClaudeAppTranscriptScript: ClaudeAppTranscriptSource, @unchecked Sen
             _newerCalls += 1
             if Thread.isMainThread { _onMain = true }
             return newers.isEmpty ? .turns([], cursor: cursor, hasMore: false) : newers.removeFirst()
+        }
+    }
+
+    func subagents(sessionID: String, cwd: String?, since: SubagentCursor?) -> SubagentListing {
+        lock.withLock {
+            _subagentCalls += 1
+            _subagentSinces.append(since)
+            if Thread.isMainThread { _onMain = true }
+            if !subagentListings.isEmpty { return subagentListings.removeFirst() }
+            return _subagentCalls > 1 ? .unchanged : .missing
         }
     }
 

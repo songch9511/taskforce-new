@@ -9,10 +9,13 @@ public protocol ClaudeAppTranscriptSource: Sendable {
     func newer(_ cursor: ClaudeAppTranscriptCursor) -> ClaudeAppTranscriptUpdate
     /// 펼친 도구 줄의 입력 · 결과 (읽지 못하는 면은 nil)
     func detail(of turn: ClaudeAppTurn, cursor: ClaudeAppTranscriptCursor) -> ClaudeAppToolDetail?
+    /// 세션 폴더의 하위 에이전트 메타 훑기 (부모 · 깊이 · 이름). `since`는 앞서 본 폴더의 바뀐 시각: 그대로면 `.unchanged`. 읽지 못하는 면은 폴더 없음
+    func subagents(sessionID: String, cwd: String?, since: SubagentCursor?) -> SubagentListing
 }
 
 extension ClaudeAppTranscriptSource {
     public func detail(of turn: ClaudeAppTurn, cursor: ClaudeAppTranscriptCursor) -> ClaudeAppToolDetail? { nil }
+    public func subagents(sessionID: String, cwd: String?, since: SubagentCursor?) -> SubagentListing { .missing }
 }
 
 extension ClaudeAppTranscriptReader: ClaudeAppTranscriptSource {}
@@ -53,7 +56,7 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
     public private(set) var hasEarlier = false
     /// 앞쪽을 읽는 중이다 (단추가 한 번에 하나만 돈다)
     public private(set) var loadingEarlier = false
-    /// 이 세션이 돌리는 백그라운드 일 (기록의 시작 · 끝 줄에서)
+    /// 이 세션이 돌리는 백그라운드 일 · 하위 에이전트 (기록의 시작 · 끝 줄 + `subagents/` 메타의 부모 · 깊이 · 이름). 트리는 `SubagentTree`가 이것으로 만든다
     public private(set) var backgroundTasks = BackgroundTaskList()
     /// 보는 쪽이 맨 아래에 붙어 있다 (패널의 스크롤 위치가 알린다). 위로 거슬러 읽는 중이면 false: 그동안은 라이브 줄이 붙어도 위쪽 줄을 버리지 않는다 (읽던 글이 사라지거나 밀리지 않게).
     /// 맨 아래로 돌아오면 그때 상한에 맞춘다. 상한의 두 배를 넘으면 붙어 있지 않아도 버린다 (메모리 상한)
@@ -80,6 +83,18 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
     @ObservationIgnored private var toolDescriptions: [String: String] = [:]
     @ObservationIgnored private var toolDescriptionOrder: [String] = []
     static let maxRememberedDescriptions = 4096
+    /// 기록의 시작 · 끝 줄만으로 만든 일 목록: 상태는 이것이 정한다. 화면에 내는 `backgroundTasks`는 여기에 메타를 겹친 것이다
+    @ObservationIgnored private var signalTasks = BackgroundTaskList()
+    /// 마지막으로 읽은 `subagents/` 메타 (폴더가 그대로면 다시 읽지 않는다) · 그때의 자리(프로젝트 폴더 · 폴더의 바뀐 시각)
+    @ObservationIgnored private var subagentMetas: [SubagentMeta] = []
+    @ObservationIgnored private var subagentCursor: SubagentCursor?
+    /// 본 기록에서 본 에이전트 도구 호출과 그 결과 (도구 호출 id → 짝): 깊이 1 전경 에이전트의 상태를 메타의 `toolUseId`와 짝지어 정한다. 오래된 것부터 버린다 (상한 `maxRememberedAgentCalls`)
+    @ObservationIgnored private var agentCalls: [String: AgentCallRecord] = [:]
+    @ObservationIgnored private var agentCallOrder: [String] = []
+    static let maxRememberedAgentCalls = 2048
+    /// 하위 에이전트 폴더가 없는 채로 지나간 꼬리 읽기 수: 없는 폴더를 매초 찾아다니지 않는다 (새 줄이 오면 바로, 아니면 `missingScanEvery`번에 한 번)
+    @ObservationIgnored private var quietTicks = 0
+    static let missingScanEvery = 5
 
     /// 읽기 한 번 뒤에 무엇을 하나
     private enum Step: Sendable {
@@ -175,6 +190,7 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
                 settle(fresh: page.turns, signals: page.cursor.signals)
                 hasEarlier = page.hasEarlier
                 phase = .ready
+                await scanSubagents(generation: started)
                 return .next
             case .unreadable:
                 phase = .failed
@@ -197,6 +213,7 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
                 settle(fresh: more, signals: next.signals)
                 // 꼬리를 읽었다: 앞서 못 읽어 `failed`였어도 다시 읽히는 대화다
                 phase = .ready
+                if shouldScanSubagents(sawActivity: !more.isEmpty || !next.signals.isEmpty) { await scanSubagents(generation: started) }
                 return hasMore ? .again : .next
             case .reset:
                 // 파일이 줄었거나 바뀌었다: 꼬리부터 다시 연다 (옛 파일의 실패 · 일 목록은 버린다)
@@ -212,6 +229,7 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
                 settle(fresh: page.turns, signals: page.cursor.signals)
                 hasEarlier = page.hasEarlier
                 phase = .ready
+                await scanSubagents(generation: started)
                 return .next
             case .unreadable:
                 phase = .failed
@@ -305,7 +323,62 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
         failedSet = []
         toolDescriptions = [:]
         toolDescriptionOrder = []
+        signalTasks = BackgroundTaskList()
+        subagentMetas = []
+        subagentCursor = nil
+        agentCalls = [:]
+        agentCallOrder = []
+        quietTicks = 0
         backgroundTasks = BackgroundTaskList()
+    }
+
+    /// 이번 꼬리 읽기에서 하위 에이전트 폴더를 훑을까: 폴더가 있었으면 늘(속에서 에이전트가 자란다), 없었으면 새 줄이 왔을 때 또는 몇 번에 한 번
+    private func shouldScanSubagents(sawActivity: Bool) -> Bool {
+        if subagentCursor != nil || sawActivity {
+            quietTicks = 0
+            return true
+        }
+        quietTicks += 1
+        return quietTicks.isMultiple(of: Self.missingScanEvery)
+    }
+
+    /// 세션 폴더의 하위 에이전트 메타를 훑어 일 목록에 겹친다 (파일 읽기는 메인 밖에서). 폴더가 그대로면 아무것도 읽지 않고, 없어졌거나 믿을 수 없게 되면 메타를 비운다 (믿을 수 없는 폴더의 값은 남기지 않는다)
+    private func scanSubagents(generation started: Int) async {
+        let source = source
+        let session = sessionID
+        let folder = cwd
+        let since = subagentCursor
+        let listing = await Task.detached(priority: .userInitiated) { source.subagents(sessionID: session, cwd: folder, since: since) }.value
+        guard started == generation else { return }
+        switch listing {
+        case .metas(let found, let cursor):
+            subagentMetas = found
+            subagentCursor = cursor
+        case .unchanged:
+            return
+        case .missing, .unreadable:
+            subagentMetas = []
+            subagentCursor = nil
+        }
+        publishTasks()
+    }
+
+    /// 화면에 내는 목록 = 기록의 시작 · 끝 줄로 만든 목록 + 메타 (달라졌을 때만 바꾼다)
+    private func publishTasks() {
+        let combined = signalTasks.adding(subagents: subagentMetas, calls: agentCalls)
+        if combined != backgroundTasks { backgroundTasks = combined }
+    }
+
+    /// 에이전트 호출(`Agent` · 예전 이름 `Task`의 도구 줄) 또는 그 결과를 장부에 적는다 (같은 id는 한 칸으로 합친다)
+    private func noteAgentCall(_ id: String, _ update: (inout AgentCallRecord) -> Void) {
+        if agentCalls[id] == nil {
+            agentCallOrder.append(id)
+            if agentCallOrder.count > Self.maxRememberedAgentCalls {
+                let dropped = agentCallOrder.removeFirst()
+                agentCalls[dropped] = nil
+            }
+        }
+        update(&agentCalls[id, default: AgentCallRecord()])
     }
 
     /// 읽은 한 번(`fresh`: 새로 들어온 줄 · `signals`)을 반영한다: 도구 설명을 배우고, 실패 id를 기억하고, 일 사건을 먹이고, 이름을 찾고, 실패를 도구 줄에 붙인다
@@ -320,16 +393,27 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
             for id in toolDescriptionOrder.prefix(excess) { toolDescriptions[id] = nil }
             toolDescriptionOrder.removeFirst(excess)
         }
+        for turn in fresh {
+            guard case .tool(let name, _) = turn.kind, name == "Agent" || name == "Task", let id = turn.toolUseID, BackgroundTaskText.isValidToolUseID(id) else { continue }
+            noteAgentCall(id) { record in
+                record.called = true
+                if record.startedAt == nil { record.startedAt = turn.timestamp }
+            }
+        }
+        for outcome in signals.toolOutcomes {
+            noteAgentCall(outcome.toolUseID) { $0.outcome = AgentCallRecord.Outcome(failed: outcome.failed, at: outcome.at) }
+        }
         for id in signals.failedToolIDs where failedSet.insert(id).inserted { failedIDs.append(id) }
         if failedIDs.count > Self.maxRememberedFailures {
             let excess = failedIDs.count - Self.maxRememberedFailures
             for id in failedIDs.prefix(excess) { failedSet.remove(id) }
             failedIDs.removeFirst(excess)
         }
-        var list = backgroundTasks
+        var list = signalTasks
         for event in signals.background { list.apply(event) }
         list.resolveNames { toolDescriptions[$0] }
-        if list != backgroundTasks { backgroundTasks = list }
+        signalTasks = list
+        publishTasks()
         if !failedSet.isEmpty {
             let indices = turns.indices.filter { index in
                 guard case .tool = turns[index].kind, !turns[index].failed, let id = turns[index].toolUseID else { return false }
