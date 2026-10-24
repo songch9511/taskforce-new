@@ -200,6 +200,7 @@
 		DE51DA1610314BCE5A25CE45 /* LauncherShellModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65D96844CFEE5E58206572EF /* LauncherShellModelTests.swift */; };
 		DE88C408782D388398BAF3F4 /* SampleContexts.swift in Sources */ = {isa = PBXBuildFile; fileRef = B419DF6CD9E3FFA75C5ABB95 /* SampleContexts.swift */; };
 		E04F065B94A24BBDB2009EDF /* AssistantWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B599BC480868CC552C6E2318 /* AssistantWindowController.swift */; };
+		E0684F8C10026507872CE4B3 /* EdgeCodexChat.swift in Sources */ = {isa = PBXBuildFile; fileRef = 964DBFC6E8D89A4AAC647E4C /* EdgeCodexChat.swift */; };
 		E1126617A47FD961B4920E4A /* EdgeShellModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBD3E7D1D9EE7600950CF52C /* EdgeShellModel.swift */; };
 		E147D7CE5FF4219D93669F16 /* EdgeWorkLinks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F2E137BDCFE54052D520EA3 /* EdgeWorkLinks.swift */; };
 		E17FB6C6E7776D11E4AC5FBA /* AssistantFolderHeaderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B72DCF60FDF31473408DE336 /* AssistantFolderHeaderTests.swift */; };
@@ -433,6 +434,7 @@
 		92F698F601249C05F43EB8B2 /* SettingsPlanTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsPlanTestSupport.swift; sourceTree = "<group>"; };
 		9484208DC1E48820E056CD42 /* TaskforceAgent.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TaskforceAgent.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		95937722FDD5FA1D25CAF396 /* EdgeChatTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeChatTests.swift; sourceTree = "<group>"; };
+		964DBFC6E8D89A4AAC647E4C /* EdgeCodexChat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeCodexChat.swift; sourceTree = "<group>"; };
 		968E143D8C8DE91AB2753198 /* EdgeClaudeAppPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeClaudeAppPanel.swift; sourceTree = "<group>"; };
 		973869B20BB79A08A4C3B663 /* SignInScreenTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SignInScreenTests.swift; sourceTree = "<group>"; };
 		996844ECC6544A8834AC5B51 /* ProjectWorkspacesTranslocationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectWorkspacesTranslocationTests.swift; sourceTree = "<group>"; };
@@ -623,6 +625,7 @@
 				F823AF6F2877FB4E575A589D /* EdgeChat.swift */,
 				70A91AF8D97F79CAA27211F4 /* EdgeClaudeAppChat.swift */,
 				968E143D8C8DE91AB2753198 /* EdgeClaudeAppPanel.swift */,
+				964DBFC6E8D89A4AAC647E4C /* EdgeCodexChat.swift */,
 				A00841031EBB57D4E7DF8478 /* EdgeCodexSessionPanel.swift */,
 				F7EB9CAB50F66C6FF3FD71E0 /* EdgeContextMenu.swift */,
 				C0204F4050B08D1D44053B5D /* EdgeExternalSessions.swift */,
@@ -1362,6 +1365,7 @@
 				8023CD7267734164B80C81A3 /* EdgeChat.swift in Sources */,
 				E379C22304130676F7384E0F /* EdgeClaudeAppChat.swift in Sources */,
 				EA95D05661C88F6AAC2C30BD /* EdgeClaudeAppPanel.swift in Sources */,
+				E0684F8C10026507872CE4B3 /* EdgeCodexChat.swift in Sources */,
 				7CDF5F55CCE8C871C13C55AD /* EdgeCodexSessionPanel.swift in Sources */,
 				B931AE531DEAD062AF72D3A2 /* EdgeContextMenu.swift in Sources */,
 				4D611471C74DA8B4179A0E82 /* EdgeExternalSessions.swift in Sources */,

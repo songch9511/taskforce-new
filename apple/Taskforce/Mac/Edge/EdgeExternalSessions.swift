@@ -82,7 +82,9 @@ struct SessionsPanelBody: View {
                 guard !Task.isCancelled else { return }
                 codexLoaded = true
                 switch result {
-                case .sessions(let rows): codexSessions = rows; codexFailed = false
+                case .sessions(let rows):
+                    codexSessions = rows.filter { !shell.codexChatRuntime.isManagedThread($0.id) }
+                    codexFailed = false
                 case .unreadable: codexSessions = []; codexFailed = true
                 }
                 try? await Task.sleep(for: .seconds(10))

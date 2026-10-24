@@ -91,8 +91,19 @@ public actor CodexLocalSessionReader {
         try db.rows(sql, binds) { Thread(id: $0.requiredText(0), title: $0.requiredText(1), path: $0.requiredText(2), updated: $0.int(3), source: $0.requiredText(4)) }
     }
     nonisolated private func rootThread(_ db: SQLiteDatabase, id: String) throws -> Thread {
-        guard ExternalSessionRules.isCanonicalUUID(id), let thread = try threads(db, sql: "SELECT \(Self.columns) FROM threads t WHERE t.id = ? AND t.archived = 0 AND t.source IN ('cli','vscode','exec') AND NOT EXISTS (SELECT 1 FROM thread_spawn_edges e WHERE e.child_thread_id = t.id)", binds: [.text(id)]).first else { throw Failure.unreadable }
+        guard ExternalSessionRules.isCanonicalUUID(id), let thread = try threads(db, sql: "SELECT \(Self.columns) FROM threads t WHERE t.id = ? AND t.archived = 0 AND t.source IN ('cli','vscode','exec','app_server','appServer') AND NOT EXISTS (SELECT 1 FROM thread_spawn_edges e WHERE e.child_thread_id = t.id)", binds: [.text(id)]).first else { throw Failure.unreadable }
         return thread
+    }
+    /// The continuation runs in the source project, never in the app bundle or a guessed cwd.
+    public func workingDirectory(sessionID: String) -> String? {
+        do {
+            let db = try database(root: root())
+            _ = try rootThread(db, id: sessionID)
+            guard let path = try db.rows("SELECT cwd FROM threads WHERE id = ?", [.text(sessionID)], { $0.requiredText(0) }).first,
+                  path.hasPrefix("/"), !path.contains("\0"), let resolved = files.realpath(path),
+                  let entry = files.lstat(resolved), entry.kind == .directory, !entry.othersCanWrite else { return nil }
+            return resolved
+        } catch { return nil }
     }
     public func read() -> Result {
         if files.lstat(directory) == nil { return .sessions([]) }
@@ -100,7 +111,7 @@ public actor CodexLocalSessionReader {
             let root = try root()
             if files.lstat(root + "/state_5.sqlite") == nil { return .sessions([]) }
             let db = try database(root: root)
-            let records = try threads(db, sql: "SELECT \(Self.columns) FROM threads t WHERE t.archived = 0 AND t.source IN ('cli','vscode','exec') AND NOT EXISTS (SELECT 1 FROM thread_spawn_edges e WHERE e.child_thread_id = t.id) ORDER BY t.updated_at DESC, t.id LIMIT 200")
+            let records = try threads(db, sql: "SELECT \(Self.columns) FROM threads t WHERE t.archived = 0 AND t.source IN ('cli','vscode','exec','app_server','appServer') AND NOT EXISTS (SELECT 1 FROM thread_spawn_edges e WHERE e.child_thread_id = t.id) ORDER BY t.updated_at DESC, t.id LIMIT 200")
             let titles = indexTitles(root: root)
             return .sessions(records.compactMap(\.session).map { session in
                 CodexLocalSession(id: session.id, title: titles[session.id] ?? session.title, updatedAt: session.updatedAt)
@@ -139,23 +150,34 @@ public actor CodexLocalSessionReader {
         }
         return result
     }
-    public func snapshot(sessionID: String) -> SnapshotResult {
+    public func snapshot(sessionID: String, contextSessionID: String? = nil) -> SnapshotResult {
         do {
             let root = try root(), db = try database(root: root)
             let thread = try rootThread(db, id: sessionID)
             let transcript = try transcript(thread, root: root)
             let titles = indexTitles(root: root)
-            let tasks = try graph(db, rootID: sessionID).map { child, parent, depth in
+            var nodes = try graph(db, rootID: sessionID)
+            if let contextSessionID, contextSessionID != sessionID {
+                _ = try rootThread(db, id: contextSessionID)
+                let seen = Set(nodes.map { $0.0.id })
+                nodes += try graph(db, rootID: contextSessionID).filter { !seen.contains($0.0.id) }
+            }
+            let tasks = nodes.prefix(256).map { child, parent, depth in
                 BackgroundTask(id: child.id, kind: .agent, name: titles[child.id] ?? child.agentName ?? ExternalSessionRules.sanitizedTitle(child.title), status: .stopped, parentID: parent, depth: depth, statusUnknown: true)
             }
             return .snapshot(CodexSessionSnapshot(turns: transcript.turns, tasks: BackgroundTaskList(metadataTasks: tasks), hasEarlier: transcript.hasEarlier))
         } catch { return .unreadable }
     }
-    nonisolated public func tail(sessionID: String, rootSessionID: String) -> BackgroundTaskTail.Result {
+    nonisolated public func tail(sessionID: String, rootSessionID: String, contextRootSessionID: String? = nil) -> BackgroundTaskTail.Result {
         do {
             let root = try root(), db = try database(root: root)
             _ = try rootThread(db, id: rootSessionID)
-            guard let child = try graph(db, rootID: rootSessionID).first(where: { $0.0.id == sessionID })?.0 else { return .unreadable }
+            var nodes = try graph(db, rootID: rootSessionID)
+            if let contextRootSessionID, contextRootSessionID != rootSessionID {
+                _ = try rootThread(db, id: contextRootSessionID)
+                nodes += try graph(db, rootID: contextRootSessionID)
+            }
+            guard let child = nodes.first(where: { $0.0.id == sessionID })?.0 else { return .unreadable }
             let value = try transcript(child, root: root)
             return .output(.agent(value.turns, hasEarlier: value.hasEarlier))
         } catch { return .unreadable }

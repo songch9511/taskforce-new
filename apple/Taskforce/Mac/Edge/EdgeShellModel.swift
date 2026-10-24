@@ -381,6 +381,7 @@ final class EdgeShellModel {
     private(set) var desktopPanelID: String? {
         didSet { desktopPanelChanged() }
     }
+    let codexChatRuntime = CodexChatRuntime()
     private(set) var codexPanelSession: CodexLocalSession?
     @ObservationIgnored var onResetCodexPresentation: () -> Void = {}
     @ObservationIgnored var onEscapeCodexPane: () -> Bool = { false }
@@ -1845,6 +1846,7 @@ final class EdgeShellModel {
     /// 토큰 갱신처럼 같은 계정이면 그대로 둔다
     func accountChanged(_ account: UUID?) {
         guard account != self.account else { return }
+        codexChatRuntime.adopt(account)
         projectSessions.clear()
         onResetSessionPresentation()
         onResetDesktopPresentation()

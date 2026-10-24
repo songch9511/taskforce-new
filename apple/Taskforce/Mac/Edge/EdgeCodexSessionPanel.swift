@@ -4,7 +4,7 @@ import SwiftUI
 import TaskforceKit
 import TaskforceUI
 
-/// Local, read-only Codex conversation. It never uses Claude's relay or desktop metrics.
+/// Local Codex history polling. It never uses Claude's relay or desktop metrics.
 @MainActor
 @Observable
 final class CodexSessionPanelModel {
@@ -65,12 +65,12 @@ struct CodexSessionPanelView: View {
     var body: some View {
         SessionPanelFrame(pane: presentation.pane, reduceMotion: shell.reduceMotion,
                           root: shell.codexPanelSession.map { AgentTreeRoot(title: $0.title, agent: .codex) },
-                          childComposer: { task in AnyView(openButton(id: task.id)) }) { width in
+                          childComposer: { task in AnyView(contextComposer(task)) }) { width in
             VStack(spacing: 0) {
                 if let session = shell.codexPanelSession {
                     PanelHeader(title: session.title, agent: .codex,
-                                pill: PanelHeaderPill(title: "Open in Codex") { openInCodex(session.id) },
-                                status: "Local session · Read only")
+                                pill: PanelHeaderPill(title: "Open in Codex") { openInCodex(presentation.codexChat.managedThreadID ?? session.id) },
+                                status: "Managed by Taskforce · Continued from Codex")
                         .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { presentation.headHeight = $0 }
                     ScrollView {
                         VStack(alignment: .leading, spacing: 0) {
@@ -93,10 +93,15 @@ struct CodexSessionPanelView: View {
                         .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { presentation.bodyHeight = $0 }
                     }
                     .defaultScrollAnchor(.bottom)
+                    if presentation.pane.allowsRootInput { rootComposer }
                     if openFailed { Text("Couldn’t open Codex.").font(TFFont.footnote).padding(TFSpace.lg) }
                 }
             }
             .frame(width: width).frame(maxHeight: .infinity, alignment: .top)
+        }
+        .onChange(of: presentation.codexChat.managedThreadID) { _, _ in
+            guard let id = visibleID else { return }
+            beginReading(id)
         }
         .onChange(of: visibleID, initial: true) { _, id in
             presentation.reset()
@@ -107,12 +112,19 @@ struct CodexSessionPanelView: View {
     }
 
     private func begin(_ id: String) {
-        let reader = reader
         presentation.beginSession("codex:" + id)
+        guard let chat = shell.codexChatRuntime.chat(sourceID: id) else { return }
+        presentation.codexChat = chat
+        beginReading(id)
+    }
+
+    private func beginReading(_ id: String) {
+        let reader = reader
+        let historyID = presentation.codexChat.managedThreadID ?? id
         presentation.pane.makeTail = { task in
-            BackgroundTaskTailModel(taskID: task.id, limits: .init(tailBytes: 2 << 20, maxTailBytes: 2 << 20), read: { _ in reader.tail(sessionID: task.id, rootSessionID: id) })
+            BackgroundTaskTailModel(taskID: task.id, limits: .init(tailBytes: 2 << 20, maxTailBytes: 2 << 20), read: { _ in reader.tail(sessionID: task.id, rootSessionID: historyID, contextRootSessionID: id) })
         }
-        presentation.codex.start(id, pane: presentation.pane) { await reader.snapshot(sessionID: id) }
+        presentation.codex.start(id, pane: presentation.pane) { await reader.snapshot(sessionID: historyID, contextSessionID: id) }
     }
 
     private func openInCodex(_ id: String) {
@@ -120,15 +132,55 @@ struct CodexSessionPanelView: View {
         openFailed = !NSWorkspace.shared.open(url)
     }
 
-    private func openButton(id: String) -> some View {
-        VStack(spacing: TFSpace.sm) {
-            if case .agent(_, let earlier) = presentation.pane.tail?.state, earlier {
-                Text("Showing recent messages. Open in Codex for the full conversation.")
-                    .font(TFFont.footnote).foregroundStyle(TFColor.textSecondary)
+    private var rootComposer: some View {
+        VStack(alignment: .leading, spacing: TFSpace.sm) {
+            deliveryError
+            CodexChatPromptsView(chat: presentation.codexChat)
+            Composer(
+                text: Binding(get: { presentation.codexChat.draft }, set: {
+                    if presentation.pane.allowsRootInput { presentation.codexChat.draft = $0 }
+                }), placeholder: "Message Codex…", label: "Message Codex",
+                isSending: presentation.codexChat.isSending,
+                isRunning: presentation.codexChat.isRunning && !presentation.codexChat.isSending,
+                blocked: presentation.codexChat.requests.isEmpty ? nil : "Answer the request above first",
+                onStop: { presentation.codexChat.interrupt() },
+                claimsFocusOnCreation: !presentation.pane.showsTree,
+                sendEnabled: !presentation.codexChat.isRunning,
+                onSubmit: { _ in presentation.codexChat.submitRoot(pane: presentation.pane) }
+            )
+        }
+        .padding(TFSpace.lg)
+        .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { presentation.footerHeight = $0 }
+    }
+
+    private var deliveryError: some View {
+        Group {
+            if let message = presentation.codexChat.errorMessage {
+                Text(message).font(TFFont.footnote).foregroundStyle(TFColor.textSecondary)
             }
-            Button("Open in Codex") { openInCodex(id) }
-                .buttonStyle(TFButtonStyle(.secondary, size: .md))
-        }.padding(TFSpace.lg)
+        }
+    }
+
+    private func contextComposer(_ task: TaskforceKit.BackgroundTask) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if !presentation.codexChat.requests.isEmpty {
+                CodexChatPromptsView(chat: presentation.codexChat).padding(TFSpace.lg)
+            }
+            if presentation.codexChat.isRunning {
+                Button("Stop") { presentation.codexChat.interrupt() }
+                    .buttonStyle(TFButtonStyle(.secondary, size: .sm)).padding(.horizontal, TFSpace.lg)
+            }
+            if presentation.codexChat.errorMessage != nil {
+                deliveryError.padding([.horizontal, .top], TFSpace.lg)
+            }
+            AgentTreeContextComposer(
+                task: task,
+                text: Binding(get: { presentation.codexChat.childDraft(for: task.id) }, set: { presentation.codexChat.setChildDraft($0, for: task.id) }),
+                isSending: presentation.codexChat.isSending || presentation.codexChat.isRunning,
+                onOpenMain: { presentation.pane.selectRootInTree() },
+                onSubmit: { _ in presentation.codexChat.submitChild(task, pane: presentation.pane) }
+            )
+        }
     }
 }
 #endif

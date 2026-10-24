@@ -15,7 +15,7 @@ struct CodexLocalSessionsTests {
         try FileManager.default.createDirectory(at: root.appendingPathComponent("sessions"), withIntermediateDirectories: true)
         root = URL(fileURLWithPath: try #require(ExternalSessionFileSystem.live.realpath(root.path)))
         let db = try SQLiteDatabase(path: root.appendingPathComponent("state_5.sqlite").path)
-        try db.exec("CREATE TABLE threads(id TEXT PRIMARY KEY,title TEXT,rollout_path TEXT,updated_at INTEGER,source TEXT,archived INTEGER); CREATE TABLE thread_spawn_edges(parent_thread_id TEXT,child_thread_id TEXT,status TEXT)")
+        try db.exec("CREATE TABLE threads(id TEXT PRIMARY KEY,title TEXT,rollout_path TEXT,updated_at INTEGER,source TEXT,archived INTEGER,cwd TEXT); CREATE TABLE thread_spawn_edges(parent_thread_id TEXT,child_thread_id TEXT,status TEXT)")
         return (root, db)
     }
     private func insert(_ id: String, root: URL, db: SQLiteDatabase, parent: String? = nil, source: String? = nil, archived: Int64 = 0, metaID: String? = nil) throws {
@@ -24,8 +24,29 @@ struct CodexLocalSessionsTests {
         data.append(try line(["type":"response_item", "payload":["type":"message", "role":"assistant", "content":[["type":"output_text", "text":"Reply for \(id)"]]]]))
         try data.write(to: path)
         let origin = try source ?? parent.map { String(decoding: try JSONSerialization.data(withJSONObject: ["subagent":["thread_spawn":["parent_thread_id":$0]]]), as: UTF8.self) } ?? "cli"
-        try db.run("INSERT INTO threads VALUES(?,?,?,?,?,?)", [.text(id),.text("Original"),.text(path.path),.int(100),.text(origin),.int(archived)])
+        try db.run("INSERT INTO threads VALUES(?,?,?,?,?,?,?)", [.text(id),.text("Original"),.text(path.path),.int(100),.text(origin),.int(archived),.text(root.path)])
         if let parent { try db.run("INSERT INTO thread_spawn_edges VALUES(?,?,?)", [.text(parent),.text(id),.text("running")]) }
+    }
+    @Test func managedContinuationKeepsSourceTaskContextAndValidatedWorkingDirectory() async throws {
+        let (root, db) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        try insert(first, root: root, db: db)
+        try insert(second, root: root, db: db, source: "app_server")
+        try insert(third, root: root, db: db, parent: first)
+        let reader = CodexLocalSessionReader(directory: root.path)
+        #expect(await reader.workingDirectory(sessionID: first) == root.path)
+        #expect(await reader.workingDirectory(sessionID: third) == nil)
+        guard case .snapshot(let snapshot) = await reader.snapshot(sessionID: second, contextSessionID: first) else {
+            Issue.record("Expected continuation with context"); return
+        }
+        #expect(snapshot.tasks.tasks.map(\.id) == [third])
+        #expect(snapshot.turns.first?.kind == .assistant("Reply for \(second)"))
+        guard case .output(.agent(let turns, _)) = reader.tail(sessionID: third, rootSessionID: second, contextRootSessionID: first) else {
+            Issue.record("Expected source child context"); return
+        }
+        #expect(turns.first?.kind == .assistant("Reply for \(third)"))
+        #expect(reader.tail(sessionID: third, rootSessionID: second) == .unreadable)
+        try db.run("UPDATE threads SET cwd=? WHERE id=?", [.text("relative/path"), .text(first)])
+        #expect(await reader.workingDirectory(sessionID: first) == nil)
     }
     @Test func canonicalRootsExcludeChildrenGuardiansAndArchivedAndPreserveRenames() async throws {
         let (root, db) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
@@ -119,7 +140,7 @@ struct CodexLocalSessionsTests {
         #expect(reader.tail(sessionID:parent, rootSessionID:first) == .unreadable)
         for n in 100...305 {
             let id = String(format: "10000000-0000-0000-0000-%012d", n)
-            try db.run("INSERT INTO threads VALUES(?,?,?,?,?,?)", [.text(id),.text("Task"),.text("unused"),.int(Int64(n)),.text("vscode"),.int(0)])
+            try db.run("INSERT INTO threads VALUES(?,?,?,?,?,?,?)", [.text(id),.text("Task"),.text("unused"),.int(Int64(n)),.text("vscode"),.int(0),.text(root.path)])
         }
         guard case .sessions(let sessions) = await reader.read() else { Issue.record("Expected list"); return }
         #expect(sessions.count == 200)

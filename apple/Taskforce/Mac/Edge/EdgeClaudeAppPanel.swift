@@ -21,6 +21,7 @@ final class EdgeClaudeAppPanelPresentation {
     /// 단계 묶음 · 줄의 보이는 상태
     let steps = SessionStepsState()
     let codex = CodexSessionPanelModel()
+    var codexChat = CodexSessionChatModel()
     /// 본문이 다시 계산돼도 대화가 그대로면 타임라인을 다시 만들지 않는다
     @ObservationIgnored let timeline = SessionTimelineMemo<ClaudeTimelineInput, ClaudeTimeline>()
 
@@ -36,6 +37,7 @@ final class EdgeClaudeAppPanelPresentation {
 
     func reset() {
         codex.stop()
+        codexChat = CodexSessionChatModel()
         sessionKey = nil
         pane.attach(session: nil)
         steps.reset()
