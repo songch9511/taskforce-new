@@ -65,7 +65,6 @@ struct SessionsPanelBody: View {
     @State private var codexSessions: [CodexLocalSession] = []
     @State private var codexFailed = false
     @State private var codexLoaded = false
-    @State private var codexOpenFailed = false
     private let codexReader = CodexLocalSessionReader()
 
     var body: some View {
@@ -73,8 +72,8 @@ struct SessionsPanelBody: View {
         TimelineView(.periodic(from: .now, by: 30)) { context in
             content(now: context.date)
         }
-        .task(id: shell.externalSessionsVisible) {
-            guard shell.externalSessionsVisible, Self.readsLiveCodexSessions else {
+        .task(id: codexReadAccount) {
+            guard codexReadAccount != nil, Self.readsLiveCodexSessions else {
                 codexSessions = []; codexFailed = false; codexLoaded = true
                 return
             }
@@ -89,6 +88,10 @@ struct SessionsPanelBody: View {
                 try? await Task.sleep(for: .seconds(10))
             }
         }
+    }
+
+    private var codexReadAccount: UUID? {
+        shell.externalSessionsVisible && shell.panelOpen && shell.view == .sessions ? shell.account : nil
     }
 
     /// Sample captures and XCTest hosts must never read the user's local Codex index.
@@ -177,25 +180,23 @@ struct SessionsPanelBody: View {
             }
             ForEach(codexExpanded ? codexSessions : Array(codexSessions.prefix(3))) { session in
                 Button {
-                    guard let url = session.openURL else { return }
-                    codexOpenFailed = !NSWorkspace.shared.open(url)
+                    shell.openCodexSession(session)
                 } label: {
                     HStack(alignment: .top, spacing: 10) {
                         AgentMark(.codex, size: 20).accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 0) {
                             Text(session.title).font(TFFont.callout).foregroundStyle(TFColor.textPrimary).lineLimit(1)
-                            Text("Open in Codex").font(TFFont.footnote).foregroundStyle(TFColor.textSecondary)
+                            Text("Local session").font(TFFont.footnote).foregroundStyle(TFColor.textSecondary)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        Image(systemName: "arrow.up.right").foregroundStyle(TFColor.textSecondary)
+                        Image(systemName: "chevron.right").foregroundStyle(TFColor.textSecondary)
                     }
                     .padding(.vertical, 8).padding(.horizontal, 10)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("\(session.title) — Open in Codex")
+                .accessibilityLabel("\(session.title) — Open session")
             }
-            if codexOpenFailed { SessionsSectionNote("Couldn’t open Codex. Check that the app is installed.") }
         }
     }
 

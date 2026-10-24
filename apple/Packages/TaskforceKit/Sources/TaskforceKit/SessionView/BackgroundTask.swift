@@ -135,6 +135,15 @@ public struct BackgroundTaskList: Equatable, Sendable, CustomStringConvertible, 
 
     public init() {}
 
+    /// Provider metadata has no execution-state evidence. Keep its hierarchy without inventing running tasks.
+    public init(metadataTasks: [BackgroundTask]) {
+        var seen: Set<String> = []
+        tasks = metadataTasks.filter { seen.insert($0.id).inserted }.prefix(Self.maxTasks).map { task in
+            BackgroundTask(id: task.id, kind: task.kind, name: Self.cleaned(task.name), status: .stopped,
+                           parentID: task.parentID, depth: task.depth, statusUnknown: true)
+        }
+    }
+
     private func index(of id: String) -> Int? { tasks.firstIndex { $0.id == id } }
 
     private static func cleaned(_ name: String?) -> String? { name.flatMap(ExternalSessionRules.sanitizedTitle) }

@@ -20,6 +20,7 @@ final class EdgeClaudeAppPanelPresentation {
     let pane: SessionSidePaneModel
     /// 단계 묶음 · 줄의 보이는 상태
     let steps = SessionStepsState()
+    let codex = CodexSessionPanelModel()
     /// 본문이 다시 계산돼도 대화가 그대로면 타임라인을 다시 만들지 않는다
     @ObservationIgnored let timeline = SessionTimelineMemo<ClaudeTimelineInput, ClaudeTimeline>()
 
@@ -34,6 +35,7 @@ final class EdgeClaudeAppPanelPresentation {
     private(set) var sessionKey: String?
 
     func reset() {
+        codex.stop()
         sessionKey = nil
         pane.attach(session: nil)
         steps.reset()
@@ -317,7 +319,8 @@ final class EdgeClaudeAppPanelController {
     let shell: EdgeShellModel
     let panel: EdgeKeyPanel
     let presentation: EdgeClaudeAppPanelPresentation
-    private let hosting: NSHostingView<ClaudeAppSessionPanelView>
+    private let hosting: NSHostingView<AnyView>
+    private let isCodex: Bool
     private var generation = 0
     /// 창을 옆줄만큼 왼쪽으로 넓힌 폭의 마지막 값: 바뀌면 움직이지 않고 바로 맞춘다 (옆줄은 두 겹이 처음부터 최종 크기로 놓이고 크로스페이드만)
     private var appliedExtra: CGFloat = 0
@@ -325,14 +328,17 @@ final class EdgeClaudeAppPanelController {
     var mainPanelFrame: () -> NSRect? = { nil }
 
     /// - backgroundOpen: 백그라운드 일 옆줄의 "열어 본 시각" 저장소 (실제 앱은 영속, 시험 호스트 · 견본은 메모리)
-    init(shell: EdgeShellModel, backgroundOpen: any BackgroundTaskOpenStore = InMemoryBackgroundTaskOpenStore()) {
+    init(shell: EdgeShellModel, backgroundOpen: any BackgroundTaskOpenStore = InMemoryBackgroundTaskOpenStore(), isCodex: Bool = false) {
+        self.isCodex = isCodex
         self.shell = shell
         presentation = EdgeClaudeAppPanelPresentation(backgroundOpen: backgroundOpen)
         panel = EdgeKeyPanel(
             contentRect: NSRect(x: 0, y: 0, width: EdgePanelMetrics.width, height: EdgePanelMetrics.minHeight),
             styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView], backing: .buffered, defer: false
         )
-        hosting = NSHostingView(rootView: ClaudeAppSessionPanelView(shell: shell, presentation: presentation))
+        hosting = NSHostingView(rootView: isCodex
+            ? AnyView(CodexSessionPanelView(shell: shell, presentation: presentation))
+            : AnyView(ClaudeAppSessionPanelView(shell: shell, presentation: presentation)))
         hosting.sizingOptions = []
         panel.isFloatingPanel = true
         panel.level = .statusBar
@@ -345,20 +351,25 @@ final class EdgeClaudeAppPanelController {
         panel.animationBehavior = .none
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient, .ignoresCycle]
         panel.contentView = hosting
-        panel.setAccessibilityLabel(AgentMarkKind.claudeCode.accessibilityName)
+        panel.setAccessibilityLabel((isCodex ? AgentMarkKind.codex : .claudeCode).accessibilityName)
         // Esc: 옆줄이 열려 있으면 꼬리 → 목록 → 접힘을 먼저 (그다음 패널)
         let presentation = presentation
-        shell.onEscapeDesktopPane = { presentation.pane.escape() }
+        if isCodex {
+            shell.onEscapeCodexPane = { presentation.pane.escape() }
+            shell.onResetCodexPresentation = { [weak presentation] in presentation?.reset() }
+        } else {
+            shell.onEscapeDesktopPane = { presentation.pane.escape() }
+            shell.onResetDesktopPresentation = { [weak presentation] in presentation?.reset() }
+        }
         // 옆줄이 바뀌면 창 틀을 그 자리에서 맞춘다 (관찰의 한 박자를 기다리지 않는다: 내용이 낡은 창에 잘리지 않게)
         presentation.pane.onRootInputHidden = { [weak panel] in _ = panel?.makeFirstResponder(nil) }
-        shell.onResetDesktopPresentation = { [weak presentation] in presentation?.reset() }
         presentation.pane.onWindowChange = { [weak self] in self?.fit() }
     }
 
     var isVisible: Bool { panel.isVisible }
 
     /// 레일 옆 한 패널인가 (Sessions 옆이 아니라)
-    private var standalone: Bool { shell.view == .claudeApp }
+    private var standalone: Bool { !isCodex && shell.view == .claudeApp }
 
     /// 높이: 내용에 맞춰 320–520 (세션 패널과 같다)
     func height() -> CGFloat {

@@ -283,6 +283,7 @@ final class EdgeShellModel {
             if !panelOpen { loadedPanelConversation = nil }
             externalSessionsPanelChanged()
             desktopPanelChanged()
+            if !codexPanelShown { onResetCodexPresentation() }
             savedChatPanelChanged()
         }
     }
@@ -290,6 +291,7 @@ final class EdgeShellModel {
         didSet {
             externalSessionsPanelChanged()
             desktopPanelChanged()
+            if !codexPanelShown { onResetCodexPresentation() }
             savedChatPanelChanged()
         }
     }
@@ -379,6 +381,20 @@ final class EdgeShellModel {
     private(set) var desktopPanelID: String? {
         didSet { desktopPanelChanged() }
     }
+    private(set) var codexPanelSession: CodexLocalSession?
+    @ObservationIgnored var onResetCodexPresentation: () -> Void = {}
+    @ObservationIgnored var onEscapeCodexPane: () -> Bool = { false }
+    var codexPanelShown: Bool { externalSessionsVisible && panelOpen && view == .sessions && codexPanelSession != nil }
+
+    func openCodexSession(_ session: CodexLocalSession) {
+        guard externalSessionsVisible, panelOpen, view == .sessions else { return }
+        desktopPanelID = nil
+        sessionPanelID = nil
+        savedChatPanelID = nil
+        onResetCodexPresentation()
+        codexPanelSession = codexPanelSession?.id == session.id ? nil : session
+    }
+
     /// 그 세션의 대화 (패널이 보이는 동안 라이브 꼬리를 읽는다). 세션 보기가 없으면 nil
     private(set) var desktopConversation: ClaudeAppConversation?
     @ObservationIgnored private var desktopConversationShown = false
@@ -763,7 +779,11 @@ final class EdgeShellModel {
             if view == .sessions || self.view == .sessions { sessionPanelID = nil }
             if view != .sessions, view != .claudeApp { desktopPanelID = nil }
             // 저장된 대화 읽기 패널은 Sessions 안에서만 산다 (OA D3v-m)
-            if view != .sessions { savedChatPanelID = nil }
+            if view != .sessions {
+                savedChatPanelID = nil
+                codexPanelSession = nil
+                onResetCodexPresentation()
+            }
         }
         self.view = view
         panelOpen = true
@@ -1027,6 +1047,8 @@ final class EdgeShellModel {
     /// 연 세션은 끝남(초록)이 내려간다. 왼쪽 패널은 하나라서 데스크톱 세션 보기는 닫힌다
     func openSessionRow(_ id: UUID) {
         guard issues != nil, panelOpen, view == .sessions else { return }
+        codexPanelSession = nil
+        onResetCodexPresentation()
         desktopPanelID = nil
         savedChatPanelID = nil
         sessionPanelID = sessionPanelID == id ? nil : id
@@ -1047,6 +1069,8 @@ final class EdgeShellModel {
     /// Sessions가 열려 있으면 그 왼쪽에 서고(같은 줄을 다시 누르면 닫는다) 아니면 `.claudeApp` 화면으로 레일 옆 한 패널이 된다
     func openDesktopSession(_ id: String, from source: DesktopOpenSource) {
         guard desktop != nil, sessionsVisible else { return }
+        codexPanelSession = nil
+        onResetCodexPresentation()
         sessionPanelID = nil
         savedChatPanelID = nil
         if panelOpen, view == .sessions {
@@ -1092,6 +1116,8 @@ final class EdgeShellModel {
     /// - confirmDelete: 오른쪽 클릭 메뉴의 Delete — **바로 지우지 않고** 그 대화를 열어 확인 카드를 그 자리에 띄운다 (이미 열려 있으면 닫지 않고 카드만)
     func openSavedChat(_ id: UUID, confirmDelete: Bool = false) {
         guard let savedChats, sessionsVisible, panelOpen, view == .sessions, savedChats.rows.contains(where: { $0.id == id }) else { return }
+        codexPanelSession = nil
+        onResetCodexPresentation()
         sessionPanelID = nil
         desktopPanelID = nil
         if savedChatPanelID == id {
@@ -1680,6 +1706,12 @@ final class EdgeShellModel {
 
     /// Esc: 안쪽 것(열린 필터 카드 · Chats의 대화 목록)을 먼저 닫고, 그다음 패널을 접는다 (디자인 Focus and keys)
     func escape() {
+        if codexPanelShown {
+            if onEscapeCodexPane() { return }
+            codexPanelSession = nil
+            onResetCodexPresentation()
+            return
+        }
         // 레일 옆 한 패널(데스크톱 세션 보기)은 Esc가 패널째 접는다. Sessions 왼쪽의 세션 보기는 Esc가 먼저 그것만 닫는다 (OA PR-D2)
         if panelOpen, view == .claudeApp {
             // 옆줄이 열려 있으면 Esc가 먼저 그것만 접는다 (꼬리 → 목록 → 접힘 → 패널)
@@ -1816,6 +1848,8 @@ final class EdgeShellModel {
         projectSessions.clear()
         onResetSessionPresentation()
         onResetDesktopPresentation()
+        codexPanelSession = nil
+        onResetCodexPresentation()
         // 알던 계정이 떠났다(로그아웃 · 다른 계정): 그 계정의 끝남 표시는 이 계정에 없다 (저장본은 `AccountScope`가 비운다). 처음 로그인(앱을 다시 켠 뒤)은 저장해 둔 것을 그대로 둔다
         let hadAccount = self.account != nil
         self.account = account
