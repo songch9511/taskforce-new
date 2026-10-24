@@ -583,3 +583,24 @@ struct ClaudeAppChatMacTests {
         #expect(configuration.ownPIDs().isEmpty)
     }
 }
+
+@Suite("Agent tree contextual messages")
+struct AgentTreeContextMessageTests {
+    @Test func includesOnlySelectedIdentityAndUserMessage() throws {
+        let task = TaskforceKit.BackgroundTask(id: "child-7", kind: .agent, name: "Review \"quotes\"\nand lines", parentID: "parent-private")
+        let payload = try #require(AgentTreeContextMessage.make(task: task, text: "  Please check this.  "))
+        #expect(payload.hasSuffix("User message:\nPlease check this."))
+        #expect(payload.contains("child-7"))
+        #expect(!payload.contains("parent-private"))
+        let identity = try #require(payload.components(separatedBy: "\n").dropFirst().first)
+        let json = try #require(JSONSerialization.jsonObject(with: Data(identity.utf8)) as? [String: String])
+        #expect(json == ["agent_id": task.id, "task": task.title])
+    }
+
+    @Test func rejectsBlankAndCountsContextAgainstMessageLimit() {
+        let task = TaskforceKit.BackgroundTask(id: "child", kind: .agent, name: "Research")
+        #expect(AgentTreeContextMessage.make(task: task, text: " \n ") == nil)
+        #expect(AgentTreeContextMessage.make(task: task, text: String(repeating: "x", count: ChatComposerRules.maxLength)) == nil)
+        #expect(AgentTreeContextMessage.make(task: task, text: "Continue") != nil)
+    }
+}

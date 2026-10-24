@@ -314,7 +314,7 @@ struct SidePaneTail: View {
         let byID = Dictionary(turns.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         // Show earlier는 본문이 하나만 세운다: 창 밖에 읽어 둔 줄을 먼저 펴고, 다 폈으면 꼬리의 창을 넓힌다 (`tail.showEarlier()`)
         SessionEntriesView(entries: entries, steps: data.steps, state: steps, earlierPage: SessionEarlierPage(available: earlier, load: { tail.showEarlier() }), pinnedToBottom: pinned, item: { id in
-            if let turn = byID[id], case .assistant(let text) = turn.kind { SessionMarkdownView(source: turn.truncated ? text + "…" : text) }
+            if let turn = byID[id] { ClaudeAppTurnView(turn: turn) }
         })
         .padding(.horizontal, TFSpace.sm)
         // 옆줄 꼬리의 코드 면은 패널 본문보다 훨씬 좁다 (옆줄 256 − 꼬리 안쪽 여백 · 줄 여백 sm × 4): 줄바꿈이 많아 접을지 셀 때의 한 줄 칸 수가 다르다

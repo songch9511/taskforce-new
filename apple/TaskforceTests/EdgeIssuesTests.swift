@@ -165,14 +165,14 @@ struct EdgeIssuesTests {
         #expect(!rig.shell.sessionPanelShown, "Projects에는 세션 패널이 없다")
     }
 
-    @Test func aProjectListShowsTheNameAsTheTitleAndNoSessionPanelOpensFromAList() async {
+    @Test func aProjectListShowsTheNameAndOpensSessionsWhileOtherListsDoNot() async {
         let rig = await make()
         rig.openProject()
         #expect(rig.shell.nav.current == .list(.project(Fx.taskforce)) && rig.shell.panelTitle == "Taskforce 0.2.0")
         #expect(rig.shell.nav.canGoBack)
-        // 세션은 이슈 상세의 Sessions 목록에서만 연다 (OA U3-45): 목록 화면에서는 열리지 않는다
+        // Approved T3m adds the project Sessions group; Done today and Ungrouped still have no session entry.
         rig.shell.openSession(Fx.session(1))
-        #expect(rig.shell.sessionPanelID == nil && !rig.shell.sessionPanelShown)
+        #expect(rig.shell.sessionPanelID == Fx.session(1) && rig.shell.sessionPanelShown)
         rig.shell.openList(.doneToday)
         rig.shell.openSession(Fx.session(1))
         #expect(rig.shell.sessionPanelID == nil)

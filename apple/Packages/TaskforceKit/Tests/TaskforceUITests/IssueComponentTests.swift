@@ -139,6 +139,40 @@ struct IssueComponentTests {
         #expect(!SessionRow.Look.of(line: "Closed", dimmed: true).showsLine, "끝난 행은 말이 와도 그리지 않는다")
     }
 
+    // MARK: 프로젝트 Sessions 묶음의 세션 행 (에이전트 트리 T3m): 공유 · 접힌 행의 끝 글 · 펼침 표시. 새 문구 없음
+
+    #if os(macOS)
+    private func sessionItem(closed: Bool = false, line: String = "Running") -> AgentSessionItem {
+        AgentSessionItem(
+            id: UUID(), name: "Pricing copy", agent: .claudeCode, agentName: "Claude Code", connectionID: UUID(), status: closed ? .closed : .bound, ring: closed ? nil : .running,
+            line: closed ? "" : line, createdAt: .distantPast, updatedAt: .distantPast, issueIDs: [], currentIssueID: nil, conversationID: nil, hasOpenTask: false, pill: nil
+        )
+    }
+
+    @Test func theSecondLineJoinsTheStatusWordAndTheOtherProjectsAndAClosedSessionKeepsOnlyTheProjects() {
+        #expect(SessionRow.secondLine(line: "Running", dimmed: false, shared: nil) == "Running", "공유가 없으면 지금까지와 같다")
+        #expect(SessionRow.secondLine(line: "Running", dimmed: false, shared: "Acme, Beta") == "Running · Acme, Beta")
+        #expect(SessionRow.secondLine(line: "", dimmed: true, shared: "Acme") == "Acme", "끝난 세션은 상태 말이 없고 프로젝트 이름만 남는다")
+        #expect(SessionRow.secondLine(line: "Closed", dimmed: true, shared: nil) == nil, "끝난 행은 말이 와도 그리지 않는다")
+        #expect(SessionRow.secondLine(line: "", dimmed: false, shared: nil) == nil && SessionRow.secondLine(line: "", dimmed: false, shared: "") == nil)
+    }
+
+    @Test func theRowNameKeepsItsShapeAndAppendsTheOtherProjectsAndTheCollapsedSummary() {
+        let item = sessionItem()
+        #expect(SessionRow.accessibilityName(item) == item.rowAccessibilityName, "덧붙일 것이 없으면 지금 그대로")
+        #expect(SessionRow.accessibilityName(item, shared: "Acme") == "Pricing copy — Claude Code — Running — Acme")
+        #expect(SessionRow.accessibilityName(item, summary: "Running 2") == "Pricing copy — Claude Code — Running, Running 2")
+        #expect(SessionRow.accessibilityName(sessionItem(closed: true), shared: "Acme") == "Pricing copy — Claude Code — Acme")
+    }
+
+    @Test func theDisclosureSpeaksAValueAndAnActionOnlyWhenTheRowCanOpen() {
+        let open = SessionRowDisclosure(isExpanded: true, canToggle: true, accessibilityValue: "Expanded", toggleActionName: "Show less", onToggle: {})
+        #expect(open.accessibilityValue == "Expanded" && open.toggleActionName == "Show less")
+        let none = SessionRowDisclosure(isExpanded: false, canToggle: false, accessibilityValue: "Collapsed", toggleActionName: "Show all", onToggle: {})
+        #expect(none.accessibilityValue == nil && none.toggleActionName == nil, "트리가 없는 에이전트의 줄은 값도 동작도 없다 (빈 칸만 같은 폭으로 남는다)")
+    }
+    #endif
+
     // MARK: 긴 메뉴 (검토 반영 9)
 
     @Test func aMenuTallerThanTheScreenIsLimitedToTheVisibleHeightLeavingTheMargins() {

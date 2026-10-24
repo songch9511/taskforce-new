@@ -28,7 +28,6 @@ public struct WorkList: View {
     let onOpen: (UUID) -> Void
     let onPin: (UUID) -> Void
     let onUnpin: (UUID) -> Void
-    let onAddTask: () -> Void
     let onConnect: (() -> Void)?
     let onRetry: () -> Void
     @State private var hovered: UUID?
@@ -45,7 +44,7 @@ public struct WorkList: View {
         currentID: UUID? = nil, highlightedID: UUID? = nil, today: LocalDate, projectsProblem: WorkLoad.Problem? = nil,
         summary: AnyView? = nil, detail: @escaping (UUID) -> AnyView? = { _ in nil },
         onOpen: @escaping (UUID) -> Void = { _ in }, onPin: @escaping (UUID) -> Void = { _ in }, onUnpin: @escaping (UUID) -> Void = { _ in },
-        onAddTask: @escaping () -> Void = {}, onConnect: (() -> Void)? = nil, onRetry: @escaping () -> Void = {}
+        onConnect: (() -> Void)? = nil, onRetry: @escaping () -> Void = {}
     ) {
         self.items = items
         self.load = load
@@ -62,7 +61,6 @@ public struct WorkList: View {
         self.onOpen = onOpen
         self.onPin = onPin
         self.onUnpin = onUnpin
-        self.onAddTask = onAddTask
         self.onConnect = onConnect
         self.onRetry = onRetry
     }
@@ -93,7 +91,6 @@ public struct WorkList: View {
                 notice(problem)
                 summary
                 PanelEmptyState(.noWork) {
-                    Button("Add task", action: onAddTask).buttonStyle(TFButtonStyle(.primary, size: .md))
                     if let onConnect {
                         Button("Connect a source", action: onConnect).buttonStyle(TFButtonStyle(.secondary, size: .md))
                     }

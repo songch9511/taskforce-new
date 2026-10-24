@@ -506,6 +506,12 @@ enum ExternalSessionSnapshot {
     nonisolated static func rows(_ scenario: Scenario) -> [ExternalSessionRow] {
         switch scenario {
         case .mixed:
+            if ProcessInfo.processInfo.arguments.contains("-TFAgentTreeSample") {
+                return [
+                    row(1, "Pricing copy draft", group: "taskforce", status: .held(.claudeApp), client: .claudeDesktop, minutes: 1),
+                    row(9, "A session without sub-agents", group: "taskforce", status: .held(.claudeApp), client: .claudeDesktop, minutes: 2),
+                ]
+            }
             return [
                 row(1, "Fix launcher focus after sleep when the panel is open", group: "taskforce", status: .held(.claudeApp), client: .claudeDesktop, minutes: 2),
                 row(2, "Add RLS test for agent_sessions", group: "taskforce", status: .held(.terminal), minutes: 0.2),

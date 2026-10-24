@@ -119,6 +119,47 @@ struct ChatStoreWindowsTests {
         #expect(chat.currentID == navigation.0 && chat.mode == navigation.1 && chat.focusRequest == navigation.2, "창의 대화는 저장소의 currentID · mode · 포커스를 건드리지 않는다")
     }
 
+    @Test func contextualSendPreservesTheIndependentMainDraft() async {
+        let row = Chats.conversation(1, title: "Main", last: 10)
+        serve([row])
+        let chat = store()
+        await chat.refresh()
+        chat.ensureLoaded(row.id)
+        await chat.settle()
+        chat.setDraft("Unfinished Main draft", for: row.id)
+        gateway.postHandler = { conversation, cmid, text in Chats.pair(1, in: conversation, seq: 1, cmid: cmid, text: text) }
+        #expect(await chat.send("Regarding selected agent: check links", in: row.id, preservingDraft: true))
+        #expect(chat.draft(for: row.id) == "Unfinished Main draft")
+        #expect(chat.turns(for: row.id).map(\.text) == ["Regarding selected agent: check links", "Noted."])
+    }
+
+    @Test func failedContextualSendAlsoPreservesTheMainDraft() async {
+        let row = Chats.conversation(1, title: "Main", last: 10)
+        serve([row])
+        let chat = store()
+        await chat.refresh()
+        chat.ensureLoaded(row.id)
+        await chat.settle()
+        chat.setDraft("Unfinished Main draft", for: row.id)
+        gateway.postHandler = { _, _, _ in throw APIError.unexpectedStatus(503) }
+        #expect(await chat.send("Regarding selected agent: check links", in: row.id, preservingDraft: true))
+        #expect(chat.draft(for: row.id) == "Unfinished Main draft")
+        #expect(chat.turns(for: row.id).first?.text == "Regarding selected agent: check links")
+    }
+
+    @Test func contextualSendReturnsFalseWhenNoPendingTurnWasAccepted() async {
+        let row = Chats.conversation(1, title: "Main", last: 10)
+        serve([row])
+        let chat = store()
+        await chat.refresh()
+        chat.ensureLoaded(row.id)
+        await chat.settle()
+        chat.setDraft("Main draft", for: row.id)
+        #expect(!(await chat.send("   ", in: row.id, preservingDraft: true)))
+        #expect(!(await chat.send("Context", in: UUID(), preservingDraft: true)))
+        #expect(chat.draft(for: row.id) == "Main draft" && chat.turns(for: row.id).isEmpty)
+    }
+
     @Test func refreshReadsEveryConversationAWindowShowsNotOnlyTheSharedCurrentOne() async throws {
         let a = Chats.conversation(1, title: "A", last: 20)
         let b = Chats.conversation(2, title: "B", last: 10)

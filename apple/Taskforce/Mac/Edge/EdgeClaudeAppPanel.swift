@@ -25,12 +25,20 @@ final class EdgeClaudeAppPanelPresentation {
 
     init(backgroundOpen: any BackgroundTaskOpenStore = InMemoryBackgroundTaskOpenStore()) {
         pane = SessionSidePaneModel(store: backgroundOpen)
+        pane.usesAgentCanvas = true
     }
 
     var contentHeight: CGFloat { headHeight + bodyHeight + footerHeight }
 
     /// 지금 보는 세션 (같으면 아무 일도 없다)
     private(set) var sessionKey: String?
+
+    func reset() {
+        sessionKey = nil
+        pane.attach(session: nil)
+        steps.reset()
+        timeline.reset()
+    }
 
     /// 다른 세션을 연다: 옆줄이 그 세션의 것으로 바뀌고, 열어 둔 줄 · 읽은 본문은 비운다 (줄 id는 세션 안에서만 겹치지 않는다)
     func beginSession(_ key: String) {
@@ -86,7 +94,7 @@ struct ClaudeAppSessionPanelView: View {
     var body: some View {
         let scale = TFMotion.panelTransform(shown: presentation.shown, reduceMotion: shell.reduceMotion).scale
         // 옆줄(백그라운드 일)이 있으면 패널의 왼쪽 바깥에 붙는다: 같은 창 · 같은 위 · 같은 높이 (`SessionPanelFrame`)
-        SessionPanelFrame(pane: presentation.pane, reduceMotion: shell.reduceMotion) { width in
+        SessionPanelFrame(pane: presentation.pane, reduceMotion: shell.reduceMotion, root: shell.desktopPanelID.map { AgentTreeRoot(title: shell.desktopTitle($0), agent: .claudeCode) }, childComposer: { task in AnyView(contextComposer(task)) }) { width in
             Group {
                 if let id = shell.desktopPanelID, let conversation = shell.desktopConversation {
                     content(id, conversation)
@@ -101,6 +109,34 @@ struct ClaudeAppSessionPanelView: View {
         .animation(TFMotion.move(TFMotion.panelMove, reduceMotion: shell.reduceMotion), value: presentation.shown)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(shell.desktopPanelID.map { shell.desktopTitle($0) } ?? AgentMarkKind.claudeCode.accessibilityName)
+    }
+
+    private func contextComposer(_ task: TaskforceKit.BackgroundTask) -> some View {
+        let pane = presentation.pane
+        let id = shell.desktopPanelID
+        let chat = id.flatMap { shell.desktopChat?.chat(for: $0) }
+        return AgentTreeContextComposer(
+            task: task, text: Binding(get: { pane.draft(for: task.id) }, set: { pane.setDraft($0, for: task.id) }),
+            unavailable: chat?.composerShown == true ? nil : "Main is not available for messages.",
+            isSending: chat.map { $0.hasPending || $0.isChecking || $0.isConfirming } ?? false,
+            onOpenMain: { pane.selectRootInTree() },
+            onSubmit: { payload in
+                guard pane.showsTree, pane.selectedID == task.id, shell.desktopPanelID == id,
+                      let chat, chat.canSubmitMessage(payload) else { return }
+                let generation = pane.draftGeneration
+                let draft = pane.draft(for: task.id)
+                let submission = chat.submitMessage(payload, onAccepted: {
+                    pane.reconcileDraft(for: task.id, matching: draft, generation: generation)
+                })
+                Task {
+                    await submission.value
+                    guard pane.draftGeneration == generation, pane.selectedID == task.id,
+                          chat.isConfirming || chat.deliveries.contains(where: { $0.text == payload }) else { return }
+                    // Main owns the confirmation, delivery state, and eventual reply.
+                    pane.selectRootInTree()
+                }
+            }
+        )
     }
 
     @ViewBuilder
@@ -140,8 +176,10 @@ struct ClaudeAppSessionPanelView: View {
                 }
             }
             // 입력창 자리: 첫 보내기 확인(C5) · 띠(승인 · 답을 기다릴 때, Open in Claude뿐) · 입력창 (`ClaudeAppFooterPlan`)
-            ClaudeAppFooterView(shell: shell, sessionID: id, band: band, chat: chat)
-                .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { presentation.footerHeight = $0 }
+            if presentation.pane.allowsRootInput {
+                ClaudeAppFooterView(shell: shell, sessionID: id, band: band, chat: chat, canSubmit: { presentation.pane.allowsRootInput }, claimsFocusOnCreation: !presentation.pane.showsTree)
+                    .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { presentation.footerHeight = $0 }
+            }
         }
         // 닫힘 · 기록 못 읽음에는 입력창이 없다. 열쇠는 (세션, 상태): 기록 못 읽음 → 못 읽음 · 닫힘 → 닫힘처럼 상태가 같은 채 세션만 바뀌어도 새 세션의 입력창에 알린다
         .onChange(of: ClaudeAppChatViewKey(sessionID: id, state: viewState, chat: chat.map(ObjectIdentifier.init)), initial: true) { _, key in chat?.setView(key.state) }
@@ -312,6 +350,8 @@ final class EdgeClaudeAppPanelController {
         let presentation = presentation
         shell.onEscapeDesktopPane = { presentation.pane.escape() }
         // 옆줄이 바뀌면 창 틀을 그 자리에서 맞춘다 (관찰의 한 박자를 기다리지 않는다: 내용이 낡은 창에 잘리지 않게)
+        presentation.pane.onRootInputHidden = { [weak panel] in _ = panel?.makeFirstResponder(nil) }
+        shell.onResetDesktopPresentation = { [weak presentation] in presentation?.reset() }
         presentation.pane.onWindowChange = { [weak self] in self?.fit() }
     }
 
@@ -322,7 +362,7 @@ final class EdgeClaudeAppPanelController {
 
     /// 높이: 내용에 맞춰 320–520 (세션 패널과 같다)
     func height() -> CGFloat {
-        min(EdgePanelMetrics.maxHeight, max(EdgePanelMetrics.minHeight, presentation.contentHeight))
+        presentation.pane.showsTree ? min(640, (EdgeRailPanelController.screen?.visibleFrame.height ?? 664) - 24) : min(EdgePanelMetrics.maxHeight, max(EdgePanelMetrics.minHeight, presentation.contentHeight))
     }
 
     /// 레일 전체의 세로 가운데 (`EdgeRailPanelController.centerLineY`): 컨트롤러가 레일에 잇는다. 레일 창이 안 떠 있으면(nil) 화면 `midY`다
@@ -350,6 +390,7 @@ final class EdgeClaudeAppPanelController {
     func targetFrame() -> NSRect? {
         guard let base = panelFrame() else { return nil }
         let visibleMinX = EdgeRailPanelController.screen?.visibleFrame.minX ?? base.minX - 10_000
+        presentation.pane.canvasWidth = min(784, max(380, base.maxX - visibleMinX - 12))
         let room = base.minX - visibleMinX
         if presentation.pane.room != room { presentation.pane.room = room }
         return SidePaneLayout.windowFrame(panel: base, outside: presentation.pane.windowExtra)
@@ -364,31 +405,34 @@ final class EdgeClaudeAppPanelController {
         generation += 1
         if !panel.isVisible {
             panel.alphaValue = 0
-            let start = standalone && !shell.reduceMotion ? target.offsetBy(dx: TFMotion.panelHiddenOffset, dy: 0) : target
-            panel.setFrame(start, display: false)
+            panel.setFrame(target, display: false)
         }
         if standalone {
             panel.makeKeyAndOrderFront(nil)
         } else {
             // Sessions의 키를 빼앗지 않는다: 눌렀을 때 키 창이 된다
             panel.orderFrontRegardless()
+            #if DEBUG
+            // Opt-in for native QA of real sessions: focus only, no fixture data.
+            if ProcessInfo.processInfo.arguments.contains("-TFEdgeInteractFocusSessions") {
+                panel.makeKeyAndOrderFront(nil)
+            }
+            #endif
         }
         presentation.shown = true
         NSAnimationContext.runAnimationGroup { context in
             context.duration = TFMotion.panelFade
             panel.animator().alphaValue = 1
         }
-        if panel.frame != target {
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = standalone && !shell.reduceMotion ? TFMotion.panelMove : 0
-                panel.animator().setFrame(target, display: true)
-            }
-        }
+        // Mounting the hosting view can discover children while the window is opening.
+        // Re-read its current mode after visibility and the first layout pass.
+        fit()
         return true
     }
 
     func hide() {
         guard panel.isVisible else { return }
+        if presentation.pane.hasAgentTree { presentation.pane.returnToTree() }
         generation += 1
         let current = generation
         presentation.shown = false
@@ -406,15 +450,11 @@ final class EdgeClaudeAppPanelController {
     /// 내용 높이 · 메인 패널 자리가 바뀌면 위를 맞춘 채로 맞춘다 (메인 패널이 세로 가운데로 다시 갈 때 같은 움직임으로 따라간다)
     func fit() {
         guard panel.isVisible, presentation.shown, let target = targetFrame(), !EdgePanelMotion.isSameFrame(target, panel.frame) else { return }
-        let extra = presentation.pane.windowExtra
-        if extra != appliedExtra {
-            // 옆줄이 나타나거나 사라지거나 접힘 ↔ 펼침: 창 틀은 움직이지 않고 바로 맞춘다 (안의 두 겹이 크로스페이드한다). 그림자는 새 모양을 따른다
-            appliedExtra = extra
-            panel.setFrame(target, display: true)
-            panel.invalidateShadow()
-        } else {
-            EdgePanelMotion.move(panel, to: target, reduceMotion: shell.reduceMotion)
-        }
+        // Transcript discovery can change the mode during an earlier height update.
+        // Window geometry stays synchronous so no stale narrow animation can win later.
+        appliedExtra = presentation.pane.windowExtra
+        panel.setFrame(target, display: true)
+        panel.invalidateShadow()
     }
 }
 #endif

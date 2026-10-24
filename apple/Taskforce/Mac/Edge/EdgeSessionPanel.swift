@@ -27,12 +27,31 @@ final class EdgeSessionPanelPresentation {
 
     init(backgroundOpen: any BackgroundTaskOpenStore = InMemoryBackgroundTaskOpenStore()) {
         pane = SessionSidePaneModel(store: backgroundOpen)
+        pane.usesAgentCanvas = true
     }
 
     var contentHeight: CGFloat { headHeight + bodyHeight + footerHeight }
 
     /// 지금 보는 세션 (같으면 아무 일도 없다)
     private(set) var sessionKey: String?
+
+    private var pendingReveal: (session: String, task: String)?
+    var hasPendingReveal: Bool { pendingReveal != nil }
+    func requestReveal(session: String, taskID: String) { pendingReveal = (session, taskID); tryReveal() }
+    func tryReveal() {
+        guard let pendingReveal, pendingReveal.session == sessionKey, pane.reveal(pendingReveal.task) else { return }
+        self.pendingReveal = nil
+    }
+
+    func reset() {
+        sessionKey = nil
+        pendingReveal = nil
+        attachLocal(nil)
+        localTarget = nil
+        pane.attach(session: nil)
+        steps.reset()
+        timeline.reset()
+    }
 
     /// 다른 세션을 연다: 옆줄이 그 세션의 것으로 바뀌고, 이 Mac 기록 연결을 끊고, 위로 올려 읽던 자리 · 열어 둔 줄 · 읽은 본문을 비운다 (줄 id는 세션 안에서만 겹치지 않는다)
     func beginSession(_ key: String) {
@@ -56,6 +75,8 @@ final class EdgeSessionPanelPresentation {
     /// 찾은 이 Mac의 기록 위치를 받는다: **지금 보는 세션(`key`)의 것일 때만**. 세션이 바뀐 뒤에 늦게 온 앞 세션의 결과는 버린다 (다른 세션의 기록이 이 패널에 보이지 않게)
     func adoptLocal(_ target: AgentLocalTranscriptTarget?, forSession key: String, make: (String, String?) -> ClaudeAppConversation) {
         guard sessionKey == key else { return }
+        // Rebuilding the tree/chat presentation must not replace the live reader with an empty one.
+        guard target != localTarget else { return }
         localTarget = target
         attachLocal(target.map { make($0.providerSessionID, $0.cwd) })
     }
@@ -103,7 +124,7 @@ struct SessionPanelView: View {
     var body: some View {
         let scale = TFMotion.panelTransform(shown: presentation.shown, reduceMotion: shell.reduceMotion).scale
         // 옆줄(백그라운드 일)이 있으면 패널의 왼쪽 바깥에 붙는다: 같은 창 · 같은 위 · 같은 높이 (`SessionPanelFrame`)
-        SessionPanelFrame(pane: presentation.pane, reduceMotion: shell.reduceMotion) { width in
+        SessionPanelFrame(pane: presentation.pane, reduceMotion: shell.reduceMotion, root: shell.openSessionItem.map { AgentTreeRoot(title: $0.name, agent: $0.agent, status: $0.isClosed ? .stopped : ($0.ring == .running ? .running : nil)) }, childComposer: { task in AnyView(contextComposer(task)) }) { width in
             Group {
                 if let session = shell.openSessionItem {
                     content(session)
@@ -149,8 +170,10 @@ struct SessionPanelView: View {
                     }
                 }
             }
-            footer(session)
-                .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { presentation.footerHeight = $0 }
+            if presentation.pane.allowsRootInput {
+                footer(session)
+                    .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { presentation.footerHeight = $0 }
+            }
         }
         .task(id: session.id) { await prepare(session) }
         // 이 Mac의 기록(단계 · 일)과 어댑터의 일 목록을 옆줄에 먹인다
@@ -195,6 +218,7 @@ struct SessionPanelView: View {
                 lastLocal = local
                 let merged = board.tasks(session: key).merged(with: local ?? BackgroundTaskList())
                 if merged != presentation.pane.tasks { presentation.pane.tasks = merged }
+                presentation.tryReveal()
             }
             try? await Task.sleep(for: .seconds(1))
         }
@@ -452,7 +476,7 @@ struct SessionPanelView: View {
         Composer(
             text: Binding(
                 get: { conversationID.map { chat.draft(for: $0) } ?? "" },
-                set: { value in if let conversationID { chat.setDraft(value, for: conversationID) } }
+                set: { value in if presentation.pane.allowsRootInput, let conversationID { chat.setDraft(value, for: conversationID) } }
             ),
             placeholder: "Message \(session.agentName)", label: "Message \(session.agentName)", isDisabled: disabled,
             isSending: conversationID.map { chat.isSending(in: $0) } ?? false,
@@ -460,9 +484,39 @@ struct SessionPanelView: View {
             // 비밀값 질문이 열려 있으면 입력이 꺼진다 ("Answer the question above first"): 여기 쓴 글이 비밀값의 답이 되는 길이 없다
             blocked: runtime.questions?.blocksComposer(session: session.id) == true ? "" : nil,
             onStop: { Task { await runtime.stop.stopSession(session) } },
-            onSubmit: { text in if let conversationID { Task { await chat.send(text, in: conversationID) } } }
+            claimsFocusOnCreation: !presentation.pane.showsTree,
+            onSubmit: { text in if presentation.pane.allowsRootInput, let conversationID { Task { await chat.send(text, in: conversationID) } } }
         )
         .padding(EdgeInsets(top: 10, leading: TFSpace.md, bottom: TFSpace.md, trailing: TFSpace.md))
+    }
+
+    @ViewBuilder
+    private func contextComposer(_ task: TaskforceKit.BackgroundTask) -> some View {
+        if let session = shell.openSessionItem {
+            let pane = presentation.pane
+            let blocked = runtime.questions?.blocksComposer(session: session.id) == true
+            let ready: Bool = { if case .ready = Self.composerState(for: session, chat: chat) { return !chat.isUnavailable }; return false }()
+            AgentTreeContextComposer(
+                task: task, text: Binding(get: { pane.draft(for: task.id) }, set: { pane.setDraft($0, for: task.id) }),
+                unavailable: blocked ? "Answer the question in Main first." : (ready ? nil : "Main is not available for messages."),
+                isSending: session.conversationID.map { chat.isSending(in: $0) } ?? false,
+                onOpenMain: { pane.selectRootInTree() },
+                onSubmit: { payload in
+                    guard pane.showsTree, pane.selectedID == task.id, shell.openSessionItem?.id == session.id,
+                          !blocked, let id = session.conversationID, chat.canSend(payload, in: id) else { return }
+                    let generation = pane.draftGeneration
+                    let draft = pane.draft(for: task.id)
+                    Task {
+                        guard pane.draftGeneration == generation, pane.selectedID == task.id, shell.openSessionItem?.id == session.id,
+                              runtime.questions?.blocksComposer(session: session.id) != true else { return }
+                        let accepted = await chat.send(payload, in: id, preservingDraft: true)
+                        if accepted { pane.reconcileDraft(for: task.id, matching: draft, generation: generation) }
+                        guard accepted, pane.draftGeneration == generation, pane.selectedID == task.id else { return }
+                        pane.selectRootInTree()
+                    }
+                }
+            )
+        }
     }
 
     /// 열 때: 현재 이슈의 번호를 읽는다 (대화는 셸이 `onLoadSessionConversation`으로 id로 읽는다)
@@ -511,6 +565,10 @@ final class EdgeSessionPanelController {
         panel.setAccessibilityLabel("Session")
         wire(runtime)
         // 옆줄이 바뀌면 창 틀을 그 자리에서 맞춘다 (관찰의 한 박자를 기다리지 않는다: 내용이 낡은 창에 잘리지 않게)
+        presentation.pane.onRootInputHidden = { [weak panel] in _ = panel?.makeFirstResponder(nil) }
+        shell.onResetSessionPresentation = { [weak presentation] in presentation?.reset() }
+        shell.onRevealSessionTask = { [weak presentation] session, task in presentation?.requestReveal(session: session.uuidString.lowercased(), taskID: task) }
+        shell.projectSessions.connect(board: runtime.backgroundBoard, findTarget: { await runtime.localTranscriptTarget($0) }, makeSource: { _, _ in ProjectSessionsLive.source() })
         presentation.pane.onWindowChange = { [weak self] in self?.fit() }
     }
 
@@ -541,7 +599,7 @@ final class EdgeSessionPanelController {
 
     /// 세션 패널 높이: 내용에 맞춰 320–520 (DS EdgePanel · OA-3)
     func height() -> CGFloat {
-        min(EdgePanelMetrics.maxHeight, max(EdgePanelMetrics.minHeight, presentation.contentHeight))
+        presentation.pane.showsTree ? min(640, (EdgeRailPanelController.screen?.visibleFrame.height ?? 664) - 24) : min(EdgePanelMetrics.maxHeight, max(EdgePanelMetrics.minHeight, presentation.contentHeight))
     }
 
     /// 지금 자리: 이슈 패널 왼쪽 40pt, 위 맞춤. 옆줄(띠 36 · 펼침 256)이 있으면 창을 그만큼 왼쪽으로 넓힌다 (오른쪽 · 위 · 높이는 패널과 같다).
@@ -550,6 +608,7 @@ final class EdgeSessionPanelController {
         guard let issue = issuePanelFrame() else { return nil }
         let base = Self.frame(issuePanel: issue, height: height())
         let visibleMinX = EdgeRailPanelController.screen?.visibleFrame.minX ?? base.minX - 10_000
+        presentation.pane.canvasWidth = min(784, max(380, base.maxX - visibleMinX - 12))
         let room = base.minX - visibleMinX
         if presentation.pane.room != room { presentation.pane.room = room }
         return SidePaneLayout.windowFrame(panel: base, outside: presentation.pane.windowExtra)
@@ -581,11 +640,15 @@ final class EdgeSessionPanelController {
             context.duration = TFMotion.panelFade
             panel.animator().alphaValue = 1
         }
+        // Mounting the hosting view can discover children while the window is opening.
+        // Re-read its current mode after visibility and the first layout pass.
+        fit()
         return true
     }
 
     func hide() {
         guard panel.isVisible else { return }
+        if presentation.pane.hasAgentTree { presentation.pane.returnToTree() }
         generation += 1
         let current = generation
         presentation.shown = false
@@ -603,15 +666,11 @@ final class EdgeSessionPanelController {
     /// 내용 높이 · 이슈 패널 자리가 바뀌면 위를 맞춘 채로 맞춘다. 이슈 패널이 세로 가운데로 다시 갈 때 같은 움직임으로 따라간다 (세션 패널 자신은 가운데로 서지 않는다: 이슈 패널의 위에 맞춘다)
     func fit() {
         guard panel.isVisible, presentation.shown, let target = targetFrame(), !EdgePanelMotion.isSameFrame(target, panel.frame) else { return }
-        let extra = presentation.pane.windowExtra
-        if extra != appliedExtra {
-            // 옆줄이 나타나거나 사라지거나 접힘 ↔ 펼침: 창 틀은 움직이지 않고 바로 맞춘다 (안의 두 겹이 크로스페이드한다)
-            appliedExtra = extra
-            panel.setFrame(target, display: true)
-            panel.invalidateShadow()
-        } else {
-            EdgePanelMotion.move(panel, to: target, reduceMotion: shell.reduceMotion)
-        }
+        // Transcript discovery can change the mode during an earlier height update.
+        // Window geometry stays synchronous so no stale narrow animation can win later.
+        appliedExtra = presentation.pane.windowExtra
+        panel.setFrame(target, display: true)
+        panel.invalidateShadow()
     }
 }
 #endif

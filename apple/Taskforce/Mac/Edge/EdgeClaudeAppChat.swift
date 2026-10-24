@@ -109,6 +109,8 @@ struct ClaudeAppFooterView: View {
     let sessionID: String
     let band: ClaudeAppPanelBand?
     let chat: ClaudeAppSessionChat?
+    var canSubmit: () -> Bool = { true }
+    var claimsFocusOnCreation = true
 
     var body: some View {
         let plan = ClaudeAppFooterPlan.of(band: band, chat: chat.map { ($0.composerShown, $0.isConfirming) })
@@ -139,9 +141,9 @@ struct ClaudeAppFooterView: View {
 
     private func composer(_ chat: ClaudeAppSessionChat) -> some View {
         Composer(
-            text: Binding(get: { chat.draft }, set: { chat.draft = $0 }), placeholder: ClaudeAppChatCopy.composerPlaceholder, label: ClaudeAppChatCopy.composerLabel,
+            text: Binding(get: { chat.draft }, set: { if canSubmit() { chat.draft = $0 } }), placeholder: ClaudeAppChatCopy.composerPlaceholder, label: ClaudeAppChatCopy.composerLabel,
             // 확인 전 글이 있거나 확인 중이면 Send가 꺼진다 (글을 계속 쓸 수는 있다)
-            isSending: chat.hasPending || chat.isChecking || chat.isConfirming, onSubmit: { _ in chat.submit() }
+            isSending: chat.hasPending || chat.isChecking || chat.isConfirming, claimsFocusOnCreation: claimsFocusOnCreation, onSubmit: { _ in if canSubmit() { chat.submit() } }
         )
         .padding(EdgeInsets(top: 10, leading: TFSpace.md, bottom: TFSpace.md, trailing: TFSpace.md))
     }
@@ -176,6 +178,54 @@ struct ClaudeAppDeliveryBubbles: View {
             }
             .padding(.top, TFSpace.md)
         }
+    }
+}
+/// Only the selected task identity accompanies the user's message; transcripts stay local.
+enum AgentTreeContextMessage {
+    static func make(task: TaskforceKit.BackgroundTask, text: String) -> String? {
+        let message = ChatComposerRules.normalized(text)
+        guard !message.isEmpty,
+              let data = try? JSONSerialization.data(withJSONObject: ["agent_id": task.id, "task": task.title], options: [.sortedKeys]),
+              let identity = String(data: data, encoding: .utf8) else { return nil }
+        let payload = "Regarding this sub-agent task (context only):\n\(identity)\n\nUser message:\n\(message)"
+        guard ChatComposerRules.isSendable(payload), ClaudeAppSendText.normalize(payload) != nil else { return nil }
+        return payload
+    }
+}
+
+struct AgentTreeContextComposer: View {
+    let task: TaskforceKit.BackgroundTask
+    @Binding var text: String
+    var unavailable: String? = nil
+    var isSending = false
+    var onOpenMain: () -> Void
+    var onSubmit: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: TFSpace.xs) {
+            Label("To Main", systemImage: "arrow.turn.up.right")
+                .font(TFFont.caption).foregroundStyle(TFColor.textSecondary)
+                .help("Includes the context of \(task.title)")
+            if let unavailable {
+                Text(unavailable).font(TFFont.footnote)
+                Button("View Main conversation", action: onOpenMain)
+                    .buttonStyle(TFButtonStyle(.secondary, size: .sm))
+            }
+            Composer(
+                text: $text, placeholder: "Message Main…", label: "Message Main about \(task.title)",
+                isDisabled: unavailable != nil, isSending: isSending,
+                claimsFocusOnCreation: false,
+                sendEnabled: AgentTreeContextMessage.make(task: task, text: text) != nil,
+                onSubmit: { text in
+                    guard unavailable == nil, let payload = AgentTreeContextMessage.make(task: task, text: text) else { return }
+                    onSubmit(payload)
+                }
+            )
+            if !ChatComposerRules.normalized(text).isEmpty && AgentTreeContextMessage.make(task: task, text: text) == nil {
+                Text("Shorten this message to include the task context.").font(TFFont.footnote)
+            }
+        }
+        .padding(TFSpace.lg)
     }
 }
 #endif

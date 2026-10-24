@@ -47,15 +47,56 @@ final class SessionSidePaneModel {
         didSet {
             if treeExpansion.count > 0 { treeExpansion.prune(keeping: Set(tasks.tasks.map(\.id))) }
             windowMayHaveChanged()
+            if hasAgentTree && !rootChatOpen && !oldValue.tasks.contains(where: { $0.kind == .agent }) { onRootInputHidden?() }
         }
     }
     /// 트리의 접힘 · 펼침 선택 (기본은 2단계까지 펴 둔다): 갱신이 와도 사용자가 고른 것은 그대로이고, 세션을 바꾸면 비운다
     private(set) var treeExpansion = SubagentTreeExpansion()
+    var canvasExpansion = SubagentTreeExpansion(visibleLevels: 17)
+    var rootExpanded = true
+    var focusedCardID: String?
+    private(set) var rootChatOpen = false { didSet { windowMayHaveChanged() } }
+    var usesAgentCanvas = false
+    var canvasWidth: CGFloat = 784
+    var hasAgentTree: Bool { usesAgentCanvas && effective.tasks.contains { $0.kind == .agent } }
+    @ObservationIgnored var onRootInputHidden: (() -> Void)?
+    var allowsRootInput: Bool { !hasAgentTree || selectedID == nil }
+    var showsTree: Bool { hasAgentTree && !rootChatOpen }
+    var canvasRows: [SubagentTreeRow] { SubagentTree.rows(for: effective, expansion: canvasExpansion) }
+
+    private var childDrafts: [String: String] = [:]
+    private(set) var draftGeneration = UUID()
+    func draft(for id: String) -> String { childDrafts[id] ?? "" }
+    func setDraft(_ value: String, for id: String) {
+        guard showsTree, selectedID == id else { return }
+        childDrafts[id] = value
+    }
+
+    /// Accepted messages clear only their original, unchanged draft, even after selection moves.
+    func reconcileDraft(for id: String, matching draft: String, generation: UUID) {
+        guard draftGeneration == generation, childDrafts[id] == draft else { return }
+        childDrafts[id] = nil
+    }
+
+    func selectRootInTree() { back(); rootChatOpen = false }
+    func openRootChat() { back(); rootChatOpen = true }
+    func returnToTree() { back(); rootChatOpen = false; onRootInputHidden?() }
+    func openAgentChat(_ id: String) { _ = reveal(id) }
+
+    @discardableResult
+    func reveal(_ id: String) -> Bool {
+        guard effective.tasks.contains(where: { $0.id == id }) else { return false }
+        if allowsRootInput { onRootInputHidden?() }
+        rootChatOpen = false
+        expanded = true
+        select(id)
+        return true
+    }
     /// 패널 왼쪽 끝에서 화면 왼쪽 끝까지의 여유 (컨트롤러가 창 자리에서 잰다). 모르면 넉넉하다고 본다
     var room: CGFloat = .greatestFiniteMagnitude { didSet { windowMayHaveChanged() } }
 
     private(set) var expanded = false { didSet { windowMayHaveChanged() } }
-    private(set) var selectedID: String?
+    private(set) var selectedID: String? { didSet { windowMayHaveChanged() } }
     /// 이 세션의 목록을 마지막으로 열어 본 시각 (이 Mac에 저장)
     private(set) var openedAt: Date? { didSet { windowMayHaveChanged() } }
     /// 세션이 닫힌 때 (Claude에서 닫음): 그때까지 돌던 일은 Stopped다
@@ -77,13 +118,15 @@ final class SessionSidePaneModel {
     /// 옆줄이 창에 요구하는 폭(`windowExtra`)이 바뀌었다: 컨트롤러가 **그 자리에서** 창 틀을 맞춘다 (모델이 바뀐 바로 그 호출 안에서: 다음 루프 · 관찰의 한 박자를 기다리면 내용이 낡은 창에 잠깐 잘리거나 쏠린다)
     @ObservationIgnored var onWindowChange: (() -> Void)?
     @ObservationIgnored private var notifiedExtra: CGFloat = 0
+    @ObservationIgnored private var notifiedTree = false
     @ObservationIgnored private var batching = 0
 
     private func windowMayHaveChanged() {
         guard batching == 0 else { return }
         let extra = windowExtra
-        guard extra != notifiedExtra else { return }
+        guard extra != notifiedExtra || hasAgentTree != notifiedTree else { return }
         notifiedExtra = extra
+        notifiedTree = hasAgentTree
         onWindowChange?()
     }
 
@@ -106,6 +149,12 @@ final class SessionSidePaneModel {
             selectedID = nil
             closedAt = nil
             treeExpansion = SubagentTreeExpansion()
+            canvasExpansion = SubagentTreeExpansion(visibleLevels: 17)
+            rootExpanded = true
+            focusedCardID = nil
+            rootChatOpen = false
+            childDrafts.removeAll()
+            draftGeneration = UUID()
             tasks = BackgroundTaskList()
         }
     }
@@ -129,7 +178,7 @@ final class SessionSidePaneModel {
     var plan: SidePaneLayout.Plan { SidePaneLayout.plan(visible: visible, expanded: expanded, room: room) }
 
     /// 패널 창이 왼쪽으로 넓어지는 폭 (컨트롤러가 관찰한다)
-    var windowExtra: CGFloat { plan.outside }
+    var windowExtra: CGFloat { hasAgentTree ? (showsTree ? canvasWidth - EdgePanelMetrics.width : 0) : plan.outside }
 
     /// 보이는 트리 줄 (접힌 분기의 자손은 나오지 않는다)
     var treeRows: [SubagentTreeRow] { SubagentTree.rows(for: effective, expansion: treeExpansion) }
@@ -175,6 +224,11 @@ final class SessionSidePaneModel {
 
     /// Esc: 꼬리 → 목록 → 접힘 → (패널). 처리했으면 true, 옆줄이 접혀 있으면 false (패널이 받는다)
     func escape() -> Bool {
+        if hasAgentTree {
+            guard rootChatOpen || selectedID != nil else { return false }
+            returnToTree()
+            return true
+        }
         if selectedID != nil {
             back()
             return true

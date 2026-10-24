@@ -125,7 +125,7 @@ struct UsageCreditsPane: View {
     /// "N AI drafts are paused" 카드 (Figma Settings row, 아이콘 20 · 굵은 제목 · ›): 누르면 런처 범위 `Taskforce Working`
     private func pausedRow(_ card: CreditsRows.PausedCard) -> some View {
         Button {
-            LauncherRoute.showTaskforceWorking()
+            TaskWorkRoute.show()
         } label: {
             HStack(spacing: TFSpace.md) {
                 Image(systemName: "pause.circle")
@@ -153,13 +153,13 @@ struct UsageCreditsPane: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(card.title)
         .accessibilityValue(card.subtitle)
-        .accessibilityHint("Shows Taskforce Working in the launcher")
+        .accessibilityHint("Opens tasks in Taskforce")
     }
 
     /// 할 일 제목 (멈춘 run · 원가를 확인하는 중인 할 일): 런처가 받은 목록에서 찾는다 (`CreditsRows`: 모르는 할 일은 제목 없이 센다).
     /// 제목은 사용자 글이라 화면에 그릴 때만 읽고 따로 두지 않는다
     private static var taskTitles: [UUID: String] {
-        guard let now = MacAppDelegate.shared?.launcher?.model.now else { return [:] }
+        guard let now = MacAppDelegate.shared?.launcherModel?.now else { return [:] }
         var titles: [UUID: String] = [:]
         for item in now.response?.now ?? [] { titles[item.action.id] = item.action.title }
         for action in now.response?.confirmations ?? [] { titles[action.id] = action.title }
@@ -168,14 +168,11 @@ struct UsageCreditsPane: View {
     }
 }
 
-/// 설정에서 런처로 가는 길 (U2 Mac PR4 → PR3): 런처를 열고 범위 `Taskforce Working`을 고른다.
-/// 범위의 행 · 개수 · 메뉴 자리는 런처(PR3, `TaskScope.taskforceWorking` + `RunStore.workingActionIDs`)가 채운다
+/// Settings opens the current task shell; the retired launcher is never constructed.
 @MainActor
-enum LauncherRoute {
-    static func showTaskforceWorking() {
-        guard let launcher = MacAppDelegate.shared?.launcher else { return }
-        launcher.show()
-        launcher.model.chooseScope(.taskforceWorking)
+enum TaskWorkRoute {
+    static func show() {
+        MacAppDelegate.shared?.openTaskforce()
     }
 }
 #endif

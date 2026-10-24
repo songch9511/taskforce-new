@@ -1001,19 +1001,22 @@ public final class ChatStore {
     }
 
     /// 한 대화에 글을 보낸다 (Assistant 창). 칩은 이 제출에 실려 같은 제출을 다시 보내도 같다. 에이전트 대상이면 응답은 전달 표시뿐이다
-    public func send(_ text: String, in id: UUID, attachments: [ChatAttachment] = []) async {
-        await send(text, in: id, attachments: attachments, clearsDraft: true)
+    @discardableResult
+    public func send(_ text: String, in id: UUID, attachments: [ChatAttachment] = [], preservingDraft: Bool = false) async -> Bool {
+        await send(text, in: id, attachments: attachments, clearsDraft: !preservingDraft)
     }
 
     /// 보내기 하나. `clearsDraft`가 거짓이면 쓰던 글을 지우지 않는다 (cancelled를 새 메시지로 다시 보낼 때: 사용자가 따로 쓰던 글이 있다)
-    func send(_ text: String, in id: UUID, attachments: [ChatAttachment], clearsDraft: Bool) async {
-        guard canCompose(in: id), let token = scope.token, ChatComposerRules.isSendable(text) else { return }
-        guard !(threads[id]?.isSending ?? false) else { return }
+    @discardableResult
+    func send(_ text: String, in id: UUID, attachments: [ChatAttachment], clearsDraft: Bool) async -> Bool {
+        guard canCompose(in: id), let token = scope.token, ChatComposerRules.isSendable(text) else { return false }
+        guard !(threads[id]?.isSending ?? false) else { return false }
         let turn = PendingTurn(id: UUID(), text: ChatComposerRules.normalized(text), createdAt: now(), owner: token, status: .sending, attachments: attachments)
         threads[id, default: ChatThread()].pending.append(turn)
         sentChips[turn.id] = attachments
         if clearsDraft { drafts[id] = nil }
         await deliver(turn.id, in: id)
+        return true
     }
 
     /// 보내지 못한 글(또는 답이 없는 마지막 글)을 같은 `client_message_id` · 같은 글로 다시 보낸다

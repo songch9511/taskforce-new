@@ -108,6 +108,10 @@ public final class ClaudeAppSessionChat: CustomStringConvertible, CustomDebugStr
     @ObservationIgnored var confirmation: ClaudeAppSendContext.Confirmation?
     /// 카드가 물은 프로세스 (확인을 누르면 이것이 `confirmation`이 된다)
     @ObservationIgnored var candidate: ClaudeAppSendContext.Confirmation?
+    /// Contextual submissions must not read or replace the independent Main draft.
+    @ObservationIgnored private var contextualConfirmationText: String?
+    @ObservationIgnored private var contextualConfirmationReplacement: String?
+    @ObservationIgnored private var contextualAcceptance: (() -> Void)?
 
     init(sessionID: String, service: ClaudeAppChatService) {
         self.sessionID = sessionID
@@ -122,8 +126,27 @@ public final class ClaudeAppSessionChat: CustomStringConvertible, CustomDebugStr
 
     /// Enter로 보낼 수 있나: 입력창이 있고, 정리한 글이 1–16,000자이고, 확인 전 글이 없고, 확인 카드 · 확인이 돌고 있지 않다
     public var canSubmit: Bool {
-        guard composerShown, !hasPending, !isConfirming, !isChecking, let text = ClaudeAppSendText.normalize(draft) else { return false }
-        return ClaudeAppSendText.isSendable(text)
+        canSubmitMessage(draft)
+    }
+
+    public func canSubmitMessage(_ text: String) -> Bool {
+        guard composerShown, !hasPending, !isConfirming, !isChecking, let normalized = ClaudeAppSendText.normalize(text) else { return false }
+        return ClaudeAppSendText.isSendable(normalized)
+    }
+
+    /// Submit explicit parent-routed context without replacing the Main composer draft.
+    @discardableResult
+    public func submitMessage(_ text: String, onAccepted: @escaping () -> Void = {}) -> Task<Void, Never> {
+        Task { [weak self] in
+            guard let self, canSubmitMessage(text), let normalized = ClaudeAppSendText.normalize(text) else { return }
+            await service?.begin(chat: self, text: normalized, replacing: nil, preservingDraft: true, onAccepted: onAccepted)
+        }
+    }
+
+    fileprivate func captureConfirmation(text: String, preservingDraft: Bool, replacing: String?, onAccepted: (() -> Void)?) {
+        contextualConfirmationText = preservingDraft ? text : nil
+        contextualConfirmationReplacement = preservingDraft ? replacing : nil
+        contextualAcceptance = preservingDraft ? onAccepted : nil
     }
 
     /// 패널이 이 세션을 보여 주고 있다: 중계를 미리 띄워 두고 (첫 보내기가 빠르다), 닫으면 쓰는 곳이 없어져 2분 뒤 끝난다
@@ -152,10 +175,16 @@ public final class ClaudeAppSessionChat: CustomStringConvertible, CustomDebugStr
     @discardableResult
     public func confirm() -> Task<Void, Never> {
         Task { [weak self] in
-            guard let self, isConfirming, let text = ClaudeAppSendText.normalize(draft) else { return }
+            guard let self, isConfirming, let text = contextualConfirmationText ?? ClaudeAppSendText.normalize(draft) else { return }
+            let preservingDraft = contextualConfirmationText != nil
+            let replacing = contextualConfirmationReplacement
+            let onAccepted = contextualAcceptance
+            contextualAcceptance = nil
+            contextualConfirmationText = nil
+            contextualConfirmationReplacement = nil
             confirmation = candidate
             isConfirming = false
-            await service?.begin(chat: self, text: text, replacing: nil)
+            await service?.begin(chat: self, text: text, replacing: replacing, preservingDraft: preservingDraft, onAccepted: onAccepted)
         }
     }
 
@@ -163,6 +192,9 @@ public final class ClaudeAppSessionChat: CustomStringConvertible, CustomDebugStr
     public func cancelConfirmation() {
         isConfirming = false
         candidate = nil
+        contextualAcceptance = nil
+        contextualConfirmationText = nil
+        contextualConfirmationReplacement = nil
     }
 
     /// Send again: 못 보낸 말을 같은 글로 다시 보낸다 (같은 자리에서 새 id로 바뀐다). 닫힌 세션의 말은 다시 보낼 곳이 없다
@@ -170,7 +202,7 @@ public final class ClaudeAppSessionChat: CustomStringConvertible, CustomDebugStr
     public func sendAgain(_ id: String) -> Task<Void, Never> {
         Task { [weak self] in
             guard let self, !hasPending, !isChecking, composerShown, let delivery = deliveries.first(where: { $0.id == id }), case .notSent(let reason) = delivery.state, reason.allowsSendAgain else { return }
-            await service?.begin(chat: self, text: delivery.text, replacing: id)
+            await service?.begin(chat: self, text: delivery.text, replacing: id, preservingDraft: true)
         }
     }
 
@@ -333,32 +365,36 @@ public final class ClaudeAppChatService {
     // MARK: 보내기
 
     /// 정리한 글을 보낸다: 확인 사실을 모으고(메인 밖) → 보내기 전 확인 → (C5 카드 | 막힘 줄 | 보냄)
-    fileprivate func begin(chat: ClaudeAppSessionChat, text: String, replacing replaced: String?) async {
-        guard !isShutDown else { return }
+    fileprivate func begin(chat: ClaudeAppSessionChat, text: String, replacing replaced: String?, preservingDraft: Bool = false, onAccepted: (() -> Void)? = nil) async {
+        // A queued Task can start after accountLeft advanced the epoch. Only the
+        // current account's registered chat may capture that new epoch.
+        guard !isShutDown, chats[chat.sessionID] === chat else { return }
         let sessionID = chat.sessionID
         let started = epoch
         chat.isChecking = true
         defer { chat.isChecking = false }
         let facts = await detached { [environment] in environment.facts(sessionID) }
         // 기다리는 동안 계정이 떠났으면 이 입력창은 이미 남의 것이 아니다: 아무것도 만들지 않는다 (카드 · 막힘 줄 · 보내기 모두)
-        guard !isShutDown, epoch == started, chat.composerShown else { return }
+        guard !isShutDown, epoch == started, chats[sessionID] === chat, chat.composerShown else { return }
         var readiness = await environment.relay.readiness()
-        guard epoch == started else { return }
+        guard epoch == started, chats[sessionID] === chat else { return }
         // 띄운 뒤 정체가 바뀐 중계는 보내기가 새로 띄운다 (⑤: 안 되면 Not received)
         if readiness == .mismatch { readiness = .notRunning }
         let context = ClaudeAppSendContext(confirmed: chat.confirmation, hasPending: chat.hasPending && replaced == nil, relay: readiness, view: chat.view)
         switch ClaudeAppSendCheck.evaluate(facts: facts, context: context) {
         case .needsConfirmation:
+            chat.captureConfirmation(text: text, preservingDraft: preservingDraft, replacing: replaced, onAccepted: onAccepted)
             chat.candidate = facts.session.map { ClaudeAppSendContext.Confirmation(pid: $0.pid, procStart: $0.procStart) }
             chat.isConfirming = true
         case .blocked(let block):
             guard let reason = block.notSentReason else { return }
             let delivery = ClaudeAppSessionChat.Delivery(id: UUID().uuidString.lowercased(), text: text, state: .notSent(reason), matchedTurnID: nil)
             place(delivery, in: chat, replacing: replaced)
-            if replaced == nil { chat.draft = "" }
+            onAccepted?()
+            if replaced == nil && !preservingDraft { chat.draft = "" }
             noteTerminal(.notSent(reason))
         case .allowed:
-            await send(chat: chat, text: text, replacing: replaced, facts: facts, epoch: started)
+            await send(chat: chat, text: text, replacing: replaced, facts: facts, epoch: started, preservingDraft: preservingDraft, onAccepted: onAccepted)
         }
     }
 
@@ -386,21 +422,22 @@ public final class ClaudeAppChatService {
         askTask = Task { await saver.ensureAsked() }
     }
 
-    private func send(chat: ClaudeAppSessionChat, text: String, replacing replaced: String?, facts: ClaudeAppSendFacts, epoch started: Int) async {
+    private func send(chat: ClaudeAppSessionChat, text: String, replacing replaced: String?, facts: ClaudeAppSendFacts, epoch started: Int, preservingDraft: Bool = false, onAccepted: (() -> Void)? = nil) async {
         let sessionID = chat.sessionID
         let id = UUID().uuidString.lowercased()
         // 보내기 **전에** 기록을 열어 둔다: 이미 있던 줄은 이번 보내기의 것이 아니다. 못 열면 baseline을 모른다 (보낸 시각 뒤의 줄만 우리 것)
         let follower = followers[sessionID] ?? Follower(sessionID: sessionID)
         followers[sessionID] = follower
         await openOrCatchUp(follower, cwd: facts.session?.cwd ?? environment.session(sessionID)?.cwd)
-        guard epoch == started, !isShutDown else { return }
+        guard epoch == started, !isShutDown, chats[sessionID] === chat else { return }
         let active = Active(
             id: id, sessionID: sessionID, text: text, startedAt: environment.now(), baseline: Set(follower.turns.map(\.id)), baselineUnknown: follower.cursor == nil
         )
         actives[sessionID, default: []].append(active)
         setInterest("follow:\(sessionID)", true)
         place(ClaudeAppSessionChat.Delivery(id: id, text: text, state: .sending, matchedTurnID: nil), in: chat, replacing: replaced)
-        if replaced == nil { chat.draft = "" }
+        onAccepted?()
+        if replaced == nil && !preservingDraft { chat.draft = "" }
         ensureLoop()
         // 저장 켜짐 확인은 보내기와 나란히 간다 (기다리지 않는다)
         startAsking()
@@ -645,6 +682,7 @@ public final class ClaudeAppChatService {
     public func shutdown() async {
         isShutDown = true
         epoch += 1
+        for chat in chats.values { chat.cancelConfirmation() }
         await stopEverything(terminal: true)
     }
 
@@ -665,6 +703,7 @@ public final class ClaudeAppChatService {
         // 세대를 먼저 올린다 (기다리는 중인 보내기 · 읽기 · 올리기 · 미리 띄우기가 깨어나면 이 값이 달라 그만둔다)
         epoch += 1
         askTask = nil
+        for chat in chats.values { chat.cancelConfirmation() }
         chats = [:]
         await stopEverything(terminal: false)
     }

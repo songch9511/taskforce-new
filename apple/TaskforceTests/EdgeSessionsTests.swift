@@ -1007,6 +1007,33 @@ struct EdgeSessionsTests {
         return Windows(controller: controller, script: script, desktop: desktop, store: store)
     }
 
+    private struct DelayedTreeSource: ClaudeAppTranscriptSource {
+        func open(sessionID: String, cwd: String?) -> ClaudeAppTranscriptLoad {
+            Thread.sleep(forTimeInterval: 0.15)
+            let events = [BackgroundTaskEvent.started(taskID: "child", toolUseID: "tool", kind: .agent, name: "Research", at: Date(), parentID: nil, depth: 1, foreground: false)]
+            var cursor = ClaudeAppTranscriptCursor(sessionID: sessionID)
+            cursor.signals = ClaudeAppTranscriptSignals(background: events)
+            return .page(ClaudeAppTranscriptPage(turns: [], cursor: cursor, hasEarlier: false, skippedLines: 0))
+        }
+        func earlier(_ cursor: ClaudeAppTranscriptCursor) -> ClaudeAppTranscriptLoad { .unreadable }
+        func newer(_ cursor: ClaudeAppTranscriptCursor) -> ClaudeAppTranscriptUpdate { .turns([], cursor: cursor, hasMore: false) }
+    }
+
+    @Test func delayedTreeDiscoveryWinsOverShellHeightAnimation() async throws {
+        let w = try await windows(live: [Self.live(1, .busy)])
+        defer { w.shell.dismiss(); w.controller.followPanel() }
+        w.shell.reduceMotion = false
+        w.shell.makeConversation = { id, cwd in ClaudeAppConversation(sessionID: id, cwd: cwd, source: DelayedTreeSource()) }
+        w.shell.openRailEntry(try #require(w.shell.slots.first { $0.source == .claudeApp(sessionID: Self.id(1)) }))
+        #expect(await until { w.claude.isVisible && w.claude.presentation.shown })
+        w.claude.presentation.bodyHeight = 470
+        w.controller.followClaudePanel()
+        #expect(await until { w.claude.presentation.pane.showsTree })
+        try? await Task.sleep(for: .milliseconds(700))
+        #expect(w.claude.presentation.pane.showsTree)
+        #expect(abs(w.claude.panel.frame.width - w.claude.presentation.pane.canvasWidth) < 1)
+    }
+
     @Test func theClaudePanelWindowStandsAloneForARingAndBesideSessionsForARowAndFollowsTheShell() async throws {
         _ = try #require(EdgeRailPanelController.screen, "화면이 있어야 창 자리를 잰다")
         let w = try await windows(live: [Self.live(1, .busy)])

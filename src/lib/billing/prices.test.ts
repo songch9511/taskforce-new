@@ -19,7 +19,8 @@ it('keeps the policy numbers the contract fixes', () => {
 });
 it('no retired $9.99 plan constant is left in the billing code', async () => {
     const { readFileSync, readdirSync } = await import('node:fs');
-    const dir = new URL('.', import.meta.url).pathname;
+    const { fileURLToPath } = await import('node:url');
+    const dir = fileURLToPath(new URL('.', import.meta.url));
     for (const file of readdirSync(dir).filter(name => name.endsWith('.ts') && !name.endsWith('.test.ts') && name !== 'testing.ts')) {
         const text = readFileSync(dir + file, 'utf8');
         // the two literals required by the frozen v1 response are the only allowed places

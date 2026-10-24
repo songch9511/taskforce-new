@@ -364,3 +364,18 @@ struct EdgeChatTests {
         }
     }
 }
+
+@Suite("Retired launcher entrypoints")
+struct RetiredLauncherEntrypointTests {
+    @Test func appEntrypointsNeverConstructTheLegacyPanel() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appending(path: "Taskforce/Mac")
+        let source = try String(contentsOf: root.appending(path: "MacAppDelegate.swift"), encoding: .utf8)
+        #expect(!source.contains("LauncherPanelController("))
+        #expect(!source.contains("Button(\"Open Launcher\")"))
+        #expect(!source.contains("launcher.show()"))
+        #expect(source.contains("Button(\"Open Taskforce\")"))
+        #expect(source.contains("edge.shell.open(itemID: id)"))
+        #expect(source.contains("SettingsOpener.open(.account)"))
+        #expect(!source.contains("EdgeTaskFlow"))
+    }
+}

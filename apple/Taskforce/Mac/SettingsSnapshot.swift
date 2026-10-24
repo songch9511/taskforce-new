@@ -336,14 +336,14 @@ enum SettingsSnapshot {
         try? await Task.sleep(for: .seconds(1))
     }
 
-    /// 멈춘 단계 카드 ›와 같은 길(`LauncherRoute.showTaskforceWorking`): 런처가 범위 Taskforce Working으로 열린 모습을 담고 닫는다
+    /// 멈춘 단계 카드와 같은 경로로 현재 Taskforce 작업 화면을 담고 닫는다.
     private static func captureTaskforceWorking(name: String, to directory: URL) async {
-        LauncherRoute.showTaskforceWorking()
+        TaskWorkRoute.show()
         try? await Task.sleep(for: .seconds(1.5))
         if let panel = NSApplication.shared.windows.first(where: { $0 is NSPanel && $0.isVisible }) {
             capture(panel, to: directory.appending(path: "mac-settings-usage-working-\(name).png"), drawsHostedContent: true)
         }
-        MacAppDelegate.shared?.launcher?.hide()
+        MacAppDelegate.shared?.edge?.shell.dismiss()
         try? await Task.sleep(for: .seconds(0.5))
     }
 

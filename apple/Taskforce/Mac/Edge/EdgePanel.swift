@@ -205,20 +205,13 @@ struct EdgePanelView: View {
         } else if shell.view == .review, shell.review != nil {
             if shell.taskforceEnabled { TaskforcePanelHeader(shell: shell) } else { ReviewPanelHeader(shell: shell) }
         } else if shell.issueScreensEnabled, shell.view == .allWork {
-            // 새 Issues 화면: 머리는 지금 연 화면이 정한다. 뒤로는 목록 · 상세에, 직접 추가 `+`는 Done today를 뺀 이슈 목록에 (Add task = 기존 런처)
+            // The header follows the current screen; back returns to the list.
             PanelHeader(
-                title: shell.panelTitle, onBack: shell.nav.canGoBack ? { shell.goBack() } : nil,
-                onAdd: addsTask ? { shell.onAddTask() } : nil
+                title: shell.panelTitle, onBack: shell.nav.canGoBack ? { shell.goBack() } : nil
             )
         } else {
             PanelHeader(title: shell.view.title)
         }
-    }
-
-    /// 머리 `+`(Add task)가 있나: 프로젝트 · Ungrouped 이슈 목록뿐
-    private var addsTask: Bool {
-        guard case .list(let scope) = shell.nav.current else { return false }
-        return shell.issueList(scope)?.allowsAdd ?? false
     }
 
     /// Chats에 대화가 없음 (이 셸을 대화 저장소 없이 만들었을 때)
@@ -252,7 +245,6 @@ struct EdgePanelView: View {
             onOpen: { shell.open(itemID: $0) },
             onPin: { shell.pin($0) },
             onUnpin: { shell.unpin($0) },
-            onAddTask: { shell.onAddTask() },
             onConnect: shell.work.canConnect ? { shell.onConnect() } : nil,
             onRetry: { shell.onRetry() }
         )
