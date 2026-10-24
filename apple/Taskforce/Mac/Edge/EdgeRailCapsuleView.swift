@@ -97,6 +97,11 @@ struct EdgeRailCapsuleView: View {
         .animation(slide, value: layout)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(shell.railAccessibilityLabel)
+        .accessibilityActions {
+            if shell.sessionsVisible {
+                Button("Sessions") { shell.openSessions() }
+            }
+        }
     }
 
     private func capsuleBackground(_ frame: CGRect) -> some View {

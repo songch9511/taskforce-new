@@ -61,12 +61,42 @@ struct SessionsPanelBody: View {
     @Bindable var shell: EdgeShellModel
     @State private var taskforceExpanded = false
     @State private var macExpanded = false
+    @State private var codexExpanded = false
+    @State private var codexSessions: [CodexLocalSession] = []
+    @State private var codexFailed = false
+    @State private var codexLoaded = false
+    @State private var codexOpenFailed = false
+    private let codexReader = CodexLocalSessionReader()
 
     var body: some View {
         // 시각("2 min ago")이 열려 있는 동안 흐르게 30초마다 다시 그린다
         TimelineView(.periodic(from: .now, by: 30)) { context in
             content(now: context.date)
         }
+        .task(id: shell.externalSessionsVisible) {
+            guard shell.externalSessionsVisible, Self.readsLiveCodexSessions else {
+                codexSessions = []; codexFailed = false; codexLoaded = true
+                return
+            }
+            while !Task.isCancelled {
+                let result = await codexReader.read()
+                guard !Task.isCancelled else { return }
+                codexLoaded = true
+                switch result {
+                case .sessions(let rows): codexSessions = rows; codexFailed = false
+                case .unreadable: codexSessions = []; codexFailed = true
+                }
+                try? await Task.sleep(for: .seconds(10))
+            }
+        }
+    }
+
+    /// Sample captures and XCTest hosts must never read the user's local Codex index.
+    static var readsLiveCodexSessions: Bool {
+        #if DEBUG
+        if SampleData.isEnabled || ExternalSessionSnapshot.isEnabled { return false }
+        #endif
+        return !TestHost.isTestHost()
     }
 
     /// On this Mac 절이 무엇을 보이나
@@ -120,7 +150,7 @@ struct SessionsPanelBody: View {
         let savedStore = shell.savedChatsVisible ? shell.savedChats : nil
         let saved = savedStore?.section(expanded: shell.savedChatsExpanded)
         let plan = Self.plan(taskforce: taskforce, mac: mac, phase: store?.phase, taskforceRead: shell.issues?.sessions.hasRead ?? true, saved: saved?.state ?? .absent)
-        if plan.noSessions {
+        if plan.noSessions && codexLoaded && codexSessions.isEmpty && !codexFailed {
             PanelEmptyState(title: SessionsPanelCopy.noSessions) {}
         } else {
             VStack(alignment: .leading, spacing: 0) {
@@ -133,8 +163,39 @@ struct SessionsPanelBody: View {
                     }
                 }
                 if let store { onThisMac(store, plan: plan.mac, section: mac) }
+                codexSection
                 if let savedStore, let saved { savedChats(savedStore, section: saved, now: now) }
             }
+        }
+    }
+
+    @ViewBuilder private var codexSection: some View {
+        if !codexSessions.isEmpty || codexFailed {
+            SessionsSectionHeader("Codex on this Mac", togglesFold: codexSessions.count > 3, expanded: codexExpanded) { codexExpanded.toggle() }
+            if codexFailed {
+                SessionsSectionNote("Couldn’t read Codex sessions")
+            }
+            ForEach(codexExpanded ? codexSessions : Array(codexSessions.prefix(3))) { session in
+                Button {
+                    guard let url = session.openURL else { return }
+                    codexOpenFailed = !NSWorkspace.shared.open(url)
+                } label: {
+                    HStack(alignment: .top, spacing: 10) {
+                        AgentMark(.codex, size: 20).accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(session.title).font(TFFont.callout).foregroundStyle(TFColor.textPrimary).lineLimit(1)
+                            Text("Open in Codex").font(TFFont.footnote).foregroundStyle(TFColor.textSecondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        Image(systemName: "arrow.up.right").foregroundStyle(TFColor.textSecondary)
+                    }
+                    .padding(.vertical, 8).padding(.horizontal, 10)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(session.title) — Open in Codex")
+            }
+            if codexOpenFailed { SessionsSectionNote("Couldn’t open Codex. Check that the app is installed.") }
         }
     }
 
