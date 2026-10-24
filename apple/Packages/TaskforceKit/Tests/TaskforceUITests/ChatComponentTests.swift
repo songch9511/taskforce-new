@@ -8,6 +8,12 @@ import AppKit
 
 /// 0.2.0 Chats · Remembered 부품 (B3): 순수 규칙 · 접근성 이름 · IME 조합 중 Enter · 금지 문구 · 아이콘 역할
 struct ChatComponentTests {
+    @Test func contextualPayloadCanDisableSendingWithoutDisablingDraftEditing() {
+        #expect(!Composer.canSend(text: "Correctable draft", isDisabled: false, isSending: false, sendEnabled: false))
+        #expect(Composer.fieldEnabled(isDisabled: false, blocked: nil))
+        #expect(Composer.canSend(text: "Corrected draft", isDisabled: false, isSending: false, sendEnabled: true))
+    }
+
     @Test func composerSendsOnlyRealTextWhenEnabledAndIdle() {
         #expect(Composer.canSend(text: "Hello", isDisabled: false, isSending: false))
         #expect(!Composer.canSend(text: "  \n", isDisabled: false, isSending: false), "빈 글은 보낼 수 없다")

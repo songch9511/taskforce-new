@@ -10,8 +10,11 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
     /// SwiftUI의 NSApplicationDelegateAdaptor가 만든 인스턴스 (메뉴 · 설정에서 런처와 단축키를 부른다)
     private(set) static weak var shared: MacAppDelegate?
 
-    private(set) var launcher: LauncherPanelController?
-    /// 0.2.0 Edge 셸 (`TF_EDGE_SHELL`이 켜진 격리 Debug 실행에서만, 기본은 nil → 기존 런처)
+    private(set) var launcherModel: LauncherModel?
+    private var changesTask: Task<Void, Never>?
+    private var changesUserID: UUID?
+    private var pendingActionID: UUID?
+    /// Current Mac shell. Feature flags still gate its optional server-backed surfaces.
     private(set) var edge: EdgeShellController?
     /// 대화 · 기억 상태 (`TF_EDGE_SHELL`이 켜졌을 때만)
     private(set) var chatRuntime: ChatRuntime?
@@ -55,35 +58,28 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         case .misconfigured(let message):
             model = LauncherModel(configurationError: message)
         }
-        let launcher = LauncherPanelController(model: model)
-        self.launcher = launcher
+        launcherModel = model
         // 런처가 숨어 있어도 로그아웃 · 계정 전환을 따라간다 (전 사용자의 목록 · 연결 · 동의를 지운다)
         if case .ready(let session, _) = AppRuntime.startup {
             follow(session, model: model)
         }
-        // 누른 알림: 런처를 열고 그 할 일을 고른다
+        followChanges(model)
+        // Notifications open the current shell.
         PushCenter.shared.onOpen = { [weak self] target in self?.openNotification(target) }
-        if let target = PushCenter.shared.take() { openNotification(target) }
 
-        if EdgeShellFlag.isEnabled() {
+        do {
             // Review 페이지(S4) · 복귀 요약(C3)은 각자의 표면 값(`S4Flag` · `C3Flag`)이 켜졌을 때만 연결된다 (nil이면 지금 그대로). 계정 경계는 Chats 것이 아니라 Edge 기초의 것
             let features = AppRuntime.edgeFeatures(foundation: edgeFoundation, now: model.now, services: model.services)
             let edge = EdgeShellController(launcher: model, chat: chatRuntime, review: features.review, summary: features.summary)
             self.edge = edge
-            // All work의 Add task: 패널을 접고 기존 런처(제목 → 없으면 추가, 직접 추가의 정식 입구)를 연다
-            edge.shell.onAddTask = { [weak edge, weak launcher] in
-                edge?.shell.dismiss()
-                launcher?.show()
-            }
             edge.start()
             #if DEBUG
             // 견본(`-TFSampleData`)에서 Review 답은 서버 없이 가짜 서버(`SampleReviewServer`)가 받는다
             if SampleData.isEnabled, edge.shell.review != nil { model.now?.installSampleReview(SampleReviewServer()) }
             #endif
-            hotKeys.onPress = { [weak edge] in edge?.togglePanel() }
-        } else {
-            hotKeys.onPress = { [weak launcher] in launcher?.toggle() }
+            hotKeys.onPress = { [weak self] in self?.toggleTaskforce() }
         }
+        if let target = PushCenter.shared.take() { openNotification(target) }
         hotKeys.install()
         hotKeys.register(HotKeyShortcut.load())
         settingsHotKeys.onPress = { SettingsOpener.open() }
@@ -96,12 +92,9 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         // 자동 업데이트(Sparkle): 피드 주소나 공개 키가 비어 있거나 Debug이면 시작하지 않는다 (`AppUpdater` · `UpdateConfiguration`)
         AppUpdater.shared.start()
 
-        // 스크린샷 · 수동 확인용: 실행하자마자 런처를 연다
+        // Keep the existing launch argument as an alias for the current shell.
         if ProcessInfo.processInfo.arguments.contains("--show-launcher") {
-            launcher.show()
-            #if DEBUG
-            launcher.snapshotIfRequested()
-            #endif
+            openTaskforce()
         }
         #if DEBUG
         // 설정 창 확인용: `--show-settings` (`-TFSnapshot <폴더>`면 항목마다 PNG를 남기고 끝낸다)
@@ -110,6 +103,7 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         if let edge { EdgeSnapshot.runIfRequested(edge) }
         // Edge 셸 합성 조작 확인용: `-TF_EDGE_SHELL YES -TFSampleData -TFEdgeInteract <로그 파일>`
         if let edge { EdgeInteraction.runIfRequested(edge) }
+        if let edge { AgentTreeSample.runIfRequested(edge) }
         #endif
     }
 
@@ -148,10 +142,10 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         Self.routeOpenedURLs(
             urls,
             google: GoogleSignInFlow.handle,
-            artifact: { id in
-                guard let launcher = self.launcher else { return false }
-                launcher.show()
-                launcher.model.openDraft(id: id)
+            artifact: { _ in
+                // The current shell has no standalone artifact viewer. Consume this
+                // recognized URL without sending it to the connection callback.
+                self.openTaskforce()
                 return true
             },
             connection: { url in Task { await account.handleCallback(url) } }
@@ -171,6 +165,29 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func syncChangesAccount(_ model: LauncherModel) {
+        let userID = model.signedInUserID
+        if changesUserID != userID {
+            changesTask?.cancel()
+            changesUserID = userID
+            if let userID, let services = model.services {
+                changesTask = Task { await model.changes.follow(services: services, userID: userID) }
+            }
+        }
+    }
+
+    private func followChanges(_ model: LauncherModel) {
+        syncChangesAccount(model)
+        withObservationTracking { _ = model.changes.revision } onChange: { [weak self, weak model] in
+            Task { @MainActor in
+                guard let self, let model else { return }
+                await model.now?.load()
+                await model.runs?.actionsChanged()
+                self.followChanges(model)
+            }
+        }
+    }
+
     private func follow(_ session: SessionStore, model: LauncherModel) {
         withObservationTracking {
             _ = session.state
@@ -178,6 +195,8 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in
                 guard let self, let model else { return }
                 model.sessionChanged()
+                self.syncChangesAccount(model)
+                if model.isSignedIn, self.pendingActionID != nil { self.openTaskforce() }
                 // 알림: 허용돼 있으면 로그인한 사용자로 기기 토큰을 보낸다
                 PushCenter.shared.follow(userID: model.signedInUserID, services: model.services)
                 // 로그아웃 · 세션 만료 · 계정 삭제 모두: 이 기기의 Google 로그인도 지운다 (다음 계정이 전 계정의 Google 토큰을 쓰지 않게)
@@ -210,9 +229,28 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
             edge.openQuestion(sessionID: sessionID)
             return
         }
-        guard let launcher else { return }
-        launcher.show()
-        if let id = target.actionID { launcher.model.focus(actionID: id) }
+        pendingActionID = target.actionID
+        openTaskforce()
+    }
+
+    /// The current shell is the only app entrypoint. Account recovery stays available
+    /// without constructing the retired Search tasks window.
+    func openTaskforce() {
+        NSApp.activate()
+        guard let model = launcherModel else { return }
+        if model.configurationError != nil || !model.isSignedIn {
+            SettingsOpener.open(.account)
+        } else if let id = pendingActionID, let edge {
+            pendingActionID = nil
+            edge.shell.open(itemID: id)
+        } else {
+            edge?.shell.openAllWork()
+        }
+    }
+
+    private func toggleTaskforce() {
+        guard launcherModel?.isSignedIn == true else { openTaskforce(); return }
+        edge?.togglePanel()
     }
 
     /// Stored preferences change only after successful registration.
@@ -262,10 +300,10 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
 
 }
 
-/// 메뉴 막대 아이콘의 메뉴: Open Launcher · Check for Updates… · Settings · Quit
+/// 메뉴 막대 아이콘의 메뉴: Open Taskforce · Check for Updates… · Settings · Quit
 struct MenuBarMenu: View {
     var body: some View {
-        Button("Open Launcher") { MacAppDelegate.shared?.launcher?.show() }
+        Button("Open Taskforce") { MacAppDelegate.shared?.openTaskforce() }
         CheckForUpdatesButton()
         Button("Settings…") { SettingsOpener.open() }
             .keyboardShortcut(",")

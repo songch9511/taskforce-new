@@ -8,6 +8,7 @@ import TaskforceUI
 /// 게이트가 꺼져 있으면 이 객체가 없다 (`ChatRuntime.issues == nil`): 읽기도 타이머도 0이고 All work는 지금 그대로다
 @MainActor
 final class IssueRuntime {
+    let agentTree: AgentTreeMetrics?
     let sessions: AgentSessionStore
     let numbers: IssueNumberStore
     let details: IssueDetailStore
@@ -17,7 +18,8 @@ final class IssueRuntime {
     /// 다시 켠 뒤 표시만 남은 끝난 이슈를 id로 읽는다 (같은 RLS 읽기, 상세 화면의 캐시와 섞지 않는다): 끝난 링을 제목과 함께 되살린다
     let finished: FinishedIssueLookup
 
-    init(gateway: any IssueScreensGateway, scope: AccountScope, now: @escaping @Sendable () -> Date = { Date() }) {
+    init(gateway: any IssueScreensGateway, scope: AccountScope, now: @escaping @Sendable () -> Date = { Date() }, agentTree: AgentTreeMetrics? = nil) {
+        self.agentTree = agentTree ?? (gateway as? any AgentTreeOpenedGateway).map { AgentTreeMetrics(gateway: $0, scope: scope, now: now) }
         sessions = AgentSessionStore(gateway: gateway, scope: scope, now: now)
         numbers = IssueNumberStore(gateway: gateway, scope: scope)
         details = IssueDetailStore(gateway: gateway, scope: scope)

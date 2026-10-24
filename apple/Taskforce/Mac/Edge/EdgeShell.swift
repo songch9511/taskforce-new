@@ -442,6 +442,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         let wanted = withObservationTracking {
             _ = claudePanel.presentation.contentHeight
             _ = claudePanel.presentation.pane.windowExtra
+            _ = claudePanel.presentation.pane.hasAgentTree
             _ = panel.presentation.bodyHeight
             _ = panel.presentation.footerHeight
             _ = panel.presentation.shown
@@ -506,6 +507,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         let wanted = withObservationTracking {
             _ = sessionPanel.presentation.contentHeight
             _ = sessionPanel.presentation.pane.windowExtra
+            _ = sessionPanel.presentation.pane.hasAgentTree
             _ = panel.presentation.bodyHeight
             _ = panel.presentation.footerHeight
             return shell.sessionPanelShown

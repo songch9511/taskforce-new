@@ -79,6 +79,8 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
     /// 오류로 끝난 도구 호출의 id (오래된 것이 먼저): 아직 읽지 않은 앞 쪽의 도구 줄에도 나중에 붙이려고 기억한다. 상한 `maxRememberedFailures`
     @ObservationIgnored private var failedIDs: [String] = []
     @ObservationIgnored private var failedSet = Set<String>()
+    @ObservationIgnored private var unpairedOutcomes: [String: AgentCallRecord.Outcome] = [:]
+    @ObservationIgnored private var unpairedOutcomeOrder: [String] = []
     /// 도구 호출 id → 모델이 쓴 description (백그라운드 일의 이름을 찾는다): 줄이 상한에서 버려져도 남는다. 상한 `maxRememberedDescriptions`
     @ObservationIgnored private var toolDescriptions: [String: String] = [:]
     @ObservationIgnored private var toolDescriptionOrder: [String] = []
@@ -321,6 +323,8 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
     private func forgetSignals() {
         failedIDs = []
         failedSet = []
+        unpairedOutcomes = [:]
+        unpairedOutcomeOrder = []
         toolDescriptions = [:]
         toolDescriptionOrder = []
         signalTasks = BackgroundTaskList()
@@ -365,7 +369,16 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
 
     /// 화면에 내는 목록 = 기록의 시작 · 끝 줄로 만든 목록 + 메타 (달라졌을 때만 바꾼다)
     private func publishTasks() {
-        let combined = signalTasks.adding(subagents: subagentMetas, calls: agentCalls)
+        var calls = agentCalls
+        // Outcomes can precede call lines outside the read window. Keep these
+        // separately bounded, so unrelated tools never evict known Agent calls.
+        for meta in subagentMetas {
+            guard let id = meta.toolUseID, let outcome = unpairedOutcomes[id], calls[id]?.outcome == nil else { continue }
+            var record = calls[id] ?? AgentCallRecord()
+            record.outcome = outcome
+            calls[id] = record
+        }
+        let combined = signalTasks.adding(subagents: subagentMetas, calls: calls)
         if combined != backgroundTasks { backgroundTasks = combined }
     }
 
@@ -400,8 +413,17 @@ public final class ClaudeAppConversation: CustomStringConvertible, CustomDebugSt
                 if record.startedAt == nil { record.startedAt = turn.timestamp }
             }
         }
-        for outcome in signals.toolOutcomes {
+        for outcome in signals.toolOutcomes where agentCalls[outcome.toolUseID]?.called == true {
             noteAgentCall(outcome.toolUseID) { $0.outcome = AgentCallRecord.Outcome(failed: outcome.failed, at: outcome.at) }
+        }
+        for outcome in signals.toolOutcomes where agentCalls[outcome.toolUseID]?.called != true {
+            if unpairedOutcomes[outcome.toolUseID] == nil { unpairedOutcomeOrder.append(outcome.toolUseID) }
+            unpairedOutcomes[outcome.toolUseID] = AgentCallRecord.Outcome(failed: outcome.failed, at: outcome.at)
+        }
+        if unpairedOutcomeOrder.count > Self.maxRememberedAgentCalls {
+            let excess = unpairedOutcomeOrder.count - Self.maxRememberedAgentCalls
+            for id in unpairedOutcomeOrder.prefix(excess) { unpairedOutcomes[id] = nil }
+            unpairedOutcomeOrder.removeFirst(excess)
         }
         for id in signals.failedToolIDs where failedSet.insert(id).inserted { failedIDs.append(id) }
         if failedIDs.count > Self.maxRememberedFailures {

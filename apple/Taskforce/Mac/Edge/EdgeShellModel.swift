@@ -325,9 +325,8 @@ final class EdgeShellModel {
     /// 로컬 날짜 · 시간대 · 시스템 시계가 바뀌었을 수 있다는 신호 (`timeChanged()`, 컨트롤러의 `EdgeTimeWatcher`가 올린다).
     /// `workItems`가 읽어서, 자정 · 시간대 변경 뒤에도 열린 채인 패널이 다시 계산한다. 값 자체에는 뜻이 없다
     private(set) var timeEpoch = 0
-    /// All work의 버튼이 가는 곳 (컨트롤러가 채운다): Add task = 기존 런처(직접 추가의 정식 입구) · Connect a source = 설정 Connections ·
+    /// All work의 버튼이 가는 곳 (컨트롤러가 채운다): Connect a source = 설정 Connections ·
     /// Try again = 목록 다시 읽기
-    @ObservationIgnored var onAddTask: () -> Void = {}
     @ObservationIgnored var onConnect: () -> Void = {}
     @ObservationIgnored var onRetry: () -> Void = {}
     /// Chats (B3): 패널이 Chats로 열릴 때 (⌘3 · ⌥ Space로 마지막 화면 · 레일) 마지막 대화를 되살린다 · ⌘N은 새 대화 · Esc는 목록에서 대화로 먼저
@@ -353,6 +352,10 @@ final class EdgeShellModel {
     var assistantWindowFront = false
     /// 새 Issues 화면(OA U2): 세션 · 번호 · 상세를 읽는 곳. **없으면 게이트가 꺼진 것이다** — Projects · 이슈 목록 · 상세 · 세션 패널이 없고 All work는 지금 그대로다 (`EdgeSurfaces.issueScreens`)
     let issues: IssueRuntime?
+    let projectSessions: ProjectSessionsModel
+    @ObservationIgnored var onResetSessionPresentation: () -> Void = {}
+    @ObservationIgnored var onResetDesktopPresentation: () -> Void = {}
+    @ObservationIgnored var onRevealSessionTask: (UUID, String) -> Void = { _, _ in }
     /// 이 Mac의 Claude Code 세션 목록 (OA 외부 세션 PR1). **없으면 게이트가 꺼진 것이다**(새 Issues 화면 ∧ `BridgeFlag` ∧ 로그인): Sessions 패널의 On this Mac 절도 훑기도 서버 보고도 없다
     let externalSessions: ExternalSessionsStore?
     /// Claude 데스크톱 앱에 열린 세션의 살아 있는 상태 (OA PR-D2, 계약 21 · 23장): 레일의 데스크톱 링 · Sessions 줄의 링 · 세션 보기의 상태 말. **목록(`externalSessions`)과 같은 게이트**다: 없으면 데스크톱 링도 세션 보기도 없다
@@ -502,6 +505,11 @@ final class EdgeShellModel {
         claudeAppOpened: ClaudeAppOpenedMetric? = nil, desktopChat: ClaudeAppChatService? = nil, savedChats: SavedChatsStore? = nil, attach: ExternalSessionAttachModel? = nil
     ) {
         self.issues = issues
+        self.projectSessions = ProjectSessionsModel(metrics: issues?.agentTree)
+        self.makeBackgroundTail = { provider, cwd, task in
+            if task.kind == .agent { issues?.agentTree?.subagentRow.opened() }
+            return EdgeShellModel.liveBackgroundTail(provider, cwd, task)
+        }
         self.externalSessions = issues == nil ? nil : externalSessions
         self.attach = issues == nil || externalSessions == nil ? nil : attach
         self.desktop = issues == nil || externalSessions == nil ? nil : desktopSessions
@@ -1358,9 +1366,31 @@ final class EdgeShellModel {
         readSessionsOnEntry()
     }
 
+    var allowsSessionPanel: Bool {
+        if nav.detailID != nil { return true }
+        if case .list(.project) = nav.current { return true }
+        return false
+    }
+
+    func projectSessionItems(of content: IssueListContent) -> [AgentSessionItem] {
+        ProjectSessions.union(issueIDs: content.issueIDs, in: issues?.sessions.items ?? [])
+    }
+
+    func sharedProjectNames(of session: AgentSessionItem, besides project: UUID, in work: [WorkItem]? = nil) -> String? {
+        let names = ProjectSessions.otherProjects(of: session, besides: project, in: work ?? workItems)
+        return names.isEmpty ? nil : names.joined(separator: ", ")
+    }
+
+    func openProjectSessionTask(session: UUID, task: String, subagent: Bool) {
+        if sessionPanelID != session { openSession(session) }
+        guard sessionPanelID == session else { return }
+        if subagent { projectSessions.noteSubagentOpened() }
+        onRevealSessionTask(session, task)
+    }
+
     /// SessionRow: 이슈 상세 왼쪽에 세션 패널 (같은 세션이면 닫고, 다른 세션이면 바꾼다). 이슈 상세 없이 열리지 않는다 — 세션은 이슈 상세의 Sessions 목록에서만 연다 (OA U3-45)
     func openSession(_ id: UUID) {
-        guard issues != nil, panelOpen, view == .allWork, nav.detailID != nil else { return }
+        guard issues != nil, panelOpen, view == .allWork, allowsSessionPanel else { return }
         sessionPanelID = sessionPanelID == id ? nil : id
         if sessionPanelID != nil {
             // 연 세션의 끝남(초록)이 내려간다
@@ -1383,7 +1413,7 @@ final class EdgeShellModel {
     }
 
     /// 세션 패널 창이 실제로 보인다: 이슈 패널이 이슈 상세로 열려 있거나(OA U2) Sessions가 열려 있고(OA PR-D2) 세션 패널이 열려 있다 (`EdgeShell.followSessionPanel`과 같은 조건)
-    var sessionPanelShown: Bool { panelOpen && ((view == .allWork && nav.detailID != nil) || view == .sessions) && openSessionItem != nil }
+    var sessionPanelShown: Bool { panelOpen && ((view == .allWork && allowsSessionPanel) || view == .sessions) && openSessionItem != nil }
 
     func closeSessionPanel() {
         sessionPanelID = nil
@@ -1426,7 +1456,7 @@ final class EdgeShellModel {
         }
         if issues.sessions.hasRead, let id = sessionPanelID, issues.sessions.item(id: id) == nil { sessionPanelID = nil }
         // 세션 패널은 이슈 상세 없이 열려 있지 않다 (목록 화면에서 열린 세션 패널은 다음 맞추기에서 닫힌다, OA U3-53). Sessions 패널은 이슈 상세 없이 세션 패널을 둔다 (OA PR-D2)
-        if sessionPanelID != nil, nav.detailID == nil, view != .sessions { sessionPanelID = nil }
+        if sessionPanelID != nil, !allowsSessionPanel, view != .sessions { sessionPanelID = nil }
     }
 
     /// 세션 · 번호가 바뀌었다: 레일의 링을 다시 정하고 열어 둔 화면을 맞춘다
@@ -1783,6 +1813,9 @@ final class EdgeShellModel {
     /// 토큰 갱신처럼 같은 계정이면 그대로 둔다
     func accountChanged(_ account: UUID?) {
         guard account != self.account else { return }
+        projectSessions.clear()
+        onResetSessionPresentation()
+        onResetDesktopPresentation()
         // 알던 계정이 떠났다(로그아웃 · 다른 계정): 그 계정의 끝남 표시는 이 계정에 없다 (저장본은 `AccountScope`가 비운다). 처음 로그인(앱을 다시 켠 뒤)은 저장해 둔 것을 그대로 둔다
         let hadAccount = self.account != nil
         self.account = account

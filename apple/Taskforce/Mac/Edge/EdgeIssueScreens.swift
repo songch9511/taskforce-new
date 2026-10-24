@@ -84,7 +84,6 @@ struct ProjectsBody: View {
             VStack(alignment: .leading, spacing: 0) {
                 IssuesNotice(problem: problem, retry: shell.onRetry)
                 PanelEmptyState(.noWork) {
-                    Button("Add task") { shell.onAddTask() }.buttonStyle(TFButtonStyle(.primary, size: .md))
                     if shell.work.canConnect { Button("Connect a source") { shell.onConnect() }.buttonStyle(TFButtonStyle(.secondary, size: .md)) }
                 }
             }
@@ -140,6 +139,7 @@ struct IssueListBody: View {
             VStack(alignment: .leading, spacing: 0) {
                 IssuesNotice(problem: problem ?? shell.projectsProblem, retry: shell.onRetry)
                 if let list = shell.issueList(scope) {
+                    if case .project(let project) = scope { ProjectSessionsGroup(shell: shell, project: project, sessions: shell.projectSessionItems(of: list)) }
                     ForEach(list.groups) { group in
                         if let label = group.label { GroupLabel(label) }
                         // 행 사이 2 (Figma M3: 행 36 + 간격 2)

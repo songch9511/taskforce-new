@@ -479,7 +479,7 @@ struct SectionDisplaySettingsPane: View {
         .contentMargins(.bottom, 12, for: .scrollContent)
         .onChange(of: preferences) { _, value in
             value.save()
-            MacAppDelegate.shared?.launcher?.model.applySectionDisplayPreferences(value)
+            MacAppDelegate.shared?.launcherModel?.applySectionDisplayPreferences(value)
         }
     }
 

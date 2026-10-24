@@ -226,6 +226,170 @@ extension ExternalSessionSuites {
             rig.transcript.append(ClaudeAppTurn(id: "U-desktop", kind: .user("typed later on the desktop"), timestamp: rig.clock.now.addingTimeInterval(9)))
         }
 
+        @Test func contextualAcceptanceWaitsForConfirmationAndFiresOnceAtDeliveryPlacement() async throws {
+            let rig = try await ChatRig()
+            let chat = rig.service.chat(for: sid)
+            chat.draft = "Main draft"
+            var accepted = 0
+            await chat.submitMessage("Context", onAccepted: {
+                accepted += 1
+                #expect(chat.deliveries.count == 1 && chat.deliveries.first?.text == "Context")
+            }).value
+            #expect(chat.isConfirming && accepted == 0)
+            rig.world.restart(pid: 333)
+            await chat.confirm().value
+            #expect(chat.isConfirming && accepted == 0)
+            await chat.confirm().value
+            await chat.confirm().value
+            #expect(accepted == 1 && chat.draft == "Main draft")
+            await rig.cleanup()
+        }
+
+        @Test func contextualAcceptanceIsDiscardedOnCancelButFiresForANotSentDelivery() async throws {
+            let rig = try await ChatRig()
+            let chat = rig.service.chat(for: sid)
+            var cancelled = 0
+            await chat.submitMessage("Cancel context", onAccepted: { cancelled += 1 }).value
+            chat.cancelConfirmation()
+            await chat.confirm().value
+            #expect(cancelled == 0 && chat.deliveries.isEmpty)
+            rig.world.facts = ClaudeAppSendFacts(session: nil, doubled: true, processTrusted: false, otherWriters: .none)
+            var blocked = 0
+            await chat.submitMessage("Blocked context", onAccepted: { blocked += 1 }).value
+            #expect(blocked == 1 && cancelled == 0 && chat.deliveries.first?.state == .notSent(.twoWriters))
+            await rig.cleanup()
+        }
+
+        @Test func contextualConfirmationUsesCapturedTextAndPreservesAnEditedMainDraft() async throws {
+            let rig = try await ChatRig()
+            let chat = rig.service.chat(for: sid)
+            chat.draft = "Unfinished Main draft"
+            #expect(chat.canSubmitMessage("  Selected agent: check links  "))
+            await chat.submitMessage("  Selected agent: check links  ").value
+            #expect(chat.isConfirming && rig.launcher.launches.isEmpty)
+            chat.draft = "Main draft edited while confirming"
+            await chat.confirm().value
+            #expect(chat.draft == "Main draft edited while confirming")
+            #expect(chat.deliveries.map(\.text) == ["Selected agent: check links"])
+            #expect(rig.launcher.processes[0].contents.last == "/tfsend \(sid)\nSelected agent: check links")
+            await rig.cleanup()
+        }
+
+        @Test func cancellingContextualConfirmationForgetsItsTextAndKeepsNormalSubmitBehavior() async throws {
+            let rig = try await ChatRig()
+            let chat = rig.service.chat(for: sid)
+            chat.draft = "Main draft"
+            await chat.submitMessage("Selected agent context").value
+            chat.cancelConfirmation()
+            await chat.confirm().value
+            #expect(chat.draft == "Main draft" && chat.deliveries.isEmpty && rig.launcher.launches.isEmpty)
+            await chat.submit().value
+            await chat.confirm().value
+            #expect(chat.draft.isEmpty && chat.deliveries.map(\.text) == ["Main draft"])
+            await rig.cleanup()
+        }
+
+        @Test func blockedContextualSubmissionDoesNotReachTheRelayOrClearMainDraft() async throws {
+            let rig = try await ChatRig()
+            let chat = rig.service.chat(for: sid)
+            chat.draft = "Main draft"
+            rig.world.facts = ClaudeAppSendFacts(session: nil, doubled: true, processTrusted: false, otherWriters: .none)
+            await chat.submitMessage("Selected agent context").value
+            #expect(chat.draft == "Main draft")
+            #expect(chat.deliveries.map(\.state) == [.notSent(.twoWriters)])
+            #expect(rig.launcher.launches.isEmpty)
+            await rig.cleanup()
+        }
+
+        @Test func retryingABlockedContextualMessageConfirmsItsTextAndReplacesItsOwnRow() async throws {
+            let rig = try await ChatRig()
+            let chat = rig.service.chat(for: sid)
+            chat.draft = "Main draft"
+            rig.world.facts = ClaudeAppSendFacts(session: nil, doubled: true, processTrusted: false, otherWriters: .none)
+            await chat.submitMessage("Selected agent context").value
+            let blocked = try #require(chat.deliveries.first)
+            rig.world.facts = ClaudeAppSendFacts(session: rig.world.session, doubled: false, processTrusted: true, otherWriters: .none)
+            await chat.sendAgain(blocked.id).value
+            #expect(chat.isConfirming && rig.launcher.launches.isEmpty)
+            await chat.confirm().value
+            #expect(chat.deliveries.count == 1 && chat.deliveries.first?.id != blocked.id)
+            #expect(chat.deliveries.first?.text == "Selected agent context" && chat.draft == "Main draft")
+            #expect(rig.launcher.processes[0].contents.last == "/tfsend \(sid)\nSelected agent context")
+            await rig.cleanup()
+        }
+
+        @Test func contextualSubmissionKeepsExistingTextAndViewGates() async throws {
+            let rig = try await ChatRig()
+            let chat = rig.service.chat(for: sid)
+            chat.draft = "Main draft"
+            for text in ["", "  \n", String(repeating: "x", count: 16_001)] {
+                #expect(!chat.canSubmitMessage(text))
+                await chat.submitMessage(text).value
+            }
+            for view in [ClaudeAppSendContext.View.closed, .unreadable] {
+                chat.setView(view)
+                #expect(!chat.canSubmitMessage("context"))
+                await chat.submitMessage("context").value
+            }
+            #expect(chat.deliveries.isEmpty && rig.launcher.launches.isEmpty && chat.draft == "Main draft")
+            await rig.cleanup()
+        }
+
+        @Test func contextualConfirmationSurvivesPidReconfirmationWithoutReadingMainDraft() async throws {
+            let rig = try await ChatRig()
+            let chat = rig.service.chat(for: sid)
+            chat.draft = "Main draft"
+            await chat.submitMessage("Selected agent context").value
+            rig.world.restart(pid: 333)
+            await chat.confirm().value
+            #expect(chat.isConfirming && chat.deliveries.isEmpty)
+            await chat.confirm().value
+            #expect(chat.deliveries.map(\.text) == ["Selected agent context"] && chat.draft == "Main draft")
+            await rig.cleanup()
+        }
+
+        @Test func aQueuedContextualSubmitCannotAdoptTheNextAccountsEpoch() async throws {
+            let rig = try await ChatRig()
+            let oldChat = rig.service.chat(for: sid)
+            let session = try #require(rig.world.session)
+            oldChat.confirmation = ClaudeAppSendContext.Confirmation(pid: session.pid, procStart: session.procStart)
+            oldChat.draft = "Old account Main draft"
+            var accepted = 0
+            let queued = oldChat.submitMessage("Old account selected agent context", onAccepted: { accepted += 1 })
+            await rig.service.accountLeft()
+            let fresh = rig.service.chat(for: sid)
+            await queued.value
+            #expect(oldChat !== fresh && accepted == 0)
+            #expect(oldChat.deliveries.isEmpty && !oldChat.isConfirming)
+            #expect(fresh.deliveries.isEmpty && !fresh.isConfirming && fresh.draft.isEmpty)
+            #expect(rig.launcher.launches.isEmpty && rig.reports.all.isEmpty)
+            // Keeping a reference to the old object cannot restore its sending rights.
+            await oldChat.submitMessage("Another stale context").value
+            #expect(oldChat.deliveries.isEmpty && rig.launcher.launches.isEmpty)
+            await rig.cleanup()
+        }
+
+        @Test func leavingTheViewOrAccountAndShutdownCancelContextualConfirmation() async throws {
+            let rig = try await ChatRig()
+            var chat = rig.service.chat(for: sid)
+            chat.draft = "Main draft"
+            await chat.submitMessage("Context before closed view").value
+            chat.setView(.closed)
+            chat.setView(.open)
+            await chat.confirm().value
+            #expect(!chat.isConfirming && chat.draft == "Main draft" && chat.deliveries.isEmpty)
+            await chat.submitMessage("Context before account leave").value
+            await rig.service.accountLeft()
+            await chat.confirm().value
+            #expect(!chat.isConfirming && chat.deliveries.isEmpty)
+            chat = rig.service.chat(for: sid)
+            await chat.submitMessage("Context before shutdown").value
+            await rig.service.shutdown()
+            await chat.confirm().value
+            #expect(!chat.isConfirming && chat.deliveries.isEmpty && rig.launcher.launches.isEmpty)
+            await rig.cleanup()
+        }
+
         // MARK: 정상 흐름 (저장 켜짐)
 
         @Test func theFirstSendAsksForConfirmationThenSendsAndTheTranscriptLineMakesItReceivedAndSavedWithItsReply() async throws {

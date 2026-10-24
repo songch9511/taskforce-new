@@ -470,7 +470,9 @@ public struct Composer: View {
     let label: String
     let isDisabled: Bool
     let isSending: Bool
+    let sendEnabled: Bool
     let focusRequest: Int
+    let claimsFocusOnCreation: Bool
     let isRunning: Bool
     let blocked: String?
     let onStop: () -> Void
@@ -483,7 +485,7 @@ public struct Composer: View {
     ///   입력칸이 꺼지고 보내기 원은 `bg/selected`의 조용한 원(회색 화살표)이 되어 아무 일도 하지 않는다 — 여기 쓴 글이 비밀값의 답이 되거나 서버에 닿는 길이 없다. Stop은 에이전트가 돌면 그대로 쓸 수 있다
     public init(
         text: Binding<String>, placeholder: String = ChatCopy.composerPlaceholder, label: String = ChatCopy.composerLabel,
-        isDisabled: Bool = false, isSending: Bool = false, focusRequest: Int = 0, isRunning: Bool = false, blocked: String? = nil, onStop: @escaping () -> Void = {},
+        isDisabled: Bool = false, isSending: Bool = false, focusRequest: Int = 0, isRunning: Bool = false, blocked: String? = nil, onStop: @escaping () -> Void = {}, claimsFocusOnCreation: Bool = true, sendEnabled: Bool = true,
         onSubmit: @escaping (String) -> Void
     ) {
         _text = text
@@ -491,7 +493,9 @@ public struct Composer: View {
         self.label = label
         self.isDisabled = isDisabled
         self.isSending = isSending
+        self.sendEnabled = sendEnabled
         self.focusRequest = focusRequest
+        self.claimsFocusOnCreation = claimsFocusOnCreation
         self.isRunning = isRunning
         self.blocked = blocked
         self.onStop = onStop
@@ -507,8 +511,8 @@ public struct Composer: View {
     nonisolated public static func circleStopsInsteadOfSending(running: Bool) -> Bool { running }
 
     /// 보낼 수 있나 (글이 있고, 꺼져 있지 않고, 막혀 있지 않고, 보내는 중이 아니다)
-    nonisolated public static func canSend(text: String, isDisabled: Bool, isSending: Bool, blocked: String? = nil) -> Bool {
-        !isDisabled && blocked == nil && !isSending && ChatComposerRules.isSendable(text)
+    nonisolated public static func canSend(text: String, isDisabled: Bool, isSending: Bool, blocked: String? = nil, sendEnabled: Bool = true) -> Bool {
+        sendEnabled && !isDisabled && blocked == nil && !isSending && ChatComposerRules.isSendable(text)
     }
 
     /// 막혔을 때의 자리표시 (빈 글이면 기본 문구). 막히지 않았으면 원래 자리표시
@@ -523,7 +527,7 @@ public struct Composer: View {
     /// 보내기 원이 조용한 모양인가 (막혔고 Stop이 아닐 때): `bg/selected` 원 + 회색 화살표, 눌러도 아무 일이 없다
     nonisolated public static func circleIsQuiet(blocked: String?, running: Bool) -> Bool { blocked != nil && !running }
 
-    private var canSend: Bool { Self.canSend(text: text, isDisabled: isDisabled, isSending: isSending, blocked: blocked) }
+    private var canSend: Bool { Self.canSend(text: text, isDisabled: isDisabled, isSending: isSending, blocked: blocked, sendEnabled: sendEnabled) }
 
     private func submit() {
         guard canSend else { return }
@@ -567,7 +571,7 @@ public struct Composer: View {
         #if os(macOS)
         ComposerTextField(
             text: $text, placeholder: Self.placeholder(base: placeholder, blocked: blocked), label: label, isEnabled: Self.fieldEnabled(isDisabled: isDisabled, blocked: blocked),
-            focusRequest: focusRequest, onFocusChange: { focused = $0 }, onSubmit: submit
+            focusRequest: focusRequest, claimsFocusOnCreation: claimsFocusOnCreation, onFocusChange: { focused = $0 }, onSubmit: submit
         )
         #else
         TextField(Self.placeholder(base: placeholder, blocked: blocked), text: $text)

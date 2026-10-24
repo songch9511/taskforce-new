@@ -260,6 +260,45 @@ extension ExternalSessionSuites {
             conversation.stop()
         }
 
+        // MARK: 장부 (T1 후속 1번): Agent가 아닌 도구의 실패는 Agent 호출 장부를 밀어내지 못한다
+
+        /// 오류로 끝난 결과는 어떤 도구의 것이든 신호로 온다 (`failedToolIDs` · `toolOutcomes`). 호출 줄을 Agent로 본 id의 결과만 장부에 적어야 2048칸 장부에서 진짜 Agent 호출이 밀리지 않는다
+        @Test func manyFailedResultsOfOtherToolsNeverPushARealAgentCallOutOfTheLedger() async {
+            let script = S()
+            script.queueOpen(page([S.turn(1), agentCall("tuA", at: 5)]))
+            script.queueSubagents(.metas([meta("a1", tool: "tuA")], cursor: cursor1))
+            let count = ClaudeAppConversation.maxRememberedAgentCalls + 200
+            let ids = (0..<count).map { "bash\($0)" }
+            var failed = cursor()
+            failed.signals = ClaudeAppTranscriptSignals(failedToolIDs: ids, background: [], toolOutcomes: ids.map { ClaudeAppToolOutcome(toolUseID: $0, failed: true, at: t0.addingTimeInterval(10)) })
+            script.queueNewer(.turns([], cursor: failed, hasMore: false))
+            let conversation = make(script)
+            conversation.start()
+            #expect(await eventually { task(conversation, "a1")?.status == .running }, "호출 줄을 본 에이전트가 도는 중으로 보인다")
+            #expect(await eventually { conversation.rememberedFailureCount > 0 }, "Agent가 아닌 도구의 실패 결과가 들어왔다")
+            #expect(task(conversation, "a1")?.status == .running, "도구 실패가 많이 와도 Agent 호출은 장부에 남아 있다")
+            conversation.stop()
+        }
+
+        /// 호출 줄이 읽은 창 밖(앞 쪽)에 있는 에이전트의 실패 결과가 먼저 온 경우: 지금처럼 실패한 에이전트로 보이고(시작 시각만 모른다), 앞 쪽 기록을 읽어 호출 줄이 들어오면 시작 시각이 채워진다 (결과 시각 그대로). 따로 둔 실패가 이 길을 잃지 않는다
+        @Test func aFailedResultThatCameBeforeItsCallLineFailsTheAgentOnceTheCallLineIsRead() async {
+            let script = S()
+            let first = ClaudeAppTranscriptPage(turns: [S.turn(5)], cursor: cursor(outcomes: [ClaudeAppToolOutcome(toolUseID: "tuA", failed: true, at: t0.addingTimeInterval(20))]), hasEarlier: true, skippedLines: 0)
+            script.queueOpen(.page(first))
+            script.queueSubagents(.metas([meta("a1", tool: "tuA")], cursor: cursor1))
+            script.queueEarlier(.page(ClaudeAppTranscriptPage(turns: [agentCall("tuA", at: 5)], cursor: cursor(), hasEarlier: false, skippedLines: 0)))
+            let conversation = make(script)
+            conversation.start()
+            #expect(await eventually { conversation.phase == .ready && script.subagentCalls >= 1 })
+            #expect(await eventually { task(conversation, "a1")?.status == .failed }, "호출 줄이 창 밖이어도 실패한 결과는 그 에이전트의 실패다 (지금까지와 같다)")
+            #expect(task(conversation, "a1")?.startedAt == nil, "시작 시각은 호출 줄을 읽어야 안다")
+            conversation.showEarlier()
+            #expect(await eventually { task(conversation, "a1")?.startedAt == t0.addingTimeInterval(5) })
+            let found = task(conversation, "a1")
+            #expect(found?.startedAt == t0.addingTimeInterval(5) && found?.endedAt == t0.addingTimeInterval(20))
+            conversation.stop()
+        }
+
         @Test func aSourceThatKnowsNothingAboutAgentsLeavesTheTaskListAsItWas() async {
             final class Plain: ClaudeAppTranscriptSource, @unchecked Sendable {
                 func open(sessionID: String, cwd: String?) -> ClaudeAppTranscriptLoad { .page(ClaudeAppTranscriptPage(turns: [ClaudeAppTranscriptScript.turn(1)], cursor: ClaudeAppTranscriptCursor(sessionID: ExternalSessionFixture.uuid(0xF1)), hasEarlier: false, skippedLines: 0)) }

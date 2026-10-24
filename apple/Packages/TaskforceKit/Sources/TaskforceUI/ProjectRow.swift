@@ -66,6 +66,20 @@ public struct ProjectRow: View {
 
 /// SessionRow (0.2.0 디자인 시스템 Molecules, OA U2): 이슈의 에이전트 세션 하나. 에이전트 마크 20 · 세션 이름(callout) · 지금 어디에 있나(footnote `text/secondary`).
 /// ProjectRow와 같은 수치. 말은 동사를 앞에 ("Running", "External · Open in Terminal"): 줄임이 동사를 남긴다. 접근성 이름 "{이름} — {에이전트} — {말}"
+public struct SessionRowDisclosure {
+    public let isExpanded: Bool
+    public let canToggle: Bool
+    public let accessibilityValue: String?
+    public let toggleActionName: String?
+    public let onToggle: () -> Void
+    public init(isExpanded: Bool, canToggle: Bool, accessibilityValue: String, toggleActionName: String, onToggle: @escaping () -> Void) {
+        self.isExpanded = isExpanded; self.canToggle = canToggle
+        self.accessibilityValue = canToggle ? accessibilityValue : nil
+        self.toggleActionName = canToggle ? toggleActionName : nil
+        self.onToggle = onToggle
+    }
+}
+
 public struct SessionRow: View {
     /// 끝난(`closed`) 세션의 모양 (사용자 결정 2026-10-15): 상태 말 없이 흐리게. DS에는 `text-tertiary`가 없어 DS의 비활성 값을 쓴다: 이름은 `text-secondary`,
     /// 마크는 불투명도 .45(DS `.tf-btn:disabled` · `.tf-iconbtn:disabled`와 같은 값). 새 색을 만들지 않는다
@@ -86,6 +100,9 @@ public struct SessionRow: View {
     let current: Bool
     let highlighted: Bool
     let dimmed: Bool
+    var disclosure: SessionRowDisclosure? = nil
+    var shared: String? = nil
+    var summary: String? = nil
     let onOpen: () -> Void
     let onAsk: (() -> Void)?
 
@@ -104,11 +121,25 @@ public struct SessionRow: View {
         self.onAsk = onAsk
     }
 
-    public init(_ item: AgentSessionItem, current: Bool = false, highlighted: Bool = false, onOpen: @escaping () -> Void, onAsk: (() -> Void)? = nil) {
+    public init(_ item: AgentSessionItem, current: Bool = false, highlighted: Bool = false, disclosure: SessionRowDisclosure? = nil, shared: String? = nil, summary: String? = nil, onOpen: @escaping () -> Void, onAsk: (() -> Void)? = nil) {
         self.init(
-            name: item.name, agent: item.agent, line: item.line, accessibilityName: item.rowAccessibilityName, current: current, highlighted: highlighted,
+            name: item.name, agent: item.agent, line: item.line, accessibilityName: Self.accessibilityName(item, shared: shared, summary: summary), current: current, highlighted: highlighted,
             dimmed: item.isClosed, onOpen: onOpen, onAsk: onAsk
         )
+        self.disclosure = disclosure
+        self.shared = shared
+        self.summary = summary
+    }
+
+    public static func secondLine(line: String, dimmed: Bool, shared: String?) -> String? {
+        let parts = [dimmed || line.isEmpty ? nil : line, shared?.isEmpty == false ? shared : nil].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+    public static func accessibilityName(_ item: AgentSessionItem, shared: String? = nil, summary: String? = nil) -> String {
+        var result = item.rowAccessibilityName
+        if let summary, !summary.isEmpty { result += ", " + summary }
+        if let shared, !shared.isEmpty { result += " — " + shared }
+        return result
     }
 
     public var body: some View {
@@ -118,6 +149,7 @@ public struct SessionRow: View {
             askLabel: onAsk == nil ? nil : AskPill.accessibilityName(number: nil, name: name), onOpen: onOpen, onAsk: onAsk
         ) { lit, asking in
             HStack(alignment: .top, spacing: 10) {
+                if disclosure != nil { Color.clear.frame(width: 14, height: 20) }
                 AgentMark(agent, size: 20)
                     .opacity(look.markOpacity)
                     .frame(minHeight: 20)
@@ -129,8 +161,8 @@ public struct SessionRow: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .frame(height: 20, alignment: .leading)
-                    if look.showsLine {
-                        Text(line)
+                    if let second = Self.secondLine(line: line, dimmed: dimmed, shared: shared) {
+                        Text(second)
                             .font(TFFont.footnote)
                             .tracking(-0.08)
                             .foregroundStyle(lit ? TFColor.textSecondarySelected : TFColor.textSecondary)
@@ -141,6 +173,21 @@ public struct SessionRow: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                if let summary { Text(summary).font(TFFont.footnote).foregroundStyle(TFColor.textSecondary) }
+            }
+        }
+        .overlay(alignment: .topLeading) {
+            if let disclosure, disclosure.canToggle {
+                Button(action: disclosure.onToggle) {
+                    Image(systemName: disclosure.isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .frame(width: 24, height: 36)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.leading, 5)
+                .accessibilityLabel(disclosure.toggleActionName ?? "")
+                .accessibilityValue(disclosure.accessibilityValue ?? "")
             }
         }
     }
