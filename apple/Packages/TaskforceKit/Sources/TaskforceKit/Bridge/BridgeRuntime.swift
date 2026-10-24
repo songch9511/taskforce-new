@@ -157,6 +157,8 @@ public actor BridgeRuntime {
     var requestTimes: [BridgeRoute: [Date]] = [:]
     var supervised: [String: Supervised] = [:]
     var startReservations: [String: StartReservation] = [:]
+    /// 로컬 Resume here 확인이 `prepareAttach`로 낸, 아직 확정 · 취소되지 않은 이어받기 계획 (Claude id마다 하나, 메모리만: `BridgeRuntime+Attach.swift`)
+    var pendingAttaches: [String: AttachPlan] = [:]
     /// 원장은 살아 있다고 하지만 감독하는 실행이 없는 task가 마지막으로 확인된 상태: `.alive`(끝내지 못했다) · `.unknown`(끝을 증명하지 못했다)
     var orphanLiveness: [String: AgentLiveness] = [:]
     /// adapter 닫기(`closeRequest`)가 도는 task와 그 세션 (OA D3a 16장 1): 닫기 spawn은 시작부터 생존 판단(`hasLiveProcess` · 종료)에 든다

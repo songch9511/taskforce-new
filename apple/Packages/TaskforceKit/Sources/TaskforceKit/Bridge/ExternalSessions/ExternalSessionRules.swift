@@ -3,8 +3,9 @@ import Foundation
 
 /// 외부 세션 발견의 순수 규칙 (OA 외부 세션 PR1, 계약 5장 · T4 · T5). 파일 시스템 · 프로세스를 만지지 않는다
 public enum ExternalSessionRules {
-    /// 이어받기 최소 Claude Code 버전 (ES-13): `-p --resume`에서 `--system-prompt-snapshot`을 쓸 수 있는 첫 버전
-    public static let minimumResumeVersion = "2.1.257"
+    /// 이어받기 최소 Claude Code 버전. 계약 ES-13은 `-p --resume`에서 `--system-prompt-snapshot`을 쓸 수 있는 첫 버전(2.1.257)이었지만, 이어받은 세션이 쓰는 빈 `--setting-sources`
+    /// 격리(저장소 · 사용자 설정이 Taskforce의 승인 규칙과 섞이지 않게)는 **2.1.304 · 2.1.306에서만 확인했다** (PR2m 보안 P3-3): 그 아래 판은 이 인자로 띄우지 않고 "Update Claude Code"로 막는다
+    public static let minimumResumeVersion = "2.1.304"
     /// 제목 상한: 서버 `title`은 1–200자(JS 문자열 = UTF-16 단위)다. 단위로 세면 코드 포인트 수 규칙도 함께 지킨다
     public static let maxTitleUTF16 = 200
     /// 프로젝트 디렉터리 이름의 상한: 이보다 길면 Claude Code가 해시를 붙여 이름을 만들어 확인할 수 없다 (CC-A)

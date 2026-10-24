@@ -14,6 +14,20 @@ public enum SessionsPanelCopy {
     public static let done = AgentSessionRules.done
 }
 
+/// 줄들이 Resume here를 어떻게 보이나 (OA 외부 세션 PR2m): 게이트 + 줄마다의 확인 상태
+public struct ExternalSessionAttachPresentation: Equatable, Sendable {
+    public var gate: ExternalSessionAttachModel.Gate
+    public var phases: [String: ExternalSessionAttachModel.Phase]
+
+    public init(gate: ExternalSessionAttachModel.Gate, phases: [String: ExternalSessionAttachModel.Phase]) {
+        self.gate = gate
+        self.phases = phases
+    }
+
+    /// 이어받기가 없다 (게이트 닫힘): 줄은 이전 그대로
+    public static let off = ExternalSessionAttachPresentation(gate: .unavailable, phases: [:])
+}
+
 /// 한 절 (Taskforce · On this Mac): 보일 줄과 접힌 줄. 링 있는 줄(주황 · 도는 중 · 끝)은 접지 않고 쉬는 줄 · 끝난 줄만 셋 뒤로 접는다 (`Show all` · `Show less`)
 public struct SessionsSection<Row: Identifiable & Sendable & Equatable>: Equatable, Sendable {
     /// 지금 보일 줄 (순서대로)
@@ -71,13 +85,16 @@ public struct SessionsMacRow: Identifiable, Equatable, Sendable, CustomStringCon
     public let ring: AgentSessionRing?
     /// 줄을 누르면 Claude 세션 보기(`ClaudeAppSessionPanel`)가 열린다: Taskforce가 상태를 아는 살아 있는 데스크톱 줄뿐
     public let opensSession: Bool
+    /// 이 줄 밑에 서 있는 Resume here 확인의 상태 (없으면 nil)
+    public let attach: ExternalSessionAttachModel.Phase?
 
-    public init(id: String, row: ExternalSessionRow, line: ExternalSessionLineContent, ring: AgentSessionRing?, opensSession: Bool) {
+    public init(id: String, row: ExternalSessionRow, line: ExternalSessionLineContent, ring: AgentSessionRing?, opensSession: Bool, attach: ExternalSessionAttachModel.Phase? = nil) {
         self.id = id
         self.row = row
         self.line = line
         self.ring = ring
         self.opensSession = opensSession
+        self.attach = attach
     }
 
     /// 제목 · 경로 · id를 찍지 않는다
@@ -143,7 +160,7 @@ public enum SessionsPanelRules {
     /// - busy: 방금 누른 Open in Claude가 도는 줄들 ("Opening…")
     public static func onThisMac(
         _ rows: [ExternalSessionRow], live: (String) -> ClaudeAppLiveStatus?, now: Date, expanded: Bool, notice: (id: String, text: String)? = nil,
-        busy: Set<String> = [], timeZone: TimeZone = .current
+        busy: Set<String> = [], timeZone: TimeZone = .current, attach: ExternalSessionAttachPresentation = .off
     ) -> SessionsSection<SessionsMacRow> {
         let listed = rows.filter { $0.status != .inTaskforce }.map { row -> (row: ExternalSessionRow, status: ClaudeAppLiveStatus?) in (row, live(row.id)) }
         // 링 있는 줄(주황 → 도는 중 → 끝, 새것 먼저)을 앞에, 나머지는 훑은 순서 그대로
@@ -155,16 +172,39 @@ public enum SessionsPanelRules {
         let rest = listed.filter { !($0.status.map(hasRingRow) ?? false) }
         let built = (ringRows + rest).map { entry -> (row: SessionsMacRow, isRing: Bool) in
             let isBusy = busy.contains(entry.row.id)
-            let line: ExternalSessionLineContent
+            var line: ExternalSessionLineContent
+            var phase: ExternalSessionAttachModel.Phase?
             if let status = entry.status {
                 line = ExternalSessionLineText.make(entry.row, live: status, now: now, timeZone: timeZone, busy: isBusy)
             } else {
                 line = ExternalSessionLineText.make(
                     entry.row, now: now, timeZone: timeZone, notice: notice?.id == entry.row.id ? notice?.text : nil, busy: isBusy
                 )
+                // 이어받기 (OA 외부 세션 PR2m, 계약 8.2 · 8.3): 아무 곳에서도 열려 있지 않은 줄(Idle)에만. Open in Claude가 도는 중인 줄은 건드리지 않는다
+                if entry.row.status == .available, !isBusy {
+                    switch attach.gate {
+                    case .ready where entry.row.folderPath != nil:
+                        if let standing = attach.phases[entry.row.id] {
+                            // 확인이 서 있는 동안은 줄의 버튼을 숨긴다 (확인 단추와 겹쳐 보이지 않게)
+                            line.action = nil
+                            line.extraActions = []
+                            phase = standing
+                        } else {
+                            // DZ: 눈에 보이는 버튼은 Resume here 하나, Open in Claude(쉬는 데스크톱 줄)는 VoiceOver 동작으로 남는다
+                            if line.action == .openInClaude { line.extraActions = [.openInClaude] }
+                            line.action = .resumeHere
+                        }
+                    case .notReady(let word):
+                        // 서버는 열렸는데 이 Mac의 대상이 ready가 아니다: 줄은 그 대상 단어를 말한다 (계약 8.2-8)
+                        line.statusWord = word
+                        line.statusIsEmphasis = false
+                    default: break
+                    }
+                }
             }
-            let mac = SessionsMacRow(id: entry.row.id, row: entry.row, line: line, ring: entry.status?.ring, opensSession: entry.status != nil)
-            return (mac, entry.status.map(hasRingRow) ?? false)
+            let mac = SessionsMacRow(id: entry.row.id, row: entry.row, line: line, ring: entry.status?.ring, opensSession: entry.status != nil, attach: phase)
+            // 확인이 서 있는 줄은 접히지 않는다 (보이지 않는 확인이 남지 않게)
+            return (mac, (entry.status.map(hasRingRow) ?? false) || phase != nil)
         }
         return fold(built, expanded: expanded)
     }

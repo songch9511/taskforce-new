@@ -61,8 +61,13 @@ public struct ExternalSessionLineView: View {
         .animation(TFMotion.ease(TFMotion.hoverFade), value: highlighted)
     }
 
+    /// VoiceOver 동작: 보이는 버튼의 동작과 (Resume here가 보이는 쉬는 데스크톱 줄의) Open in Claude. 여는 동안은 없다
     @ViewBuilder private var accessibilityOpenAction: some View {
-        if let action = content.action, !content.isBusy { Button(ExternalSessionCopy.openInClaude) { onAction(action) } }
+        if !content.isBusy {
+            ForEach(Array(([content.action].compactMap { $0 } + content.extraActions).enumerated()), id: \.offset) { _, action in
+                Button(content.title(of: action)) { onAction(action) }
+            }
+        }
     }
 
     private var rowContent: some View {
@@ -121,6 +126,31 @@ public struct ExternalSessionLineView: View {
     }
 }
 
+/// 줄 밑에 서는 이어받기 제자리 확인 (OA 외부 세션 PR2m, DZ 승인 2026-10-21 · 계약 8.3 · 17장): `ConfirmRow`를 패널 안에 그대로 쓴다 (`bg/field` 바탕 · 둥근 모서리).
+/// 제목 "Resume this session in Taskforce?" · 설명 "Don't open it in Claude while Taskforce is working." · 확인 "Resume here" · Cancel이 먼저 포커스.
+/// `note`는 직전 시도가 거절된 이유의 회색 한 줄이다 (단추 밑, 빨강 없음). 도는 중(`busy`)에는 확인이 비활성이고 스피너가 돈다
+public struct ExternalSessionConfirmView: View {
+    let note: String?
+    let busy: Bool
+    let onConfirm: () -> Void
+    let onCancel: () -> Void
+
+    public init(note: String? = nil, busy: Bool = false, onConfirm: @escaping () -> Void, onCancel: @escaping () -> Void) {
+        self.note = note
+        self.busy = busy
+        self.onConfirm = onConfirm
+        self.onCancel = onCancel
+    }
+
+    public var body: some View {
+        ConfirmRow(
+            ExternalSessionAttachCopy.confirmTitle, detail: ExternalSessionAttachCopy.confirmDetail, confirmLabel: ExternalSessionAttachCopy.resumeHere, busy: busy, note: note,
+            onConfirm: onConfirm, onCancel: onCancel
+        )
+        .background(TFColor.bgField, in: RoundedRectangle(cornerRadius: TFRadius.md, style: .continuous))
+    }
+}
+
 #if DEBUG
 /// 디자인 비교 스냅샷만 (Debug): 이 제목의 줄을 호버한 것처럼 보인다 (Open in Claude가 뜬다). 앱의 다른 곳에서는 쓰지 않는다
 public enum ExternalSessionLineSnapshot {
@@ -133,6 +163,8 @@ public enum ExternalSessionLineSnapshot {
         ExternalSessionLineView(content: .init(title: "Fix launcher focus after sleep when the panel is open", statusWord: "Running in Claude", statusIsEmphasis: true, detail: ["2 min ago"], action: .openInClaude), ring: .running, onOpen: {})
         ExternalSessionLineView(content: .init(title: "Add RLS test", statusWord: "Idle", statusIsEmphasis: false, detail: ["40 min ago", "Claude desktop"], action: nil))
         ExternalSessionLineView(content: .init(title: "Banner variants", statusWord: "Can't resume here", statusIsEmphasis: true, detail: ["Worktree", "2 hr ago"], action: nil))
+        ExternalSessionLineView(content: .init(title: "Rewrite the pricing page copy", statusWord: "Idle", statusIsEmphasis: false, detail: ["40 min ago"], action: nil), current: true)
+        ExternalSessionConfirmView(note: "Close it in Claude first", onConfirm: {}, onCancel: {})
     }
     .padding(8)
     .frame(width: 380)

@@ -73,6 +73,9 @@ enum Fake {
         var promptFile = ""
         var systemPrompt = ""
         var promptMode = 0
+        /// `--setting-sources`의 값 (`project` 또는 빈 값) · `--system-prompt-snapshot off`가 있었나
+        var settingSources = "project"
+        var snapshotOff = false
         var settings = ""
         var sessionID: String?
         var resume: String?
@@ -343,7 +346,9 @@ enum Fake {
             case "--mcp-config": guard let path = value() else { return nil }; flags.mcpConfig = path
             case "--add-dir": guard let path = value() else { return nil }; flags.addDir = path
             case "--settings": guard let path = value() else { return nil }; flags.settings = path
-            case "--setting-sources": guard value() == "project" else { return nil }
+            // 새 세션 · Taskforce 세션의 턴은 `project`, 이어받은 세션은 빈 값 + `--system-prompt-snapshot off` (OA 외부 세션 PR2m, ES-12 B · ES-12b)
+            case "--setting-sources": guard let sources = value(), sources == "project" || sources.isEmpty else { return nil }; flags.settingSources = sources
+            case "--system-prompt-snapshot": guard value() == "off" else { return nil }; flags.snapshotOff = true
             case "--permission-mode": guard value() == "manual" else { return nil }
             case "--append-system-prompt-file": guard let path = value() else { return nil }; flags.promptFile = path
             case "--session-id": flags.sessionID = value()
@@ -355,6 +360,8 @@ enum Fake {
         let required: Set<String> = ["-p", "--output-format", "--verbose", "--include-hook-events", "--max-budget-usd", "--tools", "--strict-mcp-config", "--mcp-config", "--add-dir",
                                      "--settings", "--setting-sources", "--permission-mode", "--append-system-prompt-file"]
         guard required.isSubset(of: seen), (flags.sessionID == nil) != (flags.resume == nil) else { return nil }
+        // 두 짝: `project` ↔ 스냅샷 기본, 빈 값 ↔ `--system-prompt-snapshot off` (이어받은 세션은 늘 resume다)
+        guard flags.settingSources == "project" ? !flags.snapshotOff : (flags.snapshotOff && flags.resume != nil) else { return nil }
         // 프롬프트는 `--add-dir`과 순서가 정해져 있지 않으므로 다 읽은 뒤에 대조한다
         guard let text = loadPrompt(&flags), promptNamesWorkspace(text, addDir: flags.addDir) else { return nil }
         flags.systemPrompt = text
@@ -493,6 +500,7 @@ enum Fake {
             "args_ok": true, "project_instructions": flags.systemPrompt.contains(projectOpen), "prompt_file_mode": flags.promptMode, "prompt_file_beside_settings": true,
             "argv_has_prompt_text": CommandLine.arguments.contains { $0.contains("PROJECT INSTRUCTIONS") || $0.contains(prompt) }, "fds": openFDs.map(Int.init), "env_keys": environmentKeys.sorted(), "stdin_bytes": stdin.count, "resume": flags.resume != nil,
             "session_id": sessionID, "cwd": cwd, "tools": flags.tools, "pid": Int(getpid()), "pgid": Int(getpgrp()),
+            "setting_sources": flags.settingSources, "snapshot_off": flags.snapshotOff, "prompt_shell_in_workspace": flags.systemPrompt.contains("Your shell starts in the workspace folder."),
             "argv0": CommandLine.arguments.first ?? "", "exec_path": executablePath(), "started_at": Date().timeIntervalSince1970,
         ]
         saveReport()

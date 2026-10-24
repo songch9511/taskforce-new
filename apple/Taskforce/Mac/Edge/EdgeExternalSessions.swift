@@ -181,7 +181,7 @@ struct SessionsPanelBody: View {
         guard let store, store.phase == .ready else { return SessionsSection(rows: [], hiddenCount: 0, togglesFold: false, expanded: false) }
         return SessionsPanelRules.onThisMac(
             store.rows, live: { shell.desktop?.liveStatus(for: $0) }, now: now, expanded: macExpanded,
-            notice: shell.openNoticeSessionID.map { ($0, ExternalSessionCopy.runningInTerminal) }, busy: shell.openingSessionIDs
+            notice: shell.openNoticeSessionID.map { ($0, ExternalSessionCopy.runningInTerminal) }, busy: shell.openingSessionIDs, attach: shell.attachPresentation
         )
     }
 
@@ -208,13 +208,20 @@ struct SessionsPanelBody: View {
             SessionsSectionHeader(SessionsPanelCopy.onThisMac, togglesFold: section.togglesFold, expanded: section.expanded) { macExpanded.toggle() }
             VStack(alignment: .leading, spacing: 2) {
                 ForEach(section.rows) { mac in
-                    // 여는 동안(`isBusy`)의 "Opening…" 글자와 비활성은 줄 그림이 `content`에서 스스로 정한다
-                    ExternalSessionLineView(
-                        content: mac.line, ring: mac.ring, current: shell.desktopPanelID == mac.id,
-                        onOpen: mac.opensSession ? { shell.openDesktopSession(mac.id, from: .list) } : nil
-                    ) { action in
-                        switch action {
-                        case .openInClaude: shell.openInClaude(mac.row)
+                    // 확인이 서 있는 줄(`mac.attach`)은 선택 바탕을 유지한다: 어느 세션인지 읽히게, 확인은 그 줄 밑에 선다 (DZ 승인 2026-10-21 "줄을 남기고 밑에")
+                    VStack(alignment: .leading, spacing: 2) {
+                        // 여는 동안(`isBusy`)의 "Opening…" 글자와 비활성은 줄 그림이 `content`에서 스스로 정한다
+                        ExternalSessionLineView(
+                            content: mac.line, ring: mac.ring, current: shell.desktopPanelID == mac.id || mac.attach != nil,
+                            onOpen: mac.opensSession ? { shell.openDesktopSession(mac.id, from: .list) } : nil
+                        ) { action in
+                            switch action {
+                            case .openInClaude: shell.openInClaude(mac.row)
+                            case .resumeHere: shell.resumeHere(mac.row)
+                            }
+                        }
+                        if let phase = mac.attach {
+                            ExternalSessionConfirmView(note: phase.note, busy: phase == .working, onConfirm: { shell.confirmResume(mac.row) }, onCancel: { shell.cancelResume(mac.id) })
                         }
                     }
                 }
@@ -357,14 +364,19 @@ final class ExternalSessionsEnvironment: @unchecked Sendable {
     ) -> ExternalSessionScanner.Configuration {
         ExternalSessionScanner.Configuration(
             claudeDirectory: home + "/.claude", folderRules: ExternalSessionFolderRules.lexical(home: home, protectedRoots: protectedRoots), protectedRoots: protectedRoots,
-            taskforceSessionIDs: { taskforceSessionIDs(sessionsRoot: sessionsRoot) }, ownPIDs: { ClaudeAppRelayPIDs.shared.current }, installedCLIVersion: installedCLIVersion
+            taskforceSessionIDs: { taskforceSessionIDs(sessionsRoot: sessionsRoot) }, attachedSessionIDs: { attachedSessionIDs(sessionsRoot: sessionsRoot) },
+            ownPIDs: { ClaudeAppRelayPIDs.shared.current }, installedCLIVersion: installedCLIVersion
         )
     }
 
-    /// Taskforce가 띄운 세션의 Claude id (세션 폴더의 `state.json`): 목록에서 뺀다
+    /// Taskforce가 띄운 세션의 Claude id (세션 폴더의 `state.json`): 목록에서 뺀다. **이 Mac의 사용자가 이어받은 세션은 뺀다** (그 줄은 "In Taskforce"로 남는다: `attachedSessionIDs`)
     static func taskforceSessionIDs(sessionsRoot: URL) -> Set<String> {
-        let folders = (try? FileManager.default.contentsOfDirectory(at: sessionsRoot, includingPropertiesForKeys: nil)) ?? []
-        return Set(folders.compactMap { ClaudeSessionState.load(from: $0).providerSessionID?.lowercased() })
+        ExternalSessionBoundIDs.read(sessionsRoot: sessionsRoot).taskforce
+    }
+
+    /// 이 Mac이 로컬 Resume here로 이어받은 세션의 Claude id (OA 외부 세션 PR2m): 목록에서는 "In Taskforce" 줄이고, Sessions 패널은 그 줄을 Taskforce 절에서만 보인다
+    static func attachedSessionIDs(sessionsRoot: URL) -> Set<String> {
+        ExternalSessionBoundIDs.read(sessionsRoot: sessionsRoot).attached
     }
 }
 
@@ -389,6 +401,22 @@ enum ExternalSessionsRuntime {
             report: { rows, origin in await environment.report(rows, origin: origin, via: reporter) },
             shown: { rows, held in (try? await api.externalSessionsShown(rowsBucket: rows, heldBucket: held)) != nil }, recheck: { id in await environment.recheck(id) }, seen: seen, log: log
         )
+    }
+}
+
+/// 이어받기 "Resume here" (OA 외부 세션 PR2m, 계약 6 · 8.3 · 17 · 20장): 목록과 같은 게이트(새 Issues 화면 ∧ `BridgeFlag` ∧ 서비스 · 계정 경계)에 더해 **서버가 이어받기를 열었고**(플래그 · 베타 명단)
+/// 이 Mac의 Claude Code 대상이 ready일 때만 줄에 단추가 보인다 (`ExternalSessionAttachModel.gate`). 쓰기(서버 이어받기 · 핀 · 상태)는 이 Mac의 런타임이 사용자가 누른 확인에서만 하고,
+/// 여기서는 Kit의 흐름에 런타임 · 서버 면을 낄 뿐이다 (이 파일은 쓰기를 부르지 않는다: 소스 검사 시험이 지킨다). 정상 모드의 런타임만 쓴다 (마무리 모드는 새 등록 0)
+enum ExternalSessionAttachRuntime {
+    @MainActor
+    static func make(
+        services: AppServices?, scope: AccountScope?, externalSessions: ExternalSessionsStore?, targets: AssistantTargetsStore?,
+        host: @escaping @MainActor @Sendable () -> BridgeHost? = { BridgeHost.shared }
+    ) -> ExternalSessionAttachModel? {
+        guard externalSessions != nil, let services, let scope, let targets else { return nil }
+        let runtime: @Sendable () async -> BridgeRuntime? = { await MainActor.run { host()?.activeAgentRuntime } }
+        let server = ExternalSessionAttachServer.live(api: services.api, reads: services.reads, targets: targets, bridgeID: { await runtime()?.localBridgeID() })
+        return ExternalSessionAttachModel(scope: scope, runtime: ExternalSessionAttachingHost(runtime: runtime), server: server, log: BridgeOSLog())
     }
 }
 

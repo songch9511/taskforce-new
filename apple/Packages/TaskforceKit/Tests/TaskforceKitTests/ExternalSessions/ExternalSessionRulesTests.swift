@@ -134,21 +134,24 @@ extension ExternalSessionSuites {
             }
         }
 
-        // MARK: 버전 (ES-13: 이어받기 최소 2.1.257)
+        // MARK: 버전 (이어받기 최소 2.1.304: 빈 `--setting-sources` 격리를 2.1.304 · 2.1.306에서만 확인했다, PR2m 보안 P3-3; 계약 ES-13의 2.1.257을 올렸다)
 
         @Test func versionsCompareNumerically() {
-            #expect(ExternalSessionRules.minimumResumeVersion == "2.1.257")
-            #expect(ExternalSessionRules.version("2.1.257", atLeast: "2.1.257") == true)
-            #expect(ExternalSessionRules.version("2.1.304", atLeast: "2.1.257") == true)
-            #expect(ExternalSessionRules.version("2.1.241", atLeast: "2.1.257") == false)
-            #expect(ExternalSessionRules.version("2.2.0", atLeast: "2.1.257") == true)
-            #expect(ExternalSessionRules.version("3.0.0", atLeast: "2.1.257") == true)
-            #expect(ExternalSessionRules.version("2.1.1000", atLeast: "2.1.257") == true)
-            #expect(ExternalSessionRules.version("2.1.257-beta.1", atLeast: "2.1.257") == true)
-            #expect(ExternalSessionRules.version("2.1", atLeast: "2.1.257") == false)
-            #expect(ExternalSessionRules.version("garbage", atLeast: "2.1.257") == nil)
-            #expect(ExternalSessionRules.version("", atLeast: "2.1.257") == nil)
-            #expect(ExternalSessionRules.version("2.1.257 (Claude Code)", atLeast: "2.1.257") == true)
+            let minimum = ExternalSessionRules.minimumResumeVersion
+            #expect(minimum == "2.1.304")
+            #expect(ExternalSessionRules.version("2.1.304", atLeast: minimum) == true)
+            #expect(ExternalSessionRules.version("2.1.306", atLeast: minimum) == true)
+            #expect(ExternalSessionRules.version("2.1.303", atLeast: minimum) == false)
+            #expect(ExternalSessionRules.version("2.1.257", atLeast: minimum) == false, "예전 최소: 이제 막는다")
+            #expect(ExternalSessionRules.version("2.1.241", atLeast: minimum) == false)
+            #expect(ExternalSessionRules.version("2.2.0", atLeast: minimum) == true)
+            #expect(ExternalSessionRules.version("3.0.0", atLeast: minimum) == true)
+            #expect(ExternalSessionRules.version("2.1.1000", atLeast: minimum) == true)
+            #expect(ExternalSessionRules.version("2.1.304-beta.1", atLeast: minimum) == true)
+            #expect(ExternalSessionRules.version("2.1", atLeast: minimum) == false)
+            #expect(ExternalSessionRules.version("garbage", atLeast: minimum) == nil)
+            #expect(ExternalSessionRules.version("", atLeast: minimum) == nil)
+            #expect(ExternalSessionRules.version("2.1.304 (Claude Code)", atLeast: minimum) == true)
         }
 
         // MARK: 구간 (지표는 수가 아니라 구간만)

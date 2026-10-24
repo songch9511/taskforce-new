@@ -389,6 +389,9 @@ final class EdgeShellModel {
     /// 저장된 Claude 데스크톱 대화 (OA D3v-m, 계약 27장): Sessions의 셋째 절 · Settings › Account의 모두 지우기가 읽는 저장소. **목록(`externalSessions`)과 같은 게이트다**
     /// (새 Issues 화면 ∧ `BridgeFlag` ∧ 로그인) — 읽기 전용 보기는 중계 게이트(`ClaudeAppRelayGate`)와 상관없다. 없으면 절도 보기도 없다
     let savedChats: SavedChatsStore?
+    /// 이 Mac의 닫힌 Claude 세션을 Taskforce 세션으로 이어받는 흐름 (OA 외부 세션 PR2m, 계약 6 · 8.3): Sessions의 On this Mac 줄의 Resume here · 제자리 확인. **목록(`externalSessions`)과 같은 게이트**에 더해
+    /// 서버가 이어받기를 열었을 때만 단추가 보인다 (`ExternalSessionAttachModel.gate`). 없으면 줄은 이전 그대로다
+    let attach: ExternalSessionAttachModel?
     /// 지금 보이는 저장된 대화 (Sessions 왼쪽 패널, 한 번에 하나): Sessions 줄을 눌러 연다. Taskforce 세션 패널 · 데스크톱 세션 보기와 왼쪽 자리를 나눈다 (하나가 열리면 다른 것은 닫힌다)
     private(set) var savedChatPanelID: UUID? {
         didSet { savedChatPanelChanged() }
@@ -496,10 +499,11 @@ final class EdgeShellModel {
         contexts: WorkContextStore? = nil, review: ReviewDesk? = nil, summary: ReturnSummaryStore? = nil, chatsEnabled: Bool = true,
         windowsEnabled: Bool = false, issues: IssueRuntime? = nil, taskforceGate: Bool = EdgeSurfaces.taskforceConversationForThisRun,
         externalSessions: ExternalSessionsStore? = nil, desktopSessions: ClaudeAppSessionsModel? = nil, railDone: (any RailDoneStore)? = nil,
-        claudeAppOpened: ClaudeAppOpenedMetric? = nil, desktopChat: ClaudeAppChatService? = nil, savedChats: SavedChatsStore? = nil
+        claudeAppOpened: ClaudeAppOpenedMetric? = nil, desktopChat: ClaudeAppChatService? = nil, savedChats: SavedChatsStore? = nil, attach: ExternalSessionAttachModel? = nil
     ) {
         self.issues = issues
         self.externalSessions = issues == nil ? nil : externalSessions
+        self.attach = issues == nil || externalSessions == nil ? nil : attach
         self.desktop = issues == nil || externalSessions == nil ? nil : desktopSessions
         self.desktopChat = issues == nil || externalSessions == nil || desktopSessions == nil ? nil : desktopChat
         self.savedChats = issues == nil || externalSessions == nil ? nil : savedChats
@@ -522,6 +526,8 @@ final class EdgeShellModel {
         self.clock = clock
         self.calendar = calendar
         self.pinStore = pinStore
+        // 이어받기가 끝나면 목록을 다시 읽고 그 세션의 패널을 연다 (OA 외부 세션 PR2m)
+        self.attach?.onAttached = { [weak self] id in await self?.sessionAttached(id) }
         // 읽기가 반영돼 그 응답이 화면에 보일 수 있게 되는 그 자리에서 첫 정상 표시 확정을 받는다 (C)
         summary?.onDisplayed = { [weak self] in self?.considerSummaryBaseline() }
         // Taskforce 충돌 해소의 2초 보류는 셸의 주입 시계로 만든다 (시험이 손으로 돌린다, OA U3-27)
@@ -969,7 +975,42 @@ final class EdgeShellModel {
         let showing = panelOpen && view == .sessions && externalSessionsVisible
         guard showing != externalSessionsShowing else { return }
         externalSessionsShowing = showing
-        if showing { externalSessions?.panelOpened() } else { externalSessions?.panelClosed() }
+        if showing {
+            externalSessions?.panelOpened()
+            // Resume here의 게이트(서버가 열었나 · 이 Mac의 대상이 ready인가)는 패널을 열 때 다시 읽는다 (플래그는 한 시간에 한 번만 묻는다)
+            Task { [weak self] in await self?.attach?.refreshGate() }
+        } else {
+            externalSessions?.panelClosed()
+        }
+    }
+
+    // MARK: Resume here (OA 외부 세션 PR2m, 계약 6 · 8.3)
+
+    /// On this Mac 줄들이 그릴 이어받기 모양 (게이트 + 줄마다의 확인 상태). 이어받기가 없는 셸은 `.off`다
+    var attachPresentation: ExternalSessionAttachPresentation {
+        attach.map { ExternalSessionAttachPresentation(gate: $0.gate, phases: $0.phases) } ?? .off
+    }
+
+    /// 줄의 Resume here: 제자리 확인을 세운다 (아무것도 하지 않는다)
+    func resumeHere(_ row: ExternalSessionRow) {
+        attach?.request(row)
+    }
+
+    func cancelResume(_ id: String) {
+        attach?.cancel(id)
+    }
+
+    /// 확인의 Resume here: 이 순간 그 세션을 다시 판정하고 이어받는다. 끝나면 `sessionAttached`가 돈다. 시험이 끝나기를 기다릴 수 있게 Task를 돌려준다
+    @discardableResult
+    func confirmResume(_ row: ExternalSessionRow) -> Task<Void, Never> {
+        Task { [weak self] in _ = await self?.attach?.confirm(row) }
+    }
+
+    /// 이어받았다: 이 Mac 목록을 다시 훑고(줄이 "In Taskforce"가 되어 Taskforce 절로 옮겨 간다) 세션을 다시 읽은 뒤 그 세션 패널을 연다. Sessions를 떠났으면 열지 않는다
+    func sessionAttached(_ id: UUID) async {
+        await externalSessions?.refreshFresh()
+        await issues?.sessions.refresh()
+        openSessionRow(id)
     }
 
     // MARK: Sessions 패널의 줄 · Claude 데스크톱 세션 보기 (OA PR-D2)

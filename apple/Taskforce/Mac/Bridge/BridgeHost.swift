@@ -558,7 +558,9 @@ final class BridgeHost {
                         ClaudeCodeProcess(
                             sessionsRoot: partition.directory(in: root).appending(path: "claude-code", directoryHint: .isDirectory), hookServer: hookServer,
                             helpers: .inBundle(), locator: .standard(home: NSHomeDirectory()), log: BridgeOSLog(),
-                            protectedRoots: ProjectWorkspaces.protectedRoots(support: support, bundleID: bundleID, root: root, bundle: bundle)
+                            protectedRoots: ProjectWorkspaces.protectedRoots(support: support, bundleID: bundleID, root: root, bundle: bundle),
+                            // 이어받은 세션의 턴마다 하는 외부 writer 검사 (OA 외부 세션 PR2m, ES-10): 이 Mac의 `~/.claude/sessions`와 그 세션 기록 파일 하나의 수정 시각만 본다
+                            externalWriters: LiveExternalWriterCheck(claudeDirectory: NSHomeDirectory() + "/.claude")
                         )
                     }) else {
                         BridgeOSLog().log("app_translocation_unresolved", [:])

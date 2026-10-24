@@ -48,6 +48,7 @@
 		2C916DBA7153033831398162 /* SettingsWindowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE1F0073D4EF8BAC2345440F /* SettingsWindowTests.swift */; };
 		2DF2F905D563F3DF432CF8B7 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = DE37FA5998D1A9FB0C6A9AF2 /* Assets.xcassets */; };
 		31373BB6936E3F2AC9DB6243 /* SignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB26C2543E88F763B3553D02 /* SignIn.swift */; };
+		338BE82847BCFBDC5A4B3660 /* EdgeAttachSessionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DE930FF4478F0B547844B4F /* EdgeAttachSessionsTests.swift */; };
 		3451E1B85A258D6BF2186A88 /* SessionEntriesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2301FEE1F928B501009C896A /* SessionEntriesView.swift */; };
 		3498CC69345186E53C0CC66E /* PushCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7439B64C561B831037F0D2E2 /* PushCenter.swift */; };
 		34AC3C55914B7872E39BC5BD /* MacSettingsTabTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D43D09D38ACB649AE46CFE3 /* MacSettingsTabTests.swift */; };
@@ -140,6 +141,7 @@
 		9731E4E4A9B4D4EC556F263B /* MacAppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = D553D4AC83AD95CD5BD8CBF7 /* MacAppDelegate.swift */; };
 		9A9E1B9ACF66D29DA528771B /* ClaudeAppChatSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D995A541098B5ABFEEC0D0A1 /* ClaudeAppChatSnapshotTests.swift */; };
 		9F39DBC5227B49B5C16AA413 /* SessionEntriesWindowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48EAA1EE0E7812F2EA7DA926 /* SessionEntriesWindowTests.swift */; };
+		A35C42EED8F6DAEE182AF0A3 /* AttachSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85B214CB284B7B337D205C50 /* AttachSnapshotTests.swift */; };
 		A37221F5414FC45FB99C3017 /* SignInScreenTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 973869B20BB79A08A4C3B663 /* SignInScreenTests.swift */; };
 		A4261CCE0661340A86AA7AE8 /* TaskDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E8C9F31E468AFC305D9E9EF /* TaskDetailView.swift */; };
 		A47C3AE4A443F1BD51F8AB27 /* EdgeSnapshotQuestions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B701324DD03164B78BB88972 /* EdgeSnapshotQuestions.swift */; };
@@ -408,6 +410,7 @@
 		825A9C73A94BF4178FE78CFE /* EdgeIssueScreens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeIssueScreens.swift; sourceTree = "<group>"; };
 		840B715FD7E19A3D1F340ADC /* BridgeHostTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeHostTests.swift; sourceTree = "<group>"; };
 		8570E294F8818A905A1C4A38 /* UpdateConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateConfiguration.swift; sourceTree = "<group>"; };
+		85B214CB284B7B337D205C50 /* AttachSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachSnapshotTests.swift; sourceTree = "<group>"; };
 		85DFD91C8858A9B259EF58E0 /* EdgeSidePaneFrame.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeSidePaneFrame.swift; sourceTree = "<group>"; };
 		88016909251C953765367228 /* SettingsAgentsHostTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsAgentsHostTests.swift; sourceTree = "<group>"; };
 		8871EE809BE4D0D820370E12 /* TestHostTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestHostTests.swift; sourceTree = "<group>"; };
@@ -432,6 +435,7 @@
 		9B61143ECDB3A70FF32355F0 /* AppEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEnvironment.swift; sourceTree = "<group>"; };
 		9C010F4E20056FDC3FB9EF13 /* EdgeQuestionCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeQuestionCard.swift; sourceTree = "<group>"; };
 		9D0F71F0A0909CAB10DEB524 /* tf-agent-hook */ = {isa = PBXFileReference; includeInIndex = 0; path = "tf-agent-hook"; sourceTree = BUILT_PRODUCTS_DIR; };
+		9DE930FF4478F0B547844B4F /* EdgeAttachSessionsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeAttachSessionsTests.swift; sourceTree = "<group>"; };
 		9E2BFF6EF4C37CFDCEBD88DB /* AccountViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountViews.swift; sourceTree = "<group>"; };
 		9E5447C917C7443CACB72BD8 /* AccountStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountStore.swift; sourceTree = "<group>"; };
 		9F8D37FA5B4AE9940C90C66D /* MacQuitAnswersTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacQuitAnswersTests.swift; sourceTree = "<group>"; };
@@ -785,6 +789,7 @@
 				6346DCBC1D933DB97280A8F7 /* AssistantQuestionTests.swift */,
 				C829DC4F9BA468450E9A197F /* AssistantWindowDragResizeTests.swift */,
 				1EBD0CD2AABE82C2D793F3EB /* AssistantWindowTests.swift */,
+				85B214CB284B7B337D205C50 /* AttachSnapshotTests.swift */,
 				1839C1D158ACAD1812110AFA /* BridgeFlagTests.swift */,
 				840B715FD7E19A3D1F340ADC /* BridgeHostTests.swift */,
 				BFABA2B3A32BF5846AF461F3 /* BridgeSecretSubmitterTests.swift */,
@@ -793,6 +798,7 @@
 				D995A541098B5ABFEEC0D0A1 /* ClaudeAppChatSnapshotTests.swift */,
 				A92254CB31E4F69655B0606D /* ClaudeCodeHostTests.swift */,
 				4631257EC759C2397E8212AB /* EdgeAssistantTests.swift */,
+				9DE930FF4478F0B547844B4F /* EdgeAttachSessionsTests.swift */,
 				95937722FDD5FA1D25CAF396 /* EdgeChatTests.swift */,
 				9A5A281634165BEDF65F44B2 /* EdgeExternalSessionsTests.swift */,
 				501E38D7EB485E52ACD7C132 /* EdgeIssueFixesTests.swift */,
@@ -1216,6 +1222,7 @@
 				C473E3BF70DAC68DFD12862F /* AssistantQuestionTests.swift in Sources */,
 				7E729B32F584508D320D9799 /* AssistantWindowDragResizeTests.swift in Sources */,
 				22C1399492FA20ABEC44A94E /* AssistantWindowTests.swift in Sources */,
+				A35C42EED8F6DAEE182AF0A3 /* AttachSnapshotTests.swift in Sources */,
 				5E98B573C97D4264AB34EAB3 /* BridgeFlagTests.swift in Sources */,
 				C20CBDA2974FEBB4C3859102 /* BridgeHostTests.swift in Sources */,
 				54D5EEF036FFF9B8C37B68E8 /* BridgeSecretSubmitterTests.swift in Sources */,
@@ -1224,6 +1231,7 @@
 				9A9E1B9ACF66D29DA528771B /* ClaudeAppChatSnapshotTests.swift in Sources */,
 				76EE49130B1D99C5715A0CD8 /* ClaudeCodeHostTests.swift in Sources */,
 				29AA0370A45CB04876C3535D /* EdgeAssistantTests.swift in Sources */,
+				338BE82847BCFBDC5A4B3660 /* EdgeAttachSessionsTests.swift in Sources */,
 				1C155DEDD5DBDE44C0F106D1 /* EdgeChatTests.swift in Sources */,
 				CACD2C7114DCD5C81F7B6DD0 /* EdgeExternalSessionsTests.swift in Sources */,
 				A9910FF7E602894970A8D9FD /* EdgeIssueFixesTests.swift in Sources */,

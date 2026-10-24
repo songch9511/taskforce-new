@@ -725,6 +725,10 @@ extension BridgeRuntime {
         guard let adapter = adapters[common.adapter] else {
             return await failBeforeAcceptance(taskID: common.agentTaskID, commandID: record.commandID, reason: .spawnFailed)
         }
+        // 이어받은 세션: 이 Mac이 로컬 확인으로 이어받기 전에 서버가 만들어 둔 명령은 띄우지 않는다 (계약 20장 6)
+        guard await commandPostdatesAttach(record, adapter: adapter, session: common.agentSessionID) else {
+            return await refuseUnknownPayload(record: record, why: "command_before_attach")
+        }
         // 접수 전 실패 이유: 설치 안 됨 · 버전 밖 · 로그인 아님 (등급 계산은 서버, 여기서는 시작 직전 사실만 본다)
         let report = await adapter.probe()
         if !report.installed {
