@@ -11,10 +11,13 @@ import Testing
 /// 키보드(↑ ↓ Return Esc) · VoiceOver 메뉴 역할 · 바깥 클릭으로 닫힘 · ⋯ 위 클릭은 토글 · 닫히면 포커스가 ⋯로 돌아온다
 @MainActor
 struct EdgeRailCapsuleMoreTests {
-    private let capsule = CGRect(x: 1390, y: 300, width: 44, height: 112)
+    /// 레일은 화면 오른쪽 끝에 붙는다: 자리는 이 Mac 화면의 보이는 영역에서 잡는다.
+    /// 고정 좌표(x 1390)는 CI 러너의 1024 폭 화면 밖이라 카드가 화면 안으로 밀려 ⋯ 옆이 아니게 된다
+    private var screen: CGRect { NSScreen.main?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1024, height: 768) }
+    private var capsule: CGRect { CGRect(x: screen.maxX - 50, y: screen.minY + 300, width: 44, height: 112) }
 
     private func parent() -> NSPanel {
-        let panel = EdgePassivePanel(contentRect: CGRect(x: 1300, y: 200, width: 140, height: 400), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        let panel = EdgePassivePanel(contentRect: CGRect(x: screen.maxX - 140, y: screen.minY + 200, width: 140, height: 400), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         return panel
     }
 
@@ -160,7 +163,7 @@ struct EdgeRailCapsuleMoreTests {
         #expect(rig.shell.isExpanded)
         var bottoms: [CGFloat] = []
         for originY in [CGFloat(120), 380] {
-            rail.panel.setFrame(CGRect(origin: CGPoint(x: 1200, y: originY), size: EdgeRailCapsuleLayout.windowSize), display: false)
+            rail.panel.setFrame(CGRect(origin: CGPoint(x: screen.maxX - EdgeRailCapsuleLayout.windowWidth, y: screen.minY + originY), size: EdgeRailCapsuleLayout.windowSize), display: false)
             rail.toggleMoreCard()
             let local = try #require(rig.shell.capsuleLayout.thirdCapsuleFrame)
             let capsule = rail.panel.convertToScreen(rail.hosting.convert(NSRect(x: local.minX, y: local.minY, width: local.width, height: local.height), to: nil))
