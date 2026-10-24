@@ -20,11 +20,27 @@ struct EdgeAttachSessionsTests {
         var prepare: Result<AttachPlan, AttachRefusal>?
         var commit: AttachRefusal?
         private(set) var calls: [String] = []
+        /// 켜면 `prepareAttach`는 `release()`까지 기다린다 (도는 중의 Cancel을 보려고)
+        var holdPrepare = false
+        private var waiting: [CheckedContinuation<Void, Never>] = []
+
+        func release() {
+            let pending = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+                holdPrepare = false
+                defer { waiting = [] }
+                return waiting
+            }
+            for continuation in pending { continuation.resume() }
+        }
 
         func prepareAttach(sessionID: String, folder: String) async -> Result<AttachPlan, AttachRefusal> {
-            lock.withLock {
+            let hold = lock.withLock { () -> Bool in
                 calls.append("prepare")
-                return prepare ?? .success(AttachPlan(sessionID: sessionID, folder: folder, ref: "ws_" + UUID().uuidString.lowercased(), bridgeID: bridge, adapter: "agent:claude-code", nonce: UUID(), issuedAt: Date()))
+                return holdPrepare
+            }
+            if hold { await withCheckedContinuation { continuation in lock.withLock { waiting.append(continuation) } } }
+            return lock.withLock {
+                prepare ?? .success(AttachPlan(sessionID: sessionID, folder: folder, ref: "ws_" + UUID().uuidString.lowercased(), bridgeID: bridge, adapter: "agent:claude-code", nonce: UUID(), issuedAt: Date()))
             }
         }
 
@@ -184,6 +200,25 @@ struct EdgeAttachSessionsTests {
         runtime.prepare = .failure(.held(.terminal))
         await w.rig.shell.confirmResume(target).value
         #expect(w.rig.shell.attachPresentation.phases[target.id]?.note == "Close the terminal session first")
+    }
+
+    /// 코드 검토: 도는 중에 Cancel · Esc(같은 `onCancel`)를 누르면 흐름이 멈추고 확인이 닫힌다 — 서버에는 가지 않는다
+    @Test func cancelWhileWorkingStopsTheFlowBeforeTheServerAndClosesTheConfirmation() async {
+        let runtime = Runtime()
+        runtime.holdPrepare = true
+        let w = world(runtime: runtime)
+        w.rig.shell.openSessions()
+        #expect(await until { w.attach.gate == .ready })
+        let target = row()
+        w.rig.shell.resumeHere(target)
+        let task = w.rig.shell.confirmResume(target)
+        #expect(await until { runtime.calls == ["prepare"] })
+        #expect(w.rig.shell.attachPresentation.phases == [target.id: .working], "준비에서 멈춰 있다")
+        w.rig.shell.cancelResume(target.id)
+        runtime.release()
+        await task.value
+        #expect(w.server.attachCalls.isEmpty && runtime.calls == ["prepare", "cancel"], "서버를 부르지 않고 계획을 거둔다")
+        #expect(w.rig.shell.attachPresentation.phases.isEmpty && w.rig.shell.sessionPanelID == nil, "확인이 닫히고 세션 패널은 열리지 않는다")
     }
 
     @Test func leavingTheAccountClearsEveryConfirmation() async {

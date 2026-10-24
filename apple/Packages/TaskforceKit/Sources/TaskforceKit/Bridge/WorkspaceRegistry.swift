@@ -161,6 +161,24 @@ public final class WorkspaceRegistry: @unchecked Sendable {
         return outcome
     }
 
+    /// 이어받기 확정이 핀을 꽂은 **뒤에** 실패했을 때 그 핀만 되돌린다 (보안 P3-2). 이 세션의 핀이 지금도 `ref`일 때만 지운다 (그사이 다른 값이 되었으면 건드리지 않는다).
+    /// 불투명 id 표는 지우지 않는다: 아무 표도 가리키지 않게 된 id는 다음 쓰기가 거둔다 (`collect`). 지웠으면 true
+    @discardableResult
+    public func unpinIfEqual(session sessionID: String, ref: String) -> Bool {
+        var removed = false
+        do {
+            try write { tables in
+                let key = Self.key(sessionID)
+                guard tables.sessions[key] == ref else { return }
+                tables.sessions[key] = nil
+                removed = true
+            }
+        } catch {
+            return false
+        }
+        return removed
+    }
+
     // MARK: 대화 (Ungrouped)
 
     /// Ungrouped 대화가 보내기 전에 고른 폴더. 없으면 nil

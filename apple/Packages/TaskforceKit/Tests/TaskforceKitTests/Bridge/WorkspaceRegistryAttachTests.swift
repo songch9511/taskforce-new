@@ -79,6 +79,35 @@ struct WorkspaceRegistryAttachTests {
         #expect(try Data(contentsOf: fixture.file) == before, "다시 쓰지 않는다")
     }
 
+    /// 보안 P3-2: 확정이 중간에 실패하면 방금 꽂은 핀만 되돌린다 (지금도 그 id일 때만)
+    @Test func unpinIfEqualRemovesOnlyThePinThatStillHasTheGivenRef() throws {
+        let fixture = try Fixture()
+        let registry = fixture.registry()
+        let proposal = try #require(registry.proposedRef(forPath: fixture.folder("a")))
+        #expect(registry.attachPin(session: session, to: fixture.folder("a"), ref: proposal.ref) == .pinned(ref: proposal.ref))
+        // 다른 id를 주면 건드리지 않는다
+        #expect(!registry.unpinIfEqual(session: session, ref: "ws_" + UUID().uuidString.lowercased()))
+        #expect(registry.pinned(session: session) == fixture.real("a"))
+        // 같은 id면 지운다 (앱을 다시 띄워도 없다)
+        #expect(registry.unpinIfEqual(session: session, ref: proposal.ref))
+        #expect(registry.pinned(session: session) == nil && fixture.registry().pinned(session: session) == nil)
+        // 없는 핀 · 두 번째는 아무 일도 없다
+        #expect(!registry.unpinIfEqual(session: session, ref: proposal.ref))
+        // 다시 이어받을 수 있다: 같은 폴더에 새로 꽂힌다
+        let again = try #require(registry.proposedRef(forPath: fixture.folder("a")))
+        #expect(registry.attachPin(session: session, to: fixture.folder("a"), ref: again.ref) == .pinned(ref: again.ref))
+    }
+
+    @Test func unpinIfEqualLeavesAnotherSessionsPinAlone() throws {
+        let fixture = try Fixture()
+        let registry = fixture.registry()
+        let other = "5e551011-0000-4000-8000-00000000a002"
+        try registry.pin(session: other, to: fixture.folder("a"))
+        let ref = try #require(registry.ref(forPath: fixture.folder("a")))
+        #expect(!registry.unpinIfEqual(session: session, ref: ref), "이 세션에는 핀이 없다")
+        #expect(registry.pinned(session: other) == fixture.real("a"))
+    }
+
     @Test func aSessionPinnedToAnotherFolderIsNeverMoved() throws {
         let fixture = try Fixture()
         let registry = fixture.registry()

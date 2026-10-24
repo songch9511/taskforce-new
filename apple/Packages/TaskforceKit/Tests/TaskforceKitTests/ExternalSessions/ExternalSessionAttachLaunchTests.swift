@@ -57,8 +57,9 @@ struct ExternalSessionAttachLaunchTests {
         #expect(args(.new(id), attached: true) == golden(sources: "project", session: ["--session-id", id], snapshot: false), "새 세션은 이어받은 세션이 아니다")
     }
 
-    @Test func theMinimumVersionForTheAttachedFlagsIsTheOneTheContractNames() {
-        #expect(ExternalSessionRules.minimumResumeVersion == "2.1.257")
+    /// 빈 `--setting-sources` + `--system-prompt-snapshot off` 격리를 2.1.304 · 2.1.306에서만 확인했다 (PR2m 보안 P3-3): 그 아래 판에는 이 인자로 띄우지 않는다
+    @Test func theMinimumVersionForTheAttachedFlagsIsTheOneWeVerified() {
+        #expect(ExternalSessionRules.minimumResumeVersion == "2.1.304")
     }
 
     // MARK: 시작 프롬프트

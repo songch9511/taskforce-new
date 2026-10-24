@@ -39,9 +39,10 @@ struct ClaudeAttachRuntimeTests {
 
         var folder: String { fake.realWorkspace }
 
-        func facts(_ plan: AttachPlan, external: String? = nil, ref: String? = nil, connection: UUID? = nil, thisMac: UUID?? = nil) -> AttachServerFacts {
+        func facts(_ plan: AttachPlan, external: String? = nil, ref: String? = nil, connection: UUID? = nil, thisMac: UUID?? = nil, ready: Bool = true) -> AttachServerFacts {
             AttachServerFacts(
-                externalSessionID: external ?? plan.sessionID, workspaceRef: ref ?? plan.workspaceRef, connectionID: connection ?? self.connection, thisMacConnectionID: thisMac ?? self.connection
+                externalSessionID: external ?? plan.sessionID, workspaceRef: ref ?? plan.workspaceRef, connectionID: connection ?? self.connection, thisMacConnectionID: thisMac ?? self.connection,
+                thisMacReady: ready
             )
         }
 
@@ -139,7 +140,15 @@ struct ClaudeAttachRuntimeTests {
 
     @Test func prepareRefusesAnOldOrMissingClaudeCode() async throws {
         let old = try await Rig(version: "2.1.241 (Claude Code)")
-        #expect(await old.h.runtime.prepareAttach(sessionID: Self.claudeID, folder: old.folder) == .failure(.version), "2.1.257 미만")
+        #expect(await old.h.runtime.prepareAttach(sessionID: Self.claudeID, folder: old.folder) == .failure(.version), "2.1.304 미만")
+        // 빈 `--setting-sources` 격리는 2.1.304 · 2.1.306에서만 확인했다 (보안 P3-3): 2.1.257 같은 중간 판도 막는다
+        for version in ["2.1.257 (Claude Code)", "2.1.303 (Claude Code)"] {
+            let below = try await Rig(version: version)
+            #expect(await below.h.runtime.prepareAttach(sessionID: Self.claudeID, folder: below.folder) == .failure(.version), "\(version)")
+            #expect(below.writers.calls.isEmpty)
+        }
+        let first = try await Rig(version: "2.1.304 (Claude Code)")
+        #expect((try? await first.h.runtime.prepareAttach(sessionID: Self.claudeID, folder: first.folder).get()) != nil, "2.1.304부터 된다")
         let unsupported = try await Rig(version: "2.2.0 (Claude Code)")
         #expect(await unsupported.h.runtime.prepareAttach(sessionID: Self.claudeID, folder: unsupported.folder) == .failure(.version), "adapter 범위 밖")
         #expect(old.writers.calls.isEmpty && unsupported.writers.calls.isEmpty)
@@ -272,6 +281,37 @@ struct ClaudeAttachRuntimeTests {
         let plan = try #require(try? await r.h.runtime.prepareAttach(sessionID: Self.claudeID, folder: r.folder).get())
         #expect(await r.h.runtime.commitAttach(plan, agentSessionID: r.agentSession, server: r.facts(plan)) == .inUse, "한 Claude 세션에 writer 하나")
         #expect(r.fake.state.providerSessionID == nil)
+        #expect(r.registry.pinned(session: BridgeHarness.sessionID) == nil, "핀을 꽂은 뒤 상태 쓰기가 거절되면 그 핀을 되돌린다 (보안 P3-2)")
+    }
+
+    /// 보안 P3-2: 핀을 이 호출이 새로 꽂았고 그 뒤 단계가 실패하면 그 핀을 되돌린다. 이 호출이 꽂지 않은 핀은 건드리지 않는다
+    @Test func aPinThisCommitCreatedIsRolledBackWhenALaterCheckFailsButAnOlderPinStays() async throws {
+        // 이 호출이 새로 꽂았다: 서버가 답하는 사이 그 폴더가 다른 id로 등록돼 ref가 다르다
+        let mismatch = try await Rig()
+        let plan = try #require(try? await mismatch.h.runtime.prepareAttach(sessionID: Self.claudeID, folder: mismatch.folder).get())
+        try mismatch.registry.pin(session: "5e551011-0000-4000-8000-0000000000e3", to: mismatch.folder)
+        #expect(await mismatch.h.runtime.commitAttach(plan, agentSessionID: mismatch.agentSession, server: mismatch.facts(plan)) == .server, "ref가 다르면 거절")
+        #expect(mismatch.registry.pinned(session: BridgeHarness.sessionID) == nil, "새로 꽂은 핀은 되돌린다")
+        #expect(mismatch.registry.pinned(session: "5e551011-0000-4000-8000-0000000000e3") == GateFileSystem.realpath(mismatch.folder), "남의 핀은 그대로")
+        #expect(mismatch.fake.state.providerSessionID == nil)
+        // 앞서 꽂혀 있던 핀(반쯤 끝난 이어받기)은 뒤 단계가 실패해도 남는다
+        let older = try await Rig()
+        let proposal = try #require(older.registry.proposedRef(forPath: older.folder))
+        #expect(older.registry.attachPin(session: BridgeHarness.sessionID, to: older.folder, ref: proposal.ref) == .pinned(ref: proposal.ref))
+        try older.fake.attach(provider: Self.claudeID, session: "5e551011-0000-4000-8000-0000000000e2")
+        let again = try #require(try? await older.h.runtime.prepareAttach(sessionID: Self.claudeID, folder: older.folder).get())
+        #expect(await older.h.runtime.commitAttach(again, agentSessionID: older.agentSession, server: older.facts(again)) == .inUse)
+        #expect(older.registry.pinned(session: BridgeHarness.sessionID) == GateFileSystem.realpath(older.folder), "이 호출이 꽂지 않은 핀은 지우지 않는다")
+    }
+
+    /// 계약 6.1-2: 이 Mac의 대상이 확정 순간 ready가 아니면 쓰지 않는다
+    @Test func aCommitWhileThisMacsTargetIsNotReadyIsRefusedAndWritesNothing() async throws {
+        let r = try await Rig()
+        let plan = try #require(try? await r.h.runtime.prepareAttach(sessionID: Self.claudeID, folder: r.folder).get())
+        #expect(await r.h.runtime.commitAttach(plan, agentSessionID: r.agentSession, server: r.facts(plan, ready: false)) == .notReady)
+        #expect(r.registry.pinned(session: BridgeHarness.sessionID) == nil && r.registryFile == nil)
+        let attached = await r.fake.process.isAttached(agentSession: BridgeHarness.sessionID)
+        #expect(r.fake.state.providerSessionID == nil && !attached)
     }
 
     @Test func pressingAgainAfterAHalfFinishedAttachCompletesItInsteadOfFailing() async throws {

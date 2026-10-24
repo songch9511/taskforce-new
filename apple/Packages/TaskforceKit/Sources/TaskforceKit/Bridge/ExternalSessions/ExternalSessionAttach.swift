@@ -186,6 +186,10 @@ public final class ExternalSessionAttachModel {
     /// 이어받기가 끝났다 (새 Taskforce 세션의 id): 셸이 목록을 다시 읽고 세션 패널을 연다
     @ObservationIgnored public var onAttached: @MainActor (UUID) async -> Void
     @ObservationIgnored private var lastProbe: (availability: AgentAttachAvailability, at: Date)?
+    /// 도는 중에 Cancel · Esc를 누른 줄들: 흐름이 다음 확인 자리(서버 호출 전 · 확정 전)에서 보고 멈춘다. 확정이 시작된 뒤에는 되돌리지 않는다
+    @ObservationIgnored private var cancelRequested = Set<String>()
+    /// 지금 돌고 있는 서버 호출 (줄마다 하나): 취소하면 이것만 끊는다 — 이 Mac의 확정(`commitAttach`)은 끊지 않는다
+    @ObservationIgnored private var serverCalls: [String: Task<AttachAgentSessionResponse, Error>] = [:]
 
     public init(
         scope: AccountScope, runtime: any ExternalSessionAttaching, server: ExternalSessionAttachServer, now: @escaping @Sendable () -> Date = { Date() },
@@ -204,6 +208,7 @@ public final class ExternalSessionAttachModel {
         phases = [:]
         gate = .unavailable
         lastProbe = nil
+        cancelRequested = []
     }
 
     // MARK: 게이트
@@ -255,9 +260,16 @@ public final class ExternalSessionAttachModel {
         phases[row.id] = .confirming(note: nil)
     }
 
-    /// 확인의 Cancel (도는 중에는 지우지 않는다)
+    /// 확인의 Cancel · Esc. 서 있는 확인은 닫는다. **도는 중이면 흐름에 멈추라고 알린다**: 흐름은 서버를 부르기 전 · 확정을 시작하기 전에 그것을 보고 계획을 거두고 확인을 닫는다
+    /// (서버가 이미 행을 만들었어도 다시 누르면 같은 행을 돌려받아 끝낸다). 이 Mac이 핀 · 상태를 쓰기 시작한 뒤(`commitAttach`)에는 되돌리지 않는다
     public func cancel(_ id: String) {
-        if case .confirming = phases[id] { phases[id] = nil }
+        switch phases[id] {
+        case .confirming: phases[id] = nil
+        case .working:
+            cancelRequested.insert(id)
+            serverCalls[id]?.cancel()
+        case nil: break
+        }
     }
 
     /// 확인을 눌렀다 (계약 6.1-2): 이 순간 다시 판정하고 이어받는다. 보이는 확인이 없는 줄 · 게이트가 닫힌 줄은 아무것도 하지 않는다
@@ -265,7 +277,9 @@ public final class ExternalSessionAttachModel {
     public func confirm(_ row: ExternalSessionRow) async -> Outcome {
         guard case .confirming = phases[row.id], canResume(row), let folder = row.folderPath, let token = scope.token else { return .ignored }
         phases[row.id] = .working
+        cancelRequested.remove(row.id)
         let outcome = await run(row: row, folder: folder, token: token)
+        let cancelled = cancelRequested.remove(row.id) != nil
         guard scope.isCurrent(token) else { return .ignored }
         switch outcome {
         case .attached(let id):
@@ -273,10 +287,11 @@ public final class ExternalSessionAttachModel {
             log.log("attach_done", [:])
             await onAttached(id)
         case .refused(let refusal):
-            phases[row.id] = .confirming(note: ExternalSessionAttachCopy.note(for: refusal))
+            // 게이트가 그 사이 닫혔거나(서버가 이어받기를 모른다고 답했다) 사용자가 취소했으면 보일 확인이 없다
+            phases[row.id] = gate == .unavailable || cancelled ? nil : .confirming(note: ExternalSessionAttachCopy.note(for: refusal))
             log.log("attach_refused", ["reason": .code(ExternalSessionAttachCopy.detail(for: refusal))])
         case .ignored:
-            phases[row.id] = .confirming(note: nil)
+            phases[row.id] = cancelled ? nil : .confirming(note: nil)
         }
         return outcome
     }
@@ -287,24 +302,33 @@ public final class ExternalSessionAttachModel {
         case .failure(let refusal): return .refused(refusal)
         case .success(let made): plan = made
         }
-        guard scope.isCurrent(token) else {
+        guard scope.isCurrent(token), !cancelRequested.contains(row.id) else {
             await runtime.cancelAttach(plan)
             return .ignored
         }
         let response: AttachAgentSessionResponse
         do {
-            response = try await server.attach(plan.bridgeID, plan.adapter, plan.sessionID, plan.workspaceRef)
+            // 서버 호출은 따로 도는 작업이라 사용자가 취소하면 그것만 끊을 수 있다 (바깥 작업이 취소돼도 같이 끊는다)
+            let call = Task { try await server.attach(plan.bridgeID, plan.adapter, plan.sessionID, plan.workspaceRef) }
+            serverCalls[row.id] = call
+            defer { serverCalls[row.id] = nil }
+            response = try await withTaskCancellationHandler(operation: { try await call.value }, onCancel: { call.cancel() })
         } catch is CancellationError {
             await runtime.cancelAttach(plan)
             return .ignored
         } catch {
             await runtime.cancelAttach(plan)
+            // 취소하는 사이 끊긴 호출은 실패가 아니다
+            if cancelRequested.contains(row.id) { return .ignored }
+            // 서버가 이어받기를 모른다(404) · 이 adapter는 이어받을 수 없다(403)고 답했다: 한 시간 캐시를 믿지 않고 지금 닫는다
+            if let status = (error as? APIError)?.status, status == 404 || status == 403 { serverClosedAttach() }
             return .refused(Self.refusal(for: error))
         }
         // 서버가 그 세션 행에 적은 값을 이 Mac이 RLS로 읽는다: 응답의 `session`에는 외부 id가 없다 (20장 2)
         let written = await server.readSession(response.session.id)
         let target = await server.target(plan.bridgeID)
-        guard scope.isCurrent(token) else {
+        // 확정을 시작하기 전의 마지막 확인 자리: 계정이 떠났거나 사용자가 취소했으면 이 Mac은 아무것도 쓰지 않는다 (서버 행은 다시 누르면 이어진다)
+        guard scope.isCurrent(token), !cancelRequested.contains(row.id) else {
             await runtime.cancelAttach(plan)
             return .ignored
         }
@@ -312,12 +336,22 @@ public final class ExternalSessionAttachModel {
             await runtime.cancelAttach(plan)
             return .refused(.server)
         }
-        let facts = AttachServerFacts(externalSessionID: written.externalSessionID, workspaceRef: response.workspaceRef, connectionID: written.connectionID, thisMacConnectionID: target?.connectionID)
+        let facts = AttachServerFacts(
+            externalSessionID: written.externalSessionID, workspaceRef: response.workspaceRef, connectionID: written.connectionID, thisMacConnectionID: target?.connectionID,
+            thisMacReady: target.map { $0.connectionID != nil && $0.word == nil } ?? false
+        )
         if let refusal = await runtime.commitAttach(plan, agentSessionID: response.session.id, server: facts) { return .refused(refusal) }
         return .attached(response.session.id)
     }
 
-    /// 서버 오류 → 거절: 409(다른 곳이 이미 이어받았다 · 가상 루트가 다른 폴더에 묶여 있다)는 "이미 쓰이는 중"이고 나머지(꺼짐 404 · 403 · 429 · 5xx · 전송 오류 · 모양 오류)는 서버 실패다
+    /// 서버가 이어받기를 닫았다고 알렸다: 닫힘을 한 시간 기억하고 단추 · 확인을 바로 거둔다
+    private func serverClosedAttach() {
+        lastProbe = (.disabled, now())
+        gate = .unavailable
+    }
+
+    /// 서버 오류 → 거절: 409(다른 곳이 이미 이어받았다 · 가상 루트가 다른 폴더에 묶여 있다 — 코드를 모르면 상태로 짐작한 `conflict`)는 "이미 쓰이는 중"이다.
+    /// 잠금 경합(`busy_retry`, 쓰기 0)과 나머지(꺼짐 404 · 403 · 429 · 5xx · 전송 오류 · 모양 오류)는 서버 실패다: 사용자가 다시 누르면 같은 요청이 멱등으로 간다
     static func refusal(for error: Error) -> AttachRefusal {
         if let api = error as? APIError, case .server(409, .conflict, _) = api { return .inUse }
         return .server

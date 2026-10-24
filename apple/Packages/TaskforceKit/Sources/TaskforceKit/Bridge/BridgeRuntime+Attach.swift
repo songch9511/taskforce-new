@@ -35,7 +35,7 @@ public enum AttachRefusal: Error, Equatable, Sendable {
     case folder
     /// 세션 id 모양이 틀렸다
     case unreadable
-    /// Claude Code가 없거나 이어받기 최소 버전(2.1.257) · adapter 범위 밖이다
+    /// Claude Code가 없거나 이어받기 최소 버전(2.1.304) · adapter 범위 밖이다
     case version
     /// 이 Mac의 런타임 · 연결 · 로그인이 준비되지 않았다 (또는 이미 같은 세션을 준비 중이다)
     case notReady
@@ -53,14 +53,17 @@ public struct AttachServerFacts: Sendable, Equatable {
     public var workspaceRef: String
     /// 그 세션 행의 연결
     public var connectionID: UUID
-    /// 이 Mac의 Claude Code 연결 (대상 목록의 `bridge_id`가 이 Mac인 `ready` 연결). 모르면 nil → 거절
+    /// 이 Mac의 Claude Code 연결 (대상 목록의 `bridge_id`가 이 Mac인 연결). 모르면 nil → 거절
     public var thisMacConnectionID: UUID?
+    /// 그 대상이 지금 `ready`다 (대상 단어가 없다, 계약 6.1-2). 서버가 답한 사이 Offline 같은 단어가 생겼으면 false → 거절
+    public var thisMacReady: Bool
 
-    public init(externalSessionID: String, workspaceRef: String, connectionID: UUID, thisMacConnectionID: UUID?) {
+    public init(externalSessionID: String, workspaceRef: String, connectionID: UUID, thisMacConnectionID: UUID?, thisMacReady: Bool) {
         self.externalSessionID = externalSessionID
         self.workspaceRef = workspaceRef
         self.connectionID = connectionID
         self.thisMacConnectionID = thisMacConnectionID
+        self.thisMacReady = thisMacReady
     }
 }
 
@@ -69,7 +72,7 @@ extension BridgeRuntime {
     static let attachPlanLifetime: TimeInterval = 300
 
     /// 이어받기 준비: **로컬 사실만 보고 쓰지 않는다** (등록부 · 상태 · 서버 0). 조건 (계약 6.1-2): 정규 소문자 UUID ∧ 폴더 규칙 · 겹침 규칙 통과 ∧ 이 Mac의 런타임 준비
-    /// ∧ Claude Code 설치 · 버전 ≥ 2.1.257 · adapter 범위 · 로그인 ∧ **쥔 곳 없음**(`free`, 모르면 막는다). 통과하면 서버에 보낼 불투명 id를 담은 계획을 낸다.
+    /// ∧ Claude Code 설치 · 버전 ≥ 2.1.304 · adapter 범위 · 로그인 ∧ **쥔 곳 없음**(`free`, 모르면 막는다). 통과하면 서버에 보낼 불투명 id를 담은 계획을 낸다.
     /// 같은 Claude id를 이미 준비 중이면 막는다 (같은 id에 대한 Resume here 두 번은 하나만)
     public func prepareAttach(sessionID: String, folder: String) async -> Result<AttachPlan, AttachRefusal> {
         guard ExternalSessionRules.isCanonicalUUID(sessionID) else { return .failure(.unreadable) }
@@ -104,6 +107,8 @@ extension BridgeRuntime {
         guard !shuttingDown, clock.now().timeIntervalSince(plan.issuedAt) < Self.attachPlanLifetime,
               let adapter = adapters[plan.adapter] as? any AttachableSessionAdapter, let resolver = workspaces as? RegistryWorkspaceResolver else { return .notReady }
         guard server.externalSessionID == plan.sessionID, server.workspaceRef == plan.workspaceRef, let mac = server.thisMacConnectionID, server.connectionID == mac else { return .server }
+        // 이 Mac의 대상이 확정 순간에도 ready여야 한다 (계약 6.1-2): 서버가 답하는 사이 Offline 같은 단어가 생겼으면 쓰지 않는다
+        guard server.thisMacReady else { return .notReady }
         switch await adapter.probeExternalWriter(providerSessionID: plan.sessionID, workspace: plan.folder) {
         case .free: break
         case .held(let holder): return .held(holder)
@@ -111,14 +116,24 @@ extension BridgeRuntime {
         }
         guard !shuttingDown else { return .notReady }
         let sessionKey = agentSessionID.uuidString.lowercased()
+        // 이 호출이 새로 꽂은 핀만 뒤 단계가 실패하면 되돌린다 (보안 P3-2): 이미 있던 핀(반쯤 끝난 이어받기)은 건드리지 않는다
+        var created: String?
         switch resolver.registry.attachPin(session: sessionKey, to: plan.folder, ref: plan.ref) {
-        case .pinned(let ref), .samePin(let ref): guard ref == plan.ref else { return .server }
+        case .pinned(let ref):
+            created = ref
+            guard ref == plan.ref else {
+                resolver.registry.unpinIfEqual(session: sessionKey, ref: ref)
+                return .server
+            }
+        case .samePin(let ref): guard ref == plan.ref else { return .server }
         case .pinnedElsewhere, .rejected: return .folder
         case .refTaken: return .server
         }
         switch await adapter.bindAttached(agentSessionID: sessionKey, providerSessionID: plan.sessionID, at: clock.now()) {
         case .written, .alreadyAttached: return nil
-        case .refused: return .inUse
+        case .refused:
+            if let created { resolver.registry.unpinIfEqual(session: sessionKey, ref: created) }
+            return .inUse
         }
     }
 

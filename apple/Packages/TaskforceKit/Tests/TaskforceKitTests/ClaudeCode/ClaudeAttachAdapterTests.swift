@@ -358,12 +358,90 @@ struct ClaudeAttachAdapterTests {
         let before = Date()
         _ = try await fake.turn("Again", task: "7a5c0001-0000-4000-8000-000000000002", external: FakeClaude.claudeID, events: second)
         #expect(await second.wait { FakeClaude.ended($0) })
-        let call = try #require(writers.calls.last)
+        // 첫 턴 · 둘째 턴(앞 프로세스를 기다리기 전) · 둘째 턴(기다린 뒤 다시): 기다렸으므로 한 번 더 본다
+        #expect(writers.calls.count == 3)
+        guard writers.calls.count == 3 else { return }
+        let call = writers.calls[1]
         #expect(call.ownPIDs.contains(Int32(try #require(identity.pid))), "아직 끝나는 중인 우리 프로세스의 pid")
         let last = try #require(call.ownLastActivity)
         #expect(abs(last.timeIntervalSince(before)) < 5, "그 프로세스가 도는 동안의 기록 쓰기는 우리 쓰기다 (지금까지)")
+        let recheck = writers.calls[2]
+        let ended = try #require(recheck.ownLastActivity)
+        #expect(ended >= before && abs(ended.timeIntervalSince(before)) < 6, "기다린 뒤에는 앞 프로세스가 끝난 때까지의 쓰기가 우리 쓰기다")
         _ = await first.wait { FakeClaude.ended($0) }
     }
+
+    // MARK: 기다린 뒤 다시 본다 (코드 검토 P2 · 보안 P3-1: 앞 spawn을 기다리는 동안 외부 writer가 생길 수 있다)
+
+    @Test func aWriterThatAppearsWhileWeWaitForOurOwnPreviousProcessStopsTheTurn() async throws {
+        // 첫 턴 · 둘째 턴의 기다리기 전 · 기다린 뒤: 기다린 사이 터미널이 그 세션을 열었다
+        let writers = ScriptedWriterCheck(.free, .free, .held(.terminal))
+        let fake = try FakeClaude(externalWriters: writers)
+        try fake.scenario(["runs": [["steps": [["text": "One"]], "linger_after_result": 2.0], ["steps": [["text": "Two"]]]]])
+        try fake.attach()
+        let first = events()
+        _ = try await fake.turn("Next", external: FakeClaude.claudeID, events: first)
+        #expect(await first.wait { $0.contains(.turnCompleted) })
+        let second = events()
+        await #expect(throws: AgentStartError.self) {
+            _ = try await fake.turn("Again", task: "7a5c0001-0000-4000-8000-000000000002", external: FakeClaude.claudeID, events: second)
+        }
+        #expect(fake.runCount == 1, "기다린 사이 쥔 곳이 생겼다: 둘째 프로세스를 띄우지 않는다")
+        #expect(writers.calls.count == 3)
+        #expect(await fake.process.externalHold(forAgentSession: ClaudeTest.session) == .held(.terminal), "이유를 기억한다 (세션 패널)")
+        _ = await first.wait { FakeClaude.ended($0) }
+    }
+
+    @Test func aWriterThatAppearsWhileAnAnswerOrACloseWaitsStopsThemToo() async throws {
+        let ask: [String: Any] = ["steps": [["tool": "mcp__tf__ask_user", "id": "toolu_q1", "input": FakeClaude.askColor]], "linger_after_result": 2.0]
+        for closing in [false, true] {
+            let writers = ScriptedWriterCheck(.free, .free, .held(.claudeApp))
+            let fake = try FakeClaude(externalWriters: writers)
+            try fake.scenario(["runs": [ask, ["final_text": "never"]]])
+            try fake.attach()
+            let first = events()
+            _ = try await fake.turn("Ask me", external: FakeClaude.claudeID, events: first)
+            // 열린 질문이 적혔을 때 첫 프로세스는 아직 산다 (결과 뒤 linger): 답 · 닫기는 그 프로세스를 기다린다
+            #expect(await first.wait { _ in fake.state.openDeferred?.id == "toolu_q1" }, "closing=\(closing)")
+            let answered = events()
+            await #expect(throws: AgentStartError.self) {
+                if closing {
+                    try await fake.process.closeRequest(AgentRequestRef(
+                        taskID: ClaudeTest.task, sessionID: ClaudeTest.session, requestID: "toolu_q1", externalSessionID: FakeClaude.claudeID, workspaceRef: fake.workspace
+                    ))
+                } else {
+                    _ = try await fake.answer("toolu_q1", kind: .input, value: AgentAnswerValue(answers: ["color": .one("blue")]), external: FakeClaude.claudeID, events: answered)
+                }
+            }
+            #expect(fake.runCount == 1 && writers.calls.count == 3, "closing=\(closing): 기다린 뒤에 다시 보고 막힌다")
+            _ = await first.wait { FakeClaude.ended($0) }
+        }
+    }
+
+    /// 코드 검토 M1b: 로컬 확인이 외부 writer 검사 뒤 · 상태를 읽기 전에(기다리는 동안) 이어받음 상태를 썼다. 외부 id 없는 시작(서버가 먼저 쌓아 둔 새 세션 명령)은 그 상태를 새 id로 덮지 않는다.
+    /// 같은 id · 다른 id의 턴도 이어받음 상태를 검사 없이 띄우지 않는다
+    @Test func aTurnThatRacesTheLocalAttachNeverOverwritesTheStateTheAttachJustWrote() async throws {
+        for external in [String?.none, FakeClaude.otherClaudeID, FakeClaude.claudeID] {
+            let holder = FakeHolder()
+            let fake = try FakeClaude(
+                hooks: ClaudeCodeTestHooks(beforeSessionIdleWait: {
+                    guard let fake = holder.fake, let folder = try? ClaudeSessionFolder.prepare(sessionsRoot: fake.box.sessionsRoot, agentSessionID: ClaudeTest.session) else { return }
+                    _ = ClaudeSessionState.writeAttached(providerSessionID: FakeClaude.claudeID, at: Date(), in: folder.root)
+                }),
+                externalWriters: ScriptedWriterCheck(.free)
+            )
+            holder.fake = fake
+            try fake.scenario(["runs": [["steps": [["text": "x"]]]]])
+            // 이 세션은 아직 이어받기 전이다 (검사는 이어받은 세션이 아니라고 보고 지나간다)
+            let log = events()
+            await #expect(throws: AgentStartError.self, "external=\(external ?? "nil")") { _ = try await fake.turn("Next", external: external, events: log) }
+            let state = fake.state
+            #expect(fake.runCount == 0, "external=\(external ?? "nil"): 띄우지 않는다")
+            #expect(state.origin == .attached && state.bound && state.providerSessionID == FakeClaude.claudeID, "external=\(external ?? "nil"): 이어받음 상태가 그대로다 (새 id로 덮지 않는다)")
+        }
+    }
+
+    final class FakeHolder: @unchecked Sendable { var fake: FakeClaude? }
 
     // MARK: 로컬 확인이 쓰는 면 (AttachableSessionAdapter)
 

@@ -19,25 +19,34 @@ struct ExternalSessionAttachModelTests {
         private(set) var calls: [String] = []
         private(set) var committed: [(plan: AttachPlan, session: UUID, facts: AttachServerFacts)] = []
         private(set) var prepared: [(id: String, folder: String)] = []
+        /// 준비 · 확정을 붙잡는다 (취소가 흐름의 어느 자리에서 먹는지 보려고)
+        let prepareGate = OrderGate()
+        let commitGate = OrderGate()
+        var holdPrepare = false
+        var holdCommit = false
 
         init(bridge: UUID) {
             prepare = .success(AttachPlan.forTest(sessionID: ExternalSessionAttachModelTests.claudeID, folder: ExternalSessionAttachModelTests.folder, ref: "ws_" + UUID().uuidString.lowercased(), bridgeID: bridge, adapter: "agent:claude-code"))
         }
 
         func prepareAttach(sessionID: String, folder: String) async -> Result<AttachPlan, AttachRefusal> {
-            lock.withLock {
+            let (result, hold) = lock.withLock { () -> (Result<AttachPlan, AttachRefusal>, Bool) in
                 calls.append("prepare")
                 prepared.append((sessionID, folder))
-                return prepare
+                return (prepare, holdPrepare)
             }
+            if hold { await prepareGate.wait() }
+            return result
         }
 
         func commitAttach(_ plan: AttachPlan, agentSessionID: UUID, server: AttachServerFacts) async -> AttachRefusal? {
-            lock.withLock {
+            let (result, hold) = lock.withLock { () -> (AttachRefusal?, Bool) in
                 calls.append("commit")
                 committed.append((plan, agentSessionID, server))
-                return commit
+                return (commit, holdCommit)
             }
+            if hold { await commitGate.wait() }
+            return result
         }
 
         func cancelAttach(_ plan: AttachPlan) async { lock.withLock { calls.append("cancel") } }
@@ -58,8 +67,13 @@ struct ExternalSessionAttachModelTests {
         var responseWorkspaceRef: String?
         let gate = OrderGate()
         var holdAttach = false
+        /// 서버가 답한 뒤 그 세션 행을 읽는 자리를 붙잡는다 (확정을 시작하기 전의 마지막 확인 자리를 보려고)
+        let readGate = OrderGate()
+        var holdRead = false
+        private(set) var readCalls = 0
         private(set) var availabilityCalls = 0
         private(set) var targetCalls = 0
+        private(set) var attachWasCancelled = false
         private(set) var attachCalls: [(bridge: UUID, adapter: String, id: String, ref: String)] = []
 
         init() { target = ExternalSessionAttachTarget(connectionID: connection, word: nil) }
@@ -78,6 +92,11 @@ struct ExternalSessionAttachModelTests {
                 attach: { [self] bridge, adapter, id, ref in
                     lock.withLock { attachCalls.append((bridge, adapter, id, ref)) }
                     if holdAttach { await gate.wait() }
+                    // 사용자가 도는 중에 취소했으면 모델이 이 진행 중인 호출을 취소한다 (네트워크 호출이 계속 돌지 않게)
+                    if Task.isCancelled {
+                        lock.withLock { attachWasCancelled = true }
+                        throw CancellationError()
+                    }
                     switch attachResult {
                     case .failure(let error): throw error
                     case .success(let status):
@@ -88,6 +107,8 @@ struct ExternalSessionAttachModelTests {
                     }
                 },
                 readSession: { [self] id in
+                    lock.withLock { readCalls += 1 }
+                    if holdRead { await readGate.wait() }
                     guard id == session else { return nil }
                     let connection = rowConnection ?? self.connection
                     let external = rowExternal ?? ExternalSessionAttachModelTests.claudeID
@@ -228,6 +249,44 @@ struct ExternalSessionAttachModelTests {
         #expect(r.model.gate == .unavailable && r.model.phases.isEmpty)
     }
 
+    /// 코드 검토 P2: 서버가 이어받기를 꺼 두었다(404 · 403: 어댑터가 꺼졌다)고 이어받기 호출이 답하면 한 시간 캐시를 믿지 않고 그 자리에서 닫는다
+    @Test func aServerThatAnswers404Or403ClosesTheGateAtOnceAndRemembersItForTheHour() async {
+        for (status, code) in [(404, APIErrorCode.notFound), (403, .internalError)] {
+            let r = Rig()
+            await r.openGate()
+            let row = r.row()
+            r.model.request(row)
+            r.server.attachResult = .failure(APIError.server(status: status, code: code, message: ""))
+            #expect(await r.model.confirm(row) == .refused(.server), "\(status)")
+            #expect(r.model.gate == .unavailable && r.model.phases.isEmpty && !r.model.canResume(row), "\(status): 단추 · 확인이 바로 사라진다")
+            #expect(r.runtime.calls == ["prepare", "cancel"], "\(status)")
+            // 서버가 열렸다고 다시 답해도 한 시간 안에는 묻지 않는다: 닫힘이 캐시에 있다
+            let asked = r.server.availabilityCalls
+            await r.model.refreshGate()
+            #expect(r.model.gate == .unavailable && r.server.availabilityCalls == asked, "\(status): 닫힘이 한 시간 기억된다")
+            r.advance(ExternalSessionAttachModel.probeInterval + 1)
+            await r.model.refreshGate()
+            #expect(r.model.gate == .ready && r.server.availabilityCalls == asked + 1, "\(status): 한 시간 뒤 다시 묻는다")
+        }
+    }
+
+    @Test func otherServerErrorsLeaveTheGateOpenWithTheRefusalLine() async {
+        let errors: [Error] = [
+            APIError.server(status: 409, code: .conflict, message: ""), APIError.server(status: 409, code: .busyRetry, message: ""), APIError.server(status: 429, code: .rateLimited, message: ""),
+            APIError.server(status: 500, code: .internalError, message: ""), APIError.transport("x"),
+        ]
+        for error in errors {
+            let r = Rig()
+            await r.openGate()
+            let row = r.row()
+            r.model.request(row)
+            r.server.attachResult = .failure(error)
+            _ = await r.model.confirm(row)
+            #expect(r.model.gate == .ready, "\(error): 게이트는 그대로")
+            if case .confirming(let note) = r.model.phases[row.id], note != nil {} else { Issue.record("\(error): 거절 한 줄과 함께 확인으로 돌아간다") }
+        }
+    }
+
     // MARK: 줄 · 확인의 상태
 
     @Test func onlyAnIdleRowWithAFolderCanBeResumedAndOnlyWhenTheGateIsReady() async {
@@ -272,7 +331,7 @@ struct ExternalSessionAttachModelTests {
         #expect(r.model.phases == [b.id: .confirming(note: nil)])
     }
 
-    @Test func aRowThatIsWorkingCannotBeCancelledOrConfirmedAgain() async {
+    @Test func aRowThatIsWorkingCannotBeConfirmedAgain() async {
         let r = Rig()
         await r.openGate()
         r.server.holdAttach = true
@@ -281,12 +340,94 @@ struct ExternalSessionAttachModelTests {
         let first = Task { await r.model.confirm(row) }
         await eventually { r.server.attachCalls.count == 1 }
         #expect(r.model.phases[row.id] == .working)
-        r.model.cancel(row.id)
-        #expect(r.model.phases[row.id] == .working, "도는 중에는 취소로 지우지 않는다")
         #expect(await r.model.confirm(row) == .ignored, "같은 id에 대한 Resume here 두 번은 하나만 (9.2)")
         r.server.gate.open()
         #expect(await first.value == .attached(r.server.session))
         #expect(r.server.attachCalls.count == 1 && r.runtime.calls.filter { $0 == "prepare" }.count == 1)
+    }
+
+    // MARK: 도는 중의 Cancel · Esc (코드 검토: 확정이 시작되기 전까지 먹는다)
+
+    @Test func cancelWhileTheServerIsAnsweringEndsTheFlowQuietlyAndNothingIsCommitted() async {
+        let r = Rig()
+        await r.openGate()
+        r.server.holdAttach = true
+        let row = r.row()
+        r.model.request(row)
+        let flow = Task { await r.model.confirm(row) }
+        await eventually { r.server.attachCalls.count == 1 }
+        r.model.cancel(row.id)
+        #expect(r.model.phases[row.id] == .working, "흐름이 취소를 알아챌 때까지 도는 중이다: 같은 줄에 두 번째 흐름이 겹치지 않는다")
+        r.server.gate.open()
+        #expect(await flow.value == .ignored)
+        #expect(r.runtime.calls == ["prepare", "cancel"], "확정하지 않고 계획을 거둔다")
+        #expect(r.server.attachWasCancelled, "진행 중인 서버 호출도 취소한다 (확정은 취소하지 않는다)")
+        #expect(r.model.phases.isEmpty && r.box.ids.isEmpty, "확인이 닫히고 세션 패널은 열리지 않는다")
+        // 서버에 행이 남았어도 다시 누르면 같은 행을 돌려받아 끝낸다 (멱등)
+        r.server.holdAttach = false
+        r.server.attachResult = .success(.existing)
+        r.model.request(row)
+        #expect(await r.model.confirm(row) == .attached(r.server.session))
+    }
+
+    @Test func cancelAfterTheServerAnsweredButBeforeTheCommitStartsStopsBeforeTheCommit() async {
+        let r = Rig()
+        await r.openGate()
+        r.server.holdRead = true
+        let row = r.row()
+        r.model.request(row)
+        let flow = Task { await r.model.confirm(row) }
+        // 서버는 답했고 이 Mac은 세션 행을 읽는 중이다
+        await eventually { r.server.readCalls == 1 }
+        r.model.cancel(row.id)
+        r.server.readGate.open()
+        #expect(await flow.value == .ignored)
+        #expect(r.runtime.calls == ["prepare", "cancel"], "확정을 시작하기 전이므로 이 Mac은 아무것도 쓰지 않는다")
+        #expect(r.model.phases.isEmpty && r.box.ids.isEmpty)
+    }
+
+    @Test func cancelWhilePreparingNeverCallsTheServer() async {
+        let r = Rig()
+        await r.openGate()
+        r.runtime.holdPrepare = true
+        let row = r.row()
+        r.model.request(row)
+        let flow = Task { await r.model.confirm(row) }
+        await eventually { r.runtime.calls == ["prepare"] }
+        r.model.cancel(row.id)
+        r.runtime.prepareGate.open()
+        #expect(await flow.value == .ignored)
+        #expect(r.server.attachCalls.isEmpty && r.runtime.calls == ["prepare", "cancel"] && r.model.phases.isEmpty)
+    }
+
+    @Test func aCancelThatArrivesWhileTheCommitIsRunningDoesNotUndoIt() async {
+        let r = Rig()
+        await r.openGate()
+        r.runtime.holdCommit = true
+        let row = r.row()
+        r.model.request(row)
+        let flow = Task { await r.model.confirm(row) }
+        await eventually { r.runtime.calls.contains("commit") }
+        r.model.cancel(row.id)
+        r.runtime.commitGate.open()
+        #expect(await flow.value == .attached(r.server.session), "이 Mac이 쓰기 시작한 뒤에는 되돌리지 않는다")
+        #expect(r.model.phases.isEmpty && r.box.ids == [r.server.session])
+    }
+
+    @Test func aCancelledFlowDoesNotLeaveAFlagThatCancelsTheNextOne() async {
+        let r = Rig()
+        await r.openGate()
+        r.server.holdAttach = true
+        let row = r.row()
+        r.model.request(row)
+        let flow = Task { await r.model.confirm(row) }
+        await eventually { r.server.attachCalls.count == 1 }
+        r.model.cancel(row.id)
+        r.server.gate.open()
+        _ = await flow.value
+        r.server.holdAttach = false
+        r.model.request(row)
+        #expect(await r.model.confirm(row) == .attached(r.server.session), "지난 취소가 다음 흐름을 막지 않는다")
     }
 
     // MARK: 확인 → 준비 → 서버 → 확정
@@ -306,7 +447,7 @@ struct ExternalSessionAttachModelTests {
         #expect(!call.ref.contains(Self.folder))
         let committed = try #require(r.runtime.committed.first)
         #expect(committed.session == r.server.session)
-        #expect(committed.facts == AttachServerFacts(externalSessionID: Self.claudeID, workspaceRef: plan.workspaceRef, connectionID: r.server.connection, thisMacConnectionID: r.server.connection))
+        #expect(committed.facts == AttachServerFacts(externalSessionID: Self.claudeID, workspaceRef: plan.workspaceRef, connectionID: r.server.connection, thisMacConnectionID: r.server.connection, thisMacReady: true))
         #expect(r.model.phases.isEmpty, "성공하면 줄에서 확인이 사라진다")
         #expect(r.box.ids == [r.server.session], "세션 패널을 여는 쪽에 알린다")
     }
@@ -386,7 +527,9 @@ struct ExternalSessionAttachModelTests {
             r.model.request(row)
             #expect(await r.model.confirm(row) == .refused(refusal), "\(error)")
             #expect(r.runtime.calls == ["prepare", "cancel"], "\(error): 서버가 실패하면 확정하지 않고 계획을 거둔다")
-            if case .confirming = r.model.phases[row.id] {} else { Issue.record("\(error): 확인으로 돌아간다") }
+            if let status = (error as? APIError)?.status, status == 404 || status == 403 {
+                #expect(r.model.gate == .unavailable && r.model.phases.isEmpty, "\(error): 서버가 이어받기를 닫았다고 답하면 게이트와 확인이 바로 닫힌다")
+            } else if case .confirming = r.model.phases[row.id] {} else { Issue.record("\(error): 확인으로 돌아간다") }
         }
     }
 
@@ -455,6 +598,24 @@ struct ExternalSessionAttachModelTests {
         r.server.gate.open()
         _ = await flow.value
         #expect(r.runtime.committed.first?.facts.thisMacConnectionID == nil, "이 Mac의 연결을 모르면 런타임이 거절하도록 nil로 넘긴다")
+        #expect(r.runtime.committed.first?.facts.thisMacReady == false, "연결이 없으면 ready도 아니다")
+    }
+
+    /// 계약 6.1-2: 서버가 답하는 사이 이 Mac의 대상에 Offline 같은 단어가 생겼으면 확정에 그 사실을 넘긴다 (연결은 그대로여도 ready가 아니다)
+    @Test func aTargetThatTurnedNotReadyWhileTheServerWasAnsweringIsHandedToTheCommitAsNotReady() async throws {
+        let r = Rig()
+        await r.openGate()
+        r.server.holdAttach = true
+        r.runtime.commit = .notReady
+        let row = r.row()
+        r.model.request(row)
+        let flow = Task { await r.model.confirm(row) }
+        await eventually { r.server.attachCalls.count == 1 }
+        r.server.target = ExternalSessionAttachTarget(connectionID: r.server.connection, word: "Offline")
+        r.server.gate.open()
+        #expect(await flow.value == .refused(.notReady))
+        let facts = try #require(r.runtime.committed.first?.facts)
+        #expect(facts.thisMacConnectionID == r.server.connection && !facts.thisMacReady, "연결은 같고 ready만 아니다")
     }
 
     @Test func aCommitRefusalAfterTheServerAnsweredShowsTheLineAndALaterPressCompletesIt() async {
