@@ -420,7 +420,7 @@ final class EdgeClaudeAppPanelController {
             panel.alphaValue = 0
             panel.setFrame(target, display: false)
         }
-        if standalone {
+        if standalone || isCodex {
             panel.makeKeyAndOrderFront(nil)
         } else {
             // Sessions의 키를 빼앗지 않는다: 눌렀을 때 키 창이 된다

@@ -12,6 +12,11 @@ Taskforce owns a dedicated `codex app-server --listen stdio://` process. The sou
 - Owned sessions request workspace-write, on-request approvals and a human reviewer. The effective policy is validated before starting a turn. Forking history uses the existing workspace, not a new worktree.
 - Failed delivery retains the draft. An uncertain acknowledgement blocks automatic retry to avoid duplicate turns.
 - The secondary Open in Codex action targets the managed conversation once created.
+- Opening a Codex conversation focuses its panel. During a turn the composer shows activity, including a separate preparing-history state while Codex compacts imported history; Stop remains available.
+
+## Transport
+
+The stdout reader consumes available pipe bytes with POSIX `read` and assembles bounded JSONL frames. Foundation's filling `read(upToCount:)` can wait for its entire requested buffer even when a complete short response has arrived and the server keeps the pipe open. A real open-pipe regression protects against that stall. History compaction is separately reported by provider events and must not be mistaken for failed delivery or automatically retried.
 
 ## Scope
 

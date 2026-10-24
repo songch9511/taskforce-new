@@ -157,6 +157,44 @@ struct CodexChatSenderTests {
         try FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: home.path)
         #expect(throws: CodexChatSendError.unavailable) { try CodexChatEnvironment.child(app: ["CODEX_HOME": home.path], executable: executable) }
     }
+    @Test func shortJSONLArrivesBeforeServerClosesOrFillsReadBuffer() async throws {
+        let output = Pipe()
+        let connection = CodexStdioConnection(output: output)
+        let finished = DispatchSemaphore(value: 0)
+        let result = Task.detached {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, any Error>) in
+                DispatchQueue.global().async {
+                    do { continuation.resume(returning: try connection.read()) }
+                    catch { continuation.resume(throwing: error) }
+                    finished.signal()
+                }
+            }
+        }
+        try output.fileHandleForWriting.write(contentsOf: Data("{\"id\":1}\n".utf8))
+        let deliveredWhileOpen = await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                continuation.resume(returning: finished.wait(timeout: .now() + 2) == .success)
+            }
+        }
+        // Always release a broken filling read too, so a regression fails rather than hangs.
+        try output.fileHandleForWriting.close()
+        #expect(deliveredWhileOpen)
+        #expect(try await result.value == Data("{\"id\":1}".utf8))
+        connection.close()
+    }
+    @Test func compactionProgressIsScopedAndClearedWhenTurnEnds() async throws {
+        let fixture = ChatFixtureConnection(); let sender = sender(fixture)
+        let receipt = try await sender.send(threadID: root, text: "test")
+        var events = sender.events.makeAsyncIterator()
+        #expect(await events.next() == .managedThread(receipt.threadID))
+        fixture.enqueue(["method": "item/started", "params": ["threadId": root, "item": ["type": "contextCompaction"]]])
+        fixture.enqueue(["method": "item/started", "params": ["threadId": receipt.threadID, "item": ["type": "contextCompaction"]]])
+        #expect(await events.next() == .contextCompaction(true))
+        fixture.enqueue(["method": "turn/completed", "params": ["threadId": receipt.threadID, "turn": ["id": receipt.turnID, "status": "completed"]]])
+        #expect(await events.next() == .contextCompaction(false))
+        #expect(await events.next() == .turnCompleted(threadID: receipt.threadID, turnID: receipt.turnID))
+        await sender.stop()
+    }
     @Test func interruptTargetsOnlyManagedTurn() async throws {
         let fixture = ChatFixtureConnection(); let sender = sender(fixture)
         let receipt = try await sender.send(threadID: root, text: "test")

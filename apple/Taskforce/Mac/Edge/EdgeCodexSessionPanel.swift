@@ -135,6 +135,7 @@ struct CodexSessionPanelView: View {
     private var rootComposer: some View {
         VStack(alignment: .leading, spacing: TFSpace.sm) {
             deliveryError
+            activityStatus
             CodexChatPromptsView(chat: presentation.codexChat)
             Composer(
                 text: Binding(get: { presentation.codexChat.draft }, set: {
@@ -153,6 +154,16 @@ struct CodexSessionPanelView: View {
         .onGeometryChange(for: CGFloat.self, of: { $0.size.height }) { presentation.footerHeight = $0 }
     }
 
+    @ViewBuilder private var activityStatus: some View {
+        if presentation.codexChat.isRunning {
+            HStack(spacing: TFSpace.sm) {
+                ProgressView().controlSize(.small)
+                Text(presentation.codexChat.isPreparingHistory ? "Preparing conversation history…" : "Codex is working…")
+                    .font(TFFont.footnote).foregroundStyle(TFColor.textSecondary)
+            }
+        }
+    }
+
     private var deliveryError: some View {
         Group {
             if let message = presentation.codexChat.errorMessage {
@@ -166,6 +177,7 @@ struct CodexSessionPanelView: View {
             if !presentation.codexChat.requests.isEmpty {
                 CodexChatPromptsView(chat: presentation.codexChat).padding(TFSpace.lg)
             }
+            activityStatus.padding(.horizontal, TFSpace.lg)
             if presentation.codexChat.isRunning {
                 Button("Stop") { presentation.codexChat.interrupt() }
                     .buttonStyle(TFButtonStyle(.secondary, size: .sm)).padding(.horizontal, TFSpace.lg)

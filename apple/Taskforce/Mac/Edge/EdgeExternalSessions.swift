@@ -198,6 +198,7 @@ struct SessionsPanelBody: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("\(session.title) — Open session")
+                .accessibilityAction(named: "Open session") { shell.openCodexSession(session) }
             }
         }
     }

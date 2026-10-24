@@ -18,6 +18,7 @@ public struct CodexChatQuestion: Equatable, Sendable {
 }
 public enum CodexChatEvent: Equatable, Sendable {
     case managedThread(String)
+    case contextCompaction(Bool)
     case approval(id: String, kind: String, summary: String)
     case input(id: String, questions: [CodexChatQuestion])
     case turnCompleted(threadID: String, turnID: String)
@@ -51,6 +52,7 @@ public actor CodexChatSender {
     public var managedThreadID: String? { managedID }
     private var deliveryUncertain = false
     private var completedTurns = Set<String>()
+    private var isCompacting = false
     private var fileChanges: [String: (turn: String, summary: String)] = [:]
     private var connection: (any CodexChatConnection)?
     private var reader: Task<Void, Never>?
@@ -158,6 +160,7 @@ public actor CodexChatSender {
         reader?.cancel(); reader = nil
         initialized = false; resumed = false; busy = false; turnID = nil
         requests.removeAll(); fileChanges.removeAll()
+        setCompacting(false)
         failPending(.unavailable)
     }
 
@@ -218,6 +221,7 @@ public actor CodexChatSender {
     private func disconnected(token: UUID) {
         guard generation == token else { return }
         connection?.close(); connection = nil; initialized = false; resumed = false; turnID = nil
+        setCompacting(false)
         let staleRequestIDs = Array(requests.keys)
         requests.removeAll(); fileChanges.removeAll()
         for id in staleRequestIDs { publish(.requestResolved(id: id)) }
@@ -231,6 +235,11 @@ public actor CodexChatSender {
             failPending(.unavailable)
         }
     }
+    private func setCompacting(_ value: Bool) {
+        guard isCompacting != value else { return }
+        isCompacting = value
+        publish(.contextCompaction(value))
+    }
     private func receive(_ data: Data, token: UUID) {
         guard token == generation,
               let message = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
@@ -238,6 +247,9 @@ public actor CodexChatSender {
             let params = message["params"] as? [String: Any] ?? [:]
             if let id = message["id"] {
                 handleServerRequest(id: id, method: method, params: params)
+            } else if ["item/started", "item/completed"].contains(method), params["threadId"] as? String == managedID,
+                      let item = params["item"] as? [String: Any], item["type"] as? String == "contextCompaction" {
+                setCompacting(method == "item/started")
             } else if method == "item/started", params["threadId"] as? String == managedID,
                       let item = params["item"] as? [String: Any], item["type"] as? String == "fileChange",
                       let id = item["id"] as? String, let turn = params["turnId"] as? String,
@@ -249,6 +261,7 @@ public actor CodexChatSender {
                 fileChanges[id] = (turn, bounded)
             } else if method == "turn/completed", let thread = params["threadId"] as? String,
                       let turn = params["turn"] as? [String: Any], let id = turn["id"] as? String, thread == managedID {
+                setCompacting(false)
                 if completedTurns.count >= 128 { completedTurns.removeAll() }
                 completedTurns.insert(id)
                 fileChanges = fileChanges.filter { $0.value.turn != id }
@@ -332,20 +345,25 @@ enum CodexChatEnvironment {
 }
 
 /// Bounded JSONL transport. stderr, transcript text and prompts never reach logs.
-private final class CodexStdioConnection: CodexChatConnection, @unchecked Sendable {
+final class CodexStdioConnection: CodexChatConnection, @unchecked Sendable {
     private let process = Process()
     private let input = Pipe()
-    private let output = Pipe()
+    private let output: Pipe
     private let lock = NSLock()
     private var closed = false
     private var buffer = Data()
     init(configuration: CodexChatSender.Configuration) throws {
+        output = Pipe()
         guard let executable = ClaudeCodeLocator(candidates: configuration.candidates).locate() else { throw CodexChatSendError.unavailable }
         process.executableURL = URL(fileURLWithPath: executable.realPath)
         process.arguments = ["app-server", "--listen", "stdio://"]
         process.environment = try CodexChatEnvironment.child(app: ProcessInfo.processInfo.environment, executable: executable)
         process.standardInput = input; process.standardOutput = output; process.standardError = FileHandle.nullDevice
         try process.run()
+    }
+    // Internal pipe initializer exercises the actual JSONL reader without a provider.
+    init(output: Pipe) {
+        self.output = output
     }
     deinit { close() }
     func close() {
@@ -375,8 +393,14 @@ private final class CodexStdioConnection: CodexChatConnection, @unchecked Sendab
             let ready = poll(&descriptor, 1, 100)
             if ready < 0 { if errno == EINTR { continue }; throw CodexChatSendError.unavailable }
             if ready == 0 { continue }
-            guard let bytes = try output.fileHandleForReading.read(upToCount: 16_384), !bytes.isEmpty else { throw CodexChatSendError.unavailable }
-            buffer.append(bytes)
+            // Foundation read(upToCount:) fills the requested count on a pipe.
+            // JSONL responses can be much shorter and the server keeps stdout open,
+            // so consume only the currently available bytes with a single POSIX read.
+            var bytes = [UInt8](repeating: 0, count: 16_384)
+            let count = Darwin.read(output.fileHandleForReading.fileDescriptor, &bytes, bytes.count)
+            if count < 0 && errno == EINTR { continue }
+            guard count > 0 else { throw CodexChatSendError.unavailable }
+            buffer.append(contentsOf: bytes.prefix(count))
         }
     }
 }

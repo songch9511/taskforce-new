@@ -15,6 +15,7 @@ final class CodexSessionChatModel {
     private(set) var sessionID: String?
     private(set) var managedThreadID: String?
     private(set) var isRunning = false
+    private(set) var isPreparingHistory = false
     private(set) var requests: [CodexChatPrompt] = []
     private(set) var responding: Set<String> = []
     @ObservationIgnored var onManagedThread: (String) -> Void = { _ in }
@@ -57,6 +58,7 @@ final class CodexSessionChatModel {
         requests = []
         responding = []
         isRunning = false
+        isPreparingHistory = false
         managedThreadID = nil
         pending?.cancel()
         pending = nil
@@ -115,6 +117,7 @@ final class CodexSessionChatModel {
                 self.isSending = false
                 self.pending = nil
                 self.isRunning = false
+                self.isPreparingHistory = false
                 self.errorMessage = Self.message(for: error)
             }
         }
@@ -136,11 +139,15 @@ final class CodexSessionChatModel {
         case .requestResolved(let id):
             requests.removeAll { $0.id == id }
             responding.remove(id)
+        case .contextCompaction(let preparing):
+            isPreparingHistory = preparing
         case .turnCompleted:
+            isPreparingHistory = false
             isRunning = false
             requests = []
             responding = []
         case .failure(let error):
+            isPreparingHistory = false
             isRunning = false
             requests = []
             responding = []

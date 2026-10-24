@@ -216,6 +216,23 @@ struct EdgeCodexSessionTests {
         chat.stop()
     }
 
+    @Test func historyPreparationStatusClearsOnCompletionFailureAndStop() {
+        let chat = CodexSessionChatModel()
+        chat.receive(.contextCompaction(true))
+        #expect(chat.isPreparingHistory)
+        chat.receive(.contextCompaction(false))
+        #expect(!chat.isPreparingHistory)
+        chat.receive(.contextCompaction(true))
+        chat.receive(.turnCompleted(threadID: "managed", turnID: "turn"))
+        #expect(!chat.isPreparingHistory)
+        chat.receive(.contextCompaction(true))
+        chat.receive(.failure(.unavailable))
+        #expect(!chat.isPreparingHistory)
+        chat.receive(.contextCompaction(true))
+        chat.stop()
+        #expect(!chat.isPreparingHistory)
+    }
+
     @Test func unknownDeliveryRetainsRootDraftWithoutRetrying() async {
         let pane = SessionSidePaneModel(store: InMemoryBackgroundTaskOpenStore())
         let chat = CodexSessionChatModel()

@@ -205,7 +205,14 @@ struct AgentTreeScrollInput: NSViewRepresentable {
             let inside = bounds.intersection(visibleRect).contains(location)
             switch type {
             case .magnify:
-                if phase.contains(.began) { magnifyAnchor = inside ? location : nil }
+                // Accept trackpad preflight and magnification events without a phase.
+                // Keep the origin once established so a chat gesture cannot enter the tree.
+                if phase.contains(.mayBegin) || phase.contains(.began) { magnifyAnchor = inside ? location : nil }
+                if phase.isEmpty {
+                    guard inside else { return false }
+                    if magnification != 0 { onMagnify?(magnification, location) }
+                    return true
+                }
                 let anchor = magnifyAnchor
                 if phase.contains(.ended) || phase.contains(.cancelled) { magnifyAnchor = nil }
                 guard let anchor else { return false }
@@ -217,7 +224,7 @@ struct AgentTreeScrollInput: NSViewRepresentable {
                 onFit?()
                 return true
             case .scrollWheel:
-                if phase.contains(.began) { scrollOwned = inside; momentumOwned = nil }
+                if phase.contains(.mayBegin) || phase.contains(.began) { scrollOwned = inside; momentumOwned = nil }
                 if momentum.contains(.began) { momentumOwned = scrollOwned ?? inside }
                 let owned: Bool
                 if !momentum.isEmpty { owned = momentumOwned ?? false }

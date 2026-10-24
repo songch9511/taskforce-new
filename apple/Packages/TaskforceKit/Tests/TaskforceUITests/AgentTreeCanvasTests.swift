@@ -268,5 +268,25 @@ struct AgentTreeCanvasTests {
         #expect(fits == 1)
     }
 
+    @MainActor @Test func trackpadPreflightAndUnphasedPinchRemainViewportScoped() {
+        let input = AgentTreeScrollInput.InputView(frame: CGRect(x: 0, y: 0, width: 463, height: 480))
+        let tree = CGPoint(x: 200, y: 180), chat = CGPoint(x: 600, y: 180)
+        var deltas: [CGSize] = [], anchors: [CGPoint] = []
+        input.onScroll = { deltas.append($0) }
+        input.onMagnify = { _, anchor in anchors.append(anchor) }
+        #expect(input.receive(type: .scrollWheel, phase: .mayBegin, location: tree))
+        #expect(input.receive(type: .scrollWheel, phase: .changed, location: tree, scroll: CGSize(width: 12, height: -8)))
+        #expect(deltas.last == CGSize(width: 12, height: -8))
+        #expect(!input.receive(type: .scrollWheel, phase: .mayBegin, location: chat))
+        #expect(!input.receive(type: .scrollWheel, phase: .changed, location: tree))
+        #expect(input.receive(type: .magnify, phase: .mayBegin, location: tree))
+        #expect(input.receive(type: .magnify, phase: .changed, location: chat, magnification: 0.1))
+        #expect(anchors == [tree])
+        #expect(input.receive(type: .magnify, phase: .ended, location: tree))
+        #expect(input.receive(type: .magnify, location: tree, magnification: 0.1))
+        #expect(!input.receive(type: .magnify, location: chat, magnification: 0.1))
+        #expect(anchors == [tree, tree])
+    }
+
 }
 #endif
