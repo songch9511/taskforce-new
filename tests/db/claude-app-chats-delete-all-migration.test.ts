@@ -12,6 +12,8 @@ import { openPglite } from "./pglite-template";
 const MIGRATIONS = path.resolve(__dirname, "../../supabase/migrations");
 const FILE = "20261208000000_claude_app_chats_delete_all.sql";
 const PREVIOUS = "20261207000000_claude_app_chats.sql";
+/** 20261209(T3s)는 20261207 · 20261208이 모두 있어야 적용된다 (자기 가드). 20261208을 뺀 시험 DB에서는 함께 뺀다 */
+const T3S = "20261209000000_agent_tree_metrics.sql";
 const NEW_TYPE = "claude_app_chats_deleted_all";
 const NEW_KIND = "claude_app_chat_delete_all";
 const APPLY = { timeout: 300_000 };
@@ -201,7 +203,7 @@ describe("적용 순서 가드 (20261208 → 20261207)", () => {
   it("20261207 없이 20261208을 적용하면 거절되고 아무것도 남지 않는다 (실제 적용)", APPLY, async () => {
     const db = await openPglite();
     try {
-      for (const script of await supabaseSchemaScripts({ without: [PREVIOUS, FILE] })) await db.exec(script);
+      for (const script of await supabaseSchemaScripts({ without: [PREVIOUS, FILE, T3S] })) await db.exec(script);
       await expect(db.exec(migration)).rejects.toThrow(/20261207/);
       await db.exec("rollback").catch(() => undefined);
       const { rows } = await db.query<{ fn: string | null; type: boolean; kind: boolean }>(
@@ -218,7 +220,7 @@ describe("적용 순서 가드 (20261208 → 20261207)", () => {
   it("20261206까지만 적용된 DB(묘비 표 · 지우기 함수 없음)에서도 같다", APPLY, async () => {
     const db = await openPglite();
     try {
-      for (const script of await supabaseSchemaScripts({ without: [PREVIOUS, FILE] })) await db.exec(script);
+      for (const script of await supabaseSchemaScripts({ without: [PREVIOUS, FILE, T3S] })) await db.exec(script);
       const { rows } = await db.query<{ tombstones: string | null; deleted: boolean }>(
         "select to_regclass('public.claude_app_chat_tombstones')::text as tombstones, (select pg_get_constraintdef(oid) like '%claude_app_chat_deleted%' from pg_constraint where conname = 'metric_events_type_check') as deleted",
       );
@@ -232,7 +234,7 @@ describe("적용 순서 가드 (20261208 → 20261207)", () => {
   it("20261207을 적용한 뒤에는 통과한다 (정상 순서): 함수 · 새 지표 종류 · 새 속도 제한 종류가 생기고 20261207의 종류도 그대로다", APPLY, async () => {
     const db = await openPglite();
     try {
-      for (const script of await supabaseSchemaScripts({ without: [FILE] })) await db.exec(script);
+      for (const script of await supabaseSchemaScripts({ without: [FILE, T3S] })) await db.exec(script);
       await db.exec(migration);
       const { rows } = await db.query<{ fn: string | null; types: string; kinds: string }>(
         `select to_regprocedure('public.delete_all_claude_app_chats(uuid,integer)')::text as fn,

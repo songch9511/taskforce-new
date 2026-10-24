@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		00C67C267E337B548C3B0094 /* SubagentTreePaneTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3927F20173970CF1C027AFAB /* SubagentTreePaneTests.swift */; };
 		0218BCF57EF903D2035BA06E /* AppleSignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = 382436521FFFE721D7D6D39F /* AppleSignIn.swift */; };
 		025F33A82A421DE1FC6CC896 /* AppEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B61143ECDB3A70FF32355F0 /* AppEnvironment.swift */; };
 		03921D74809B28972F7A6762 /* LauncherPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D29FF94F9BE621AF3A6095B4 /* LauncherPanel.swift */; };
@@ -350,6 +351,7 @@
 		30F560ECEC439AF8877A0F02 /* SavedChatsWindowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedChatsWindowTests.swift; sourceTree = "<group>"; };
 		3799AD45B5910C5C3511D460 /* EdgeQuestionShell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeQuestionShell.swift; sourceTree = "<group>"; };
 		382436521FFFE721D7D6D39F /* AppleSignIn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleSignIn.swift; sourceTree = "<group>"; };
+		3927F20173970CF1C027AFAB /* SubagentTreePaneTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubagentTreePaneTests.swift; sourceTree = "<group>"; };
 		3966F00FDCDA76A720E39E9F /* EdgeSessionPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeSessionPanel.swift; sourceTree = "<group>"; };
 		398336C7527982A0AA290CD8 /* WorkspacePickerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspacePickerTests.swift; sourceTree = "<group>"; };
 		3D33D8B88164A6B656028BE0 /* SessionViewReviewMacTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionViewReviewMacTests.swift; sourceTree = "<group>"; };
@@ -855,6 +857,7 @@
 				CE1F0073D4EF8BAC2345440F /* SettingsWindowTests.swift */,
 				7C3FD7E86DAC97446FEB9DF1 /* SignInFlowTests.swift */,
 				973869B20BB79A08A4C3B663 /* SignInScreenTests.swift */,
+				3927F20173970CF1C027AFAB /* SubagentTreePaneTests.swift */,
 				516C0E3EF4D6AD4CB963BEF3 /* TestDefaults.swift */,
 				8871EE809BE4D0D820370E12 /* TestHostTests.swift */,
 				2228AE0F074A7B31AB710D77 /* TestIsolationTests.swift */,
@@ -1287,6 +1290,7 @@
 				2C916DBA7153033831398162 /* SettingsWindowTests.swift in Sources */,
 				0E9067AD6BA3643D7ABF018C /* SignInFlowTests.swift in Sources */,
 				A37221F5414FC45FB99C3017 /* SignInScreenTests.swift in Sources */,
+				00C67C267E337B548C3B0094 /* SubagentTreePaneTests.swift in Sources */,
 				41484BB8902B538679446BFD /* TestDefaults.swift in Sources */,
 				76753637AD7137521A1C09B9 /* TestHostTests.swift in Sources */,
 				6B35CA03A69323AE3020B979 /* TestIsolationTests.swift in Sources */,

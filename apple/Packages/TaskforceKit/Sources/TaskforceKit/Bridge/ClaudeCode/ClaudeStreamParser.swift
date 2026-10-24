@@ -87,7 +87,8 @@ public struct ClaudeResultInfo: Equatable, Sendable {
 
 /// 백그라운드 일의 줄에서 꺼낸 칸 (아이디 · 종류 · 모델이 쓴 설명 · 상태 · 끝낸 코드 · 시각). 요약 글 · 출력 파일 경로는 담지 않는다
 public enum ClaudeTaskStreamEvent: Equatable, Sendable {
-    case started(taskID: String, toolUseID: String?, taskType: String?, description: String?, isBackgrounded: Bool?)
+    /// `parentTaskID`는 `parent_task_id`(깊이 2 이상의 자식에만 있다, 일 id 규칙을 지킬 때만), `spawnDepth`는 `spawn_depth`(0–16 정수일 때만). 프롬프트는 선언하지 않는다
+    case started(taskID: String, toolUseID: String?, taskType: String?, description: String?, isBackgrounded: Bool?, parentTaskID: String? = nil, spawnDepth: Int? = nil)
     case progress(taskID: String)
     case updated(taskID: String, status: String?, endMillis: Int64?)
     case notification(taskID: String, toolUseID: String?, status: String?, exitCode: Int?, kind: BackgroundTaskKind?)
@@ -142,7 +143,7 @@ public enum ClaudeStreamParser {
             guard let id = Self.taskID(fields) else { return .task(nil) }
             return .task(.started(
                 taskID: id, toolUseID: Self.toolUseID(fields), taskType: Self.capped(fields["task_type"]?.stringValue, 40), description: Self.capped(fields["description"]?.stringValue, Self.maxDescription),
-                isBackgrounded: fields["is_backgrounded"]?.boolValue
+                isBackgrounded: fields["is_backgrounded"]?.boolValue, parentTaskID: Self.parentTaskID(fields), spawnDepth: Self.spawnDepth(fields)
             ))
         case ("system", "task_notification"):
             guard let id = Self.taskID(fields) else { return .task(nil) }
@@ -212,6 +213,18 @@ public enum ClaudeStreamParser {
     private static func taskID(_ fields: [String: WireJSON]) -> String? {
         guard let id = fields["task_id"]?.stringValue, BackgroundTaskText.isValidTaskID(id) else { return nil }
         return id
+    }
+
+    /// `parent_task_id`: 일 id와 같은 규칙. 아니면 nil (깊이 1의 자식에는 이 칸이 없다 = 세션 바로 아래)
+    private static func parentTaskID(_ fields: [String: WireJSON]) -> String? {
+        guard let id = fields["parent_task_id"]?.stringValue, BackgroundTaskText.isValidTaskID(id) else { return nil }
+        return id
+    }
+
+    /// `spawn_depth`: 0–16 정수. 밖이거나 정수가 아니면 nil
+    private static func spawnDepth(_ fields: [String: WireJSON]) -> Int? {
+        guard let depth = fields["spawn_depth"]?.int64Value, (0...16).contains(depth) else { return nil }
+        return Int(depth)
     }
 
     private static func toolUseID(_ fields: [String: WireJSON]) -> String? {

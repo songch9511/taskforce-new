@@ -253,8 +253,8 @@ export function kstWeek(at: string): string {
 
 export type Activity = { userId: string; at: string };
 
-/** 서버가 남기는 이벤트: 사용자의 활동이 아니다 (연결 완료 · 연결 만료 · 재연결 알림 · 원문 처리 실패로 닫음 · 에이전트: 전달 시작(대기열 · 재전달 · Mac 복귀 때도) · bridge의 도구 결정 · 산출물이 일으킨 충돌) */
-const SERVER_EVENTS = new Set(["connection_created", "connection_reauth", "reconnect_notified", "source_failed", "agent_message_sent", "tool_call_decided", "path_conflict_found"]);
+/** 서버가 남기는 이벤트: 사용자의 활동이 아니다 (연결 완료 · 연결 만료 · 재연결 알림 · 원문 처리 실패로 닫음 · 에이전트: 전달 시작(대기열 · 재전달 · Mac 복귀 때도) · bridge의 도구 결정 · 산출물이 일으킨 충돌 · 하위 에이전트 지표 둘: 모델이 정한 일) */
+const SERVER_EVENTS = new Set(["connection_created", "connection_reauth", "reconnect_notified", "source_failed", "agent_message_sent", "tool_call_decided", "path_conflict_found", "subagent_turn_used", "subagent_question_redirected"]);
 
 /** 결제 · 키 이벤트(webhook · 쓸기 · 결제 창이 남긴다)는 제품 사용이 아니다: 갱신 한 번이 재방문이 되지 않게 리텐션 활동에서 뺀다 (계약 12장 "PRD 지표와 섞지 않는다") */
 const BILLING_TYPES = new Set(BILLING_EVENTS.map((e) => e.type));

@@ -1310,7 +1310,7 @@ public actor ClaudeCodeProcess: AgentProcess {
                 backgroundTasks.apply(event, session: spawn.agentSessionID)
                 // 이 spawn이 시작하거나 끝낸 일의 id: 거둘 때 이 일들만 멈춘다 (앞 spawn · 다른 원천의 일은 건드리지 않는다)
                 switch event {
-                case .started(let id, _, _, _, _), .finished(let id, _, _, _, _): spawn.backgroundTaskIDs.insert(id)
+                case .started(let id, _, _, _, _, _, _, _), .finished(let id, _, _, _, _): spawn.backgroundTaskIDs.insert(id)
                 case .snapshot: break
                 }
             case .resultSeen:
