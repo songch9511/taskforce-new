@@ -187,32 +187,80 @@ struct AgentTreeCanvasTests {
         #expect(monitor.containsScrollLocation(CGPoint(x: 230, y: 320)))
         // Real QA coordinates: x=1240 at 2x backing scale is in the adjacent chat.
         #expect(!monitor.containsScrollLocation(CGPoint(x: 620, y: 350)))
+        let pinch = try #require(monitor.magnifyRecognizer)
+        #expect(pinch.view === host)
+        #expect(host.gestureRecognizers.contains { $0 === pinch })
+        #expect(pinch.delegate === monitor)
+        for (point, expected) in [(CGPoint(x: 230, y: 320), true), (CGPoint(x: 620, y: 350), false)] {
+            let event = try #require(NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [], timestamp: 0,
+                                                       windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0))
+            #expect(monitor.gestureRecognizer(pinch, shouldAttemptToRecognizeWith: event) == expected)
+        }
+        #expect(!pinch.delaysPrimaryMouseButtonEvents)
+        monitor.enabled = false
+        #expect(!pinch.isEnabled)
+        monitor.enabled = true
+        #expect(pinch.isEnabled)
+        monitor.stop()
+        #expect(!host.gestureRecognizers.contains { $0 === pinch })
+        #expect(monitor.magnifyRecognizer == nil)
     }
 
-    @MainActor @Test func nativePinchUsesIncrementalScaleAndPreservesAnchorUntilTermination() {
-        let input = AgentTreeScrollInput.InputView(frame: CGRect(x: 0, y: 0, width: 463, height: 480))
-        let content = CGRect(x: 0, y: 0, width: 720, height: 600)
-        var transform = AgentTreeTransform(scale: 0.5, offset: CGSize(width: 50, height: 50))
-        var anchors: [CGPoint] = []
-        input.onMagnify = { increment, anchor in
-            anchors.append(anchor)
-            transform = transform.zoomed(to: transform.scale * (1 + increment), anchor: anchor, content: content, viewport: input.bounds.size)
+    @MainActor private final class Pinch: NSMagnificationGestureRecognizer {
+        var testLocation = CGPoint.zero
+        private var testState = NSGestureRecognizer.State.changed
+        override var state: NSGestureRecognizer.State {
+            get { testState }
+            set { testState = newValue }
         }
+        override func location(in view: NSView?) -> NSPoint { testLocation }
+    }
+
+    @MainActor @Test func nativeRecognizerKeepsItsAnchorAndResetsItsIncrement() throws {
+        let input = AgentTreeScrollInput.InputView(frame: CGRect(x: 0, y: 0, width: 463, height: 480))
+        let pinch = Pinch()
         let tree = CGPoint(x: 200, y: 180), chat = CGPoint(x: 600, y: 180)
-        #expect(input.receive(type: .magnify, phase: .began, location: tree))
-        #expect(input.receive(type: .magnify, phase: .changed, location: CGPoint(x: 220, y: 200), magnification: 0.1))
-        #expect(input.receive(type: .magnify, phase: .changed, location: chat, magnification: 0.1))
-        #expect(abs(transform.scale - 0.605) < 0.000001)
+        var increments: [CGFloat] = [], anchors: [CGPoint] = []
+        input.onMagnify = { increments.append($0); anchors.append($1) }
+        func begin(at point: CGPoint) throws -> Bool {
+            let event = try #require(NSEvent.mouseEvent(with: .leftMouseDown,
+                location: input.convert(point, to: nil), modifierFlags: [], timestamp: 0,
+                windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 0))
+            _ = input.gestureRecognizer(pinch, shouldAttemptToRecognizeWith: event)
+            // Reproduce hardware logs: recognizer location is outside, event location is inside.
+            pinch.testLocation = CGPoint(x: 0, y: 560)
+            return input.gestureRecognizerShouldBegin(pinch)
+        }
+
+        pinch.testLocation = chat
+        #expect(try !begin(at: chat))
+        pinch.magnification = 0.1
+        input.magnificationChanged(pinch)
+        #expect(increments.isEmpty)
+        pinch.testLocation = tree
+        #expect(try begin(at: tree))
+        input.magnificationChanged(pinch)
+        #expect(pinch.magnification == 0)
+        pinch.testLocation = chat
+        pinch.magnification = -0.05
+        input.magnificationChanged(pinch)
+        #expect(increments == [0.1, -0.05])
         #expect(anchors == [tree, tree])
-        #expect(input.receive(type: .magnify, phase: .cancelled, location: tree, magnification: 0.5))
-        #expect(!input.receive(type: .magnify, phase: .changed, location: tree, magnification: 0.5))
-        #expect(abs(transform.scale - 0.605) < 0.000001)
-        #expect(!input.receive(type: .magnify, phase: .began, location: chat))
-        #expect(!input.receive(type: .magnify, phase: .changed, location: tree, magnification: 0.1))
-        #expect(input.receive(type: .magnify, phase: .began, location: tree))
-        #expect(input.receive(type: .magnify, phase: .ended, location: tree))
-        #expect(!input.receive(type: .magnify, phase: .changed, location: tree, magnification: 0.1))
-        input.onMagnify = nil
+        pinch.state = .cancelled
+        pinch.magnification = 0.5
+        input.magnificationChanged(pinch)
+        pinch.state = .changed
+        input.magnificationChanged(pinch)
+        #expect(increments == [0.1, -0.05])
+        pinch.testLocation = tree
+        #expect(try begin(at: tree))
+        pinch.state = .ended
+        pinch.magnification = 0
+        input.magnificationChanged(pinch)
+        pinch.state = .changed
+        pinch.magnification = 0.5
+        input.magnificationChanged(pinch)
+        #expect(increments == [0.1, -0.05])
     }
 
     @MainActor @Test func momentumStaysWithItsOriginAndOrdinaryScrollUsesBothAxes() {
@@ -252,7 +300,7 @@ struct AgentTreeCanvasTests {
         #expect(count == 5)
     }
 
-    @MainActor @Test func smartZoomAndPinchRespectCanvasActivation() {
+    @MainActor @Test func smartZoomAndPinchRespectCanvasActivation() throws {
         let input = AgentTreeScrollInput.InputView(frame: CGRect(x: 0, y: 0, width: 463, height: 480))
         let tree = CGPoint(x: 200, y: 180)
         var fits = 0
@@ -260,12 +308,34 @@ struct AgentTreeCanvasTests {
         #expect(!input.receive(type: .smartMagnify, location: CGPoint(x: 600, y: 180)))
         #expect(input.receive(type: .smartMagnify, location: tree))
         #expect(fits == 1)
-        #expect(input.receive(type: .magnify, phase: .began, location: tree))
+        let pinch = Pinch()
+        pinch.testLocation = tree
+        let event = try #require(NSEvent.mouseEvent(with: .leftMouseDown,
+            location: input.convert(tree, to: nil), modifierFlags: [], timestamp: 0,
+            windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 0))
+        #expect(input.gestureRecognizer(pinch, shouldAttemptToRecognizeWith: event))
+        #expect(input.gestureRecognizerShouldBegin(pinch))
         input.enabled = false
         #expect(!input.receive(type: .smartMagnify, location: tree))
         input.enabled = true
-        #expect(!input.receive(type: .magnify, phase: .changed, location: tree, magnification: 0.1))
+        var magnified = false
+        input.onMagnify = { _, _ in magnified = true }
+        pinch.magnification = 0.1
+        input.magnificationChanged(pinch)
+        #expect(!magnified)
         #expect(fits == 1)
+    }
+
+    @MainActor @Test func trackpadPreflightRemainsViewportScoped() {
+        let input = AgentTreeScrollInput.InputView(frame: CGRect(x: 0, y: 0, width: 463, height: 480))
+        let tree = CGPoint(x: 200, y: 180), chat = CGPoint(x: 600, y: 180)
+        var deltas: [CGSize] = []
+        input.onScroll = { deltas.append($0) }
+        #expect(input.receive(type: .scrollWheel, phase: .mayBegin, location: tree))
+        #expect(input.receive(type: .scrollWheel, phase: .changed, location: tree, scroll: CGSize(width: 12, height: -8)))
+        #expect(deltas.last == CGSize(width: 12, height: -8))
+        #expect(!input.receive(type: .scrollWheel, phase: .mayBegin, location: chat))
+        #expect(!input.receive(type: .scrollWheel, phase: .changed, location: tree))
     }
 
 }

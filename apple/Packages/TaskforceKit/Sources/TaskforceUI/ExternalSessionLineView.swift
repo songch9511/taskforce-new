@@ -10,6 +10,7 @@ import TaskforceKit
 /// - 호버의 `bg/selected`는 누를 수 있는 줄(`highlightsOnHover`)에만 칠한다. 접근성 이름은 "{제목} — {둘째 줄}"
 public struct ExternalSessionLineView: View {
     let content: ExternalSessionLineContent
+    let agent: AgentMarkKind
     let ring: AgentSessionRing?
     let onOpen: (() -> Void)?
     let current: Bool
@@ -19,9 +20,10 @@ public struct ExternalSessionLineView: View {
     @FocusState private var actionFocused: Bool
 
     public init(
-        content: ExternalSessionLineContent, ring: AgentSessionRing? = nil, current: Bool = false, onOpen: (() -> Void)? = nil,
+        content: ExternalSessionLineContent, agent: AgentMarkKind = .claudeCode, ring: AgentSessionRing? = nil, current: Bool = false, onOpen: (() -> Void)? = nil,
         onAction: @escaping (ExternalSessionLineContent.Action) -> Void = { _ in }
     ) {
+        self.agent = agent
         self.content = content
         self.ring = ring
         self.current = current
@@ -72,7 +74,7 @@ public struct ExternalSessionLineView: View {
 
     private var rowContent: some View {
         HStack(alignment: .top, spacing: 10) {
-            AgentMark(.claudeCode, size: 20)
+            AgentMark(agent, size: 20)
                 .frame(minHeight: 20)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 0) {

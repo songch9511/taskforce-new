@@ -27,6 +27,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     let sessionPanel: EdgeSessionPanelController?
     /// Claude 데스크톱 세션 보기 창 (OA PR-D2, 읽기 전용): Sessions 왼쪽 또는 레일 옆 한 패널. 목록(`BridgeFlag` · 새 Issues 화면)이 없으면 nil
     let claudePanel: EdgeClaudeAppPanelController?
+    let codexPanel: EdgeClaudeAppPanelController?
     /// 저장된 대화 읽기 패널 창 (OA D3v-m, 읽기 전용): Sessions 왼쪽. 저장소(`BridgeFlag` · 새 Issues 화면)가 없으면 nil
     let savedChatPanel: EdgeSavedChatPanelController?
     /// 범용 메뉴 창 (OA U2): 이슈 패널의 메뉴 창을 "밖"으로 치지 않으려고 컨트롤러가 알아본다 (`ownsIssueWindow`)
@@ -121,6 +122,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         rail = EdgeRailPanelController(shell: shell)
         panel = EdgePanelController(shell: shell, chat: chat)
         claudePanel = shell.desktop != nil ? EdgeClaudeAppPanelController(shell: shell, backgroundOpen: doneStores.backgroundOpen) : nil
+        codexPanel = shell.externalSessions != nil ? EdgeClaudeAppPanelController(shell: shell, backgroundOpen: doneStores.backgroundOpen, isCodex: true) : nil
         savedChatPanel = shell.savedChats != nil ? EdgeSavedChatPanelController(shell: shell) : nil
         // 새 Issues 화면이 켜진 구성만 세션 패널 창이 있다 (꺼지면 창도 읽기도 없다)
         if let chat, chat.issues != nil {
@@ -146,10 +148,12 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         // 레일이 여는 패널은 레일 전체의 세로 가운데에 선다 (OA PR-D2): 레일 창의 실제 자리에서 잰다
         panel.railCenterY = { [weak rail] in rail?.centerLineY }
         claudePanel?.panel.delegate = self
+        codexPanel?.panel.delegate = self
         // 데스크톱 링으로 연 Claude 세션 패널도 레일 전체의 세로 가운데에 선다 (사용자 결정 2026-10-22)
         claudePanel?.railCenterY = { [weak rail] in rail?.centerLineY }
         // Sessions 왼쪽에 설 때의 기준은 메인 패널이 닿을 자리다 (여는 움직임 중에 밀리지 않게)
         claudePanel?.mainPanelFrame = { [weak panel] in panel.flatMap { $0.isVisible ? $0.targetFrame() : nil } }
+        codexPanel?.mainPanelFrame = { [weak panel] in panel.flatMap { $0.isVisible ? $0.targetFrame() : nil } }
         // 저장된 대화 읽기 패널도 Sessions가 닿을 자리의 왼쪽에 선다 (OA D3v-m). Settings › Account의 Saved chats도 같은 저장소를 읽는다
         savedChatPanel?.panel.delegate = self
         savedChatPanel?.mainPanelFrame = { [weak panel] in panel.flatMap { $0.isVisible ? $0.targetFrame() : nil } }
@@ -226,6 +230,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         followPanel()
         followSessionPanel()
         followClaudePanel()
+        followCodexPanel()
         followSavedChatPanel()
         followDesktop()
         followIssues()
@@ -432,8 +437,28 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
             panel.hide()
             sessionPanel?.hide()
             claudePanel?.hide()
+            codexPanel?.hide()
             removeMonitors()
         }
+    }
+
+    func followCodexPanel() {
+        guard let codexPanel else { return }
+        let wanted = withObservationTracking {
+            _ = codexPanel.presentation.contentHeight
+            _ = codexPanel.presentation.pane.windowExtra
+            _ = codexPanel.presentation.pane.hasAgentTree
+            _ = panel.presentation.bodyHeight
+            _ = panel.presentation.footerHeight
+            _ = panel.presentation.shown
+            return shell.codexPanelShown
+        } onChange: { [weak self] in
+            Task { @MainActor in self?.followCodexPanel() }
+        }
+        if wanted {
+            if codexPanel.presentation.shown, codexPanel.isVisible { codexPanel.fit() }
+            else { codexPanel.show() }
+        } else if codexPanel.presentation.shown { codexPanel.hide() }
     }
 
     /// Claude 세션 보기 창 (OA PR-D2): 열어 둔 세션이 보일 때만 뜬다. Sessions 옆이면 메인 패널 왼쪽, 레일 옆 한 패널이면 메인 패널 자리. 높이 · 메인 패널 자리가 바뀌면 위를 맞춘 채 맞춘다
@@ -627,7 +652,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             let handled = MainActor.assumeIsolated { () -> Bool in
                 // 키 창은 마지막으로 누른 패널 하나다: 이슈 패널 · 세션 패널 · Claude 세션 패널이 키일 때만 (그 밖의 창으로 온 키는 지나간다)
-                guard let self, event.window === self.panel.panel || event.window === self.sessionPanel?.panel || event.window === self.claudePanel?.panel
+                guard let self, event.window === self.panel.panel || event.window === self.sessionPanel?.panel || event.window === self.claudePanel?.panel || event.window === self.codexPanel?.panel
                     || event.window === self.savedChatPanel?.panel else { return false }
                 return self.handleKey(event)
             }
@@ -637,6 +662,9 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
 
     /// 패널 밖(다른 앱 · 이 앱의 다른 창)을 눌렀거나 키를 잃었다: 패널을 접는다 (무인 실행의 `ignoresExternalDismissal`이 아니면)
     func externalInteraction() {
+        // Keep the preview visible while editing code in another app.
+        if ProcessInfo.processInfo.environment["TASKFORCE_DEV_KEEP_PANELS_OPEN"] == "1",
+           Bundle.main.object(forInfoDictionaryKey: "TaskforceReleaseChannel") as? String == "Local Development" { return }
         #if DEBUG
         if ignoresExternalDismissal { return }
         #endif
@@ -708,7 +736,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     func windowDidResignKey(_ notification: Notification) {
         // ⌘Tab 등으로 키를 잃으면 접는다 (More 메뉴를 연 동안은 빼고)
         guard shell.panelOpen, !shell.menuOpen else { return }
-        guard assistant != nil || sessionPanel != nil || claudePanel != nil || savedChatPanel != nil else {
+        guard assistant != nil || sessionPanel != nil || claudePanel != nil || codexPanel != nil || savedChatPanel != nil else {
             externalInteraction()
             return
         }
@@ -728,7 +756,7 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
     /// 이슈 패널 · 세션 패널 · Claude 세션 패널 · 저장된 대화 패널 · 그 메뉴 창 (OA U2-47): 서로를 눌러도 다른 쪽이 접히지 않는다. 바깥 클릭은 함께 접는다
     private func ownsIssueWindow(_ window: NSWindow?) -> Bool {
         guard let window else { return false }
-        return window === panel.panel || window === sessionPanel?.panel || window === claudePanel?.panel || window === savedChatPanel?.panel || window === menu.window
+        return window === panel.panel || window === sessionPanel?.panel || window === claudePanel?.panel || window === codexPanel?.panel || window === savedChatPanel?.panel || window === menu.window
     }
 }
 

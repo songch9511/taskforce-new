@@ -281,7 +281,7 @@ struct SidePaneTail: View {
                 Button(SessionViewCopy.tryAgain) { tail.retry() }.buttonStyle(TFButtonStyle(.secondary, size: .sm)).padding(.horizontal, TFSpace.sm)
             }
         case .text(let text, let earlier):
-            if earlier { earlierLink }
+            if earlier && tail.canLoadEarlier { earlierLink }
             SessionCodeBlockView(label: SessionViewCopy.output, text: text, collapses: false)
         case .agent(let turns, let earlier):
             agent(turns, earlier: earlier)
@@ -313,7 +313,7 @@ struct SidePaneTail: View {
         let entries = SessionTimeline.build(data.items, state: running ? .running : .finished).filter { if case .footer = $0 { false } else { true } }
         let byID = Dictionary(turns.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         // Show earlier는 본문이 하나만 세운다: 창 밖에 읽어 둔 줄을 먼저 펴고, 다 폈으면 꼬리의 창을 넓힌다 (`tail.showEarlier()`)
-        SessionEntriesView(entries: entries, steps: data.steps, state: steps, earlierPage: SessionEarlierPage(available: earlier, load: { tail.showEarlier() }), pinnedToBottom: pinned, item: { id in
+        SessionEntriesView(entries: entries, steps: data.steps, state: steps, earlierPage: SessionEarlierPage(available: earlier && tail.canLoadEarlier, load: { tail.showEarlier() }), pinnedToBottom: pinned, item: { id in
             if let turn = byID[id] { ClaudeAppTurnView(turn: turn) }
         })
         .padding(.horizontal, TFSpace.sm)

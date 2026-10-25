@@ -343,6 +343,8 @@ final class BackgroundTaskTailModel {
         generation += 1
     }
 
+    var canLoadEarlier: Bool { window < limits.maxTailBytes }
+
     /// "Show earlier": 창을 넓혀 더 앞을 본다 (상한까지). 더 넓힐 수 없으면 아무 일도 없다
     func showEarlier() {
         guard window < limits.maxTailBytes else { return }

@@ -10,6 +10,10 @@ import Testing
 /// 이 Mac의 실제 Claude 기록 · 프로세스 · 서버를 읽지 않는다: 스캔 결과는 가짜 클로저, Claude 앱 열기는 가짜, 계정은 견본 계정이다
 @MainActor
 struct EdgeExternalSessionsTests {
+    @Test func testHostsNeverReadLiveCodexSessions() {
+        #expect(!SessionsPanelBody.readsLiveCodexSessions)
+    }
+
     typealias Fx = IssueSnapshotData
     /// 가짜 Claude 세션 id (소문자 정규 UUID)
     static func uuid(_ n: Int) -> String { String(format: "5e5e5e5e-0000-4000-8000-%012x", n) }

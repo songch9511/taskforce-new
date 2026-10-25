@@ -54,19 +54,59 @@ struct LiveClaudeAppOpener: ClaudeAppOpening {
     }
 }
 
-/// Sessions 패널 본문 (OA PR-D2, DZ 승인 2026-10-22 `oa-rail-sessions-dz`): 출처별 두 절 — "Taskforce"(이슈의 세션: 도는 것 · 끝난 것 · 쉬는 것 · 닫힌 것)와 "On this Mac"(이 Mac의 Claude 세션).
-/// 링 있는 줄은 늘 보이고, 쉬는 줄 · 끝난 줄만 절마다 셋 뒤로 접는다 (Show all · Show less). 빈 절은 머리째 없고 두 절이 모두 비면 "No sessions".
-/// On this Mac의 읽는 중 · 못 읽음 · Claude Code 없음은 그 절 안의 한 줄이다 (Taskforce 세션은 그대로 보인다). 줄 순서 · 접기 · 문구는 Kit의 `SessionsPanelRules`가 정한다
+/// Sessions combines Taskforce-managed and local provider sessions.
+/// Input-waiting and active sessions stay visible; remaining rows share one recent-activity fold.
+/// Provider-specific row content, navigation and read-error recovery remain intact.
 struct SessionsPanelBody: View {
     @Bindable var shell: EdgeShellModel
-    @State private var taskforceExpanded = false
-    @State private var macExpanded = false
+    @State private var sessionsExpanded = false
+    @State private var codexSessions: [CodexLocalSession] = []
+    @State private var codexFailed = false
+    @State private var codexLoaded = false
+    @State private var codexRefreshingFailed = false
+    @State private var codexStatuses: [String: CodexObservedStatus] = [:]
+    private let codexReader = CodexLocalSessionReader()
 
     var body: some View {
         // 시각("2 min ago")이 열려 있는 동안 흐르게 30초마다 다시 그린다
         TimelineView(.periodic(from: .now, by: 30)) { context in
             content(now: context.date)
         }
+        .task(id: codexReadAccount) {
+            codexSessions = []; codexStatuses = [:]; codexRefreshingFailed = false; codexFailed = false; codexLoaded = false
+            guard codexReadAccount != nil, Self.readsLiveCodexSessions else {
+                codexSessions = []; codexStatuses = [:]; codexRefreshingFailed = false; codexFailed = false; codexLoaded = true
+                return
+            }
+            while !Task.isCancelled {
+                let result = await codexReader.read()
+                guard !Task.isCancelled else { return }
+                codexLoaded = true
+                switch result {
+                case .sessions(let rows):
+                    codexSessions = rows.filter { !shell.codexChatRuntime.isManagedThread($0.id) }
+                    codexStatuses = Dictionary(uniqueKeysWithValues: codexSessions.map { ($0.id, shell.codexChatRuntime.recordedStatus(for: $0, rows: rows)) })
+                    codexFailed = false
+                    codexRefreshingFailed = false
+                case .temporarilyUnavailable:
+                    codexRefreshingFailed = true
+                case .unreadable: codexSessions = []; codexStatuses = [:]; codexRefreshingFailed = false; codexFailed = true
+                }
+                try? await Task.sleep(for: .seconds(10))
+            }
+        }
+    }
+
+    private var codexReadAccount: UUID? {
+        shell.externalSessionsVisible && shell.panelOpen && shell.view == .sessions ? shell.account : nil
+    }
+
+    /// Sample captures and XCTest hosts must never read the user's local Codex index.
+    static var readsLiveCodexSessions: Bool {
+        #if DEBUG
+        if SampleData.isEnabled || ExternalSessionSnapshot.isEnabled { return false }
+        #endif
+        return !TestHost.isTestHost()
     }
 
     /// On this Mac 절이 무엇을 보이나
@@ -113,27 +153,90 @@ struct SessionsPanelBody: View {
     private func content(now: Date) -> some View {
         let store = shell.externalSessionsVisible ? shell.externalSessions : nil
         let taskforce = SessionsPanelRules.taskforce(
-            shell.issues?.sessions.items ?? [], issueNumber: { shell.issues?.numbers.number(for: $0) }, now: now, expanded: taskforceExpanded
+            shell.issues?.sessions.items ?? [], issueNumber: { shell.issues?.numbers.number(for: $0) }, now: now, expanded: true
         )
         let mac = macSection(store, now: now)
         // 저장된 대화 (OA D3v-m): 목록과 같은 게이트. 읽었는데 비면 절이 없다
         let savedStore = shell.savedChatsVisible ? shell.savedChats : nil
         let saved = savedStore?.section(expanded: shell.savedChatsExpanded)
         let plan = Self.plan(taskforce: taskforce, mac: mac, phase: store?.phase, taskforceRead: shell.issues?.sessions.hasRead ?? true, saved: saved?.state ?? .absent)
-        if plan.noSessions {
+        if plan.noSessions && codexLoaded && codexSessions.isEmpty && !codexFailed && !codexRefreshingFailed {
             PanelEmptyState(title: SessionsPanelCopy.noSessions) {}
         } else {
             VStack(alignment: .leading, spacing: 0) {
-                if plan.taskforce {
-                    SessionsSectionHeader(SessionsPanelCopy.taskforce, togglesFold: taskforce.togglesFold, expanded: taskforce.expanded) { taskforceExpanded.toggle() }
-                    VStack(alignment: .leading, spacing: 2) {
-                        ForEach(taskforce.rows) { row in
-                            SessionsTaskforceRowView(row, current: shell.sessionPanelID == row.id) { shell.openSessionRow(row.id) }
-                        }
+                sessionList(store, plan: plan.mac, section: mac, taskforce: taskforce.rows)
+                if let savedStore, let saved { savedChats(savedStore, section: saved, now: now) }
+            }
+        }
+    }
+
+    private enum SessionRow: Identifiable {
+        case taskforce(SessionsTaskforceRow, Date)
+        case claude(SessionsMacRow)
+        case codex(CodexLocalSession, CodexObservedStatus)
+        var id: String {
+            switch self { case .taskforce(let row, _): "taskforce:" + row.id.uuidString; case .claude(let row): "claude:" + row.id; case .codex(let row, _): "codex:" + row.id }
+        }
+        var date: Date {
+            switch self { case .taskforce(_, let date): date; case .claude(let row): row.row.lastActivity; case .codex(let row, _): row.updatedAt }
+        }
+        var rank: Int {
+            let ring: AgentSessionRing?
+            switch self {
+            case .taskforce(let row, _): ring = row.ring
+            case .claude(let row):
+                if row.attach != nil { return 0 }
+                ring = row.ring
+            case .codex(_, let status):
+                return status == .needsYou ? 0 : status == .running ? 1 : 2
+            }
+            switch ring {
+            case .needsYou, .waiting: return 0
+            case .running, .stopping, .unreachable: return 1
+            default: return 2
+            }
+        }
+        var active: Bool { rank < 2 }
+    }
+
+    @ViewBuilder private func sessionList(_ store: ExternalSessionsStore?, plan: MacPlan, section: SessionsSection<SessionsMacRow>, taskforce: [SessionsTaskforceRow]) -> some View {
+        let dates = Dictionary(uniqueKeysWithValues: (shell.issues?.sessions.items ?? []).map { ($0.id, $0.updatedAt) })
+        let rows = (taskforce.map { SessionRow.taskforce($0, dates[$0.id] ?? .distantPast) } + section.rows.map(SessionRow.claude) + codexSessions.map { session in
+            SessionRow.codex(session, shell.codexChatRuntime.status(sourceID: session.id) ?? (codexRefreshingFailed ? .unknown : codexStatuses[session.id] ?? .unknown))
+        }).sorted { left, right in
+            if left.rank != right.rank { return left.rank < right.rank }
+            if left.date != right.date { return left.date > right.date }
+            return left.id < right.id
+        }
+        let inactive = rows.filter { !$0.active }
+        let visible = sessionsExpanded ? rows : rows.filter(\.active) + Array(inactive.prefix(3))
+        if plan != .absent || !rows.isEmpty || codexFailed || codexRefreshingFailed {
+            if inactive.count > 3 {
+                HStack {
+                    Spacer(minLength: 0)
+                    QuietLink(sessionsExpanded ? "Show less" : "Show all") { sessionsExpanded.toggle() }
+                }
+                .padding(.horizontal, TFSpace.sm)
+                .padding(.bottom, TFSpace.xs)
+            }
+            if let store { onThisMac(store, plan: plan) }
+            if codexFailed { SessionsSectionNote("Couldn’t read Codex sessions") }
+            else if codexRefreshingFailed { SessionsSectionNote("Codex is busy. Retrying…") }
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(visible) { row in
+                    switch row {
+                    case .taskforce(let session, _):
+                        SessionsTaskforceRowView(session, current: shell.sessionPanelID == session.id) { shell.openSessionRow(session.id) }
+                    case .claude(let mac): claudeRow(mac)
+                    case .codex(let session, let status):
+                        ExternalSessionLineView(
+                            content: .init(title: session.title, statusWord: status.sessionLabel, statusIsEmphasis: status == .needsYou, detail: [], action: nil),
+                            agent: .codex, ring: status.sessionRing, current: shell.codexPanelShown && shell.codexPanelSession?.id == session.id,
+                            onOpen: { shell.openCodexSession(session) }
+                        )
+                        .accessibilityAction(named: "Open session") { shell.openCodexSession(session) }
                     }
                 }
-                if let store { onThisMac(store, plan: plan.mac, section: mac) }
-                if let savedStore, let saved { savedChats(savedStore, section: saved, now: now) }
             }
         }
     }
@@ -180,54 +283,51 @@ struct SessionsPanelBody: View {
     private func macSection(_ store: ExternalSessionsStore?, now: Date) -> SessionsSection<SessionsMacRow> {
         guard let store, store.phase == .ready else { return SessionsSection(rows: [], hiddenCount: 0, togglesFold: false, expanded: false) }
         return SessionsPanelRules.onThisMac(
-            store.rows, live: { shell.desktop?.liveStatus(for: $0) }, now: now, expanded: macExpanded,
+            store.rows, live: { shell.desktop?.liveStatus(for: $0) }, now: now, expanded: true,
             notice: shell.openNoticeSessionID.map { ($0, ExternalSessionCopy.runningInTerminal) }, busy: shell.openingSessionIDs, attach: shell.attachPresentation
         )
     }
 
     @ViewBuilder
-    private func onThisMac(_ store: ExternalSessionsStore, plan: MacPlan, section: SessionsSection<SessionsMacRow>) -> some View {
+    private func onThisMac(_ store: ExternalSessionsStore, plan: MacPlan) -> some View {
         switch plan {
         case .absent:
             EmptyView()
         case .checking:
-            SessionsSectionHeader(SessionsPanelCopy.onThisMac, togglesFold: false, expanded: false) {}
             SessionsSectionNote(ExternalSessionCopy.checking)
         case .notInstalled:
-            SessionsSectionHeader(SessionsPanelCopy.onThisMac, togglesFold: false, expanded: false) {}
             SessionsSectionNote(ExternalSessionCopy.notInstalled) {
                 // Settings › Your agents (Connections 탭)
                 Button(ExternalSessionCopy.getClaudeCode) { shell.onConnect() }.buttonStyle(TFButtonStyle(.secondary, size: .sm))
             }
         case .failed:
-            SessionsSectionHeader(SessionsPanelCopy.onThisMac, togglesFold: false, expanded: false) {}
             SessionsSectionNote(ExternalSessionCopy.couldNotCheckSessions) {
                 Button(ExternalSessionCopy.tryAgain) { store.retry() }.buttonStyle(TFButtonStyle(.secondary, size: .sm))
             }
         case .rows:
-            SessionsSectionHeader(SessionsPanelCopy.onThisMac, togglesFold: section.togglesFold, expanded: section.expanded) { macExpanded.toggle() }
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(section.rows) { mac in
-                    // 확인이 서 있는 줄(`mac.attach`)은 선택 바탕을 유지한다: 어느 세션인지 읽히게, 확인은 그 줄 밑에 선다 (DZ 승인 2026-10-21 "줄을 남기고 밑에")
-                    VStack(alignment: .leading, spacing: 2) {
-                        // 여는 동안(`isBusy`)의 "Opening…" 글자와 비활성은 줄 그림이 `content`에서 스스로 정한다
-                        ExternalSessionLineView(
-                            content: mac.line, ring: mac.ring, current: shell.desktopPanelID == mac.id || mac.attach != nil,
-                            onOpen: mac.opensSession ? { shell.openDesktopSession(mac.id, from: .list) } : nil
-                        ) { action in
-                            switch action {
-                            case .openInClaude: shell.openInClaude(mac.row)
-                            case .resumeHere: shell.resumeHere(mac.row)
-                            }
-                        }
-                        if let phase = mac.attach {
-                            ExternalSessionConfirmView(note: phase.note, busy: phase == .working, onConfirm: { shell.confirmResume(mac.row) }, onCancel: { shell.cancelResume(mac.id) })
-                        }
-                    }
+            EmptyView()
+        }
+    }
+
+    private func claudeRow(_ mac: SessionsMacRow) -> some View {
+        // 확인이 서 있는 줄(`mac.attach`)은 선택 바탕을 유지한다: 어느 세션인지 읽히게, 확인은 그 줄 밑에 선다 (DZ 승인 2026-10-21 "줄을 남기고 밑에")
+        VStack(alignment: .leading, spacing: 2) {
+            // 여는 동안(`isBusy`)의 "Opening…" 글자와 비활성은 줄 그림이 `content`에서 스스로 정한다
+            ExternalSessionLineView(
+                content: mac.line, ring: mac.ring, current: shell.desktopPanelID == mac.id || mac.attach != nil,
+                onOpen: mac.opensSession ? { shell.openDesktopSession(mac.id, from: .list) } : nil
+            ) { action in
+                switch action {
+                case .openInClaude: shell.openInClaude(mac.row)
+                case .resumeHere: shell.resumeHere(mac.row)
                 }
+            }
+            if let phase = mac.attach {
+                ExternalSessionConfirmView(note: phase.note, busy: phase == .working, onConfirm: { shell.confirmResume(mac.row) }, onCancel: { shell.cancelResume(mac.id) })
             }
         }
     }
+
 }
 
 /// 이 Mac의 값을 한 곳에서 댄다: 활성 계정의 파티션(열쇠 · Taskforce 세션 폴더) · bridge id · Claude Code probe(설치 · 버전). 계정(파티션)이 바뀌면 스캐너를 새로 만든다.
@@ -875,4 +975,28 @@ enum ExternalSessionSnapshot {
     }
 }
 #endif
+#endif
+
+#if os(macOS)
+private extension CodexObservedStatus {
+    var sessionLabel: String {
+        switch self {
+        case .unknown: "Status unavailable"
+        case .running: "Running"
+        case .needsYou: "Needs your answer"
+        case .done: "Done"
+        case .idle: "Idle"
+        case .failed: "Failed"
+        }
+    }
+    var sessionRing: AgentSessionRing {
+        switch self {
+        case .unknown, .idle: .idle
+        case .running: .running
+        case .needsYou: .needsYou
+        case .done: .done
+        case .failed: .unreachable
+        }
+    }
+}
 #endif
