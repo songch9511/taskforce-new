@@ -180,25 +180,15 @@ struct SessionsPanelBody: View {
             if codexFailed {
                 SessionsSectionNote("Couldn’t read Codex sessions")
             }
-            ForEach(codexExpanded ? codexSessions : Array(codexSessions.prefix(3))) { session in
-                Button {
-                    shell.openCodexSession(session)
-                } label: {
-                    HStack(alignment: .top, spacing: 10) {
-                        AgentMark(.codex, size: 20).accessibilityHidden(true)
-                        VStack(alignment: .leading, spacing: 0) {
-                            Text(session.title).font(TFFont.callout).foregroundStyle(TFColor.textPrimary).lineLimit(1)
-                            Text("Local session").font(TFFont.footnote).foregroundStyle(TFColor.textSecondary)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        Image(systemName: "chevron.right").foregroundStyle(TFColor.textSecondary)
-                    }
-                    .padding(.vertical, 8).padding(.horizontal, 10)
-                    .contentShape(Rectangle())
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(codexExpanded ? codexSessions : Array(codexSessions.prefix(3))) { session in
+                    ExternalSessionLineView(
+                        content: .init(title: session.title, statusWord: "Local session", statusIsEmphasis: false, detail: [], action: nil),
+                        agent: .codex, current: shell.codexPanelShown && shell.codexPanelSession?.id == session.id,
+                        onOpen: { shell.openCodexSession(session) }
+                    )
+                    .accessibilityAction(named: "Open session") { shell.openCodexSession(session) }
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("\(session.title) — Open session")
-                .accessibilityAction(named: "Open session") { shell.openCodexSession(session) }
             }
         }
     }

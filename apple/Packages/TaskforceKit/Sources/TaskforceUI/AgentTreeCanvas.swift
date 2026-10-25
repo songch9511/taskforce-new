@@ -167,15 +167,20 @@ struct AgentTreeScrollInput: NSViewRepresentable {
     var onMagnify: (CGFloat, CGPoint) -> Void = { _, _ in }
     var onFit: () -> Void = {}
 
-    final class InputView: NSView {
+    final class InputView: NSView, NSGestureRecognizerDelegate {
         var onScroll: ((CGSize) -> Void)?
         var onMagnify: ((CGFloat, CGPoint) -> Void)?
         var onFit: (() -> Void)?
         var monitor: Any?
+        private(set) var magnifyRecognizer: NSMagnificationGestureRecognizer?
         var enabled = true {
-            didSet { if !enabled { resetGestures() } }
+            didSet {
+                magnifyRecognizer?.isEnabled = enabled
+                if !enabled { resetGestures() }
+            }
         }
         private var magnifyAnchor: CGPoint?
+        private var pendingMagnifyAnchor: CGPoint?
         private var momentumOwned: Bool?
         private var scrollOwned: Bool?
         override var isFlipped: Bool { true }
@@ -183,41 +188,64 @@ struct AgentTreeScrollInput: NSViewRepresentable {
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             stop()
-            guard window != nil else { return }
-            monitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .magnify, .smartMagnify]) { [weak self] event in
-                guard let self, let window = self.window, event.window === window else { return event }
+            guard let host = window?.contentView else { return }
+            // The recognizer must live on the hit-tested hosting hierarchy, not this
+            // non-hit-tested SwiftUI background. Its delegate limits it to the canvas.
+            let pinch = NSMagnificationGestureRecognizer(target: self, action: #selector(magnificationChanged(_:)))
+            pinch.delegate = self
+            pinch.isEnabled = enabled
+            pinch.delaysPrimaryMouseButtonEvents = false
+            host.addGestureRecognizer(pinch)
+            magnifyRecognizer = pinch
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .smartMagnify]) { [weak self] event in
+                guard let self else { return event }
+                guard let window = self.window, event.window === window else { return event }
                 let multiplier: CGFloat = event.type == .scrollWheel && !event.hasPreciseScrollingDeltas ? 10 : 1
                 let handled = self.receive(type: event.type, phase: event.type == .smartMagnify ? [] : event.phase,
                                            momentum: event.type == .scrollWheel ? event.momentumPhase : [],
                                            location: self.convert(event.locationInWindow, from: nil),
-                                           scroll: event.type == .scrollWheel ? CGSize(width: event.scrollingDeltaX * multiplier, height: event.scrollingDeltaY * multiplier) : .zero,
-                                           magnification: event.type == .magnify ? event.magnification : 0)
+                                           scroll: event.type == .scrollWheel ? CGSize(width: event.scrollingDeltaX * multiplier, height: event.scrollingDeltaY * multiplier) : .zero)
                 return handled ? nil : event
             }
         }
 
-        /// Keep a pinch anchored for its whole sequence and momentum with its origin.
-        /// Native magnification is incremental, unlike SwiftUI's gesture-total value.
+        func gestureRecognizer(_ gestureRecognizer: NSGestureRecognizer, shouldAttemptToRecognizeWith event: NSEvent) -> Bool {
+            let accepted = enabled && !isHiddenOrHasHiddenAncestor && event.window === window && containsScrollLocation(event.locationInWindow)
+            pendingMagnifyAnchor = accepted ? convert(event.locationInWindow, from: nil) : nil
+            return accepted
+        }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: NSGestureRecognizer) -> Bool {
+            // Trackpad recognizers can report the hosting view origin rather than the pointer.
+            guard let location = pendingMagnifyAnchor else { return false }
+            pendingMagnifyAnchor = nil
+            guard enabled, !isHiddenOrHasHiddenAncestor, bounds.intersection(visibleRect).contains(location) else { return false }
+            magnifyAnchor = location
+            return true
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: NSGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: NSGestureRecognizer) -> Bool { true }
+
+        @objc func magnificationChanged(_ recognizer: NSMagnificationGestureRecognizer) {
+            guard enabled else { magnifyAnchor = nil; return }
+            if recognizer.state == .cancelled || recognizer.state == .failed {
+                magnifyAnchor = nil
+                return
+            }
+            guard let anchor = magnifyAnchor else { return }
+            let increment = recognizer.magnification
+            recognizer.magnification = 0
+            if increment != 0 { onMagnify?(increment, anchor) }
+            if recognizer.state == .ended { magnifyAnchor = nil }
+        }
+
+        /// Keep trackpad momentum with the viewport where the scroll started.
         @discardableResult
         func receive(type: NSEvent.EventType, phase: NSEvent.Phase = [], momentum: NSEvent.Phase = [],
-                     location: CGPoint, scroll: CGSize = .zero, magnification: CGFloat = 0) -> Bool {
+                     location: CGPoint, scroll: CGSize = .zero) -> Bool {
             guard enabled, !isHiddenOrHasHiddenAncestor else { resetGestures(); return false }
             let inside = bounds.intersection(visibleRect).contains(location)
             switch type {
-            case .magnify:
-                // Accept trackpad preflight and magnification events without a phase.
-                // Keep the origin once established so a chat gesture cannot enter the tree.
-                if phase.contains(.mayBegin) || phase.contains(.began) { magnifyAnchor = inside ? location : nil }
-                if phase.isEmpty {
-                    guard inside else { return false }
-                    if magnification != 0 { onMagnify?(magnification, location) }
-                    return true
-                }
-                let anchor = magnifyAnchor
-                if phase.contains(.ended) || phase.contains(.cancelled) { magnifyAnchor = nil }
-                guard let anchor else { return false }
-                if !phase.contains(.cancelled), magnification != 0 { onMagnify?(magnification, anchor) }
-                return true
             case .smartMagnify:
                 guard inside else { return false }
                 resetGestures()
@@ -245,10 +273,12 @@ struct AgentTreeScrollInput: NSViewRepresentable {
             // SwiftUI can report a visibleRect larger than the representable.
             bounds.intersection(visibleRect).contains(convert(locationInWindow, from: nil))
         }
-        private func resetGestures() { magnifyAnchor = nil; momentumOwned = nil; scrollOwned = nil }
+        private func resetGestures() { pendingMagnifyAnchor = nil; magnifyAnchor = nil; momentumOwned = nil; scrollOwned = nil }
         func stop() {
             if let monitor { NSEvent.removeMonitor(monitor) }
             monitor = nil
+            if let magnifyRecognizer { magnifyRecognizer.view?.removeGestureRecognizer(magnifyRecognizer) }
+            magnifyRecognizer = nil
             resetGestures()
         }
     }

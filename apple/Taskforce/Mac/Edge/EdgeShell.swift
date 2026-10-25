@@ -662,6 +662,9 @@ final class EdgeShellController: NSObject, NSWindowDelegate {
 
     /// 패널 밖(다른 앱 · 이 앱의 다른 창)을 눌렀거나 키를 잃었다: 패널을 접는다 (무인 실행의 `ignoresExternalDismissal`이 아니면)
     func externalInteraction() {
+        // Keep the preview visible while editing code in another app.
+        if ProcessInfo.processInfo.environment["TASKFORCE_DEV_KEEP_PANELS_OPEN"] == "1",
+           Bundle.main.object(forInfoDictionaryKey: "TaskforceReleaseChannel") as? String == "Local Development" { return }
         #if DEBUG
         if ignoresExternalDismissal { return }
         #endif

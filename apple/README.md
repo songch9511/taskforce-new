@@ -37,6 +37,35 @@
    이어서 빌드하면 새 프로필만 복사되고 서명은 그대로라 서명이 깨질 수 있습니다(`codesign --verify --deep --strict`가 "a sealed resource is missing or invalid"면 이 경우). 결과는 위와 같은 `-34018`입니다.
 5. 알림(C10): Mac 권한 파일의 `com.apple.developer.aps-environment`는 로컬 Debug에서 `development`, 직접 배포용 권한 확인에서는 `production`이어야 합니다. **App ID `dev.taskforcelabs.taskforce`에 Push Notifications 기능이 켜져 있어야** 서명된 빌드의 프로필에 이 권한이 들어갑니다(빠지면 자동 서명이 프로필 오류로 멈춥니다). 켠 뒤에는 프로필과 빌드 결과를 다시 확인합니다.
 
+## 실제 앱을 보며 수정하기
+
+네이티브 화면은 웹의 hot reload 대신 `scripts/dev-mac.py`로 **저장 → 증분 빌드 → 개발 앱 재시작**을 반복한다. 표준 Python만 사용하며 `Release`의 실제 연결 경로를 최적화 없이 빌드한다. 첫 빌드는 오래 걸릴 수 있지만 같은 DerivedData를 재사용한다. `/Applications/Taskforce.app`는 교체하지 않는다.
+
+로컬 xcconfig에는 실제 연결에 사용할 설정과 `TF_INTERNAL_BUILD = YES`, `TF_BRIDGE_ENABLED = YES`를 둔다. 설정 파일·서명 ID는 커밋하지 않는다. 기존 로그인에 접근하려면 설치본과 같은 번들 ID·서명 팀·Keychain 권한이 필요하다. 스크립트는 명시한 설치본의 프로비저닝 프로필·권한·Keychain 그룹을 복사한다.
+
+```bash
+# 저장소 루트에서. 개발 앱의 빌드/서명을 먼저 끝낸다(설치본은 계속 실행 가능).
+python3 scripts/dev-mac.py --build-only \
+  --xcconfig /private/tmp/taskforce-dev.xcconfig \
+  --derived-data /private/tmp/taskforce-dev-dd \
+  --signing-identity '<기존 설치본과 같은 서명 ID>' \
+  --reference-app /Applications/Taskforce.app
+
+# 설치된 Taskforce를 종료한 뒤, 서명된 개발 앱을 띄우고 변경을 감시한다.
+python3 scripts/dev-mac.py --watch --launch-ready \
+  --xcconfig /private/tmp/taskforce-dev.xcconfig \
+  --derived-data /private/tmp/taskforce-dev-dd \
+  --signing-identity '<기존 설치본과 같은 서명 ID>' \
+  --reference-app /Applications/Taskforce.app
+```
+
+- Apple 소스·리소스·프로젝트·xcconfig 저장을 감지한다. 빌드 캐시는 감시하지 않는다. 앱 타깃 파일을 추가하면 아래 XcodeGen 절차도 수행한다.
+- xcconfig에 `TF_RELEASE_CHANNEL = Local Development`를 지정하면 개발 스크립트로 실행한 패널은 다른 앱을 클릭해도 열린 상태를 유지한다. Esc로 닫을 수 있으며 설치본의 동작은 바뀌지 않는다.
+- 실행용 앱은 빌드 산출물과 별도로 복사한다. 새 빌드와 서명이 성공한 뒤 **이 스크립트가 시작한 앱만** 종료하고 교체한다. 실패한 빌드는 실행 중인 앱을 건드리지 않는다.
+- 상태는 `<derived-data>/dev-loop/state.json`, 빌드·서명 로그는 `build.log`에 남긴다. 앱의 stdout/stderr는 저장하지 않는다. 마지막 서명 앱은 `ready.json`으로 다시 실행할 수 있다.
+- `Ctrl-C`로 감시와 개발 앱을 함께 종료한다. `--once`는 변경 감시 없이 한 번 빌드해 앱이 종료될 때까지 실행한다. 개발 앱 재시작은 진행 중인 대화·작업을 끊을 수 있으므로 긴 작업 중에는 저장에 주의한다.
+- 이 흐름은 서명된 로컬 개발 실행이며 공증·배포 검증은 아니다. 스크립트 회귀 검증: `PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-dev-mac.py`.
+
 ## 프로젝트 구조를 바꿀 때
 
 `Taskforce.xcodeproj`는 [XcodeGen](https://github.com/yonaskolb/XcodeGen)으로 `project.yml`에서 생성합니다.

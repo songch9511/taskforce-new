@@ -336,7 +336,7 @@ final class EdgeClaudeAppPanelController {
         presentation = EdgeClaudeAppPanelPresentation(backgroundOpen: backgroundOpen)
         panel = EdgeKeyPanel(
             contentRect: NSRect(x: 0, y: 0, width: EdgePanelMetrics.width, height: EdgePanelMetrics.minHeight),
-            styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView], backing: .buffered, defer: false
+            styleMask: isCodex ? [.borderless, .fullSizeContentView] : [.borderless, .nonactivatingPanel, .fullSizeContentView], backing: .buffered, defer: false
         )
         hosting = NSHostingView(rootView: isCodex
             ? AnyView(CodexSessionPanelView(shell: shell, presentation: presentation))
@@ -421,6 +421,7 @@ final class EdgeClaudeAppPanelController {
             panel.setFrame(target, display: false)
         }
         if standalone || isCodex {
+            if isCodex { NSApp.activate() }
             panel.makeKeyAndOrderFront(nil)
         } else {
             // Sessions의 키를 빼앗지 않는다: 눌렀을 때 키 창이 된다
