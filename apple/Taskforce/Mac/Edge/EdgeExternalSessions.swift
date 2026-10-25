@@ -54,13 +54,12 @@ struct LiveClaudeAppOpener: ClaudeAppOpening {
     }
 }
 
-/// Sessions 패널 본문 (OA PR-D2, DZ 승인 2026-10-22 `oa-rail-sessions-dz`): 출처별 두 절 — "Taskforce"(이슈의 세션: 도는 것 · 끝난 것 · 쉬는 것 · 닫힌 것)와 "On this Mac"(이 Mac의 Claude · Codex 세션).
-/// 링 있는 줄은 늘 보이고, 쉬는 줄 · 끝난 줄만 절마다 셋 뒤로 접는다 (Show all · Show less). 빈 절은 머리째 없고 두 절이 모두 비면 "No sessions".
-/// On this Mac의 읽는 중 · 못 읽음 · Claude Code 없음은 그 절 안의 한 줄이다 (Taskforce 세션은 그대로 보인다). 줄 순서 · 접기 · 문구는 Kit의 `SessionsPanelRules`가 정한다
+/// Sessions combines Taskforce-managed and local provider sessions.
+/// Input-waiting and active sessions stay visible; remaining rows share one recent-activity fold.
+/// Provider-specific row content, navigation and read-error recovery remain intact.
 struct SessionsPanelBody: View {
     @Bindable var shell: EdgeShellModel
-    @State private var taskforceExpanded = false
-    @State private var macExpanded = false
+    @State private var sessionsExpanded = false
     @State private var codexSessions: [CodexLocalSession] = []
     @State private var codexFailed = false
     @State private var codexLoaded = false
@@ -154,7 +153,7 @@ struct SessionsPanelBody: View {
     private func content(now: Date) -> some View {
         let store = shell.externalSessionsVisible ? shell.externalSessions : nil
         let taskforce = SessionsPanelRules.taskforce(
-            shell.issues?.sessions.items ?? [], issueNumber: { shell.issues?.numbers.number(for: $0) }, now: now, expanded: taskforceExpanded
+            shell.issues?.sessions.items ?? [], issueNumber: { shell.issues?.numbers.number(for: $0) }, now: now, expanded: true
         )
         let mac = macSection(store, now: now)
         // 저장된 대화 (OA D3v-m): 목록과 같은 게이트. 읽었는데 비면 절이 없다
@@ -165,55 +164,69 @@ struct SessionsPanelBody: View {
             PanelEmptyState(title: SessionsPanelCopy.noSessions) {}
         } else {
             VStack(alignment: .leading, spacing: 0) {
-                if plan.taskforce {
-                    SessionsSectionHeader(SessionsPanelCopy.taskforce, togglesFold: taskforce.togglesFold, expanded: taskforce.expanded) { taskforceExpanded.toggle() }
-                    VStack(alignment: .leading, spacing: 2) {
-                        ForEach(taskforce.rows) { row in
-                            SessionsTaskforceRowView(row, current: shell.sessionPanelID == row.id) { shell.openSessionRow(row.id) }
-                        }
-                    }
-                }
-                localSessions(store, plan: plan.mac, section: mac)
+                sessionList(store, plan: plan.mac, section: mac, taskforce: taskforce.rows)
                 if let savedStore, let saved { savedChats(savedStore, section: saved, now: now) }
             }
         }
     }
 
-    private enum LocalRow: Identifiable {
+    private enum SessionRow: Identifiable {
+        case taskforce(SessionsTaskforceRow, Date)
         case claude(SessionsMacRow)
         case codex(CodexLocalSession, CodexObservedStatus)
         var id: String {
-            switch self { case .claude(let row): "claude:" + row.id; case .codex(let row, _): "codex:" + row.id }
+            switch self { case .taskforce(let row, _): "taskforce:" + row.id.uuidString; case .claude(let row): "claude:" + row.id; case .codex(let row, _): "codex:" + row.id }
         }
         var date: Date {
-            switch self { case .claude(let row): row.row.lastActivity; case .codex(let row, _): row.updatedAt }
+            switch self { case .taskforce(_, let date): date; case .claude(let row): row.row.lastActivity; case .codex(let row, _): row.updatedAt }
         }
-        var active: Bool {
+        var rank: Int {
+            let ring: AgentSessionRing?
             switch self {
-            case .claude(let row): row.attach != nil || (row.ring.map { [.running, .needsYou, .waiting, .stopping, .unreachable].contains($0) } ?? false)
-            case .codex(_, let status): status == .running || status == .needsYou
+            case .taskforce(let row, _): ring = row.ring
+            case .claude(let row):
+                if row.attach != nil { return 0 }
+                ring = row.ring
+            case .codex(_, let status):
+                return status == .needsYou ? 0 : status == .running ? 1 : 2
+            }
+            switch ring {
+            case .needsYou, .waiting: return 0
+            case .running, .stopping, .unreachable: return 1
+            default: return 2
             }
         }
+        var active: Bool { rank < 2 }
     }
 
-    @ViewBuilder private func localSessions(_ store: ExternalSessionsStore?, plan: MacPlan, section: SessionsSection<SessionsMacRow>) -> some View {
-        let rows = (section.rows.map(LocalRow.claude) + codexSessions.map { session in
-            LocalRow.codex(session, shell.codexChatRuntime.status(sourceID: session.id) ?? (codexRefreshingFailed ? .unknown : codexStatuses[session.id] ?? .unknown))
+    @ViewBuilder private func sessionList(_ store: ExternalSessionsStore?, plan: MacPlan, section: SessionsSection<SessionsMacRow>, taskforce: [SessionsTaskforceRow]) -> some View {
+        let dates = Dictionary(uniqueKeysWithValues: (shell.issues?.sessions.items ?? []).map { ($0.id, $0.updatedAt) })
+        let rows = (taskforce.map { SessionRow.taskforce($0, dates[$0.id] ?? .distantPast) } + section.rows.map(SessionRow.claude) + codexSessions.map { session in
+            SessionRow.codex(session, shell.codexChatRuntime.status(sourceID: session.id) ?? (codexRefreshingFailed ? .unknown : codexStatuses[session.id] ?? .unknown))
         }).sorted { left, right in
-            if left.active != right.active { return left.active }
+            if left.rank != right.rank { return left.rank < right.rank }
             if left.date != right.date { return left.date > right.date }
             return left.id < right.id
         }
         let inactive = rows.filter { !$0.active }
-        let visible = macExpanded ? rows : rows.filter(\.active) + Array(inactive.prefix(3))
+        let visible = sessionsExpanded ? rows : rows.filter(\.active) + Array(inactive.prefix(3))
         if plan != .absent || !rows.isEmpty || codexFailed || codexRefreshingFailed {
-            SessionsSectionHeader(SessionsPanelCopy.onThisMac, togglesFold: inactive.count > 3, expanded: macExpanded) { macExpanded.toggle() }
+            if inactive.count > 3 {
+                HStack {
+                    Spacer(minLength: 0)
+                    QuietLink(sessionsExpanded ? "Show less" : "Show all") { sessionsExpanded.toggle() }
+                }
+                .padding(.horizontal, TFSpace.sm)
+                .padding(.bottom, TFSpace.xs)
+            }
             if let store { onThisMac(store, plan: plan) }
             if codexFailed { SessionsSectionNote("Couldn’t read Codex sessions") }
             else if codexRefreshingFailed { SessionsSectionNote("Codex is busy. Retrying…") }
             VStack(alignment: .leading, spacing: 2) {
                 ForEach(visible) { row in
                     switch row {
+                    case .taskforce(let session, _):
+                        SessionsTaskforceRowView(session, current: shell.sessionPanelID == session.id) { shell.openSessionRow(session.id) }
                     case .claude(let mac): claudeRow(mac)
                     case .codex(let session, let status):
                         ExternalSessionLineView(
