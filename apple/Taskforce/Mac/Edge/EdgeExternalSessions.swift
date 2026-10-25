@@ -54,14 +54,13 @@ struct LiveClaudeAppOpener: ClaudeAppOpening {
     }
 }
 
-/// Sessions 패널 본문 (OA PR-D2, DZ 승인 2026-10-22 `oa-rail-sessions-dz`): 출처별 두 절 — "Taskforce"(이슈의 세션: 도는 것 · 끝난 것 · 쉬는 것 · 닫힌 것)와 "On this Mac"(이 Mac의 Claude 세션).
+/// Sessions 패널 본문 (OA PR-D2, DZ 승인 2026-10-22 `oa-rail-sessions-dz`): 출처별 두 절 — "Taskforce"(이슈의 세션: 도는 것 · 끝난 것 · 쉬는 것 · 닫힌 것)와 "On this Mac"(이 Mac의 Claude · Codex 세션).
 /// 링 있는 줄은 늘 보이고, 쉬는 줄 · 끝난 줄만 절마다 셋 뒤로 접는다 (Show all · Show less). 빈 절은 머리째 없고 두 절이 모두 비면 "No sessions".
 /// On this Mac의 읽는 중 · 못 읽음 · Claude Code 없음은 그 절 안의 한 줄이다 (Taskforce 세션은 그대로 보인다). 줄 순서 · 접기 · 문구는 Kit의 `SessionsPanelRules`가 정한다
 struct SessionsPanelBody: View {
     @Bindable var shell: EdgeShellModel
     @State private var taskforceExpanded = false
     @State private var macExpanded = false
-    @State private var codexExpanded = false
     @State private var codexSessions: [CodexLocalSession] = []
     @State private var codexFailed = false
     @State private var codexLoaded = false
@@ -174,30 +173,56 @@ struct SessionsPanelBody: View {
                         }
                     }
                 }
-                if let store { onThisMac(store, plan: plan.mac, section: mac) }
-                codexSection
+                localSessions(store, plan: plan.mac, section: mac)
                 if let savedStore, let saved { savedChats(savedStore, section: saved, now: now) }
             }
         }
     }
 
-    @ViewBuilder private var codexSection: some View {
-        if !codexSessions.isEmpty || codexFailed || codexRefreshingFailed {
-            SessionsSectionHeader("Codex on this Mac", togglesFold: codexSessions.count > 3, expanded: codexExpanded) { codexExpanded.toggle() }
-            if codexFailed {
-                SessionsSectionNote("Couldn’t read Codex sessions")
-            } else if codexRefreshingFailed {
-                SessionsSectionNote("Codex is busy. Retrying…")
+    private enum LocalRow: Identifiable {
+        case claude(SessionsMacRow)
+        case codex(CodexLocalSession, CodexObservedStatus)
+        var id: String {
+            switch self { case .claude(let row): "claude:" + row.id; case .codex(let row, _): "codex:" + row.id }
+        }
+        var date: Date {
+            switch self { case .claude(let row): row.row.lastActivity; case .codex(let row, _): row.updatedAt }
+        }
+        var active: Bool {
+            switch self {
+            case .claude(let row): row.attach != nil || (row.ring.map { [.running, .needsYou, .waiting, .stopping, .unreachable].contains($0) } ?? false)
+            case .codex(_, let status): status == .running || status == .needsYou
             }
+        }
+    }
+
+    @ViewBuilder private func localSessions(_ store: ExternalSessionsStore?, plan: MacPlan, section: SessionsSection<SessionsMacRow>) -> some View {
+        let rows = (section.rows.map(LocalRow.claude) + codexSessions.map { session in
+            LocalRow.codex(session, shell.codexChatRuntime.status(sourceID: session.id) ?? (codexRefreshingFailed ? .unknown : codexStatuses[session.id] ?? .unknown))
+        }).sorted { left, right in
+            if left.active != right.active { return left.active }
+            if left.date != right.date { return left.date > right.date }
+            return left.id < right.id
+        }
+        let inactive = rows.filter { !$0.active }
+        let visible = macExpanded ? rows : rows.filter(\.active) + Array(inactive.prefix(3))
+        if plan != .absent || !rows.isEmpty || codexFailed || codexRefreshingFailed {
+            SessionsSectionHeader(SessionsPanelCopy.onThisMac, togglesFold: inactive.count > 3, expanded: macExpanded) { macExpanded.toggle() }
+            if let store { onThisMac(store, plan: plan) }
+            if codexFailed { SessionsSectionNote("Couldn’t read Codex sessions") }
+            else if codexRefreshingFailed { SessionsSectionNote("Codex is busy. Retrying…") }
             VStack(alignment: .leading, spacing: 2) {
-                ForEach(codexExpanded ? codexSessions : Array(codexSessions.prefix(3))) { session in
-                    let status = shell.codexChatRuntime.status(sourceID: session.id) ?? (codexRefreshingFailed ? .unknown : codexStatuses[session.id] ?? .unknown)
-                    ExternalSessionLineView(
-                        content: .init(title: session.title, statusWord: status.sessionLabel, statusIsEmphasis: status == .needsYou, detail: [], action: nil),
-                        agent: .codex, ring: status.sessionRing, current: shell.codexPanelShown && shell.codexPanelSession?.id == session.id,
-                        onOpen: { shell.openCodexSession(session) }
-                    )
-                    .accessibilityAction(named: "Open session") { shell.openCodexSession(session) }
+                ForEach(visible) { row in
+                    switch row {
+                    case .claude(let mac): claudeRow(mac)
+                    case .codex(let session, let status):
+                        ExternalSessionLineView(
+                            content: .init(title: session.title, statusWord: status.sessionLabel, statusIsEmphasis: status == .needsYou, detail: [], action: nil),
+                            agent: .codex, ring: status.sessionRing, current: shell.codexPanelShown && shell.codexPanelSession?.id == session.id,
+                            onOpen: { shell.openCodexSession(session) }
+                        )
+                        .accessibilityAction(named: "Open session") { shell.openCodexSession(session) }
+                    }
                 }
             }
         }
@@ -245,54 +270,51 @@ struct SessionsPanelBody: View {
     private func macSection(_ store: ExternalSessionsStore?, now: Date) -> SessionsSection<SessionsMacRow> {
         guard let store, store.phase == .ready else { return SessionsSection(rows: [], hiddenCount: 0, togglesFold: false, expanded: false) }
         return SessionsPanelRules.onThisMac(
-            store.rows, live: { shell.desktop?.liveStatus(for: $0) }, now: now, expanded: macExpanded,
+            store.rows, live: { shell.desktop?.liveStatus(for: $0) }, now: now, expanded: true,
             notice: shell.openNoticeSessionID.map { ($0, ExternalSessionCopy.runningInTerminal) }, busy: shell.openingSessionIDs, attach: shell.attachPresentation
         )
     }
 
     @ViewBuilder
-    private func onThisMac(_ store: ExternalSessionsStore, plan: MacPlan, section: SessionsSection<SessionsMacRow>) -> some View {
+    private func onThisMac(_ store: ExternalSessionsStore, plan: MacPlan) -> some View {
         switch plan {
         case .absent:
             EmptyView()
         case .checking:
-            SessionsSectionHeader(SessionsPanelCopy.onThisMac, togglesFold: false, expanded: false) {}
             SessionsSectionNote(ExternalSessionCopy.checking)
         case .notInstalled:
-            SessionsSectionHeader(SessionsPanelCopy.onThisMac, togglesFold: false, expanded: false) {}
             SessionsSectionNote(ExternalSessionCopy.notInstalled) {
                 // Settings › Your agents (Connections 탭)
                 Button(ExternalSessionCopy.getClaudeCode) { shell.onConnect() }.buttonStyle(TFButtonStyle(.secondary, size: .sm))
             }
         case .failed:
-            SessionsSectionHeader(SessionsPanelCopy.onThisMac, togglesFold: false, expanded: false) {}
             SessionsSectionNote(ExternalSessionCopy.couldNotCheckSessions) {
                 Button(ExternalSessionCopy.tryAgain) { store.retry() }.buttonStyle(TFButtonStyle(.secondary, size: .sm))
             }
         case .rows:
-            SessionsSectionHeader(SessionsPanelCopy.onThisMac, togglesFold: section.togglesFold, expanded: section.expanded) { macExpanded.toggle() }
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(section.rows) { mac in
-                    // 확인이 서 있는 줄(`mac.attach`)은 선택 바탕을 유지한다: 어느 세션인지 읽히게, 확인은 그 줄 밑에 선다 (DZ 승인 2026-10-21 "줄을 남기고 밑에")
-                    VStack(alignment: .leading, spacing: 2) {
-                        // 여는 동안(`isBusy`)의 "Opening…" 글자와 비활성은 줄 그림이 `content`에서 스스로 정한다
-                        ExternalSessionLineView(
-                            content: mac.line, ring: mac.ring, current: shell.desktopPanelID == mac.id || mac.attach != nil,
-                            onOpen: mac.opensSession ? { shell.openDesktopSession(mac.id, from: .list) } : nil
-                        ) { action in
-                            switch action {
-                            case .openInClaude: shell.openInClaude(mac.row)
-                            case .resumeHere: shell.resumeHere(mac.row)
-                            }
-                        }
-                        if let phase = mac.attach {
-                            ExternalSessionConfirmView(note: phase.note, busy: phase == .working, onConfirm: { shell.confirmResume(mac.row) }, onCancel: { shell.cancelResume(mac.id) })
-                        }
-                    }
+            EmptyView()
+        }
+    }
+
+    private func claudeRow(_ mac: SessionsMacRow) -> some View {
+        // 확인이 서 있는 줄(`mac.attach`)은 선택 바탕을 유지한다: 어느 세션인지 읽히게, 확인은 그 줄 밑에 선다 (DZ 승인 2026-10-21 "줄을 남기고 밑에")
+        VStack(alignment: .leading, spacing: 2) {
+            // 여는 동안(`isBusy`)의 "Opening…" 글자와 비활성은 줄 그림이 `content`에서 스스로 정한다
+            ExternalSessionLineView(
+                content: mac.line, ring: mac.ring, current: shell.desktopPanelID == mac.id || mac.attach != nil,
+                onOpen: mac.opensSession ? { shell.openDesktopSession(mac.id, from: .list) } : nil
+            ) { action in
+                switch action {
+                case .openInClaude: shell.openInClaude(mac.row)
+                case .resumeHere: shell.resumeHere(mac.row)
                 }
+            }
+            if let phase = mac.attach {
+                ExternalSessionConfirmView(note: phase.note, busy: phase == .working, onConfirm: { shell.confirmResume(mac.row) }, onCancel: { shell.cancelResume(mac.id) })
             }
         }
     }
+
 }
 
 /// 이 Mac의 값을 한 곳에서 댄다: 활성 계정의 파티션(열쇠 · Taskforce 세션 폴더) · bridge id · Claude Code probe(설치 · 버전). 계정(파티션)이 바뀌면 스캐너를 새로 만든다.
