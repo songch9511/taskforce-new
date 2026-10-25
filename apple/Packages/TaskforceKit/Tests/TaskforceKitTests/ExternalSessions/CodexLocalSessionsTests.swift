@@ -48,6 +48,95 @@ struct CodexLocalSessionsTests {
         try db.run("UPDATE threads SET cwd=? WHERE id=?", [.text("relative/path"), .text(first)])
         #expect(await reader.workingDirectory(sessionID: first) == nil)
     }
+    @Test func shortDatabaseWriterLockDoesNotEraseTheSessionList() async throws {
+        let (root, db) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        try insert(first, root: root, db: db)
+        let path = root.appendingPathComponent("state_5.sqlite").path
+        let released = DispatchSemaphore(value: 0)
+        let locked: Bool = await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                do {
+                    let writer = try SQLiteDatabase(path: path)
+                    try writer.exec("BEGIN EXCLUSIVE")
+                    continuation.resume(returning: true)
+                    Thread.sleep(forTimeInterval: 0.15)
+                    try? writer.exec("COMMIT")
+                } catch {
+                    // Opening/locking failure must fail the fixture instead of looking like recovery.
+                    continuation.resume(returning: false)
+                }
+                released.signal()
+            }
+        }
+        #expect(locked)
+        let result = await CodexLocalSessionReader(directory: root.path).read()
+        let finished: Bool = await withCheckedContinuation { continuation in
+            DispatchQueue.global().async { continuation.resume(returning: released.wait(timeout: .now() + 2) == .success) }
+        }
+        #expect(finished)
+        guard case .sessions(let rows) = result else { Issue.record("Short writer lock must recover"); return }
+        #expect(rows.map(\.id) == [first])
+    }
+    @Test func prolongedLockIsTransientButInvalidSchemaIsNot() async throws {
+        let (root, db) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        try insert(first, root: root, db: db)
+        try db.exec("BEGIN EXCLUSIVE")
+        let reader = CodexLocalSessionReader(directory: root.path)
+        #expect(await reader.read() == .temporarilyUnavailable)
+        #expect(await reader.snapshot(sessionID: first) == .temporarilyUnavailable)
+        try db.exec("ROLLBACK")
+        try db.exec("DROP TABLE thread_spawn_edges")
+        #expect(await reader.read() == .unreadable)
+    }
+
+    private final class SidecarRace: @unchecked Sendable {
+        private let lock = NSLock()
+        private var observed = false
+        func firstObservation() -> Bool {
+            lock.withLock {
+                guard !observed else { return false }
+                observed = true
+                return true
+            }
+        }
+    }
+
+    @Test func disappearingSidecarRevalidatesButExistingSymlinkStillFails() async throws {
+        let (root, db) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        try insert(first, root: root, db: db)
+        let sidecar = root.appendingPathComponent("state_5.sqlite-wal").path
+        let race = SidecarRace()
+        var files = ExternalSessionFileSystem.live
+        files.lstat = { path in
+            if path == sidecar, race.firstObservation() {
+                return .init(name: "state_5.sqlite-wal", kind: .regular, owner: ExternalSessionFileSystem.live.userID,
+                             size: 0, modified: Date(), created: Date(), mode: 0o600)
+            }
+            return ExternalSessionFileSystem.live.lstat(path)
+        }
+        let reader = CodexLocalSessionReader(directory: root.path, files: files)
+        guard case .sessions(let rows) = await reader.read() else { Issue.record("Sidecar disappeared during validation"); return }
+        #expect(rows.map(\.id) == [first])
+        try FileManager.default.createSymbolicLink(atPath: sidecar, withDestinationPath: root.appendingPathComponent("state_5.sqlite").path)
+        #expect(await reader.read() == .unreadable)
+    }
+
+    @Test func listStatusUsesValidatedTerminalHistoryAndIsolatesUnreadableTranscripts() async throws {
+        let (root, db) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        try insert(first, root: root, db: db)
+        try insert(second, root: root, db: db, metaID: third)
+        for id in [first, second] {
+            let path = root.appendingPathComponent("sessions/\(id).jsonl")
+            var data = try Data(contentsOf: path)
+            data.append(try line(["type": "event_msg", "payload": ["type": "task_complete", "turn_id": "turn-1"]]))
+            try data.write(to: path)
+        }
+        guard case .sessions(let rows) = await CodexLocalSessionReader(directory: root.path).read() else {
+            Issue.record("Bad transcript must not erase the list"); return
+        }
+        #expect(rows.first(where: { $0.id == first })?.status == .done)
+        #expect(rows.first(where: { $0.id == second })?.status == .unknown)
+    }
     @Test func canonicalRootsExcludeChildrenGuardiansAndArchivedAndPreserveRenames() async throws {
         let (root, db) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
         try insert(first, root: root, db: db)

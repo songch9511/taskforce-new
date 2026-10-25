@@ -65,6 +65,8 @@ struct SessionsPanelBody: View {
     @State private var codexSessions: [CodexLocalSession] = []
     @State private var codexFailed = false
     @State private var codexLoaded = false
+    @State private var codexRefreshingFailed = false
+    @State private var codexStatuses: [String: CodexObservedStatus] = [:]
     private let codexReader = CodexLocalSessionReader()
 
     var body: some View {
@@ -73,8 +75,9 @@ struct SessionsPanelBody: View {
             content(now: context.date)
         }
         .task(id: codexReadAccount) {
+            codexSessions = []; codexStatuses = [:]; codexRefreshingFailed = false; codexFailed = false; codexLoaded = false
             guard codexReadAccount != nil, Self.readsLiveCodexSessions else {
-                codexSessions = []; codexFailed = false; codexLoaded = true
+                codexSessions = []; codexStatuses = [:]; codexRefreshingFailed = false; codexFailed = false; codexLoaded = true
                 return
             }
             while !Task.isCancelled {
@@ -84,8 +87,12 @@ struct SessionsPanelBody: View {
                 switch result {
                 case .sessions(let rows):
                     codexSessions = rows.filter { !shell.codexChatRuntime.isManagedThread($0.id) }
+                    codexStatuses = Dictionary(uniqueKeysWithValues: codexSessions.map { ($0.id, shell.codexChatRuntime.recordedStatus(for: $0, rows: rows)) })
                     codexFailed = false
-                case .unreadable: codexSessions = []; codexFailed = true
+                    codexRefreshingFailed = false
+                case .temporarilyUnavailable:
+                    codexRefreshingFailed = true
+                case .unreadable: codexSessions = []; codexStatuses = [:]; codexRefreshingFailed = false; codexFailed = true
                 }
                 try? await Task.sleep(for: .seconds(10))
             }
@@ -155,7 +162,7 @@ struct SessionsPanelBody: View {
         let savedStore = shell.savedChatsVisible ? shell.savedChats : nil
         let saved = savedStore?.section(expanded: shell.savedChatsExpanded)
         let plan = Self.plan(taskforce: taskforce, mac: mac, phase: store?.phase, taskforceRead: shell.issues?.sessions.hasRead ?? true, saved: saved?.state ?? .absent)
-        if plan.noSessions && codexLoaded && codexSessions.isEmpty && !codexFailed {
+        if plan.noSessions && codexLoaded && codexSessions.isEmpty && !codexFailed && !codexRefreshingFailed {
             PanelEmptyState(title: SessionsPanelCopy.noSessions) {}
         } else {
             VStack(alignment: .leading, spacing: 0) {
@@ -175,16 +182,19 @@ struct SessionsPanelBody: View {
     }
 
     @ViewBuilder private var codexSection: some View {
-        if !codexSessions.isEmpty || codexFailed {
+        if !codexSessions.isEmpty || codexFailed || codexRefreshingFailed {
             SessionsSectionHeader("Codex on this Mac", togglesFold: codexSessions.count > 3, expanded: codexExpanded) { codexExpanded.toggle() }
             if codexFailed {
                 SessionsSectionNote("Couldn’t read Codex sessions")
+            } else if codexRefreshingFailed {
+                SessionsSectionNote("Codex is busy. Retrying…")
             }
             VStack(alignment: .leading, spacing: 2) {
                 ForEach(codexExpanded ? codexSessions : Array(codexSessions.prefix(3))) { session in
+                    let status = shell.codexChatRuntime.status(sourceID: session.id) ?? (codexRefreshingFailed ? .unknown : codexStatuses[session.id] ?? .unknown)
                     ExternalSessionLineView(
-                        content: .init(title: session.title, statusWord: "Local session", statusIsEmphasis: false, detail: [], action: nil),
-                        agent: .codex, current: shell.codexPanelShown && shell.codexPanelSession?.id == session.id,
+                        content: .init(title: session.title, statusWord: status.sessionLabel, statusIsEmphasis: status == .needsYou, detail: [], action: nil),
+                        agent: .codex, ring: status.sessionRing, current: shell.codexPanelShown && shell.codexPanelSession?.id == session.id,
                         onOpen: { shell.openCodexSession(session) }
                     )
                     .accessibilityAction(named: "Open session") { shell.openCodexSession(session) }
@@ -930,4 +940,28 @@ enum ExternalSessionSnapshot {
     }
 }
 #endif
+#endif
+
+#if os(macOS)
+private extension CodexObservedStatus {
+    var sessionLabel: String {
+        switch self {
+        case .unknown: "Status unavailable"
+        case .running: "Running"
+        case .needsYou: "Needs your answer"
+        case .done: "Done"
+        case .idle: "Idle"
+        case .failed: "Failed"
+        }
+    }
+    var sessionRing: AgentSessionRing {
+        switch self {
+        case .unknown, .idle: .idle
+        case .running: .running
+        case .needsYou: .needsYou
+        case .done: .done
+        case .failed: .unreachable
+        }
+    }
+}
 #endif

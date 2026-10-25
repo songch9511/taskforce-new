@@ -22,6 +22,7 @@ public enum CodexChatEvent: Equatable, Sendable {
     case approval(id: String, kind: String, summary: String)
     case input(id: String, questions: [CodexChatQuestion])
     case turnCompleted(threadID: String, turnID: String)
+    case turnInterrupted
     case requestResolved(id: String)
     case failure(CodexChatSendError)
 }
@@ -269,7 +270,8 @@ public actor CodexChatSender {
                 for key in requests.keys.filter({ requests[$0]?.turn == id }) {
                     requests.removeValue(forKey: key); publish(.requestResolved(id: key))
                 }
-                publish(.turnCompleted(threadID: thread, turnID: id))
+                if turn["status"] as? String == "interrupted" { publish(.turnInterrupted) }
+                else { publish(.turnCompleted(threadID: thread, turnID: id)) }
                 if turn["status"] as? String == "failed" { publish(.failure(.rejected)) }
             } else if method == "serverRequest/resolved", let id = params["requestId"],
                       let encoded = try? JSONSerialization.data(withJSONObject: id, options: .fragmentsAllowed) {

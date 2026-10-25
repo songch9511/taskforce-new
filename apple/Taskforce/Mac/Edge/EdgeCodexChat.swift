@@ -15,6 +15,15 @@ final class CodexSessionChatModel {
     private(set) var sessionID: String?
     private(set) var managedThreadID: String?
     private(set) var isRunning = false
+    private var terminalStatus: CodexObservedStatus?
+    var listStatus: CodexObservedStatus? {
+        if !requests.isEmpty { return .needsYou }
+        if isRunning { return .running }
+        return terminalStatus
+    }
+    func reconcileRecordedStatus() {
+        if !isRunning && requests.isEmpty { terminalStatus = nil }
+    }
     private(set) var isPreparingHistory = false
     private(set) var requests: [CodexChatPrompt] = []
     private(set) var responding: Set<String> = []
@@ -58,6 +67,7 @@ final class CodexSessionChatModel {
         requests = []
         responding = []
         isRunning = false
+        terminalStatus = nil
         isPreparingHistory = false
         managedThreadID = nil
         pending?.cancel()
@@ -118,6 +128,7 @@ final class CodexSessionChatModel {
                 self.pending = nil
                 self.isRunning = false
                 self.isPreparingHistory = false
+                self.terminalStatus = .failed
                 self.errorMessage = Self.message(for: error)
             }
         }
@@ -141,12 +152,20 @@ final class CodexSessionChatModel {
             responding.remove(id)
         case .contextCompaction(let preparing):
             isPreparingHistory = preparing
+        case .turnInterrupted:
+            terminalStatus = .idle
+            isPreparingHistory = false
+            isRunning = false
+            requests = []
+            responding = []
         case .turnCompleted:
+            terminalStatus = .done
             isPreparingHistory = false
             isRunning = false
             requests = []
             responding = []
         case .failure(let error):
+            terminalStatus = .failed
             isPreparingHistory = false
             isRunning = false
             requests = []
@@ -205,6 +224,7 @@ enum CodexChatPrompt: Identifiable {
 }
 
 @MainActor
+@Observable
 final class CodexChatRuntime {
     private var account: UUID?
     private var chats: [String: CodexSessionChatModel] = [:]
@@ -238,6 +258,15 @@ final class CodexChatRuntime {
         chat.start(sourceID, managedThreadID: saved.flatMap { ExternalSessionRules.isCanonicalUUID($0) && $0 != sourceID ? $0 : nil })
         chats[sourceID] = chat
         return chat
+    }
+
+    func status(sourceID: String) -> CodexObservedStatus? { chats[sourceID]?.listStatus }
+
+    func recordedStatus(for session: CodexLocalSession, rows: [CodexLocalSession]) -> CodexObservedStatus {
+        chats[session.id]?.reconcileRecordedStatus()
+        guard let account,
+              let managed = defaults.string(forKey: "codex-managed-thread.\(account.uuidString).\(session.id)") else { return session.status }
+        return rows.first(where: { $0.id == managed })?.status ?? .unknown
     }
 
     func isManagedThread(_ id: String) -> Bool {

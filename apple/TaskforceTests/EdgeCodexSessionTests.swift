@@ -108,6 +108,24 @@ struct EdgeCodexSessionTests {
         tail.stop()
     }
 
+    @Test func managedStatusUsesLiveEventsAndNeverAssumesIdleOnOpen() {
+        let chat = CodexSessionChatModel()
+        chat.start("root", send: { _, _ in CodexChatReceipt(threadID: "managed", turnID: "turn") })
+        #expect(chat.listStatus == nil)
+        chat.receive(.approval(id: "approval", kind: "command", summary: "Test"))
+        #expect(chat.listStatus == .needsYou)
+        chat.receive(.turnCompleted(threadID: "managed", turnID: "turn"))
+        #expect(chat.listStatus == .done)
+        chat.reconcileRecordedStatus()
+        #expect(chat.listStatus == nil) // A fresh history read can supersede cached completion.
+        chat.receive(.turnInterrupted)
+        #expect(chat.listStatus == .idle)
+        chat.receive(.failure(.rejected))
+        #expect(chat.listStatus == .failed)
+        chat.stop()
+        #expect(chat.listStatus == nil)
+    }
+
     @Test func rootComposerSendsToSameSessionAndClearsAcceptedDraft() async {
         let pane = SessionSidePaneModel(store: InMemoryBackgroundTaskOpenStore())
         let chat = CodexSessionChatModel()
@@ -117,6 +135,7 @@ struct EdgeCodexSessionTests {
         let request = chat.submitRoot(pane: pane)
         await gate.waitUntilStarted()
         #expect(chat.isSending)
+        #expect(chat.listStatus == .running)
         #expect(chat.draft == "  Continue here  ")
         #expect(await gate.thread == "root")
         #expect(await gate.text == "Continue here")

@@ -1,10 +1,12 @@
 #if os(macOS)
 import Foundation
+import SQLite3
 
 public struct CodexLocalSession: Identifiable, Equatable, Sendable, CustomStringConvertible {
     public let id: String
     public let title: String
     public let updatedAt: Date
+    public var status: CodexObservedStatus = .unknown
     public var description: String { "CodexLocalSession" }
     public var openURL: URL? {
         guard ExternalSessionRules.isCanonicalUUID(id) else { return nil }
@@ -22,8 +24,8 @@ public struct CodexSessionSnapshot: Equatable, Sendable, CustomStringConvertible
 
 /// Local, read-only Codex state. Never executes commands or reports transcript content.
 public actor CodexLocalSessionReader {
-    public enum Result: Equatable, Sendable { case sessions([CodexLocalSession]), unreadable }
-    public enum SnapshotResult: Equatable, Sendable { case snapshot(CodexSessionSnapshot), unreadable }
+    public enum Result: Equatable, Sendable { case sessions([CodexLocalSession]), temporarilyUnavailable, unreadable }
+    public enum SnapshotResult: Equatable, Sendable { case snapshot(CodexSessionSnapshot), temporarilyUnavailable, unreadable }
     private let directory: String
     private let files: ExternalSessionFileSystem
     static let byteLimit = 2 * 1024 * 1024
@@ -78,13 +80,22 @@ public actor CodexLocalSessionReader {
         }
         return true
     }
-    nonisolated private func database(root: String) throws -> SQLiteDatabase {
+    nonisolated private func database(root: String, retries: Int = 2) throws -> SQLiteDatabase {
         let path = root + "/state_5.sqlite"
         guard trusted(path, root: root, kind: .regular) else { throw Failure.unreadable }
         for suffix in ["-wal", "-shm"] where files.lstat(path + suffix) != nil {
-            guard trusted(path + suffix, root: root, kind: .regular) else { throw Failure.unreadable }
+            guard trusted(path + suffix, root: root, kind: .regular) else {
+                // SQLite can remove its sidecars after checkpoint/close. Restart all checks
+                // only if this optional file vanished; an existing untrusted file still fails.
+                if retries > 0, files.lstat(path + suffix) == nil {
+                    return try database(root: root, retries: retries - 1)
+                }
+                throw Failure.unreadable
+            }
         }
-        return try SQLiteDatabase(path: path, readOnly: true)
+        let db = try SQLiteDatabase(path: path, readOnly: true)
+        try db.exec("PRAGMA busy_timeout = 750")
+        return db
     }
     nonisolated private static let columns = "t.id, t.title, t.rollout_path, t.updated_at, t.source"
     nonisolated private func threads(_ db: SQLiteDatabase, sql: String, binds: [SQLValue] = []) throws -> [Thread] {
@@ -113,9 +124,14 @@ public actor CodexLocalSessionReader {
             let db = try database(root: root)
             let records = try threads(db, sql: "SELECT \(Self.columns) FROM threads t WHERE t.archived = 0 AND t.source IN ('cli','vscode','exec','app_server','appServer') AND NOT EXISTS (SELECT 1 FROM thread_spawn_edges e WHERE e.child_thread_id = t.id) ORDER BY t.updated_at DESC, t.id LIMIT 200")
             let titles = indexTitles(root: root)
-            return .sessions(records.compactMap(\.session).map { session in
-                CodexLocalSession(id: session.id, title: titles[session.id] ?? session.title, updatedAt: session.updatedAt)
+            return .sessions(records.compactMap { thread in
+                guard let session = thread.session else { return nil }
+                let content = try? transcriptBytes(thread, root: root, limit: 64 * 1024)
+                let status = content.map { CodexObservedStatus.parse($0.data, offset: $0.offset) } ?? .unknown
+                return CodexLocalSession(id: session.id, title: titles[session.id] ?? session.title, updatedAt: session.updatedAt, status: status)
             })
+        } catch BridgeLedgerError.sqlite(let code, _) where code & 0xff == Int(SQLITE_BUSY) || code & 0xff == Int(SQLITE_LOCKED) {
+            return .temporarilyUnavailable
         } catch { return .unreadable }
     }
     nonisolated private func indexTitles(root: String) -> [String: String] {
@@ -166,6 +182,8 @@ public actor CodexLocalSessionReader {
                 BackgroundTask(id: child.id, kind: .agent, name: titles[child.id] ?? child.agentName ?? ExternalSessionRules.sanitizedTitle(child.title), status: .stopped, parentID: parent, depth: depth, statusUnknown: true)
             }
             return .snapshot(CodexSessionSnapshot(turns: transcript.turns, tasks: BackgroundTaskList(metadataTasks: tasks), hasEarlier: transcript.hasEarlier))
+        } catch BridgeLedgerError.sqlite(let code, _) where code & 0xff == Int(SQLITE_BUSY) || code & 0xff == Int(SQLITE_LOCKED) {
+            return .temporarilyUnavailable
         } catch { return .unreadable }
     }
     nonisolated public func tail(sessionID: String, rootSessionID: String, contextRootSessionID: String? = nil) -> BackgroundTaskTail.Result {
@@ -183,16 +201,20 @@ public actor CodexLocalSessionReader {
         } catch { return .unreadable }
     }
     nonisolated private func transcript(_ thread: Thread, root: String) throws -> CodexTranscriptParser.Parsed {
+        let content = try transcriptBytes(thread, root: root, limit: Self.byteLimit)
+        return CodexTranscriptParser.parse(content.data, offset: content.offset)
+    }
+    nonisolated private func transcriptBytes(_ thread: Thread, root: String, limit: Int) throws -> (data: Data, offset: Int64) {
         let path = thread.path
         guard path.hasPrefix(root + "/sessions/") || path.hasPrefix(root + "/archived_sessions/"),
               trusted(path, root: root, kind: .regular), let entry = files.lstat(path), entry.size >= 0,
-              let head = files.read(path, 0, min(1 << 20, Int(entry.size))),
+              let head = files.read(path, 0, min(limit, 1 << 20, Int(entry.size))),
               CodexTranscriptParser.matchesSession(head, id: thread.id) else { throw Failure.unreadable }
-        let offset = max(0, entry.size - Int64(Self.byteLimit))
-        guard let data = files.read(path, offset, min(Self.byteLimit, Int(entry.size))),
+        let offset = max(0, entry.size - Int64(limit))
+        guard let data = files.read(path, offset, min(limit, Int(entry.size))),
               let after = files.lstat(path), after.kind == .regular, after.owner == entry.owner,
               after.created == entry.created, after.size >= entry.size else { throw Failure.unreadable }
-        return CodexTranscriptParser.parse(data, offset: offset)
+        return (data, offset)
     }
 }
 #endif

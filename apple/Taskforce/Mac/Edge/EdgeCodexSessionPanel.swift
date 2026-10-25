@@ -42,6 +42,8 @@ final class CodexSessionPanelModel {
                     pane.tasks = snapshot.tasks
                     // Codex statuses are deliberately unknown; refresh an open tail independently.
                     await pane.tail?.readOnce()
+                case .temporarilyUnavailable:
+                    break // Keep the last trusted transcript while the database is busy.
                 case .unreadable:
                     self.turns = []
                     self.failed = true

@@ -55,6 +55,15 @@ struct CodexChatSenderTests {
     private func sender(_ fixture: ChatFixtureConnection, managed: String? = nil) -> CodexChatSender {
         CodexChatSender(factory: { fixture }, managedThreadID: managed, workingDirectory: { _ in "/fixture" })
     }
+    @Test func interruptedTurnIsNotReportedAsSuccessfulCompletion() async throws {
+        let fixture = ChatFixtureConnection(); let sender = sender(fixture)
+        var events = sender.events.makeAsyncIterator()
+        let receipt = try await sender.send(threadID: root, text: "test")
+        #expect(await events.next() == .managedThread(receipt.threadID))
+        fixture.enqueue(["method": "turn/completed", "params": ["threadId": receipt.threadID, "turn": ["id": receipt.turnID, "status": "interrupted"]]])
+        #expect(await events.next() == .turnInterrupted)
+        await sender.stop()
+    }
     @Test func forksOnceAndSendsExactTextOnlyToOwnedThread() async throws {
         let fixture = ChatFixtureConnection(); let sender = sender(fixture)
         let text = "한글 \"quoted\"\n$(never-shell)"
